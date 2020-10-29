@@ -1,0 +1,41 @@
+# See http://download.newrelic.com/infrastructure_agent/ for possible permutations of platform/arch
+platform: linux
+arch: '386'
+
+# Still TBD
+# Some variable/indicator for where you're trying to install this that isn't necessarily where you're running the newrelic-cli from
+# Options - native, vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
+target_environment: native
+variant: amazonlinux2
+
+install:
+
+  # go-task yaml definition goes here
+  # This spec - https://github.com/go-task/task
+
+  version: '3'
+
+  env:
+    NR_LICENSE_KEY: '{{.NR_LICENSE_KEY}}'
+
+  variables:
+    - FOO_VAR: foo-value
+
+  tasks:
+      default:
+        cmds:
+          - task: setup_license
+          - task: install_infra
+
+      setup_license:
+        cmds:
+          - echo "license_key: $NR_LICENSE_KEY" | sudo tee -a /etc/newrelic-infra.yml
+
+      install_infra:
+        cmds:
+          - sudo curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo apt-key add -
+          - printf "deb [arch=amd64] https://download.newrelic.com/infrastructure_agent/linux/apt bionic main" | sudo tee -a /etc/apt/sources.list.d/newrelic-infra.list
+          - sudo apt-get update
+          - sudo apt-get install newrelic-infra -y
+          - echo "New Relic infrastructure agent installed"
+        silent: true
