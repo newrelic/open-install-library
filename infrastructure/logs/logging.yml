@@ -1,0 +1,28 @@
+install:
+  version: "3"
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/logging.d"
+        - |
+          if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
+            sudo rm /etc/newrelic-infra/logging.d/logging.yml;
+          fi
+
+          sudo touch /etc/newrelic-infra/logging.d/logging.yml;
+        - |
+          # Enable infra-agent logs to New Relic
+          python -c 'import yaml; f = open("/etc/newrelic-infra/newrelic-infra.yml"); y=yaml.safe_load(f); y['verbose'] = 3; y['log_format'] = "json"; print(yaml.dump(y, default_flow_style=False, sort_keys=False))''
+        - |
+          sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null <<"EOT"
+          logs:
+            - name: syslog
+              file: /var/log/syslog
+          EOT
+        - sudo systemctl restart newrelic-infra.service
