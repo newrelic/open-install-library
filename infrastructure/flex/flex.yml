@@ -1,0 +1,38 @@
+install:
+  version: '3'
+  
+  tasks:
+    default:
+      cmds:
+       - task: setup
+
+    
+    setup:
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/integrations.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/integrations.yml;
+          fi
+          
+          sudo touch /etc/newrelic-infra/integrations.d/integrations.yml;
+
+        - |
+          sudo tee -a /etc/newrelic-infra/integrations.d/integrations.yml > /dev/null <<"EOT"
+          integrations:
+            - name: nri-flex
+              config:
+                name: linuxFileSystemIntegration
+                apis:
+                  - name: FileSystem
+                    commands:
+                      - run: 'df -PT -B1 -x tmpfs -x xfs -x vxfs -x btrfs -x ext -x ext2 -x ext3 -x ext4'
+                        split: horizontal
+                        split_by: \s+
+                        row_start: 1
+                        set_header: [fs,fsType,capacityBytes,usedBytes,availableBytes,usedPerc,mountedOn]
+                    perc_to_decimal: true
+          EOT
+        - sudo systemctl restart newrelic-infra.service
+          
