@@ -23,7 +23,7 @@ variable "environment_tag" {
 }
 
 variable "owning_team_tag" {
-  default = "DTK"
+  default = "OPENSOURCE"
 }
 
 variable "product_tag" {

@@ -1,27 +1,70 @@
 [![Community Project header](https://github.com/newrelic/opensource-website/raw/master/src/images/categories/Community_Project.png)](https://opensource.newrelic.com/oss-category/#community-project)
 
-# [Name of Project] [build badges go here when available]
+# Open Install Library
 
->[Brief description - what is the project and value does it provide? How often should users expect to get releases? How is versioning set up? Where does this project want to go?]
+A collection of recipies designed to support the automated installation and setup of New Relic products and integrations.
 
-## Installation
+## Mission
 
-> [Include a step-by-step procedure on how to get your code installed. Be sure to include any third-party dependencies that need to be installed separately]
+Deliver a consistent user experience, open source ecosystem, and platform services that allow any engineer in the world:
 
-## Getting Started
->[Simple steps to start working with the software similar to a "Hello World"]
+- to go from inadequate monitoring
+- to complete instrumentation of their environment
+- to realizing a win with New Relic
 
-## Usage
->[**Optional** - Include more thorough instructions on how to use the software. This section might not be needed if the Getting Started section is enough. Remove this section if it's not needed.]
-
-
-## Building
-
->[**Optional** - Include this section if users will need to follow specific instructions to build the software from source. Be sure to include any third party build dependencies that need to be installed separately. Remove this section if it's not needed.]
+in 5 minutes or less.
 
 ## Testing
 
->[**Optional** - Include instructions on how to run tests if we include tests with the codebase. Remove this section if it's not needed.]
+We utilize Terraform to deploy an EC2 instance for each of the supported Linux distributions.
+
+### Prerequisites
+
+- An AWS account
+- Setup the AWS configuration and credentials file as described [here](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html).
+- You will likely need to modify [variables.tf](./test/variables.tf) and update `profile`, `public_key`, and `private_key` with your own values. (For instance, the default SSH keypair looks in `~/.ssh/id_rsa.pub` and `~/.ssh/id_rsa`; you need to modify that if your env is different).
+
+### Plan Execution
+
+Once `variables.tf` is set up, execute the following:
+
+1. From the root of this project:
+
+    ```bash
+    cd test
+    ```
+
+2. Install provider plugins
+
+    ```bash
+    terraform init
+    ```
+
+3. Review possible changes
+
+    ```bash
+    terraform plan
+    ```
+
+4. Apply changes
+
+    ```bash
+    terraform apply
+    ```
+
+5. Cleanup (after you're finished)
+
+    ```bash
+    terraform destroy
+    ```
+
+### Adding a new distribution
+
+The Terraform variables file (`test/variables.tf`) contains the tested Linux distributions. There are 3 co-indexed lists: `distros`, `amis` and `ami_users`.
+
+In order to add a distribution, add the name of the distribution to the `distros` list, the ami-id to the `amis` list and the username to ssh into the EC2 instance to the `ami_users` list. 
+
+Make sure to add the name, ami-id and username to the same position in the list (for example the last position).
 
 ## Support
 
@@ -34,5 +77,4 @@ We encourage your contributions to improve [project name]! Keep in mind when you
 If you have any questions, or to execute our corporate CLA, required if your contribution is on behalf of a company,  please drop us an email at opensource@newrelic.com.
 
 ## License
-[Project Name] is licensed under the [Apache 2.0](http://apache.org/licenses/LICENSE-2.0.txt) License.
->[If applicable: The [project name] also uses source code from third-party libraries. You can find full details on which libraries are used and the terms under which they are licensed in the third-party notices document.]
+Open Install Library is licensed under the [Apache 2.0](http://apache.org/licenses/LICENSE-2.0.txt) License.
