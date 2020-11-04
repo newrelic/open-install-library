@@ -15,6 +15,10 @@ Validation runs automatically whenever there is a pull request.
 
 If you want to validate definition files manually, for example for a newly created file before opening a pull request, just put the file in the `definitions` folder  and run the validation locally like explained [here](#local-setup).
 
+### schema generation
+
+[schema-v1.json](./schema-v1.json) was generated with the help of [https://jsonschema.net](https://jsonschema.net/home). To update, use [docs/spec.json](../docs/spec.json) and generate a JSON schema definition at [JSONschema.net](https://jsonschema.net/home), then replace the content in [schema-v1.json](./schema-v1.json).
+
 ### Local setup
 
 There are two different ways of validating files locally.
@@ -39,14 +43,14 @@ If you do not want to install NodeJS, you can use the provided Dockerfile, `Dock
 1. Make sure you have `docker` installed (https://docs.docker.com/get-docker/).
 2. Build the image:
 
-```sh
-docker build . -f Dockerfile.validator -t newrelic/definitions-validator
-```
+    ```sh
+    docker build . -f Dockerfile.validator -t newrelic/definitions-validator
+    ```
 
 3. Run the container:
-  
-```sh
-docker run -v $PWD/definitions:/opt/local/newrelic/definitions newrelic/definitions-validator
-```
+
+    ```sh
+    docker run -v $PWD/definitions:/opt/local/newrelic/definitions newrelic/definitions-validator
+    ```
 
 The tool expects all integration definition files to be in a folder called `definitions` at the same level of the tool folder: map the local `definitions` folder inside the container.

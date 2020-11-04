@@ -100,3 +100,7 @@ install: string, required
         silent: true
 
 ```
+
+## Schema Validator
+
+See [open-install-library/validator](../validator).
