@@ -16,51 +16,60 @@ For example:
 ## Schema definition
 
 ```yaml
-# Integration/Product name
-# Example: Infrastructure Agent Linux Installer
-name: string, required
+metadata:
+  #TBD:
+  # id:
+  #   - node
+  #   - nodejs
 
-# Example: New Relic install recipe for the Infrastructure agent
-description: string, required
+  # Integration/Product name
+  # Example: Infrastructure Agent Linux Installer
+  name: string, required
 
-# Example: https://github.com/newrelic/infrastructure-agent
-repository: string, required
+  # Example: New Relic install recipe for the Infrastructure agent
+  description: string, required
 
-# See http://download.newrelic.com/infrastructure_agent/ for possible permutations of platform/arch
-platform: string, required
+  # Example: https://github.com/newrelic/infrastructure-agent
+  repository: string, required
 
-# Processor architecture type
-# TBD possible values
-arch: string, required
+  # Still TBD
+  # Some variable/indicator for where you're trying to install this that isn't necessarily where you're running the newrelic-cli from
+  # See http://download.newrelic.com/infrastructure_agent/ for possible permutations
+  variant: object, required
+    os: list (string), optional                  # Windows / linux distro. Ex: windows, ubuntu-X.X.X, amazonLinux-X.X.X, CentOS-X.X.X, sles-X.X.X
+    arch: list (string), optional                # Processor architecture type. Ex: 386, amd64, arm, s390x, etc.
+    target_environment: list (string), optional  # Options - vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
 
-# Still TBD
-# Some variable/indicator for where you're trying to install this that isn't necessarily where you're running the newrelic-cli from
-# Examples: native, vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
-target_environment: string, required
+  # keyword convention for dealing with search terms that could land someone on this instrumentation project
+  # Example:
+    # - Node
+    # - Node.js
+    # - Microsoft Azure Web Apps
+  keywords: list, required
 
-# Examine Infrastructure events for correlated data
-# Non-empty list of process definitions. Required.
-process_match: list, required
-  - /infra/
+  # Examine Infrastructure events for correlated data
+  # Non-empty list of process definitions. Required.
+  process_match: list, required
+    - /infra/
 
-# Examine Metrics, Events, and Logging for correlated data
-# Used by the UI to determine if you've successfully configured and are ingesting data
-melt_match: object, required
- events: list, optional
-   # Pattern to match melt data type
-   # example: /SystemSample/
-   - pattern: string, required
- metrics: list, optional
-   # Pattern to match melt data type
-   # example: /system.cpu.usage/
-   - pattern: string, required
- logging: list, optional
-   # Pattern to match melt data type
-   # example: /http/
-   pattern: string, required
-   # List of files to look for in the UI
-   files: list, optional
-     - /var\/log\/system.log
+  # Examine Metrics, Events, and Logging for correlated data
+  # Used by the UI to determine if you've successfully configured and are ingesting data
+  melt_match: object, required
+    events: list, optional
+      # Pattern to match melt data type
+      # example: /SystemSample/
+      - pattern: list, required
+    metrics: list, optional
+      # Pattern to match melt data type
+      # example: /system.cpu.usage/
+      - pattern: list, required
+    logging: list, optional
+      # Pattern to match melt data type
+      # example: /http/
+      pattern: list, required
+      # List of files to look for in the UI
+      files: list, optional
+        - /var\/log\/system.log
 
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
