@@ -1,0 +1,62 @@
+metadata:
+  name: Logs integration
+  description: New Relic install recipe for basic Logging via Infra-Agent
+  repository: https://github.com/newrelic/infrastructure-agent/tree/master/assets/examples/logging
+
+  # See http://download.newrelic.com/infrastructure_agent/ for possible permutations
+  variant:
+    os:
+      - linux
+    arch:
+      - "386"
+    target_environment:
+      - "vm"
+
+  # keyword convention for dealing with search terms that could land someone on this instrumentation project
+  keywords:
+    - Logs
+
+  # Examine Infrastructure events for correlated data
+  process_match:
+    - /logs/
+
+  # Examine Metrics, Events, and Logging for correlated data
+  # Used by the UI to determine if you've successfully configured and are ingesting data
+  melt_match:
+    events:
+      pattern:
+        - /Logs/
+    # metrics:
+    #   pattern: 
+    #     - /apm\./
+
+install:
+  version: "3"
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/logging.d"
+        - |
+          if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
+            sudo rm /etc/newrelic-infra/logging.d/logging.yml;
+          fi
+
+          sudo touch /etc/newrelic-infra/logging.d/logging.yml;
+        - |
+          # Enable infra-agent logs to New Relic
+          echo -e "verbose: 3\nlog_format: json" >> /etc/newrelic-infra.yml
+        - |
+          sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null <<"EOT"
+          logs:
+            - name: syslog
+              file: /var/log/syslog
+            - name: messages
+              file: /var/log/messages
+          EOT
+        - sudo systemctl restart newrelic-infra.service
