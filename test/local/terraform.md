@@ -15,7 +15,7 @@ Once `variables.tf` is set up, execute the following:
 1. From the root of this project:
 
     ```bash
-    cd test
+    cd test/local/terraform
     ```
 
 2. Install provider plugins
