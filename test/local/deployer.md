@@ -8,7 +8,7 @@ The [Deployer](https://github.com/newrelic/demo-deployer) should be run through 
 
 ## Run
 
-A docker image of the `Deployer` is published onto newrelic github registry.
+A docker image of the `Deployer` is published to [GitHub Container Registry](https://github.com/orgs/newrelic/packages/container/package/deployer).
 All you need to do is to place your user config files, and any related secret (pem key file for example) to a local folder on your machine for example `/home/[username]/configs` and mount that folder when executing the docker command to run the deployer.
 
 ```bash
