@@ -1,4 +1,4 @@
-[![Community Project header](https://github.com/newrelic/opensource-website/raw/master/src/images/categories/Community_Project.png)](https://opensource.newrelic.com/oss-category/#community-project)
+[![New Relic Experimental header](https://github.com/newrelic/opensource-website/raw/master/src/images/categories/Experimental.png)](https://opensource.newrelic.com/oss-category/#new-relic-experimental)
 
 # Open Install Library
 
@@ -73,8 +73,10 @@ New Relic hosts and moderates an online forum where customers can interact with 
 >Add the url for the support thread here
 
 ## Contributing
+
 We encourage your contributions to improve [project name]! Keep in mind when you submit your pull request, you'll need to sign the CLA via the click-through using CLA-Assistant. You only have to sign the CLA one time per project.
 If you have any questions, or to execute our corporate CLA, required if your contribution is on behalf of a company,  please drop us an email at opensource@newrelic.com.
 
 ## License
+
 Open Install Library is licensed under the [Apache 2.0](http://apache.org/licenses/LICENSE-2.0.txt) License.
