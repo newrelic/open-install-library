@@ -4,7 +4,6 @@
 # newrelic_personal_api_key: The newrelic personal api key. It typically starts with NRAK-
 # newrelic_account_id: (optional) The newrelic account id
 # newrelic_region: (optional) The newrelic region. Typically "US".
-# git_token: (optional) if used, a Git OAUTH token to use for accessing the recipe content URL
 
 - fail:
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
@@ -13,11 +12,6 @@
 - fail:
     msg: "A recipe_content_url is required. Create this entry in your deploy config file"
   when: recipe_content_url is not defined
-
-- name: Prepare curl headers for GET recipe
-  set_fact:
-    curl_headers: "-H 'Authorization: token {{ git_token }}' -H 'Accept: application/vnd.github.v3.raw'"
-  when: git_token is defined
 
 - name: Prepare environment variables for newrelic-cli execution
   set_fact:
@@ -35,7 +29,6 @@
 
 - name: Run recipes
   shell: "curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | sudo bash && \
-    curl {{curl_headers}} {{ item }} -o {{ item|basename }} && \
     sudo {{ env_vars }} \
     /usr/local/bin/newrelic install -c {{ item|basename }}"
   loop: "{{ recipe_content_url }}"
