@@ -1,0 +1,58 @@
+---
+# Parameters:
+# nrql_query: A query to run against the NRQL database through the Graphql API to see if an entity is reporting
+# newrelic_personal_api_key: The newrelic personal api key. It typically starts with NRAK-
+# newrelic_api_url: (optional) the URL for the newrelic REST API, default to main us URL
+
+# Testing with EU
+# - set_fact:
+#     newrelic_api_url: "api.eu.newrelic.com"
+
+- fail:
+    msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
+  when: newrelic_personal_api_key is not defined
+
+- fail:
+    msg: "A nrql_query is required. Create this entry in your deploy config file"
+  when: nrql_query is not defined
+
+- name: Set default newrelic api url
+  set_fact:
+    newrelic_api_url: "api.newrelic.com"
+  when: newrelic_api_url is undefined
+- name: Ensure https api url
+  set_fact:
+    newrelic_api_url: "https://{{ newrelic_api_url }}"
+  when: not newrelic_api_url | regex_search('^https', ignorecase=True)
+
+- debug:
+    msg: "Using newrelic_api_url:{{ newrelic_api_url }}"
+
+# Validate entity is reporting
+- block:
+  - name: Create payload
+    template:
+      src: entity-search.source.gql
+      dest: "{{ playbook_dir }}/entity-search.gql"
+  - name: Prepare POST payload for graphql
+    set_fact:
+      gql_content: "{{ lookup('file', '{{playbook_dir}}/entity-search.gql') | replace('\n', ' ') }}"
+  - name: Create payload file
+    template:
+      src: gql-query.source.json
+      dest: "{{ playbook_dir }}/gql-query.json"
+  - name: Query entity search
+    shell: "curl -X POST '{{ newrelic_api_url }}/graphql' \
+      -H 'Api-Key:{{ newrelic_personal_api_key }}' \
+      -L -H 'Content-Type: application/json' \
+      -d @{{ playbook_dir }}/gql-query.json"
+    register: output
+  - name: Parse output
+    set_fact: 
+      is_reporting: "{{ output.stdout | from_json | json_query(query) }}"
+    vars:
+      query: "data.actor.entitySearch.results.entities[0].reporting
+  - name: Evaluate if entity is reporting
+    fail:
+      msg: "Entity is NOT reporting with query:'{{nrql_query}}'"
+    when: is_reporting is not defined or is_reporting == false
