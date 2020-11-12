@@ -20,7 +20,7 @@ The testing of recipes is automated, and those are tested on a freshly provision
 
 Test definitions files are located under the path [test/definitions](test/definitions). Those definitions are used with the [Deployer](https://github.com/newrelic/demo-deployer) to provision all the required resources, run the recipe installation, validate the installation is feeding data into newrelic, and finally teardown all the provisioned resources.
 
-More information about local testing can be found at [Local Testing](test/local/README.md).
+More information about local testing can be found at [Local Testing](test/README.md).
 
 ## Support
 
