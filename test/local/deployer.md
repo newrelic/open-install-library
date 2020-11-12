@@ -15,7 +15,7 @@ All you need to do is to place your user config files, and any related secret (p
 docker pull ghcr.io/newrelic/deployer:latest
 docker run -it\
     -v $HOME/configs/:/mnt/deployer/configs/\
-    --entrypoint ruby deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/definitions/awslinux2-infra.json
+    --entrypoint ruby ghcr.io/newrelic/deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/definitions/awslinux2-infra.json
 ```
 
 ## Debug
@@ -25,5 +25,5 @@ If you need to look into the details when running the recipe or validation, you 
 ```bash
 docker run -it\
     -v $HOME/configs/:/mnt/deployer/configs/\
-    --entrypoint sh deployer
+    --entrypoint sh ghcr.io/newrelic/deployer
 ```
