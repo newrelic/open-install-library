@@ -1,20 +1,241 @@
 name: Validate Recipes
-on:
-  pull_request:
+on: [pull_request, workflow_dispatch]
+
 jobs:
-  validate:
+  validate-schema:
     name: Validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v1
         with:
-          node-version: '14'
-      
+          node-version: "14"
+
       - name: Install dependencies
         run: npm --prefix validator install
-      
+
       - name: Validate
         run: npm --prefix validator run check
+
+  # Job to get recipe that's being tested
+  #  > From the recipe, get the test definition file
+
+  test-deploy-recipe:
+    name: Test Deploy Recipe
+    needs: [validate-schema]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+
+      - name: Write AWS Certificate to File
+        env:
+          AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+        run: |
+          mkdir -p configs
+          rm -f configs/gitdeployerCanada.pem
+          echo "$AWS_PEM" > configs/gitdeployerCanada.pem
+          sudo chmod 400 configs/gitdeployerCanada.pem
+
+      - name: Write Test Definition File JSON to file
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        run: |
+          echo "$USER_JSON" > configs/gitstgdkr{{ github.run_id }}.json
+
+      - name: Pull Deployer image
+        run: |
+          docker pull ghcr.io/newrelic/deployer:latest
+          docker images ghcr.io/newrelic/deployer:latest
+
+      # - name: Teardown any previous deployment
+      #   # run: docker run -i --entrypoint ruby deployer main.rb -c gitstgdkr.json.local -d demo/catalog/hello.aws.json -t
+      #   run: |
+      #     docker run -i\
+      #       -v $HOME/configs/:/mnt/deployer/configs/\
+      #       --entrypoint ruby deployer main.rb -c configs/gitstgdkr{{ github.run_id }}.json -d test/definitions/awslinux2-infra.json
+
+      # - name: Run deployer
+      #   run: |
+      #     docker run -i\
+      #       -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+      #       --entrypoint ruby deployer main.rb -c configs/gitstgdkr{{ github.run_id }}.json -d test/definitions/awslinux2-infra.json
+      - name: Run test deployer
+        run: |
+          docker run -i --entrypoint ruby ghcr.io/newrelic/deployer main.rb
+
+  test-deploy-recipe-container:
+    name: Test Deploy Recipe Container
+    needs: [validate-schema]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/newrelic/deployer:latest
+      options: -i --entrypoint /bin/bash
+      env: 
+        AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+        USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+      # volume:
+      #   # - $HOME/configs/:
+      #   - /mnt/deployer/configs/
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+
+      - name: Write AWS Certificate to File
+        # env:
+          # AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+          # AWS_PEM: ${{ env.S_AWS_PEM }}
+        run: |
+          mkdir -p configs
+          rm -f configs/gitdeployerCanada.pem
+          echo "$AWS_PEM" > configs/gitdeployerCanada.pem
+          sudo chmod 400 configs/gitdeployerCanada.pem
+
+      - name: Write Test Definition File JSON to file
+        # env:
+        #   USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        #   USER_JSON: ${{ env.S_USER_JSON }}
+        run: |
+          echo "$USER_JSON" > configs/gitstgdkr{{ github.run_id }}.json
+
+      # - name: Teardown any previous deployment
+      #   run: |
+      #     ruby main.rb -c configs/gitstgdkr{{ github.run_id }}.json -d /github/workspace/test/definitions/awslinux2-infra.json -t
+
+      # - name: Run deployer
+      #   run: |
+      #     ruby main.rb -c configs/gitstgdkr{{ github.run_id }}.json -d /github/workspace/test/definitions/awslinux2-infra.json
+
+      - name: Run test commands
+        run: ruby main.rb # should only output usage commands
+
+  # test-deploy-recipe-container-2:
+  #   name: Test Deploy Recipe Container 2
+  #   needs: [validate-schema]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout Repo
+  #       uses: actions/checkout@v2
+
+  #     - name: Write AWS Certificate to File
+  #       env:
+  #         AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+  #       run: |
+  #         mkdir -p configs
+  #         rm -f configs/gitdeployerCanada.pem
+  #         echo "$AWS_PEM" > configs/gitdeployerCanada.pem
+  #         sudo chmod 400 configs/gitdeployerCanada.pem
+
+  #     - name: Write Test Definition File JSON to file
+  #       env:
+  #         USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+  #       run: |
+  #         echo "$USER_JSON" > configs/gitstgdkr{{ github.run_id }}.json
+
+  #     # - name: Teardown any previous deployment
+  #     #   uses: docker://ghcr.io/newrelic/deployer:latest
+  #     #   with:
+  #     #     # entrypoint: ruby main.rb
+  #     #     args: -c configs/gitstgdkr{{ github.run_id }}.json -d /github/workspace/test/definitions/awslinux2-infra.json -t
+      
+  #     # - name: Run Deployer
+  #     #   uses: docker://ghcr.io/newrelic/deployer:latest
+  #     #   with:
+  #     #     # entrypoint: ruby main.rb
+  #     #     args: -c configs/gitstgdkr{{ github.run_id }}.json -d /github/workspace/test/definitions/awslinux2-infra.json
+
+  #     - name: Run test commands
+  #       uses: docker://ghcr.io/newrelic/deployer:latest # will execute default entrypoint - should only output usage commands
+
+  # slack-notify:
+  #   runs-on: ubuntu-latest
+  #   needs: [test-deploy-recipe]
+  #   if: always() && github.event_name == 'push'
+  #   steps:
+  #     - name: Build Result Slack Notification
+  #       uses: 8398a7/action-slack@v3
+  #       with:
+  #         author_name: GitHub Actions
+  #         status: custom
+  #         fields: commit,repo,ref,author,eventName,message,workflow
+  #         custom_payload: |
+  #           {
+  #             username: "GitHub Actions",
+  #             icon_emoji: ":octocat:",
+  #             attachments: [{
+  #               color: ${{
+  #                 needs.test-deploy-recipe.result == 'success'
+  #               }} === true ? '#43cc11' : '#e05d44',
+  #               blocks: [
+  #                 {
+  #                   type: "section",
+  #                   text: {
+  #                     type: "mrkdwn",
+  #                     text: `Build for ${process.env.AS_REPO}`
+  #                   }
+  #                 },
+  #                 {
+  #                   type: "section",
+  #                   fields: [
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: `*Commit:*\n${process.env.AS_COMMIT}`
+  #                     },
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: `*Author:*\n${process.env.AS_AUTHOR}`
+  #                     },
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: `*Branch:*\n${process.env.AS_REF}`
+  #                     },
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: `*Message:*\n${process.env.AS_MESSAGE}`
+  #                     },
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: `*Type:*\n${process.env.AS_EVENT_NAME}`
+  #                     },
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: "*PR:*\n${{ github.event.pull_request.html_url }}"
+  #                     },
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: `*Workflow:*\n${ process.env.AS_WORKFLOW }`
+  #                     }
+  #                   ]
+  #                 },
+  #                 {
+  #                   type: "section",
+  #                   text: {
+  #                     type: "mrkdwn",
+  #                     text: [
+  #                       "*Result:*",
+  #                       `• ${ ${{ needs.test-deploy-recipe.result == 'success' }} === true ? '✅' : '❌' } AWS cloud provider test: ${{ needs.test-deploy-recipe.result }}`
+  #                     ].join('\n')
+  #                   }
+  #                 },
+  #                 {
+  #                   type: "context",
+  #                   elements: [
+  #                     {
+  #                       type: "image",
+  #                       image_url: "https://avatars2.githubusercontent.com/in/15368",
+  #                       alt_text: "Github Actions"
+  #                     },
+  #                     {
+  #                       type: "mrkdwn",
+  #                       text: "This message was created automatically by GitHub Actions."
+  #                     }
+  #                   ]
+  #                 }
+  #               ]
+  #             }]
+  #           }
+  #       env:
+  #         GITHUB_TOKEN: ${{ github.token }}
+  #         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
