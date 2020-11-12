@@ -1,0 +1,96 @@
+name: Non Regression Testing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: main
+
+  validate-all:
+    name: Validate All
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+
+      - name: Write AWS Certificate to File
+        env:
+          AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+        run: |
+          mkdir -p configs
+          rm -f configs/gitdeployerCanada.pem
+          echo "$AWS_PEM" > configs/gitdeployerCanada.pem
+          sudo chmod 400 configs/gitdeployerCanada.pem
+
+      - name: Write Test Definition File JSON to file
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        run: |
+          echo "$USER_JSON" > configs/gitusdkr{{ github.run_id }}.json
+
+      - name: Pull Deployer image
+        run: |
+          docker pull ghcr.io/newrelic/deployer:latest
+          docker images ghcr.io/newrelic/deployer:latest
+
+      - name: Run deployer for awslinux2
+        id: awslinux2
+        continue-on-error: true
+        run: |
+          set +e
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/awslinux2-infra.json
+          echo ::set-output name=exit_status::failure
+
+      - name: Run deployer for ubuntu16
+        id: ubuntu16
+        continue-on-error: true
+        run: |
+          set +e
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/ubuntu16-infra.json
+          echo ::set-output name=exit_status::failure
+
+      - name: Run deployer for ubuntu18
+        id: ubuntu18
+        continue-on-error: true
+        run: |
+          set +e
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/ubuntu18-infra.json
+          echo ::set-output name=exit_status::failure
+
+      - name: Run deployer for ubuntu20
+        id: ubuntu20
+        continue-on-error: true
+        run: |
+          set +e
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/ubuntu20-infra.json
+          echo ::set-output name=exit_status::failure
+
+      - name: Teardown all
+        continue-on-error: true
+        run: |
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/awslinux2-infra.json -t
+
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/ubuntu16-infra.json -t
+
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/ubuntu18-infra.json -t
+
+          docker run -i\
+            -v configs/:/mnt/deployer/configs/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/ubuntu20-infra.json -t
+
+      - name: Report error
+        if: steps.awslinux2.outputs.exit_status != 0 | steps.ubuntu16.outputs.exit_status != 0 | steps.ubuntu18.outputs.exit_status != 0 | steps.ubuntu20.outputs.exit_status != 0
+        run: exit 1
