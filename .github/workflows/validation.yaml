@@ -164,6 +164,7 @@ jobs:
           docker images ghcr.io/newrelic/deployer:3.0.0
 
       - name: Run deployer
+        id: run-deployer
         if: env.RECIPES != ''
         run: |
           echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -c -r '.[]' | while read i; do
@@ -171,10 +172,9 @@ jobs:
             docker run -i\
               -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
               -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-              --entrypoint ruby ghcr.io/newrelic/deployer:3.0.0 main.rb
+              --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i
           done
 
-      # try running with different deploy config that we know works?
       - name: Teardown any previous deployment
         if: always() && env.RECIPES != ''
         run: |
@@ -183,8 +183,12 @@ jobs:
             docker run -i\
               -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
               -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-              --entrypoint ruby ghcr.io/newrelic/deployer:3.0.0 main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i -t -l debug
+              --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i -t
           done
+
+      - name: Report error
+        if: steps.run-deployer.outputs.exit_status != 0
+        run: exit 1
 
   # slack-notify:
   #   runs-on: ubuntu-latest
