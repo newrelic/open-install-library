@@ -104,13 +104,6 @@ jobs:
               return p.concat([{ fileName: `test/definitions/${c}`, recipeNames: contents.instrumentations.resources[0].params.recipe_content_url }])
             }, [])
             console.log("dcRecipes:", dcRecipes);
-            // let dcRecipes = []
-            // for (file in deployConfigs) {
-            //   console.log(file);
-            //   const contents = require(`${process.env.GITHUB_WORKSPACE}/${file}`);
-            //
-            //   dcRecipes.push({ fileName: file, recipeNames: content.instrumentations.resources[0].params.recipe_content_url });
-            // }
 
             if (recipeFiles) {
               const testDefinitionFilesToRun = recipeFiles
@@ -122,6 +115,9 @@ jobs:
                 .map((r) => r.fileName);
 
               console.log('testDefinitionFilesToRun', testDefinitionFilesToRun);
+
+              // before returning, we need to edit the deploy config files in-place so they use the right URLs
+
               return testDefinitionFilesToRun;
             }
 
@@ -147,12 +143,21 @@ jobs:
 
       - name: Run deployer
         run: |
-          echo ${{ steps.get-test-definition-files.outputs.result }}
+          echo ${{ steps.get-test-definition-files.outputs.result }} | jq '.[]' | while read i; do
+            echo $i
+          done
+          # echo ${{ steps.get-test-definition-files.outputs.result }} | jq '.[]' | while read i; do
+            # docker run -i\
+            #   -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            #   -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            #   --entrypoint ruby deployer main.rb -c configs/$gitusdkr{{ github.run_id }}.json -d $i
+          # done
       # - name: Teardown any previous deployment
       #   if: always()
       #   run: |
       #     docker run -i\
-      #       -v $HOME/configs/:/mnt/deployer/configs/\
+      #       -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+      #       -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
       #       --entrypoint ruby deployer main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/awslinux2-infra.json -t
   # slack-notify:
   #   runs-on: ubuntu-latest
