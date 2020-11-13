@@ -14,6 +14,14 @@ Deliver a consistent user experience, open source ecosystem, and platform servic
 
 in 5 minutes or less.
 
+## Authoring a recipe
+
+### Common variables
+
+The [newrelic-cli] injects at runtime of a go-task the following variables:
+
+- `{{.NR_LICENSE_KEY}}` populated by the key associated with the profile run with the cli
+
 ## Testing
 
 The testing of recipes is automated, and those are tested on a freshly provisioned environment and re-provisioned on every test run.
