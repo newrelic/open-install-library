@@ -74,16 +74,12 @@ jobs:
         id: getfile
         run: |
           RECIPES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "recipes" || true)
-          
+
           if [ -z "$RECIPES" ]; then
             echo "No recipe files detected."
           else
             echo "RECIPES=$RECIPES" >> $GITHUB_ENV
           fi
-      
-      - name: install glob
-        run: 
-          npm install glob
 
       # 2) Use javascript action / yq to pull the test definition file from the recipe yaml
       - name: Get Test Definition Files
@@ -92,32 +88,31 @@ jobs:
         uses: actions/github-script@v3
         with:
           script: |
-            const fs = require('fs');
-            const glob = require('glob');
-            
+            const fsp = require('fs').promises;
+            const path = require('path');
+
             const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
             console.log(`Detected Recipe Files: ${JSON.stringify(recipeFiles, null, 2)}`)
-            
-            const pattern = `${process.env.GITHUB_WORKSPACE}/recipes/newrelic/**/*.yml`;
-            const filesPromise = new Promise((resolve, reject) => {
-              glob.glob(pattern, (err, matches) => {
-                if (err) {
-                  reject(err);
-                }
-                resolve(matches);
-              });
-            });
-            const deployConfigs = await filesPromise();
+
+            const deployConfigsPath = path.join(__dirname, 'test/definitions');
+            const deployConfigs = await fsp.readdir(deployConfigsPath);
+            console.log("deployConfigs:", deployConfigs);
 
             // Build up list of Deploy Config Recipes w/ their recipe params
-            let dcRecipes = []
-            for (file in deployConfigs) {
-              console.log(file);
+            const dcRecipes = deployConfigs.reduce((p, c) => {
               const contents = require(`${process.env.GITHUB_WORKSPACE}/${file}`);
 
-              dcRecipes.push({ fileName: file, recipeNames: content.instrumentations.resources[0].params.recipe_content_url });
-            }
-            
+              return p.concat([{ fileName: c, recipeNames: content.instrumentations.resources[0].params.recipe_content_url }])
+            }, [])
+            console.log("dcRecipes:", dcRecipes);
+            // let dcRecipes = []
+            // for (file in deployConfigs) {
+            //   console.log(file);
+            //   const contents = require(`${process.env.GITHUB_WORKSPACE}/${file}`);
+            //
+            //   dcRecipes.push({ fileName: file, recipeNames: content.instrumentations.resources[0].params.recipe_content_url });
+            // }
+
             if (recipeFiles) {
               const testDefinitionFilesToRun = recipeFiles.reduce((p, c) => { 
                 return p.concat(dcRecipes.filter( r => r.recipeNames.filter( rn => rn.includes(file))))
@@ -151,13 +146,11 @@ jobs:
           # docker run -i\
           #   -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
           #   --entrypoint ruby deployer main.rb -c configs/gitusdkr{{ github.run_id }}.json -d ...
-
       # - name: Teardown any previous deployment
       #   run: |
       #     docker run -i\
       #       -v $HOME/configs/:/mnt/deployer/configs/\
       #       --entrypoint ruby deployer main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/awslinux2-infra.json -t
-
   # slack-notify:
   #   runs-on: ubuntu-latest
   #   needs: [test-deploy-recipe]
