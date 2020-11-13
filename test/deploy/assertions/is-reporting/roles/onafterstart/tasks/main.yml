@@ -40,12 +40,16 @@
   template:
     src: gql-query.source.json
     dest: "{{ playbook_dir }}/gql-query.json"
+
 - name: Query entity search
   shell: "curl -X POST '{{ newrelic_api_url }}/graphql' \
     -H 'Api-Key:{{ newrelic_personal_api_key }}' \
     -L -H 'Content-Type: application/json' \
     -d @{{ playbook_dir }}/gql-query.json"
   register: output
+  retries: 20
+  delay: 15
+  until: output is not failed and (output.stdout | from_json | json_query('data.actor.entitySearch.results.entities[0].reporting') | bool)
 
 - name: Parse output
   set_fact: 
