@@ -38,7 +38,7 @@ metadata:
   variant: object, required
     os: list (string), optional                  # Windows / linux distro. Ex: windows, ubuntu-X.X.X, amazonLinux-X.X.X, CentOS-X.X.X, sles-X.X.X
     arch: list (string), optional                # Processor architecture type. Ex: 386, amd64, arm, s390x, etc.
-    target_environment: list (string), optional  # Options - vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
+    targetEnvironment: list (string), optional  # Options - vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
 
   # keyword convention for dealing with search terms that could land someone on this instrumentation project
   # Example:
@@ -49,12 +49,12 @@ metadata:
 
   # Examine Infrastructure events for correlated data
   # Non-empty list of process definitions. Required.
-  process_match: list, required
+  processMatch: list, required
     - /infra/
 
   # Examine Metrics, Events, and Logging for correlated data
   # Used by the UI to determine if you've successfully configured and are ingesting data
-  melt_match: object, required
+  meltMatch: object, required
     events: list, optional
       # Pattern to match melt data type
       # example: /SystemSample/
