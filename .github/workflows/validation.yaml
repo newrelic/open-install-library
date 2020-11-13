@@ -1,7 +1,36 @@
-name: Validate Recipes
+name: Validate Recipe (Unit Test)
 on: [pull_request, workflow_dispatch]
 
 jobs:
+  log-context:
+    runs-on: ubuntu-latest
+    steps:
+      # Dump all contexts
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "$GITHUB_CONTEXT"
+      - name: Dump job context
+        env:
+          JOB_CONTEXT: ${{ toJson(job) }}
+        run: echo "$JOB_CONTEXT"
+      - name: Dump steps context
+        env:
+          STEPS_CONTEXT: ${{ toJson(steps) }}
+        run: echo "$STEPS_CONTEXT"
+      - name: Dump runner context
+        env:
+          RUNNER_CONTEXT: ${{ toJson(runner) }}
+        run: echo "$RUNNER_CONTEXT"
+      - name: Dump strategy context
+        env:
+          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
+        run: echo "$STRATEGY_CONTEXT"
+      - name: Dump matrix context
+        env:
+          MATRIX_CONTEXT: ${{ toJson(matrix) }}
+        run: echo "$MATRIX_CONTEXT"
+
   validate-schema:
     name: Validation
     runs-on: ubuntu-latest
@@ -19,17 +48,6 @@ jobs:
       - name: Validate
         run: npm --prefix validator run check
 
-  # Job to get recipe that's being tested
-  # Assumption: This validation workflow is running (1) recipe and (2) its test definition file
-  #   > Need to determine which recipes are being tested from git context
-  #     > From the recipe, get its test definition file
-  # get-recipe-and-TDF:
-  #   name: Get Recipe and Test Definition File
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     # 1) Check for all incoming changes to files under `recipes` directory
-  #     # 2) Use yq to pull the test definition file from the recipe yaml
-
   test-deploy-recipe:
     name: Test Deploy Recipe
     needs: [validate-schema]
@@ -37,22 +55,20 @@ jobs:
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
       # 1) Check for all incoming changes to files under `recipes` directory
       - name: Get Changed Files
         id: getfile
         run: |
           RECIPES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "recipes" || true)
-          
+
           if [ -z "$RECIPES" ]; then
             echo "No recipe files detected."
           else
             echo "RECIPES=$RECIPES" >> $GITHUB_ENV
           fi
-      
-      - name: install glob
-        run: 
-          npm -i -g glob
 
       # 2) Use javascript action / yq to pull the test definition file from the recipe yaml
       - name: Get Test Definition Files
@@ -62,39 +78,70 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const glob = require('glob');
-            
+            const fsp = fs.promises;
+            const path = require('path');
+
+            // Get incoming added/updated recipe files
             const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
             console.log(`Detected Recipe Files: ${JSON.stringify(recipeFiles, null, 2)}`)
-            
-            const pattern = `${process.env.GITHUB_WORKSPACE}/recipes/newrelic/**/*.yml`;
-            const filesPromise = new Promise((resolve, reject) => {
-              glob.glob(pattern, (err, matches) => {
-                if (err) {
-                  reject(err);
-                }
-                resolve(matches);
-              });
-            });
-            const deployConfigs = await filesPromise();
 
-            // Build up list of Deploy Config Recipes w/ their recipe params
-            let dcRecipes = []
-            for (file in deployConfigs) {
-              console.log(file);
-              const contents = require(`${process.env.GITHUB_WORKSPACE}/${file}`);
-
-              dcRecipes.push({ fileName: file, recipeNames: content.instrumentations.resources[0].params.recipe_content_url });
-            }
-            
             if (recipeFiles) {
-              const testDefinitionFilesToRun = recipeFiles.reduce((p, c) => { 
-                return p.concat(dcRecipes.filter( r => r.recipeNames.filter( rn => rn.includes(file))))
-              }, [])
+              // Get all deploy config files
+              const deployConfigsPath = path.join(process.env.GITHUB_WORKSPACE, 'test/definitions');
+              const deployConfigs = await fsp.readdir(deployConfigsPath);
+              console.log("deployConfigs:", deployConfigs);
+
+              // Build up list of Deploy Configs to run based on recipes that have changed
+              const testDefinitionFilesToRun = deployConfigs.reduce((p, c) => {
+                const contents = require(`${process.env.GITHUB_WORKSPACE}/test/definitions/${c}`);
+
+                // Look at current recipe_content_url. If it contains any of recipeFiles, add this to the current accumulator
+                const recipes = contents.instrumentations.resources[0].params.recipe_content_url;
+                
+                // returns list of matched recipes from the deploy config file
+                const matchedRecipes = recipes.filter(
+                  (r) => recipeFiles.filter((rf) => r.includes(rf)).length > 0
+                );
+
+                // Add the current deploy config file to our output if there were matches 
+                return matchedRecipes.length > 0 ? [`test/definitions/${c}`, ...p] : p;
+              }, []);
+              console.log('testDefinitionFilesToRun:', testDefinitionFilesToRun);
+
+              // before returning, we need to edit the deploy config files in-place so they 
+              // use the right URLs from the branch
+              async function getDeployConfigFile(file, outputDir) {
+                const data = await fsp.readFile(path.join(outputDir, file));
+                return JSON.parse(data);
+              }
+
+              const regex = /main/gi;
+              const done = await Promise.all(
+                testDefinitionFilesToRun.map(async tdf => {
+                  const data = await getDeployConfigFile(tdf, process.env.GITHUB_WORKSPACE);
+                  
+                  // Update URLs to use branch this PR is opened with
+                  const updated_recipe_content_url = data.instrumentations.resources[0].params.recipe_content_url.map( recipe => {
+                    return recipe.replace(regex, process.env.GITHUB_HEAD_REF);
+                    //console.log('Updated ref: ', updatedRef);
+                    //return updatedRef;
+                  });
+                  data.instrumentations.resources[0].params.recipe_content_url = updated_recipe_content_url;
+
+                  // Write file back to workspace
+                  const jsonContent = JSON.stringify(data, null, 2);
+                  const outputPath = `${process.env.GITHUB_WORKSPACE}/${tdf}`;
+                  console.log("Updated Deploy Config File: ", outputPath);
+                  fs.writeFileSync(outputPath, jsonContent);
+                })
+              );
+
               return testDefinitionFilesToRun;
             }
+            return null;
 
       - name: Write AWS Certificate to File
+        if: env.RECIPES != ''
         env:
           AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
         run: |
@@ -104,28 +151,44 @@ jobs:
           sudo chmod 400 configs/gitdeployerCanada.pem
 
       - name: Write Test Definition File JSON to file
+        if: env.RECIPES != ''
         env:
           USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
         run: |
-          echo "$USER_JSON" > configs/gitusdkr{{ github.run_id }}.json
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
 
       - name: Pull Deployer image
+        if: env.RECIPES != ''
         run: |
-          docker pull ghcr.io/newrelic/deployer:latest
-          docker images ghcr.io/newrelic/deployer:latest
+          docker pull ghcr.io/newrelic/deployer:3.0.0
+          docker images ghcr.io/newrelic/deployer:3.0.0
 
       - name: Run deployer
+        id: run-deployer
+        if: env.RECIPES != ''
         run: |
-          echo ${{ steps.get-test-definition-files.outputs.result }}
-          # docker run -i\
-          #   -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
-          #   --entrypoint ruby deployer main.rb -c configs/gitusdkr{{ github.run_id }}.json -d ...
+          echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -c -r '.[]' | while read i; do
+            echo $i
+            docker run -i\
+              -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+              -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+              --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i
+          done
 
-      # - name: Teardown any previous deployment
-      #   run: |
-      #     docker run -i\
-      #       -v $HOME/configs/:/mnt/deployer/configs/\
-      #       --entrypoint ruby deployer main.rb -c configs/gitusdkr{{ github.run_id }}.json -d test/definitions/awslinux2-infra.json -t
+      - name: Teardown any previous deployment
+        if: always() && env.RECIPES != ''
+        run: |
+          echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -c -r '.[]' | while read i; do
+            echo $i
+            docker run -i\
+              -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+              -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+              --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i -t
+          done
+
+      - name: Report error
+        if: steps.run-deployer.outputs.exit_status != 0
+        run: exit 1
 
   # slack-notify:
   #   runs-on: ubuntu-latest
