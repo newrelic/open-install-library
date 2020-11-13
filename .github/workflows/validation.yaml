@@ -88,7 +88,8 @@ jobs:
         uses: actions/github-script@v3
         with:
           script: |
-            const fsp = require('fs').promises;
+            const fs = require('fs');
+            const fsp = fs.promises;
             const path = require('path');
 
             const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
@@ -104,7 +105,7 @@ jobs:
             //  return p.concat([{ fileName: `test/definitions/${c}`, recipeNames: contents.instrumentations.resources[0].params.recipe_content_url }])
             //}, [])
 
-            const dcRecipes = deployConfigs.reduce((p, c) => {
+            const testDefinitionFilesToRun = deployConfigs.reduce((p, c) => {
               const contents = require(`${process.env.GITHUB_WORKSPACE}/test/definitions/${c}`);
 
               // Look at current recipe_content_url. If it contains any of recipeFiles, add this to the current accumulator
@@ -120,8 +121,39 @@ jobs:
 
               // return p.concat([{ fileName: `test/definitions/${c}`, recipeNames: contents.instrumentations.resources[0].params.recipe_content_url }])
             }, []);
-            console.log('dcRecipes:', dcRecipes);
-            return dcRecipes;
+            console.log('testDefinitionFilesToRun:', testDefinitionFilesToRun);
+            
+
+            // before returning, we need to edit the deploy config files in-place so they use the right URLs
+            // alternatively, use jq in another step to do it (might be easier)
+            async function getDeployConfigFile(file, outputDir) {
+              const data = await fsp.readFile(path.join(outputDir, file));
+              return JSON.parse(data).fullName;
+            }
+
+            const regex = /main/gi;
+            const done = await Promise.all(
+              testDefinitionFilesToRun.map(async tdf => {
+                const data = await getDeployConfigFile(tdf, ${process.env.GITHUB_WORKSPACE});
+                const updated_recipe_content_url = data.instrumentations.resources[0].params.recipe_content_url.map( recipe => {
+                  const updatedRef = recipe.replace(regex, process.env.GITHUB_HEAD_REF);
+                  console.log('Updated ref: ', update);
+                  return updatedRef;
+                });
+                updatedData = {
+                  ...data,
+                  instrumentations.resources[0].params.recipe_content_url: updated_recipe_content_url;
+                }
+
+                // write file back to workspace
+                const jsonContent = JSON.stringify(updatedData, null, 2);
+                const outputPath = `${process.env.GITHUB_WORKSPACE}/${tdf}`);
+                console.log("Output Path: ", outputPath);
+                fs.writeFileSync(outputPath, jsonContent);
+              });
+            );
+
+            return testDefinitionFilesToRun;
 
             //if (recipeFiles) {
             //  const testDefinitionFilesToRun = recipeFiles
