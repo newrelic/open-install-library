@@ -67,7 +67,9 @@ jobs:
           if [ -z "$RECIPES" ]; then
             echo "No recipe files detected."
           else
-            echo "RECIPES=$RECIPES" >> $GITHUB_ENV
+            echo "RECIPES<<EOF" >> $GITHUB_ENV
+            echo $RECIPES >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
           fi
 
       # 2) Use javascript action / yq to pull the test definition file from the recipe yaml
@@ -128,10 +130,16 @@ jobs:
                   });
                   data.instrumentations.resources[0].params.recipe_content_url = updated_recipe_content_url;
 
+                  // Update source URLs
+                  let jsonContent = JSON.stringify(data, null, 2);
+                  const replacementString = `"source_repository": "-b ${process.env.GITHUB_HEAD_REF} https://github.com/newrelic/open-install-library"`; 
+                  const sourceRepositoryRegex = /\"source_repository\": \"https:\/\/github\.com\/newrelic\/open-install-library\"/gi;
+                  jsonContent = jsonContent.replace(sourceRepositoryRegex, replacementString);
+
                   // Write file back to workspace
-                  const jsonContent = JSON.stringify(data, null, 2);
                   const outputPath = `${process.env.GITHUB_WORKSPACE}/${tdf}`;
                   console.log("Updated Deploy Config File: ", outputPath);
+                  console.log("Deploy Config content: ", jsonContent);
                   fs.writeFileSync(outputPath, jsonContent);
                 })
               );
@@ -160,8 +168,8 @@ jobs:
       - name: Pull Deployer image
         if: env.RECIPES != ''
         run: |
-          docker pull ghcr.io/newrelic/deployer:3.0.0
-          docker images ghcr.io/newrelic/deployer:3.0.0
+          docker pull ghcr.io/newrelic/deployer:latest
+          docker images ghcr.io/newrelic/deployer:latest
 
       - name: Run deployer
         id: run-deployer
@@ -169,7 +177,7 @@ jobs:
         run: |
           echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -c -r '.[]' | while read i; do
             echo $i
-            docker run -i\
+            docker run \
               -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
               -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
               --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i
@@ -180,7 +188,7 @@ jobs:
         run: |
           echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -c -r '.[]' | while read i; do
             echo $i
-            docker run -i\
+            docker run \
               -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
               -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
               --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i -t
