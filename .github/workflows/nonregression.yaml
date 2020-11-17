@@ -66,6 +66,28 @@ jobs:
             --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d test/definitions/ubuntu18-infra.json
           echo ::set-output name=exit_status::failure
 
+      - name: Run deployer for debian9
+        id: debian9
+        continue-on-error: true
+        run: |
+          set +e
+          docker run -i\
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d test/definitions/debian9-infra.json
+          echo ::set-output name=exit_status::failure
+
+      - name: Run deployer for debian10
+        id: debian10
+        continue-on-error: true
+        run: |
+          set +e
+          docker run -i\
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d test/definitions/debian10-infra.json
+          echo ::set-output name=exit_status::failure
+
       - name: Teardown all
         continue-on-error: true
         run: |
@@ -84,8 +106,18 @@ jobs:
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d test/definitions/ubuntu18-infra.json -t
 
+          docker run -i\
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d test/definitions/debian9-infra.json -t
+
+          docker run -i\
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d test/definitions/debian10-infra.json -t
+
       - name: Report error
-        if: steps.awslinux2.outputs.exit_status != 0 || steps.ubuntu16.outputs.exit_status != 0 || steps.ubuntu18.outputs.exit_status != 0
+        if: steps.awslinux2.outputs.exit_status != 0 || steps.ubuntu16.outputs.exit_status != 0 || steps.ubuntu18.outputs.exit_status != 0 || steps.debian9.outputs.exit_status != 0 || steps.debian10.outputs.exit_status != 0
         run: exit 1
 
   slack-notify:
