@@ -38,7 +38,7 @@ metadata:
   variant: object, required
     os: list (string), optional                  # Windows / linux distro. Ex: windows, ubuntu-X.X.X, amazonLinux-X.X.X, CentOS-X.X.X, sles-X.X.X
     arch: list (string), optional                # Processor architecture type. Ex: 386, amd64, arm, s390x, etc.
-    targetEnvironment: list (string), optional  # Options - vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
+    targetEnvironment: list (string), optional   # Options - vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
 
   # keyword convention for dealing with search terms that could land someone on this instrumentation project
   # Example:
@@ -70,6 +70,13 @@ metadata:
       # List of files to look for in the UI
       files: list, optional
         - /var\/log\/system.log
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars: list, optional
+  - name: string, required      # name of the variable
+    prompt: string, optional    # message prompt to present to the user
+    default: string, optional   # default value for variable
 
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
