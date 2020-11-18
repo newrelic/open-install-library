@@ -124,6 +124,7 @@ jobs:
             }
             return null;
 
+  # need to put checks in place in case matrix isn't set
   test-deploy-recipe:
     name: Test Deploy Recipe
     needs: [get-test-definition-files]
@@ -158,130 +159,98 @@ jobs:
       #     fi
 
       # 2) Use javascript action / yq to pull the test definition file from the recipe yaml
-      # - name: Get Test Definition Files
-      #   id: get-test-definition-files
-      #   if: env.RECIPES != ''
-      #   uses: actions/github-script@v3
-      #   with:
-      #     script: |
-      #       const fs = require('fs');
-      #       const fsp = fs.promises;
-      #       const path = require('path');
+      - name: Get Test Definition Files
+        id: get-test-definition-files
+        if: env.RECIPES != ''
+        uses: actions/github-script@v3
+        with:
+          script: |
+            const fs = require('fs');
+            const fsp = fs.promises;
+            const path = require('path');
 
-      #       // Get incoming added/updated recipe files
-      #       const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
-      #       console.log(`Detected Recipe Files: ${JSON.stringify(recipeFiles, null, 2)}`)
+            // before returning, we need to edit the deploy config files in-place so they 
+            // use the right URLs from the branch
+            async function getDeployConfigFile(file, outputDir) {
+              const data = await fsp.readFile(path.join(outputDir, file));
+              return JSON.parse(data);
+            }
 
-      #       if (recipeFiles) {
-      #         // Get all deploy config files
-      #         const deployConfigsPath = path.join(process.env.GITHUB_WORKSPACE, 'test/definitions');
-      #         const deployConfigs = await fsp.readdir(deployConfigsPath);
-      #         console.log("deployConfigs:", deployConfigs);
+            // Get testDefinitonFile from MATRIX env var
+            const testDefinitionFile = JSON.parse(process.env.MATRIX).testDefinitionFile;
+            console.log(`Detected Deploy Config: ${JSON.stringify(testDefinitionFile, null, 2)}`)
+            
+            // Update URLs to use branch this PR is opened with
+            const regex = /main/gi;
+            const data = await getDeployConfigFile(testDefinitionFile, process.env.GITHUB_WORKSPACE);
+            const updated_recipe_content_url = data.instrumentations.resources[0].params.recipe_content_url.map( recipe => {
+              return recipe.replace(regex, process.env.GITHUB_HEAD_REF);
+              //console.log('Updated ref: ', updatedRef);
+              //return updatedRef;
+            });
+            data.instrumentations.resources[0].params.recipe_content_url = updated_recipe_content_url;
 
-      #         // Build up list of Deploy Configs to run based on recipes that have changed
-      #         const testDefinitionFilesToRun = deployConfigs.reduce((p, c) => {
-      #           const contents = require(`${process.env.GITHUB_WORKSPACE}/test/definitions/${c}`);
+            // Update source URLs
+            let jsonContent = JSON.stringify(data, null, 2);
+            const replacementString = `"source_repository": "-b ${process.env.GITHUB_HEAD_REF} https://github.com/newrelic/open-install-library"`; 
+            const sourceRepositoryRegex = /\"source_repository\": \"https:\/\/github\.com\/newrelic\/open-install-library\"/gi;
+            jsonContent = jsonContent.replace(sourceRepositoryRegex, replacementString);
 
-      #           // Look at current recipe_content_url. If it contains any of recipeFiles, add this to the current accumulator
-      #           const recipes = contents.instrumentations.resources[0].params.recipe_content_url;
-                
-      #           // returns list of matched recipes from the deploy config file
-      #           const matchedRecipes = recipes.filter(
-      #             (r) => recipeFiles.filter((rf) => r.includes(rf)).length > 0
-      #           );
+            // Write file back to workspace
+            const outputPath = `${process.env.GITHUB_WORKSPACE}/${tdf}`;
+            console.log("Updated Deploy Config File: ", outputPath);
+            console.log("Deploy Config content: ", jsonContent);
+            fs.writeFileSync(outputPath, jsonContent);
 
-      #           // Add the current deploy config file to our output if there were matches 
-      #           return matchedRecipes.length > 0 ? [`test/definitions/${c}`, ...p] : p;
-      #         }, []);
-      #         console.log('testDefinitionFilesToRun:', testDefinitionFilesToRun);
+            return testDefinitionFile;
 
-      #         // before returning, we need to edit the deploy config files in-place so they 
-      #         // use the right URLs from the branch
-      #         async function getDeployConfigFile(file, outputDir) {
-      #           const data = await fsp.readFile(path.join(outputDir, file));
-      #           return JSON.parse(data);
-      #         }
+      - name: Write AWS Certificate to File
+        if: env.RECIPES != ''
+        env:
+          AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+        run: |
+          mkdir -p configs
+          rm -f configs/gitdeployerCanada.pem
+          echo "$AWS_PEM" > configs/gitdeployerCanada.pem
+          sudo chmod 400 configs/gitdeployerCanada.pem
 
-      #         const regex = /main/gi;
-      #         const done = await Promise.all(
-      #           testDefinitionFilesToRun.map(async tdf => {
-      #             const data = await getDeployConfigFile(tdf, process.env.GITHUB_WORKSPACE);
-                  
-      #             // Update URLs to use branch this PR is opened with
-      #             const updated_recipe_content_url = data.instrumentations.resources[0].params.recipe_content_url.map( recipe => {
-      #               return recipe.replace(regex, process.env.GITHUB_HEAD_REF);
-      #               //console.log('Updated ref: ', updatedRef);
-      #               //return updatedRef;
-      #             });
-      #             data.instrumentations.resources[0].params.recipe_content_url = updated_recipe_content_url;
+      - name: Write Test Definition File JSON to file
+        if: env.RECIPES != ''
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        run: |
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
 
-      #             // Update source URLs
-      #             let jsonContent = JSON.stringify(data, null, 2);
-      #             const replacementString = `"source_repository": "-b ${process.env.GITHUB_HEAD_REF} https://github.com/newrelic/open-install-library"`; 
-      #             const sourceRepositoryRegex = /\"source_repository\": \"https:\/\/github\.com\/newrelic\/open-install-library\"/gi;
-      #             jsonContent = jsonContent.replace(sourceRepositoryRegex, replacementString);
+      - name: Pull Deployer image
+        if: env.RECIPES != ''
+        run: |
+          docker pull ghcr.io/newrelic/deployer:latest
+          docker images ghcr.io/newrelic/deployer:latest
 
-      #             // Write file back to workspace
-      #             const outputPath = `${process.env.GITHUB_WORKSPACE}/${tdf}`;
-      #             console.log("Updated Deploy Config File: ", outputPath);
-      #             console.log("Deploy Config content: ", jsonContent);
-      #             fs.writeFileSync(outputPath, jsonContent);
-      #           })
-      #         );
+      - name: Run deployer
+        id: run-deployer
+        if: env.RECIPES != ''
+        run: |
+          testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
+          echo $testDefinitionFile
+          # docker run \
+          #   -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+          #   -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+          #   --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile
 
-      #         return testDefinitionFilesToRun;
-      #       }
-      #       return null;
+      - name: Teardown any previous deployment
+        if: always() && env.RECIPES != ''
+        run: |
+          testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
+          echo $testDefinitionFile
+          # docker run \
+          #   -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+          #   -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+          #   --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -t
 
-      # - name: Write AWS Certificate to File
-      #   if: env.RECIPES != ''
-      #   env:
-      #     AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
-      #   run: |
-      #     mkdir -p configs
-      #     rm -f configs/gitdeployerCanada.pem
-      #     echo "$AWS_PEM" > configs/gitdeployerCanada.pem
-      #     sudo chmod 400 configs/gitdeployerCanada.pem
-
-      # - name: Write Test Definition File JSON to file
-      #   if: env.RECIPES != ''
-      #   env:
-      #     USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
-      #   run: |
-      #     echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
-
-      # - name: Pull Deployer image
-      #   if: env.RECIPES != ''
-      #   run: |
-      #     docker pull ghcr.io/newrelic/deployer:latest
-      #     docker images ghcr.io/newrelic/deployer:latest
-
-      # - name: Run deployer
-      #   id: run-deployer
-      #   if: env.RECIPES != ''
-      #   run: |
-      #     echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -c -r '.[]' | while read i; do
-      #       echo $i
-      #       docker run \
-      #         -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
-      #         -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-      #         --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i
-      #     done
-
-      # - name: Teardown any previous deployment
-      #   if: always() && env.RECIPES != ''
-      #   run: |
-      #     echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -c -r '.[]' | while read i; do
-      #       echo $i
-      #       docker run \
-      #         -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
-      #         -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-      #         --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $i -t
-      #     done
-
-      # - name: Report error
-      #   if: steps.run-deployer.outputs.exit_status != 0
-      #   run: exit 1
+      - name: Report error
+        if: steps.run-deployer.outputs.exit_status != 0
+        run: exit 1
 
   # slack-notify:
   #   runs-on: ubuntu-latest
