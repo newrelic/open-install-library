@@ -1,0 +1,79 @@
+metadata:
+  name: Infrastructure integration
+  description: New Relic install recipe for installing the infrastructure agent, with the flex and logs integration
+  repository: https://github.com/newrelic/infrastructure-agent
+
+
+  # See http://download.newrelic.com/infrastructure_agent/ for possible permutations
+  variant:
+    os:
+      - suse
+    arch:
+      - "x86_64"
+    targetEnvironment:
+      - "vm"
+
+  # keyword convention for dealing with search terms that could land someone on this instrumentation project
+  keywords:
+    - Infrastructure
+    - Agent
+    - Linux
+    - Suse
+    - SLES
+
+  # Examine Infrastructure events for correlated data
+  processMatch:
+    - /infra/
+
+  # Examine Metrics, Events, and Logging for correlated data
+  # Used by the UI to determine if you've successfully configured and are ingesting data
+  meltMatch:
+    events:
+      pattern:
+        - /SystemSample/
+    metrics:
+      pattern:
+        - /system.cpu.usage/
+    # logging:
+    #   pattern:
+    #     - /http/
+    #   files:
+    #     - /var\/log\/system.log
+
+install:
+  # go-task yaml definition goes here
+  # This spec - https://github.com/go-task/task
+
+  version: "3"
+
+  tasks:
+
+    default:
+      cmds:
+        - task: setup_license
+        - task: install_infra
+
+    setup_license:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra.yml ]; then
+            sudo rm /etc/newrelic-infra.yml;
+          fi
+          sudo touch /etc/newrelic-infra.yml;
+        - |
+          echo -e "license_key: {{.NR_LICENSE_KEY}}" >> /etc/newrelic-infra.yml
+
+    install_infra:
+      cmds:
+        - curl -L https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg > newrelic-infra.gpg
+        - sudo rpm --import newrelic-infra.gpg
+        - sudo curl -o /etc/zypp/repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo
+        - sudo zypper -n ref -r newrelic-infra
+        - sudo zypper -n install newrelic-infra
+        - rm newrelic-infra.gpg
+        - echo "New Relic infrastructure agent installed for Suse {{.SLES_VERSION}}"
+
+      vars:
+        SLES_VERSION:
+          sh: cat /etc/os-release | grep VERSION_ID | awk -F = '{print $2}'
+      silent: true
