@@ -27,8 +27,13 @@ metadata:
       pattern:
         - /Logs/
     # metrics:
-    #   pattern: 
+    #   pattern:
     #     - /apm\./
+
+inputVars:
+  - name: "LOG_FILES"
+    prompt: "Which log files would you like to tail?"
+    default: "/var/log/messages,/var/log/cloud-init.log,/var/log/secure"
 
 install:
   version: "3"
@@ -39,6 +44,7 @@ install:
         - task: setup
 
     setup:
+      silent: true
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/logging.d"
@@ -50,16 +56,18 @@ install:
           sudo touch /etc/newrelic-infra/logging.d/logging.yml;
         - |
           # Enable infra-agent logs to New Relic
-          sed -i "s,.*verbose:.*,," /etc/newrelic-infra.yml
-          sed -i "s,.*log_format:.*,," /etc/newrelic-infra.yml
-          echo -e "verbose: 3\nlog_format: json" >> /etc/newrelic-infra.yml
-          sed -i '/^$/d' /etc/newrelic-infra.yml
+          sudo sed -i "s,.*verbose:.*,," /etc/newrelic-infra.yml
+          sudo sed -i "s,.*log_format:.*,," /etc/newrelic-infra.yml
+          echo -e "verbose: 3\nlog_format: json" | sudo tee -a /etc/newrelic-infra.yml
+          sudo sed -i '/^$/d' /etc/newrelic-infra.yml
         - |
-          sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null <<"EOT"
-          logs:
-            - name: syslog
-              file: /var/log/syslog
-            - name: messages
-              file: /var/log/messages
-          EOT
+          echo "logs:" | sudo tee /etc/newrelic-infra/logging.d/logging.yml
+          for i in $(echo {{.LOG_FILES}} | sed "s/,/ /g"); do
+            if [ -f $i ]; then
+              NAME=$(basename $i)
+              echo -e "  - name: $NAME\n    file: $i" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml
+            else
+              echo "ERROR log file $i not found"
+            fi
+          done
         - sudo systemctl restart newrelic-infra.service
