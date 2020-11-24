@@ -84,6 +84,18 @@ jobs:
             const fs = require('fs');
             const fsp = fs.promises;
             const path = require('path');
+            
+            // readdir recursive directory search
+            const { resolve } = path;
+            const { readdir } = fsp;
+            async function getFiles(dir) {
+              const dirents = await readdir(dir, { withFileTypes: true });
+              const files = await Promise.all(dirents.map((dirent) => {
+                const res = resolve(dir, dirent.name);
+                return dirent.isDirectory() ? getFiles(res) : res;
+              }));
+              return Array.prototype.concat(...files);
+            }
 
             // Get incoming added/updated recipe files
             const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
@@ -92,7 +104,8 @@ jobs:
             if (recipeFiles) {
               // Get all deploy config files
               const deployConfigsPath = path.join(process.env.GITHUB_WORKSPACE, 'test/definitions');
-              const deployConfigs = await fsp.readdir(deployConfigsPath);
+              //const deployConfigs = await fsp.readdir(deployConfigsPath);
+              const deployConfigs = await getFiles(deployConfigsPath);
               console.log("deployConfigs:", deployConfigs);
 
               // Build up list of Deploy Configs to run based on recipes that have changed
