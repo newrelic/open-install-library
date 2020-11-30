@@ -16,60 +16,59 @@ For example:
 ## Schema definition
 
 ```yaml
-metadata:
-  #TBD:
-  # id:
-  #   - node
-  #   - nodejs
 
-  # Integration/Product name
-  # Example: Infrastructure Agent Linux Installer
-  name: string, required
+# Integration/Product name
+# Example: Infrastructure Agent Linux Installer
+name: string, required
 
-  # Example: New Relic install recipe for the Infrastructure agent
-  description: string, required
+# Example: New Relic install recipe for the Infrastructure agent
+description: string, required
 
-  # Example: https://github.com/newrelic/infrastructure-agent
-  repository: string, required
+# Example: https://github.com/newrelic/infrastructure-agent
+repository: string, required
 
-  # Still TBD
-  # Some variable/indicator for where you're trying to install this that isn't necessarily where you're running the newrelic-cli from
-  # See http://download.newrelic.com/infrastructure_agent/ for possible permutations
-  variant: object, required
-    os: list (string), optional                  # Windows / linux distro. Ex: windows, ubuntu-X.X.X, amazonLinux-X.X.X, CentOS-X.X.X, sles-X.X.X
-    arch: list (string), optional                # Processor architecture type. Ex: 386, amd64, arm, s390x, etc.
-    targetEnvironment: list (string), optional   # Options - vm, docker, kubernetes, serverless/lambda, prometheus-exporter etc.
+# Still TBD
+# Indicates the target host/runtime/env where user is trying to install (Note: isn't necessarily where you're running the newrelic-cli from)
+# See http://download.newrelic.com/infrastructure_agent/ for possible permutations
+installTargets: list, required
+  - type: string (enum), optional             # One of [ host, application, docker, kubernetes, cloud, serverless ]
+    os: string (enum), optional               # linux, darwin, windows
+    platform: string (enum), optional         # One of [ amazonlinux, ubuntu, debian, centos, rhel, suse ]
+    platformFamily: string (enum), optional   # One of [ debian, rhel, ... ]
+    platformVersion: string, optional         # "17.10"
+    kernelVersion: string, optional           # version of the OS kernel (if available)
+    kernelArch: string, optional              # native cpu architecture queried at runtime, as returned by `uname -m` or empty string in case of error
 
-  # keyword convention for dealing with search terms that could land someone on this instrumentation project
-  # Example:
-    # - Node
-    # - Node.js
-    # - Microsoft Azure Web Apps
-  keywords: list, required
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+# Example:
+  # - Node
+  # - Node.js
+  # - Microsoft Azure Web Apps
+keywords: list, required
 
-  # Examine Infrastructure events for correlated data
-  # Non-empty list of process definitions. Required.
-  processMatch: list, required
-    - /infra/
+# Examine Infrastructure events for correlated data
+# Non-empty list of process definitions. Required.
+processMatch: list, required
+  - /infra/
 
-  # Examine Metrics, Events, and Logging for correlated data
-  # Used by the UI to determine if you've successfully configured and are ingesting data
-  meltMatch: object, required
-    events: list, optional
-      # Pattern to match melt data type
-      # example: /SystemSample/
-      - pattern: list, required
-    metrics: list, optional
-      # Pattern to match melt data type
-      # example: /system.cpu.usage/
-      - pattern: list, required
-    logging: list, optional
-      # Pattern to match melt data type
-      # example: /http/
-      pattern: list, required
-      # List of files to look for in the UI
-      files: list, optional
-        - /var\/log\/system.log
+# Examine Metrics, Events, and Logging for correlated data
+# Used by the UI to determine if you've successfully configured and are ingesting data
+meltMatch: object, required
+  events: list, optional
+    # Pattern to match melt data type
+    # example: /SystemSample/
+    - pattern: list, required
+  metrics: list, optional
+    # Pattern to match melt data type
+    # example: /system.cpu.usage/
+    - pattern: list, required
+  logging: list, optional
+    # Pattern to match melt data type
+    # example: /http/
+    pattern: list, required
+    # List of files to look for in the UI
+    files: list, optional
+      - /var\/log\/system.log
 
 # Prompts for input from the user. These variables then become
 # available to go-task in the form of {{.VAR_NAME}}

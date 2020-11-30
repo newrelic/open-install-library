@@ -85,19 +85,30 @@ jobs:
             const fsp = fs.promises;
             const path = require('path');
 
+            // readdir recursive directory search
+            const { resolve } = path;
+            const { readdir } = fsp;
+            async function getFiles(dir) {
+              const dirents = await readdir(dir, { withFileTypes: true });
+              const files = await Promise.all(dirents.map((dirent) => {
+                const res = path.join(dir, dirent.name);
+                return dirent.isDirectory() ? getFiles(res) : res;
+              }));
+              return Array.prototype.concat(...files);
+            }
+
             // Get incoming added/updated recipe files
             const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
             console.log(`Detected Recipe Files: ${JSON.stringify(recipeFiles, null, 2)}`)
 
             if (recipeFiles) {
               // Get all deploy config files
-              const deployConfigsPath = path.join(process.env.GITHUB_WORKSPACE, 'test/definitions');
-              const deployConfigs = await fsp.readdir(deployConfigsPath);
-              console.log("deployConfigs:", deployConfigs);
+              const deployConfigs = await getFiles('test/definitions');
+              console.log("All deployConfigs:", deployConfigs);
 
               // Build up list of Deploy Configs to run based on recipes that have changed
               const testDefinitionFilesToRun = deployConfigs.reduce((p, c) => {
-                const contents = require(`${process.env.GITHUB_WORKSPACE}/test/definitions/${c}`);
+                const contents = require(`${process.env.GITHUB_WORKSPACE}/${c}`);
 
                 // Look at current recipe_content_url. If it contains any of recipeFiles, add this to the current accumulator
                 const recipes = contents.instrumentations.resources[0].params.recipe_content_url;
@@ -108,7 +119,7 @@ jobs:
                 );
 
                 // Add the current deploy config file to our output if there were matches 
-                return matchedRecipes.length > 0 ? [`test/definitions/${c}`, ...p] : p;
+                return matchedRecipes.length > 0 ? [`${c}`, ...p] : p;
               }, []);
               console.log('testDefinitionFilesToRun:', testDefinitionFilesToRun);
 
@@ -132,6 +143,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
+      fail-fast: false
     env:
       MATRIX: ${{ toJSON(matrix) }}
     steps:
