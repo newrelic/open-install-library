@@ -35,6 +35,7 @@ Recipes can be tested locally by either using the Deployer, or Terraform (DEPREC
 
 The [validation](../.github/workflows/validation.yaml) workflow will on every Pull Request. This workflow will:
 
+* Run schema validation using our [JSON schema validator](../../validator/README.md)
 * Analyze the commits to check for any changes in the `/recipes` directory
 * From that list of recipes, determine which test definition files (under `/test/definitions`) contain references to those recipes
 * Run _each_ of those test definition files with the Deployer as a separate GitHub Actions job (Note: this provisions and destroys instances on EC2)
