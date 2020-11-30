@@ -28,8 +28,8 @@ to make it easy to use locally and in our GitHub Actions workflows.
 
 Recipes can be tested locally by either using the Deployer, or Terraform (DEPRECATED):
 
-* [Deployer](local/deployer.md)
-* [Terraform](local/terraform.md)
+* [Deployer](./deployer.md)
+* [Terraform](./terraform.md)
 
 ## Automated Testing on Pull Request
 
