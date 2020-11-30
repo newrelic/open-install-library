@@ -14,13 +14,9 @@ Deliver a consistent user experience, open source ecosystem, and platform servic
 
 in 5 minutes or less.
 
-## Authoring a recipe
+## Docs
 
-### Common variables
-
-The [newrelic-cli] injects at runtime of a go-task the following variables:
-
-- `{{.NR_LICENSE_KEY}}` populated by the key associated with the profile run with the cli
+Project documentation can be found under [docs](docs/README.md).
 
 ## Testing
 
