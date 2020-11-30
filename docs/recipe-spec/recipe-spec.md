@@ -4,14 +4,17 @@ Recipe files are written in YAML and adhere to the specifications outlined below
 
 ## Filename format
 
-Recipe definition files are placed under `recipes/org/<integration_name>` and should have the following format:
+Recipe definition files are placed under `recipes/org/<on_host_integration_name>` and should have the following format:
 
 > Note: TBD on final format
-`integrationName_<variant>.yml`
+`<installTargetOS>.yml`
 
 For example:
 
-`recipes/newrelic/infra-agent/infra_amazonlinux2.yml`
+`recipes/newrelic/infra-agent/amazonlinux2.yml`
+`recipes/newrelic/nginx/amazonlinux2.yml`
+
+TBD - determine naming scheme when the a given recipe can be distro/os agnostic.
 
 ## Schema definition
 
@@ -46,10 +49,10 @@ installTargets: list, required
   # - Microsoft Azure Web Apps
 keywords: list, required
 
-# Examine Infrastructure events for correlated data
 # Non-empty list of process definitions. Required.
 processMatch: list, required
   - /infra/
+  - /usr/bin/local/node/
 
 # Examine Metrics, Events, and Logging for correlated data
 # Used by the UI to determine if you've successfully configured and are ingesting data
