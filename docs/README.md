@@ -123,7 +123,9 @@ setup_license:
 
 ### Installing latest version of a given Agent/OHI should happen automatically
 
-Since recipes commonly pull from a package manager, re-running a recipe _should_ automatically get the latest version and run with that new version.
+💡 We expect subsequent runs of a recipe to always install the latest version of a given agent/integration/etc.
+
+For example - with Linux installations the Agent/OHI recipes commonly pull from a package manager, and re-running the recipe _should_ automatically pull the latest version and run with that new version.
 
 Example from infra-agent install - this will pull latest supported version of newrelic-infra and install it:
 
@@ -136,3 +138,5 @@ install_infra:
         - echo "New Relic infrastructure agent installed"
       silent: true
 ```
+
+For recipes that install an integration and don't use a package manager, steps should be taken to ensure the latest version of that integration is always installed.
