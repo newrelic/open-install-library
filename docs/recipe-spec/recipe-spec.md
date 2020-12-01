@@ -86,27 +86,32 @@ install: string, required
 
   version: '3'
 
-  env:
-    NR_LICENSE_KEY: '{{.NR_LICENSE_KEY}}'
+  # Silent mode disables echoing of commands before Task runs it.
+  # https://taskfile.dev/#/usage?id=silent-mode
+  silent: true
+  
+  # DO NOT USE: License Key is automatically injected by the newrelic-cli
+  # env:
+  #   NR_LICENSE_KEY: '{{.NR_LICENSE_KEY}}'
 
   variables:
     - FOO_VAR: foo-value
 
   tasks:
-      install:
-        cmds:
-          - task: setup_nr_profile
-          - task: install_infra
+    default:  # must have a default task, as the newrelic-cli uses this for an entry point
+      cmds:
+        - task: setup_nr_profile
+        - task: install_infra
 
-      setup_nr_profile:
-        cmds:
-          - echo "Setting up NR Profile"
+    setup_nr_profile:
+      cmds:
+        - echo "Setting up NR Profile"
 
-      install_infra:
-        cmds:
-          - echo "Installing the Infrastructure agent"
-          - curl -L https://raw.githubusercontent.com/fryckbos/infra-install/master/install.sh {{.NR_LICENSE_KEY}} | sh
-        silent: true
+    install_infra:
+      cmds:
+        - echo "Installing the Infrastructure agent"
+        - curl -L https://raw.githubusercontent.com/fryckbos/infra-install/master/install.sh {{.NR_LICENSE_KEY}} | sh
+      silent: true
 
 ```
 

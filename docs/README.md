@@ -16,13 +16,56 @@ Recipes are written in YAML and must adhere to our [recipe spec](./recipe-spec/r
 * Run the [Deployer locally](test-framework/deployer.md).
 * Open a Pull Request with the new recipe and corresponding test definition files
 
-### Common variables
+### Consistency
+
+* MUST include a `default` task for the newrelic-cli to use as an entry point
+* Use `silent: true` to omit output at the taskfile level
+  
+  ```bash
+  install:
+    version: "3"
+
+    # Silent mode disables echoing of commands before Task runs it.
+    # https://taskfile.dev/#/usage?id=silent-mode
+    silent: true
+
+    tasks:
+      default:
+      ...
+  ```
+
+* Use `label` to give feedback that the CLI will output
+  ```bash
+  install:
+  version: "3"
+
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      label: "Installing nginx integration..."
+  ```
+  
+* Accept variables using `inputVars` (see [Common Variables](#configuration-variables))
+* Idempotence (see [Idempotence](#idempotence))
+
+### Linux Recipe Package Support
+
+All OHI Linux recipes must support APT (Debian and Ubuntu), Yum (Amazon Linux, CentOS, RHEL), Zypper ( SLES). For testing, at a minimum include tests for these three package managers for Linux recipes.
+
+### Configuration Variables
+
+All recipes can either run in interactive mode where users are prompted for configuration (when necessary), or in non interactive mode where the configuration is provided already through the CLI.
 
 The `newrelic-cli` injects at runtime of a go-task the following variables:
 
 * `{{.NR_LICENSE_KEY}}` populated by the key associated with the profile run with the CLI
-
 * Input Variables - recipes can use `inputVars` to prompt the user to enter variables needed in the recipe.
+  
   ```bash
   # Prompts for input from the user. These variables then become
   # available to go-task in the form of {{.VAR_NAME}}
@@ -33,3 +76,63 @@ The `newrelic-cli` injects at runtime of a go-task the following variables:
   ```
 
   More info can be found in the [recipe-spec](./recipe-spec/recipe-spec.md).
+
+### Idempotence
+
+💡 **Recipes should be written in an idempotent manner, as much as that can be achieved.**
+
+This section is intended to provide a best practices approach for how to achieve that goal, and will likely improve over time as we write more recipes.
+
+### Write recipes that recreate config files the same way each time
+
+Many recipes will end up writing config files (ex: infra-agent recipes will create `newrelic-infra.yml`). The pattern we're employing to make this happen is:
+
+* Check for the existance of the file and create it if it doesn't exist
+* Update the file to include whatever defaults are needed
+
+Example from infra-agent install:
+
+```bash
+setup_license:
+  cmds:
+    - |
+      if [ ! -f /etc/newrelic-infra.yml ]; then
+        sudo touch /etc/newrelic-infra.yml;
+      fi
+    - |
+      grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NR_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NR_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml
+```
+
+Another approach might be:
+
+* Check for the existance of the file
+* Remove then re-create file
+* Write the file with whatever defaults are needed
+
+```bash
+setup_license:
+  cmds:
+    - |
+      if [ -f /etc/newrelic-infra.yml ]; then
+        sudo rm /etc/newrelic-infra.yml;
+      fi
+      sudo touch /etc/newrelic-infra.yml;
+    - |
+      echo -e "license_key: {{.NR_LICENSE_KEY}}" >> /etc/newrelic-infra.yml
+```
+
+### Installing latest version of a given Agent/OHI should happen automatically
+
+Since recipes commonly pull from a package manager, re-running a recipe _should_ automatically get the latest version and run with that new version.
+
+Example from infra-agent install - this will pull latest supported version of newrelic-infra and install it:
+
+```bash
+install_infra:
+      cmds:
+        - sudo curl -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
+        - sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+        - sudo yum install newrelic-infra -y
+        - echo "New Relic infrastructure agent installed"
+      silent: true
+```
