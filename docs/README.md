@@ -81,6 +81,8 @@ The `newrelic-cli` injects at runtime of a go-task the following variables:
 
 💡 **Recipes should be written in an idempotent manner, as much as that can be achieved.**
 
+For an agent installation, that means re-running the recipe results in the agent being installed the same way as if it were the first time. For example, if vX.X.X of the agent was previously installed using the recipe, re-running the recipe results in the agent now being installed at its latest version.
+
 This section is intended to provide a best practices approach for how to achieve that goal, and will likely improve over time as we write more recipes.
 
 ### Write recipes that recreate config files the same way each time
@@ -96,10 +98,12 @@ Example from infra-agent install:
 setup_license:
   cmds:
     - |
+      # Check if newrelic-infra.yml exists; if it doesn't, create an empty file
       if [ ! -f /etc/newrelic-infra.yml ]; then
         sudo touch /etc/newrelic-infra.yml;
       fi
     - |
+      # Check for a license_key in the file and update it if it exists; otherwise, write a license_key into the file
       grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NR_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NR_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml
 ```
 
@@ -113,11 +117,13 @@ Another approach might be:
 setup_license:
   cmds:
     - |
+      # Check if newrelic-infra.yml exists; if it does, remove and create a new empty file
       if [ -f /etc/newrelic-infra.yml ]; then
         sudo rm /etc/newrelic-infra.yml;
       fi
       sudo touch /etc/newrelic-infra.yml;
     - |
+      # write the license_key into the newrelic-infra.yml config
       echo -e "license_key: {{.NR_LICENSE_KEY}}" >> /etc/newrelic-infra.yml
 ```
 
@@ -127,16 +133,16 @@ setup_license:
 
 For example - with Linux installations the Agent/OHI recipes commonly pull from a package manager, and re-running the recipe _should_ automatically pull the latest version and run with that new version.
 
-Example from infra-agent install - this will pull latest supported version of newrelic-infra and install it:
+Example from infra-agent recipe - this will pull latest supported version of newrelic-infra and install it:
 
 ```bash
 install_infra:
-      cmds:
-        - sudo curl -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
-        - sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-        - sudo yum install newrelic-infra -y
-        - echo "New Relic infrastructure agent installed"
-      silent: true
+  cmds:
+    - sudo curl -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
+    - sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+    - sudo yum install newrelic-infra -y
+    - echo "New Relic infrastructure agent installed"
+  silent: true
 ```
 
 For recipes that install an integration and don't use a package manager, steps should be taken to ensure the latest version of that integration is always installed.
