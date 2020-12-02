@@ -65,20 +65,33 @@ meltMatch: object, required
     # Pattern to match melt data type
     # example: /system.cpu.usage/
     - pattern: list, required
-  logging: list, optional
-    # Pattern to match melt data type
-    # example: /http/
-    pattern: list, required
-    # List of files to look for in the UI
-    files: list, optional
-      - /var\/log\/system.log
+  logs: list (object), optional
+    # Matches partial list of the Log forwarding parameters
+    # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+    - name: string, required
+      file: string, optional        # Path to the log file or files. Your file can point to a specific log file or multiple ones by using wildcards applied to names and extensions; for example, /logs/*.log
+      attributes: object, optional  # Custom attributes to enrich data
+        logtype: string, optional   # key/value pair
+      pattern: string, optional     # Regular expression for filtering records. https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#pattern
+      systemd: string, optional     # [LINUX ONLY] Service name. Once the systemd input is activated, log messages are collected from the journald daemon in Linux environments.
 
 # Prompts for input from the user. These variables then become
 # available to go-task in the form of {{.VAR_NAME}}
 inputVars: list, optional
   - name: string, required      # name of the variable
     prompt: string, optional    # message prompt to present to the user
+    secret: boolean, optional   # Indicates a password field. Use true/false (no quotes)
     default: string, optional   # default value for variable
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: string, optional
+
+# Optional pre-install configuration items.
+# Useful for things like including prompt info on dependencies and what vars could be supplied to the CLI to automate this recipe.
+# Can be extended in the future for any pre-install hooks we'd want the newrelic-cli to run.
+preInstall: object, optional
+  prompt: string, optional    # Message/Docs notice to display to the user before running recipe.
 
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
