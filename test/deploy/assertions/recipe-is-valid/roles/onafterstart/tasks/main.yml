@@ -12,26 +12,6 @@
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
   when: newrelic_personal_api_key is not defined
 
-- fail:
-    msg: "A nrql_query is required. Create this entry in your deploy config file"
-  when: nrql_query is not defined
-
-- name: Get Hostname
-  shell: "hostname"
-  register: hostname_output
-
-- name: Update hostname if found in nrql where clause
-  set_fact:
-    nrql_query: "{{ nrql_query | regex_replace(item.finder, item.replacer) }}"
-  with_items:
-    - { finder: '(.*)(HOSTNAME)(.*)', replacer: "'\\1{{hostname_output.stdout}}\\3'" }
-
-- name: trim eventual quotes
-  set_fact:
-    nrql_query: "{{ nrql_query | regex_replace(item.finder, item.replacer) }}"
-  with_items:
-    - { finder: "^(')(.*)(')$", replacer: "\\2" }
-
 - name: Set default newrelic api url
   set_fact:
     newrelic_api_url: "api.newrelic.com"
@@ -40,50 +20,31 @@
   set_fact:
     newrelic_api_url: "https://{{ newrelic_api_url }}"
   when: not newrelic_api_url | regex_search('^https', ignorecase=True)
-
 - debug:
     msg: "Using newrelic_api_url:{{ newrelic_api_url }}"
 
-# Query if entity is reporting
+- name: Get Hostname
+  shell: "hostname"
+  register: hostname_output
+
+- include: nrql_has_data.yml 
+  when: nrql_query is defined and nrql_query!=""
+
 - block:
-  - name: Create payload
-    template:
-      src: nrql-query.source.gql
-      dest: "{{ playbook_dir }}/nrql-query.gql"
-  - name: Prepare POST payload for graphql
+  # Fetch recipe and validationNrql for validating
+  - name: Get Hostname
+    shell: "curl -s {{ recipe_validation_nrql_url }} -o {{ recipe_validation_nrql_url|basename }}"
+  - name: Parse recipe file
     set_fact:
-      gql_content: "{{ lookup('file', '{{playbook_dir}}/nrql-query.gql') | replace('\n', ' ') }}"
-  - name: Create payload file
-    template:
-      src: gql-query.source.json
-      dest: "{{ playbook_dir }}/gql-query.json"
-  - name: Query entity search
-    shell: "curl -X POST '{{ newrelic_api_url }}/graphql' \
-      -H 'Api-Key:{{ newrelic_personal_api_key }}' \
-      -L -H 'Content-Type: application/json' \
-      -d @{{ playbook_dir }}/gql-query.json"
-    register: output
-    retries: 20
-    delay: 15
-    until: output is not failed and (output.stdout | from_json | json_query('data.actor.account.nrql.results[0]') | length > 0)
+      recipe_content: "{{ lookup('file','recipe_validation_nrql_url|basename') | from_yaml }}"
+  - debug:
+      msg: "Using recipe_content:{{ recipe_content }}"
+  - name: Get validationNrql value
+    set_fact:
+      nrql_query: "recipe_content.validationNrql"
+  - debug:
+      msg: "Using nrql_query:{{ nrql_query }}"
+  - include: nrql_has_data.yml 
+    when: nrql_query is defined and nrql_query!=""
   delegate_to: localhost
-
-- name: Parse output
-  set_fact: 
-    is_having_data: "{{ output.stdout | from_json | json_query(query) }}"
-  vars:
-    query: "data.actor.account.nrql.results[0]"
-
-- name: Assert entity is having any data
-  fail:
-    msg: "An entity is NOT having any data with query:'{{ nrql_query }}'"
-  when: is_having_data is not defined
-
-- name: Parse first return value
-  set_fact: 
-    first_row_result: "{{ is_having_data | dict2items }}"
-
-- name: Assert entity is having return value greater than 0
-  fail:
-    msg: "An entity result value is NOT greater than 0:'{{ nrql_query }}'"
-  when: first_row_result is not defined or (first_row_result | length == 0) or first_row_result[0]['value'] == 0
+  when: recipe_validation_nrql_url is defined and recipe_validation_nrql_url!=""
