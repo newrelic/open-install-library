@@ -29,35 +29,32 @@
             "processMatch": [
                 "/infra"
             ],
-            "meltMatch": {
-                "events": {
-                    "pattern": [
-                        "/SystemSample/"
-                    ]
-                },
-                "metrics": {
-                    "pattern": [
-                        "/system.cpu.usage/"
-                    ]
-                },
-                "logging": {
-                    "pattern": [
-                        "/http/"
-                    ],
-                    "files": [
-                        "/var/log/system.log"
-                    ]
+            "logMatch": [
+                {
+                    "name": "nginx",
+                    "file": "/var/log/nginx/access.log*",
+                    "attributes": {
+                        "logtype": "nginx"
+                    },
+                    "pattern": "nginx",
+                    "systemd": " nginx"
                 }
-            },
+            ],
             "inputVars": [
                 {
                     "name": "LOG_FILES",
                     "prompt": "Which log files would you like to tail?",
+                    "secret": false,
                     "default": "/var/log/messages,/var/log/cloud-init.log,/var/log/secure"
                 }
             ],
+            "validationNrql": "SELECT count(*) from SystemSample where hostname like 'HOSTNAME' SINCE 10 minutes ago",
+            "preInstall": {
+                "prompt": "Message about things user should know"
+            },
             "install": {
                 "version": "3",
+                "silent": true,
                 "tasks": {}
             }
         }
@@ -69,7 +66,6 @@
         "installTargets",
         "keywords",
         "processMatch",
-        "meltMatch",
         "install"
     ],
     "properties": {
@@ -143,6 +139,7 @@
                                 "kernelArch": "x86_64"
                             }
                         ],
+                        "required": [],
                         "properties": {
                             "type": {
                                 "$id": "#/properties/installTargets/items/anyOf/0/properties/type",
@@ -278,213 +275,121 @@
                 ]
             }
         },
-        "meltMatch": {
-            "$id": "#/properties/meltMatch",
-            "type": "object",
-            "title": "The meltMatch schema",
+        "logMatch": {
+            "$id": "#/properties/logMatch",
+            "type": "array",
+            "title": "The logMatch schema",
             "description": "An explanation about the purpose of this instance.",
-            "default": {},
+            "default": [],
             "examples": [
-                {
-                    "events": {
-                        "pattern": [
-                            "/SystemSample/"
-                        ]
-                    },
-                    "metrics": {
-                        "pattern": [
-                            "/system.cpu.usage/"
-                        ]
-                    },
-                    "logging": {
-                        "pattern": [
-                            "/http/"
-                        ],
-                        "files": [
-                            "/var/log/system.log"
-                        ]
+                [
+                    {
+                        "name": "nginx",
+                        "file": "/var/log/nginx/access.log*",
+                        "attributes": {
+                            "logtype": "nginx"
+                        },
+                        "pattern": "nginx",
+                        "systemd": " nginx"
                     }
-                }
+                ]
             ],
-            "properties": {
-                "events": {
-                    "$id": "#/properties/meltMatch/properties/events",
-                    "type": "object",
-                    "title": "The events schema",
-                    "description": "An explanation about the purpose of this instance.",
-                    "default": {},
-                    "examples": [
-                        {
-                            "pattern": [
-                                "/SystemSample/"
-                            ]
-                        }
-                    ],
-                    "required": [
-                        "pattern"
-                    ],
-                    "properties": {
-                        "pattern": {
-                            "$id": "#/properties/meltMatch/properties/events/properties/pattern",
-                            "type": "array",
-                            "title": "The pattern schema",
-                            "description": "An explanation about the purpose of this instance.",
-                            "default": [],
-                            "examples": [
-                                [
-                                    "/SystemSample/"
-                                ]
-                            ],
-                            "additionalItems": true,
-                            "items": {
-                                "$id": "#/properties/meltMatch/properties/events/properties/pattern/items",
-                                "anyOf": [
-                                    {
-                                        "$id": "#/properties/meltMatch/properties/events/properties/pattern/items/anyOf/0",
-                                        "type": "string",
-                                        "title": "The first anyOf schema",
-                                        "description": "An explanation about the purpose of this instance.",
-                                        "default": "",
-                                        "examples": [
-                                            "/SystemSample/"
-                                        ]
-                                    }
-                                ]
+            "additionalItems": true,
+            "items": {
+                "$id": "#/properties/logMatch/items",
+                "anyOf": [
+                    {
+                        "$id": "#/properties/logMatch/items/anyOf/0",
+                        "type": "object",
+                        "title": "The first anyOf schema",
+                        "description": "An explanation about the purpose of this instance.",
+                        "default": {},
+                        "examples": [
+                            {
+                                "name": "nginx",
+                                "file": "/var/log/nginx/access.log*",
+                                "attributes": {
+                                    "logtype": "nginx"
+                                },
+                                "pattern": "nginx",
+                                "systemd": " nginx"
                             }
-                        }
-                    },
-                    "additionalProperties": true
-                },
-                "metrics": {
-                    "$id": "#/properties/meltMatch/properties/metrics",
-                    "type": "object",
-                    "title": "The metrics schema",
-                    "description": "An explanation about the purpose of this instance.",
-                    "default": {},
-                    "examples": [
-                        {
-                            "pattern": [
-                                "/system.cpu.usage/"
-                            ]
-                        }
-                    ],
-                    "required": [
-                        "pattern"
-                    ],
-                    "properties": {
-                        "pattern": {
-                            "$id": "#/properties/meltMatch/properties/metrics/properties/pattern",
-                            "type": "array",
-                            "title": "The pattern schema",
-                            "description": "An explanation about the purpose of this instance.",
-                            "default": [],
-                            "examples": [
-                                [
-                                    "/system.cpu.usage/"
+                        ],
+                        "required": [
+                            "name"
+                        ],
+                        "properties": {
+                            "name": {
+                                "$id": "#/properties/logMatch/items/anyOf/0/properties/name",
+                                "type": "string",
+                                "title": "The name schema",
+                                "description": "An explanation about the purpose of this instance.",
+                                "default": "",
+                                "examples": [
+                                    "nginx"
                                 ]
-                            ],
-                            "additionalItems": true,
-                            "items": {
-                                "$id": "#/properties/meltMatch/properties/metrics/properties/pattern/items",
-                                "anyOf": [
+                            },
+                            "file": {
+                                "$id": "#/properties/logMatch/items/anyOf/0/properties/file",
+                                "type": "string",
+                                "title": "The file schema",
+                                "description": "An explanation about the purpose of this instance.",
+                                "default": "",
+                                "examples": [
+                                    "/var/log/nginx/access.log*"
+                                ]
+                            },
+                            "attributes": {
+                                "$id": "#/properties/logMatch/items/anyOf/0/properties/attributes",
+                                "type": "object",
+                                "title": "The attributes schema",
+                                "description": "An explanation about the purpose of this instance.",
+                                "default": {},
+                                "examples": [
                                     {
-                                        "$id": "#/properties/meltMatch/properties/metrics/properties/pattern/items/anyOf/0",
+                                        "logtype": "nginx"
+                                    }
+                                ],
+                                "required": [],
+                                "properties": {
+                                    "logtype": {
+                                        "$id": "#/properties/logMatch/items/anyOf/0/properties/attributes/properties/logtype",
                                         "type": "string",
-                                        "title": "The first anyOf schema",
+                                        "title": "The logtype schema",
                                         "description": "An explanation about the purpose of this instance.",
                                         "default": "",
                                         "examples": [
-                                            "/system.cpu.usage/"
+                                            "nginx"
                                         ]
                                     }
+                                },
+                                "additionalProperties": true
+                            },
+                            "pattern": {
+                                "$id": "#/properties/logMatch/items/anyOf/0/properties/pattern",
+                                "type": "string",
+                                "title": "The pattern schema",
+                                "description": "An explanation about the purpose of this instance.",
+                                "default": "",
+                                "examples": [
+                                    "nginx"
                                 ]
-                            }
-                        }
-                    },
-                    "additionalProperties": true
-                },
-                "logging": {
-                    "$id": "#/properties/meltMatch/properties/logging",
-                    "type": "object",
-                    "title": "The logging schema",
-                    "description": "An explanation about the purpose of this instance.",
-                    "default": {},
-                    "examples": [
-                        {
-                            "pattern": [
-                                "/http/"
-                            ],
-                            "files": [
-                                "/var/log/system.log"
-                            ]
-                        }
-                    ],
-                    "required": [
-                        "pattern",
-                        "files"
-                    ],
-                    "properties": {
-                        "pattern": {
-                            "$id": "#/properties/meltMatch/properties/logging/properties/pattern",
-                            "type": "array",
-                            "title": "The pattern schema",
-                            "description": "An explanation about the purpose of this instance.",
-                            "default": [],
-                            "examples": [
-                                [
-                                    "/http/"
-                                ]
-                            ],
-                            "additionalItems": true,
-                            "items": {
-                                "$id": "#/properties/meltMatch/properties/logging/properties/pattern/items",
-                                "anyOf": [
-                                    {
-                                        "$id": "#/properties/meltMatch/properties/logging/properties/pattern/items/anyOf/0",
-                                        "type": "string",
-                                        "title": "The first anyOf schema",
-                                        "description": "An explanation about the purpose of this instance.",
-                                        "default": "",
-                                        "examples": [
-                                            "/http/"
-                                        ]
-                                    }
+                            },
+                            "systemd": {
+                                "$id": "#/properties/logMatch/items/anyOf/0/properties/systemd",
+                                "type": "string",
+                                "title": "The systemd schema",
+                                "description": "An explanation about the purpose of this instance.",
+                                "default": "",
+                                "examples": [
+                                    " nginx"
                                 ]
                             }
                         },
-                        "files": {
-                            "$id": "#/properties/meltMatch/properties/logging/properties/files",
-                            "type": "array",
-                            "title": "The files schema",
-                            "description": "An explanation about the purpose of this instance.",
-                            "default": [],
-                            "examples": [
-                                [
-                                    "/var/log/system.log"
-                                ]
-                            ],
-                            "additionalItems": true,
-                            "items": {
-                                "$id": "#/properties/meltMatch/properties/logging/properties/files/items",
-                                "anyOf": [
-                                    {
-                                        "$id": "#/properties/meltMatch/properties/logging/properties/files/items/anyOf/0",
-                                        "type": "string",
-                                        "title": "The first anyOf schema",
-                                        "description": "An explanation about the purpose of this instance.",
-                                        "default": "",
-                                        "examples": [
-                                            "/var/log/system.log"
-                                        ]
-                                    }
-                                ]
-                            }
-                        }
-                    },
-                    "additionalProperties": true
-                }
-            },
-            "additionalProperties": true
+                        "additionalProperties": true
+                    }
+                ]
+            }
         },
         "inputVars": {
             "$id": "#/properties/inputVars",
@@ -497,6 +402,7 @@
                     {
                         "name": "LOG_FILES",
                         "prompt": "Which log files would you like to tail?",
+                        "secret": false,
                         "default": "/var/log/messages,/var/log/cloud-init.log,/var/log/secure"
                     }
                 ]
@@ -515,6 +421,7 @@
                             {
                                 "name": "LOG_FILES",
                                 "prompt": "Which log files would you like to tail?",
+                                "secret": false,
                                 "default": "/var/log/messages,/var/log/cloud-init.log,/var/log/secure"
                             }
                         ],
@@ -542,6 +449,16 @@
                                     "Which log files would you like to tail?"
                                 ]
                             },
+                            "secret": {
+                                "$id": "#/properties/inputVars/items/anyOf/0/properties/secret",
+                                "type": "boolean",
+                                "title": "The secret schema",
+                                "description": "An explanation about the purpose of this instance.",
+                                "default": false,
+                                "examples": [
+                                    false
+                                ]
+                            },
                             "default": {
                                 "$id": "#/properties/inputVars/items/anyOf/0/properties/default",
                                 "type": "string",
@@ -558,6 +475,42 @@
                 ]
             }
         },
+        "validationNrql": {
+            "$id": "#/properties/validationNrql",
+            "type": "string",
+            "title": "The validationNrql schema",
+            "description": "An explanation about the purpose of this instance.",
+            "default": "",
+            "examples": [
+                "SELECT count(*) from SystemSample where hostname like 'HOSTNAME' SINCE 10 minutes ago"
+            ]
+        },
+        "preInstall": {
+            "$id": "#/properties/preInstall",
+            "type": "object",
+            "title": "The preInstall schema",
+            "description": "An explanation about the purpose of this instance.",
+            "default": {},
+            "examples": [
+                {
+                    "prompt": "Message about things user should know"
+                }
+            ],
+            "required": [],
+            "properties": {
+                "prompt": {
+                    "$id": "#/properties/preInstall/properties/prompt",
+                    "type": "string",
+                    "title": "The prompt schema",
+                    "description": "An explanation about the purpose of this instance.",
+                    "default": "",
+                    "examples": [
+                        "Message about things user should know"
+                    ]
+                }
+            },
+            "additionalProperties": true
+        },
         "install": {
             "$id": "#/properties/install",
             "type": "object",
@@ -567,11 +520,13 @@
             "examples": [
                 {
                     "version": "3",
+                    "silent": true,
                     "tasks": {}
                 }
             ],
             "required": [
                 "version",
+                "silent",
                 "tasks"
             ],
             "properties": {
@@ -583,6 +538,16 @@
                     "default": "",
                     "examples": [
                         "3"
+                    ]
+                },
+                "silent": {
+                    "$id": "#/properties/install/properties/silent",
+                    "type": "boolean",
+                    "title": "The silent schema",
+                    "description": "An explanation about the purpose of this instance.",
+                    "default": false,
+                    "examples": [
+                        true
                     ]
                 },
                 "tasks": {
