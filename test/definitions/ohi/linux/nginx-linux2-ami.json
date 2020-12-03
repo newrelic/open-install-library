@@ -8,19 +8,22 @@
 
   "resources": [{
       "id": "host1",
-      "display_name": "AwsLinux2InfraNginxInstallHost",
+      "display_name": "AwsLinux2InfraNginxHost",
       "provider": "aws",
       "type": "ec2",
-      "size": "t3.nano"
+      "size": "t3a.nano",
+      "ami_name": "nginx-plus-ami-amazon-linux2-hvm-v?.?-????????.x86_64-*"
   }],
 
-  "services": [{
-    "id": "nginx1",
-    "destinations": ["host1"],
-    "source_repository": "https://github.com/newrelic/open-install-library.git",
-    "deploy_script_path": "test/deploy/linux/nginx/install/roles",
-    "port": 80
-  }],
+  "services": [
+    {
+      "id": "app1",
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/linux/nginx/open-default/roles",
+      "port": 80,
+      "destinations": ["host1"]
+    }
+  ],
 
   "instrumentations": {
     "resources": [
@@ -33,8 +36,18 @@
           "params": {
               "recipe_content_url": [
                   "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infra-agent/amazonlinux2.yml",
-                  "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/nginx/nginx_amazonLinux2.yml"
+                  "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/nginx/rhel.yml"
               ]
+          }
+      },
+      {
+          "id": "nr_infra_is_having_data",
+          "resource_ids": ["host1"],
+          "provider": "newrelic",
+          "source_repository": "https://github.com/newrelic/open-install-library",
+          "deploy_script_path": "test/deploy/assertions/recipe-is-valid/roles",
+          "params": {
+              "nrql_query": "SELECT count(*) from NginxSample where hostname like 'HOSTNAME' SINCE 30 minutes ago"
           }
       },
       {
@@ -50,3 +63,4 @@
       ]
   }
 }
+

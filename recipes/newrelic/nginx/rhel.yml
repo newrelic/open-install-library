@@ -1,0 +1,128 @@
+name: NGINX Open Source Integration
+description: New Relic install recipe for default NGINX Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-nginx
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazonLinux
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "redhat"
+  - type: host
+    os: linux
+    platform: "centos"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - nginx
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - /nginx/
+
+# Examine Metrics, Events, and Logging for correlated data
+# Used by the UI to determine if you've successfully configured and are ingesting data
+meltMatch:
+  metrics:
+    pattern:
+      - /net.connectionsActive/
+      - /net.connectionsAcceptedPerSecond/
+      - /net.connectionsDroppedPerSecond/
+      - /net.connectionsReading/
+      - /new.connectionsWaiting/
+      - /net.connectionsWriting/
+      - /net.requestsPerSecond/
+      - /software.edition/
+      - /software.version/
+  logging:
+    pattern:
+      - /http/
+    files:
+      - /var/log/nginx/
+
+install:
+  version: "3"
+
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      label: "Installing nginx integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum install nri-nginx -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/nginx-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/nginx-config.yml;
+          fi
+
+          sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml;
+        - |
+          # Check for HTTP stub status module existing and configured
+          HTTP_STUB_STATUS_MODULE_EXISTS=$(nginx -V 2>&1 | tr ' ' '\n' | grep -o with-http_stub_status_module | wc -l)
+          STUB_STATUS_ENABLED=$(curl http://127.0.0.1/status -s | grep "Active connections:" | wc -l)
+
+          if [ $HTTP_STUB_STATUS_MODULE_EXISTS -gt 0 ] && [ $STUB_STATUS_ENABLED -gt 0 ] ; then
+
+            sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.nginx
+
+          instances:
+            - name: nginx-server-metrics
+              command: metrics
+              arguments:
+                # If you're using ngx_http_api_module be certain to use the full path up to and including the version number
+                status_url: http://127.0.0.1/status
+
+                # Name of Nginx status module OHI is to query against. discover | ngx_http_stub_status_module | ngx_http_status_module | ngx_http_api_module
+                status_module: discover
+
+                # New users should leave this property as `true`, to identify the
+                # monitored entities as `remote`. Setting this property to `false` (the
+                # default value) is deprecated and will be removed soon, disallowing
+                # entities that are identified as `local`.
+                # Please check the documentation to get more information about local
+                # versus remote entities:
+                # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
+                remote_monitoring: true
+                # validate_certs: true
+                # default: true If the status URL is HTTPS with a self-signed certificate, set this to false if you want to avoid certificate validation
+              labels:
+                env: production
+                role: load_balancer
+
+            - name: nginx-server-inventory
+              command: inventory
+              arguments:
+                config_path: /etc/nginx/nginx.conf
+
+                # New users should leave this property as `true`, to identify the
+                # monitored entities as `remote`. Setting this property to `false` (the
+                # default value) is deprecated and will be removed soon, disallowing
+                # entities that are identified as `local`.
+                # Please check the documentation to get more information about local
+                # versus remote entities:
+                # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
+                remote_monitoring: true #new users should leave remote_monitoring = true
+
+                # status_url is used to identify the monitored entity to which the inventory will be attached.
+                status_url: http://127.0.0.1/status
+              labels:
+                env: production
+                role: load_balancer
+          EOT
+          else
+            echo -e "[Error]: nginx HTTP status module must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info."
+
+          fi
+        - sudo systemctl restart newrelic-infra.service
