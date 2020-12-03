@@ -49,31 +49,21 @@ installTargets: list, required
   # - Microsoft Azure Web Apps
 keywords: list, required
 
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes.
 # Non-empty list of process definitions. Required.
 processMatch: list, required
   - /infra/
   - /usr/bin/local/node/
 
-# Examine Metrics, Events, and Logging for correlated data
-# Used by the UI to determine if you've successfully configured and are ingesting data
-meltMatch: object, required
-  events: list, optional
-    # Pattern to match melt data type
-    # example: /SystemSample/
-    - pattern: list, required
-  metrics: list, optional
-    # Pattern to match melt data type
-    # example: /system.cpu.usage/
-    - pattern: list, required
-  logs: list (object), optional
-    # Matches partial list of the Log forwarding parameters
-    # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
-    - name: string, required
-      file: string, optional        # Path to the log file or files. Your file can point to a specific log file or multiple ones by using wildcards applied to names and extensions; for example, /logs/*.log
-      attributes: object, optional  # Custom attributes to enrich data
-        logtype: string, optional   # key/value pair
-      pattern: string, optional     # Regular expression for filtering records. https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#pattern
-      systemd: string, optional     # [LINUX ONLY] Service name. Once the systemd input is activated, log messages are collected from the journald daemon in Linux environments.
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch: list (object), optional  
+  - name: string, required
+    file: string, optional        # Path to the log file or files. Your file can point to a specific log file or multiple ones by using wildcards applied to names and extensions; for example, /logs/*.log
+    attributes: object, optional  # Custom attributes to enrich data
+      logtype: string, optional   # key/value pair
+    pattern: string, optional     # Regular expression for filtering records. https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#pattern
+    systemd: string, optional     # [LINUX ONLY] Service name. Once the systemd input is activated, log messages are collected from the journald daemon in Linux environments.
 
 # Prompts for input from the user. These variables then become
 # available to go-task in the form of {{.VAR_NAME}}
@@ -130,4 +120,4 @@ install: string, required
 
 ## Schema Validator
 
-See [open-install-library/validator](../validator).
+See [open-install-library/validator](../../validator).
