@@ -36,8 +36,8 @@ repository: string, required
 installTargets: list, required
   - type: string (enum), optional             # One of [ host, application, docker, kubernetes, cloud, serverless ]
     os: string (enum), optional               # linux, darwin, windows
-    platform: string (enum), optional         # One of [ amazonlinux, ubuntu, debian, centos, rhel, suse ]
-    platformFamily: string (enum), optional   # One of [ debian, rhel, ... ]
+    platform: string (enum), optional         # One of [ amazon, ubuntu, debian, centos, redhat, suse ]
+    platformFamily: string (enum), optional   # One of [ debian, rhel, suse, ... ]
     platformVersion: string, optional         # "17.10"
     kernelVersion: string, optional           # version of the OS kernel (if available)
     kernelArch: string, optional              # native cpu architecture queried at runtime, as returned by `uname -m` or empty string in case of error
@@ -50,7 +50,7 @@ installTargets: list, required
 keywords: list, required
 
 # CLI runs process detection; this is used to filter recipes that are appropriate for matched processes.
-# Non-empty list of process definitions. Required.
+# Non-empty list of process definitions.
 processMatch: list, required
   - /infra/
   - /usr/bin/local/node/
