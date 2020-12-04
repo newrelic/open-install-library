@@ -1,0 +1,26 @@
+---
+- debug:
+    msg: Install Cassandra reverse proxy
+
+- name: Get latest packages info
+  shell: "apt update"
+  become: true
+
+- name: Install cassandra
+  shell: "apt install cassandra -y"
+  become: true
+
+- name: Configure cassandra default route with status module
+  blockinfile:
+    path: /etc/cassandra/sites-enabled/default
+    insertafter: "^server {"
+    marker: "# {mark} Enable status for default route"
+    block: |
+      location = /status {
+          stub_status;
+      }
+  become: yes
+
+- name: Restart cassandra
+  shell: "systemctl restart cassandra"
+  become: yes
