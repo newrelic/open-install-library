@@ -175,20 +175,17 @@ jobs:
             console.log(`Detected Deploy Config: ${JSON.stringify(testDefinitionFile, null, 2)}`)
 
             // Update URLs to use branch this PR is opened with
-            const regex = /main/gi;
             const data = await getDeployConfigFile(testDefinitionFile, process.env.GITHUB_WORKSPACE);
-            const updated_recipe_content_url = data.instrumentations.resources[0].params.recipe_content_url.map( recipe => {
-              return recipe.replace(regex, process.env.GITHUB_HEAD_REF);
-            });
-            data.instrumentations.resources[0].params.recipe_content_url = updated_recipe_content_url;
 
-            // Update source URLs
+            // Update github source URLs with branch name
             let jsonContent = JSON.stringify(data, null, 2);
-            const replacementString = `"source_repository": "-b ${process.env.GITHUB_HEAD_REF} https://github.com/newrelic/open-install-library"`;
-            const sourceRepositoryRegex = /\"source_repository\": \"https:\/\/github\.com\/newrelic\/open-install-library\"/gi;
+            const replacementString = `$1$2-b ${process.env.GITHUB_HEAD_REF} $3$4`;
+            const sourceRepositoryRegex = /(.*)(\")(https:\/\/github.com\/newrelic\/open-install-library)(.*)/gi;
             jsonContent = jsonContent.replace(sourceRepositoryRegex, replacementString);
-            const replacementString2 = `"source_repository": "-b ${process.env.GITHUB_HEAD_REF} https://github.com/newrelic/open-install-library.git"`;
-            const sourceRepositoryRegex2 = /\"source_repository\": \"https:\/\/github\.com\/newrelic\/open-install-library.git\"/gi;
+
+            // Update raw URLs with branch name
+            const replacementString2 = `$1$2${process.env.GITHUB_HEAD_REF}/$4`;
+            const sourceRepositoryRegex2 = /(.*)(\/raw.githubusercontent.com\/newrelic\/open-install-library\/)(main)(\/newrelic\/recipes\/)*./gi;
             jsonContent = jsonContent.replace(sourceRepositoryRegex2, replacementString2);
 
             // Write file back to workspace

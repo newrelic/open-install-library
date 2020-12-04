@@ -1,0 +1,27 @@
+---
+- debug:
+    msg: Install NGINX for OpenSUSE
+
+- name: Get latest packages info
+  shell: "zypper addrepo -G -t yum -c 'https://nginx.org/packages/mainline/sles/12' nginx"
+  become: true
+  ignore_errors: yes
+
+- name: Install nginx
+  shell: "zypper -n install nginx"
+  become: true
+
+- name: Configure nginx default route with status module
+  blockinfile:
+    path: /etc/nginx/conf.d/default.conf
+    insertafter: "^server {"
+    marker: "# {mark} Enable status for default route"
+    block: |
+        location = /status {
+            stub_status;
+        }
+  become: yes
+
+- name: Restart nginx
+  shell: "systemctl restart nginx"
+  become: yes
