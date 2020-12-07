@@ -57,6 +57,20 @@ Recipes are written in YAML and must adhere to our [recipe spec](./recipe-spec/r
 
 All OHI Linux recipes must support APT (Debian and Ubuntu), Yum (Amazon Linux, CentOS, RHEL), Zypper ( SLES). For testing, at a minimum include tests for these three package managers for Linux recipes.
 
+### Validation Nrql
+
+The [recipe-spec](./recipe-spec/recipe-spec.md) contains `validationNrql` - this can be used to specify NRQL the CLI and test framework will execute to validate the recipe is successfully sending data to New Relic.
+
+Example: Validating Nginx
+
+```bash
+validationNrql: "SELECT count(*) from NginxSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
+```
+
+Note: `{{.HOSTNAME}}` is a Go template variable injected by the newrelic-cli. See [Configuration Variables](#configuration-variables) for more info.
+
+Knowing what Nrql is necessary to write is heavilty dependent on the recipe being written. For help, refer to the [New Relic Docs](https://docs.newrelic.com/) for a given integration for help on which metrics/events/etc. might be useful to query for validating data in NRDB.
+
 ### Configuration Variables
 
 All recipes can either run in interactive mode where users are prompted for configuration (when necessary), or in non interactive mode where the configuration is provided already through the CLI.
@@ -76,6 +90,7 @@ The `newrelic-cli` injects at runtime of a go-task the following variables:
   ```
 
   More info can be found in the [recipe-spec](./recipe-spec/recipe-spec.md).
+* `{{.HOSTNAME}}` - the hostname of the instance the newrelic-cli is run on. This is the same effective output as running the `hostname` command.
 
 ### Idempotence
 
