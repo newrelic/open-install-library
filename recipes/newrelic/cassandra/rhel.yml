@@ -22,35 +22,36 @@ keywords:
 
 # Examine Infrastructure events for correlated data
 processMatch:
-  - cassandra
+  - /CassandraSample/
+  - /CassandraColumnFamilySample/
 
 # Matches partial list of the Log forwarding parameters
-logMatch: 
+logMatch:
   - name: cassandra
     file: /var/log/cassandra/access.log*
     attributes:
       logtype: cassandra
   - name: cassandra
     file: /var/log/cassandra/error.log*
-    attributes: 
+    attributes:
       logtype: cassandra-error
 
 validationNrql: "SELECT count(*) from CassandraSample where hostname like 'HOSTNAME' SINCE 10 minutes ago"
 
-inputVars: 
+inputVars:
   - name: "CASSANDRA_DB_USERNAME"
     prompt: "Enter username"
   - name: "CASSANDRA_DB_PASSWORD"
     prompt: "Enter password"
     secret: true
-  - name: "CASSANDRA_DB_HOSTNAME" 
+  - name: "CASSANDRA_DB_HOSTNAME"
     prompt: "Confirm default or enter new value"
     default: "User hostname"
   - name: "CASSANDRA_DB_PORT"
     prompt: "Confirm default port or enter new value"
     default: 9042
 
-variables: 
+variables:
   - KEY_STORE: false
   - KEY_STORE_PASSWORD: false
   - TRUST_STORE: false
@@ -82,7 +83,7 @@ install:
 
           sudo touch /etc/newrelic-infra/integrations.d/cassandra-config.yml;
         - |
-        sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
+          sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
 
           instances: 
             - name: cassandra-db-metrics
@@ -99,7 +100,7 @@ install:
                 trust_store_password: {{.TRUST_STORE_PASSWORD}}
               labels:
                 env: production
-                role: load_balancer
+                role: cassandra-status
             - name: cassandra-db-inventory
               command: inventory
               arguments:
@@ -107,12 +108,10 @@ install:
                 config_path: {{.CONFIG_PATH}}
               labels: 
                 env: production
-                role: load_balancer
+                role: cassandra-status
 
-    restart: 
-      cmds: 
+    restart:
+      cmds:
         - |
           - sudo systemctl restart newrelic-infra.service
         - |
-          
-        
