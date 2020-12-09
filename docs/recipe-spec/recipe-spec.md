@@ -95,7 +95,7 @@ install: string, required
   
   # DO NOT USE: License Key is automatically injected by the newrelic-cli
   # env:
-  #   NR_LICENSE_KEY: '{{.NR_LICENSE_KEY}}'
+  #   NEW_RELIC_LICENSE_KEY: '{{.NEW_RELIC_LICENSE_KEY}}'
 
   variables:
     - FOO_VAR: foo-value
@@ -113,7 +113,7 @@ install: string, required
     install_infra:
       cmds:
         - echo "Installing the Infrastructure agent"
-        - curl -L https://raw.githubusercontent.com/fryckbos/infra-install/master/install.sh {{.NR_LICENSE_KEY}} | sh
+        - curl -L https://raw.githubusercontent.com/fryckbos/infra-install/master/install.sh {{.NEW_RELIC_LICENSE_KEY}} | sh
       silent: true
 
 ```
