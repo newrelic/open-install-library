@@ -19,7 +19,7 @@ processMatch:
   - /CassandraColumnFamilySample/
 
 # Matches partial list of the Log forwarding parameters
-logMatch: 
+logMatch:
   - name: cassandra
     file: /var/log/cassandra/access.log*
     attributes:
@@ -29,15 +29,15 @@ logMatch:
     attributes:
       logtype: cassandra-error
 
-validationNrql: "SELECT count(*) from CassandraSample where hostname like 'HOSTNAME' SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from CassandraSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
 
-inputVars: 
+inputVars:
   - name: "CASSANDRA_DB_USERNAME"
     prompt: "Enter username"
   - name: "CASSANDRA_DB_PASSWORD"
     prompt: "Enter password"
     secret: true
-  - name: "CASSANDRA_DB_HOSTNAME" 
+  - name: "CASSANDRA_DB_HOSTNAME"
     prompt: "Confirm default or enter new value"
     default: "User hostname"
   - name: "CASSANDRA_DB_PORT"
@@ -65,48 +65,47 @@ install:
     setup:
       label: "Installing cassandra integration..."
       cmds:
-       - |
-         sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-       - |
-         sudo zypper -n ref -r newrelic-infra
-       - |
-         sudo zypper -n install nri-cassandra
-       - |
-         if [ -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
-           sudo rm /etc/newrelic-infra/integrations.d/cassandra-config.yml;
-         fi
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo zypper -n ref -r newrelic-infra
+        - |
+          sudo zypper -n install nri-cassandra
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+          fi
 
-         sudo touch /etc/newrelic-infra/integrations.d/cassandra-config.yml;
-       - |
-         sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
-         integration_name: com.newrelic.cassandra
- 
-         instances: 
-           - name: cassandra-db-metrics
-             command: metrics
-             arguments:
-               hostname: {{.CASSANDRA_DB_HOSTNAME}}
-               port: {{.CASSANDRA_DB_PORT}}
-               username: {{.CASSANDRA_DB_USERNAME}}
-               password: {{.CASSANDRA_DB_PASSWORD}}
-               timeout: {{.TIMEOUT}}
-               key_store: {{.KEY_STORE}}
-               key_store_password: {{.KEY_STORE_PASSWORD}}
-               trust_store: {{.TRUST_STORE}}
-               trust_store_password: {{.TRUST_STORE_PASSWORD}}
-             labels:
-               env: production
-               role: cassandra-status
-           - name: cassandra-db-inventory
-             command: inventory
-             arguments:
-               hostname: {{.CASSANDRA_DB_HOSTNAME}}
-               config_path: {{.CONFIG_PATH}}
-             labels: 
-               env: production
-               role: cassandra-status
+          sudo touch /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+        - |
+          sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.cassandra
 
-    restart: 
-      cmds: 
+          instances: 
+            - name: cassandra-db-metrics
+              command: metrics
+              arguments:
+                hostname: {{.CASSANDRA_DB_HOSTNAME}}
+                port: {{.CASSANDRA_DB_PORT}}
+                username: {{.CASSANDRA_DB_USERNAME}}
+                password: {{.CASSANDRA_DB_PASSWORD}}
+                timeout: {{.TIMEOUT}}
+                key_store: {{.KEY_STORE}}
+                key_store_password: {{.KEY_STORE_PASSWORD}}
+                trust_store: {{.TRUST_STORE}}
+                trust_store_password: {{.TRUST_STORE_PASSWORD}}
+              labels:
+                env: production
+                role: cassandra-status
+            - name: cassandra-db-inventory
+              command: inventory
+              arguments:
+                hostname: {{.CASSANDRA_DB_HOSTNAME}}
+                config_path: {{.CONFIG_PATH}}
+              labels: 
+                env: production
+                role: cassandra-status
+
+    restart:
+      cmds:
         - sudo systemctl restart newrelic-infra.service
-        

@@ -6,30 +6,56 @@
   shell: "apt-get update -y"
   become: true
 
-- name: Install gnupg
-  shell: "apt-get install gnupg -y"
+- name: Install dependencies
+  apt:
+    name:
+      [
+        "gnupg",
+        "wget",
+        "software-properties-common",
+        "ca-certificates",
+        "dirmngr",
+        "apt-transport-https",
+      ]
+    update_cache: yes
+    state: latest
   become: true
 
-- name: Install Java
-  shell: "apt-get install default-jre -y"
+- name: Add Java Keys
+  shell: "wget -qO - https://adoptopenjdk.jfrog.io/adoptopenjdk/api/gpg/key/public | sudo apt-key add -"
   become: true
 
-- name: Add apache repository of Cassandra
-  shell: "echo 'deb http://www.apache.org/dist/cassandra/debian 311x main' | tee -a /etc/apt/sources.list.d/cassandra.sources.list"
-  become: true
-
-- name: Add Cassandra repository key
-  shell: "apt-key adv --keyserver pool.sks-keyservers.net --recv-key E91335D77E3E87CB"
+- name: Add repository
+  shell: "sudo add-apt-repository --yes https://adoptopenjdk.jfrog.io/adoptopenjdk/deb/"
   become: true
 
 - name: Get latest packages info
   shell: "apt-get update -y"
   become: true
 
-- name: install the Cassandra engine
+- name: Get latest packages info
+  apt:
+    name: ["adoptopenjdk-8-hotspot"]
+    update_cache: yes
+    state: latest
+  become: true
+
+- name: Add Cassandra Keys
+  shell: "wget -q -O - https://www.apache.org/dist/cassandra/KEYS | sudo apt-key add -"
+  become: true
+
+- name: Copy Cassandra repo
+  shell: "sudo sh -c 'echo 'deb https://www.apache.org/dist/cassandra/debian 311x main' > /etc/apt/sources.list.d/cassandra.list'"
+  become: true
+
+- name: Get latest packages info
+  shell: "apt-get update -y"
+  become: true
+
+- name: install the Cassandra
   shell: "apt install cassandra -y"
   become: true
 
-- name: Restart Cassandra
-  shell: "service cassandra restart"
+- name: Check status
+  shell: "nodetool status"
   become: true
