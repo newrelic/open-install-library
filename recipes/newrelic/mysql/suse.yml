@@ -31,14 +31,11 @@ logMatch:
 
 # NRQL the newrelic-cli will use to validate the agent/integration this recipe
 # installed is successfully sending data to New Relic
-validationNrql: "SELECT count(*) from MysqlSample where hostname like 'HOSTNAME' SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from MysqlSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
 
 # Prompts for input from the user. These variables then become
 # available to go-task in the form of {{.VAR_NAME}}
 inputVars:
-  - name: "CreatedUserPassword"
-    prompt: "Please enter your desired password below."
-    secret: true
   - name: "DB_USERNAME"
     prompt: "Please enter your MySQL username below."
   - name: "DB_PASSWORD"
@@ -65,7 +62,7 @@ install:
     default:
       cmds:
         - task: install_integration
-        - task: create_user
+        - task: create_user_notification
         - task: setup
         - task: restart
 
@@ -76,12 +73,14 @@ install:
           sudo zypper -n ref -r newrelic-infra
         - |
           sudo zypper -n install nri-mysql -y
-    create_user:
+    create_user_notification:
       cmds:
         - |
-          sudo mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY '{{.CreatedUserPassword}}';"
-        - |
-          sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
+          echo '_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _
+
+            sudo mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY \ 'YOUR_SELECTED_PASSWORD';"
+
+            sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"'
     setup:
       cmds:
         - |
