@@ -77,7 +77,7 @@ All recipes can either run in interactive mode where users are prompted for conf
 
 The `newrelic-cli` injects at runtime of a go-task the following variables:
 
-* `{{.NR_LICENSE_KEY}}` populated by the key associated with the profile run with the CLI
+* `{{.NEW_RELIC_LICENSE_KEY}}` populated by the key associated with the profile run with the CLI
 * Input Variables - recipes can use `inputVars` to prompt the user to enter variables needed in the recipe.
   
   ```bash
@@ -119,7 +119,7 @@ setup_license:
       fi
     - |
       # Check for a license_key in the file and update it if it exists; otherwise, write a license_key into the file
-      grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NR_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NR_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml
+      grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NEW_RELIC_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml
 ```
 
 Another approach might be:
@@ -139,7 +139,7 @@ setup_license:
       sudo touch /etc/newrelic-infra.yml;
     - |
       # write the license_key into the newrelic-infra.yml config
-      echo -e "license_key: {{.NR_LICENSE_KEY}}" >> /etc/newrelic-infra.yml
+      echo -e "license_key: {{.NEW_RELIC_LICENSE_KEY}}" >> /etc/newrelic-infra.yml
 ```
 
 ### Installing latest version of a given Agent/OHI should happen automatically
