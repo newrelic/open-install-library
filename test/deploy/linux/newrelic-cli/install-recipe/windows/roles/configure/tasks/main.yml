@@ -1,0 +1,45 @@
+---
+# Parameters:
+# recipe_content_urls: An array of URLs to get recipes in a raw format for example ["https://api.github.com/repos/newrelic/open-install-library/contents/recipes/newrelic/infra-agent/amazonlinux2.yml"]
+# newrelic_personal_api_key: The newrelic personal api key. It typically starts with NRAK-
+# newrelic_account_id: (optional) The newrelic account id
+# newrelic_region: (optional) The newrelic region. Typically "US".
+
+- fail:
+    msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
+  when: newrelic_personal_api_key is not defined
+
+- fail:
+    msg: "A recipe_content_url is required. Create this entry in your deploy config file"
+  when: recipe_content_url is not defined
+
+- name: Prepare environment variables for newrelic-cli execution
+  set_fact:
+    env_vars: "$env:NEW_RELIC_API_KEY=\"{{ newrelic_personal_api_key }}\"; $env:NEW_RELIC_CLI_PRERELEASEFEATURES=\"ALLOW\""
+
+- name: Adding newrelic accountId environment variable
+  set_fact:
+    env_vars: "{{ env_vars }}; $env:NEW_RELIC_ACCOUNT_ID=\"{{ newrelic_account_id }}\""
+  when: newrelic_account_id is defined
+
+- name: Adding newrelic region environment variable
+  set_fact:
+    env_vars: "{{ env_vars }}; $env:NEW_RELIC_REGION=\"{{ newrelic_region }}\""
+  when: newrelic_region is defined
+
+- name: Install newrelic cli
+  win_shell: |
+    [Net.ServicePointManager]::SecurityProtocol = "tls12, tls11, tls"
+    (New-Object System.Net.WebClient).DownloadFile("https://github.com/newrelic/newrelic-cli/releases/latest/download/NewRelicCLIInstaller.msi", "$env:TEMP\NewRelicCLIInstaller.msi");
+    msiexec.exe /qn /i "$env:TEMP\NewRelicCLIInstaller.msi" | Out-Null;
+
+- name: Run recipes
+  win_shell: |
+    curl {{ item }} -o {{ item|basename }};
+    {{ env_vars }}; newrelic install -c {{ item|basename }} | Out-Null;
+  loop: "{{ recipe_content_url }}"
+  register: output
+
+- debug:
+    msg: "output:{{ item.stdout }}"
+  loop: "{{ output.results }}"
