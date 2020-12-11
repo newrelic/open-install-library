@@ -20,6 +20,15 @@
   shell: "yum install -y /usr/bin/systemctl; systemctl --version"
   become: yes
 
+- name: Disable mysqld
+  shell: "service mysqld stop"
+
+- name: Remove /var/lib/mysql/*
+  shell: "rm -rf /var/lib/mysql/*"
+
+- name: Start mysqld service
+  shell: "service mysqld start"
+
 - name: Create Database
   command: |
     mysql -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
@@ -35,10 +44,21 @@
     mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
   become: yes
 
-- name: Export Variables
-  set_fact: 
-     env_vars: "{{ env_vars }} USERNAME=newrelic PASSWORD=testpwd HOSTNAME=localhost DB_PORT=3306"
-     
+- name: Export USERNAME
+  shell: "echo USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo PASSWORD=testpwd >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo DB_PORT=3306 >> ~/.bashrc"
+
+- name: Activate bashrc
+  shell: ". ~/.bashrc"
+  
 - name: Start mysql service
   shell: "systemctl enable --now mysqld"
   become: yes
