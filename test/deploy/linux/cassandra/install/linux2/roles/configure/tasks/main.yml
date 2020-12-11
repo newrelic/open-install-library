@@ -6,7 +6,6 @@
   shell: "yum update -y"
   become: true
 
-  #check
 - name: Install epel
   shell: "amazon-linux-extras install epel -y"
   become: yes
@@ -25,10 +24,30 @@
   shell: "yum install cassandra -y"
   become: true
 
-- name: Reload daemon
-  shell: "systemctl daemon-reload"
+- name: "Allow to create user"
+  shell: "cd /etc/cassandra/conf; sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' cassandra.yaml"
   become: true
 
 - name: Restart cassandra
-  shell: "service cassandra restart"
-  become: yes
+  shell: "service cassandra restart; systemctl restart cassandra"
+  become: true
+
+- name: Wait
+  pause:
+    seconds: 15
+  become: true
+
+- name: "Login to cassandra with default username and password"
+  shell: "cqlsh -u cassandra -p cassandra"
+  become: true
+
+- name: "Create user"
+  shell: "CREATE USER test WITH PASSWORD test"
+  become: true
+# - name: Reload daemon
+#   shell: "systemctl daemon-reload"
+#   become: true
+
+# - name: Restart cassandra
+#   shell: "service cassandra restart"
+#   become: yes
