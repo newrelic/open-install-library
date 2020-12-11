@@ -59,6 +59,7 @@ install:
     - USERNAME: 'newrelic'
     - PASSWORD: 'testpwd'
     - HOSTNAME: 'localhost'
+    - DATABASE: 'MysqlSample'
     - DB_PORT: 3306
     - EXTENDED_METRICS: false
     - EXTENDED_INNODB_METRICS: false
@@ -67,18 +68,10 @@ install:
   tasks:
     default:
       cmds:
-        - task: install_integration
         - task: create_user_notification
         - task: setup
         - task: restart
-
-    install_integration:
-      label: "Installing MySQL integration..."
-      cmds:
-        - |
-          sudo apt-get update
-        - |
-          sudo apt-get install nri-mysql -y
+        
     create_user_notification:
       cmds:
         - |
@@ -88,35 +81,43 @@ install:
 
           sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;""
     setup:
+      label: "Installing mysql integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-mysql -y
         - |
           if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
           fi
 
-          sudo touch /etc/newrelic-infra/integrations.d/mysql-config.yml;
-        - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
+          sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
+
+        - | 
+          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mysql
 
           instances: 
             - name: mysql-status
               command: status
               arguments:
-                hostname: {{.HOSTNAME}}
-                port: {{.DB_PORT}}
-                username: {{.USERNAME}}
-                password: {{.PASSWORD}}
+                hostname: 'localhost'
+                port: 3306
+                username: 'newrelic'
+                password: 'testpwd'
+                database: 'MysqlSample'
                 extended_metrics: {{.EXTENDED_METRICS}}
                 extended_innodb_metrics: {{.EXTENDED_INNODB_METRICS}}
                 extended_myisam_metrics: {{.EXTENDED_MYISAM_METRICS}}
                 remote_monitoring: true
               labels:
                 env: production
-                role: database-status
-            EOT
+                role: write-replica
+          EOT
+
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
