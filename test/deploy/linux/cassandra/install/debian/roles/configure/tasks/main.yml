@@ -6,19 +6,61 @@
   shell: "apt-get update -y"
   become: true
 
+- name: Install dependiences
+  shell: sudo apt install apt-transport-https ca-certificates wget dirmngr gnupg software-properties-common -y
+  become: true
+
+- name: Get java keys
+  shell: wget -qO - https://adoptopenjdk.jfrog.io/adoptopenjdk/api/gpg/key/public | sudo apt-key add -
+  become: true
+
+- name: Get java repo
+  shell: sudo add-apt-repository --yes https://adoptopenjdk.jfrog.io/adoptopenjdk/deb/
+  become: yes
+
+- name: update packages
+  shell: apt-get update -y
+  become: yes
+
+- name: install java
+  shell: sudo apt install adoptopenjdk-8-hotspot -y
+  become: yes
+
+- name: add cassandra keys
+  shell: wget -q -O - https://www.apache.org/dist/cassandra/KEYS | sudo apt-key add -
+  become: yes
+
+- name: add cassandra repo
+  shell: sudo sh -c 'echo "deb https://www.apache.org/dist/cassandra/debian 311x main" > /etc/apt/sources.list.d/cassandra.list'
+  become: yes
+
+- name: update packages
+  shell: apt-get update -y
+  become: yes
+
+- name: install cassandra
+  shell: apt install cassandra -y
+  become: yes
+
 - name: Allow to create user
-  command: |
-    cd /etc/cassandra/
-    sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' cassandra.yaml
+  shell: "sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' etc/cassandra/cassandra.yaml"
+  become: yes
+
+- name: flush system
+  shell: nodetool flush system
+  become: yes
+
+- name: restart cassandra
+  shell: systemctl restart cassandra
+  become: yes
+
+- name: Wait for port
+  wait_for:
+    host: localhost
+    port: 9042
+    delay: 10
   become: true
 
-- name: Restart cassandra
-  command: |
-    nodetool flush system
-    systemctl restart cassandra
-  become: true
-
-- name: Create user
-  command: |
-    cqlsh localhost -u cassandra -p cassandra -e "CREATE USER test WITH PASSWORD 'test';"
-  become: true
+- name: Login to cassandra and create user
+  shell: cqlsh localhost -u cassandra -p cassandra -e "CREATE USER test WITH PASSWORD 'test';"
+  become: yes
