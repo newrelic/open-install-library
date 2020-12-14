@@ -27,12 +27,19 @@
     env_vars: "{{ env_vars }} NEW_RELIC_REGION={{ newrelic_region }}"
   when: newrelic_region is defined
 
-- name: Run recipes
-  shell: "curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | sudo bash && \
-    curl {{ item }} -o {{ item|basename }} && \
-    sudo -E {{ env_vars }} \
-    /usr/local/bin/newrelic install -c {{ item|basename }}"
+- name: Install CLI
+  shell: "curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | sudo bash"
+  become: yes
+
+- name: Download recipes
+  shell: "curl {{ item }} -o $HOME/{{ item|basename }}"
   loop: "{{ recipe_content_url }}"
+  become: yes
+
+- name: Run recipes
+  shell: "{{ env_vars }} /usr/local/bin/newrelic install -c $HOME/{{ item|basename }}"
+  loop: "{{ recipe_content_url }}"
+  become: yes
   register: output
 
 - debug:
