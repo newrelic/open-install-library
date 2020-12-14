@@ -24,21 +24,21 @@
   shell: "yum install cassandra -y"
   become: true
 
-- name: "Allow to create user"
-  shell: "cd /etc/cassandra/conf; sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' cassandra.yaml"
+- name: Allow to create user
+  command: |
+    cd /etc/cassandra/
+    sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' cassandra.yaml
   become: true
 
 - name: Restart cassandra
-  shell: "service cassandra stop; service cassandra start"
+  command: |
+    nodetool flush system
+    systemctl restart cassandra
   become: true
 
-- name: Wait
-  pause:
-    seconds: 60
-  become: true
-
-- name: "Login to cassandra with default username and password"
-  shell: cqlsh 10.0.1.34 9160 -u cassandra -p cassandra -e "CREATE USER test WITH PASSWORD 'test'"
+- name: Create user
+  command: |
+    cqlsh localhost -u cassandra -p cassandra -e "CREATE USER test WITH PASSWORD 'test';"
   become: true
 # - name: "Create user"
 #   shell: "CREATE USER test WITH PASSWORD test"
