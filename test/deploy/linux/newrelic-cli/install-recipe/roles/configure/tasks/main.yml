@@ -22,10 +22,20 @@
     env_vars: "{{ env_vars }} NEW_RELIC_ACCOUNT_ID={{ newrelic_account_id }}"
   when: newrelic_account_id is defined
 
-- name: Adding newrelic region environment variable
+- name: Get CLI environment variables
+  shell: "/bin/bash -ic 'env' | grep NR_CLI_"
+  register: cli_env_vars
+  ignore_errors: yes
+
+- set_fact:
+    cli_env_dict: "{{ cli_env_dict | default({}) | combine ( { item.split('=')[0]: item.split('=')[1] } ) }}"
+  with_items: "{{cli_env_vars.stdout_lines}}"
+  when: cli_env_vars is defined
+
+- name: Build final env_vars
   set_fact:
-    env_vars: "{{ env_vars }} NEW_RELIC_REGION={{ newrelic_region }}"
-  when: newrelic_region is defined
+    env_vars: "{{ env_vars }} {{item.key}}={{item.value}}"
+  loop: "{{ lookup('dict', cli_env_dict|default({})) }}"
 
 - name: Run recipes
   shell: "curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | sudo bash && \
