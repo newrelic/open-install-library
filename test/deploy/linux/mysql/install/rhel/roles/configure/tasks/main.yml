@@ -34,8 +34,12 @@
 
 - name: Get temporary pwd for mysql
   shell: "grep 'temporary password' /var/log/mysqld.log | awk '{print $13}'"
-  register: PW.stdout
+  register: PW
   become: yes
+
+- name: Set password as variable
+  set_fact:
+    PW={{ PW.stdout }}
 
 - name: Create directory for limit file
   shell: "mkdir /etc/systemd/system/mysqld.service.d"
@@ -63,7 +67,7 @@
 
 - name: Create Database
   command: |
-    mysql -u root -p{{PW}} -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
+    mysql -u root -p{{ PW }} -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
   become: yes
 
 - name: Create User

@@ -64,30 +64,25 @@ install:
   tasks:
     default:
       cmds:
-        - task: install_integration
         - task: create_user_notification
         - task: setup
         - task: restart
 
-    install_integration:
-      label: "Installing MySQL integration..."
+    create_user_notification:
       cmds:
+        - |
+          echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _\n
+          sudo mysql -e \"CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';\"\n
+          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;\""
+    setup:
+      label: "Installing mysql integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
           sudo yum install nri-mysql -y
-    create_user_notification:
-      cmds:
-        - |
-          echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _
-
-          sudo mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';"
-
-          sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;""
-    setup:
-      cmds:
-        - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
           if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
