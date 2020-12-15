@@ -1,0 +1,57 @@
+name: Elasticsearch Open Source Integration
+description: New Relic install recipe for default Elasticsearch Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-elasticsearch
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - elastic
+  - elasticsearch
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - elasticsearch
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: elasticsearch
+    file: /var/log/elasticsearch/elasticsearch*.log 
+
+validationNrql: "SELECT count(*) from #PLACEHOLDER where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      label: "Installing elasticsearch integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-elasticsearch -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/elastic-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/elastic-config.yml;
+          fi
+
+          sudo touch /etc/newrelic-infra/integrations.d/elastic-config.yml;
+        - |
+         
+        - sudo systemctl restart newrelic-infra.service
