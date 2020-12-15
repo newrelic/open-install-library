@@ -29,11 +29,11 @@ processMatch:
 # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
 logMatch:
   - name: mysql
-    file: /var/log/mysql/mysqld.log
-  - name: mysql-error
-    file: /var/log/mysql/error.log
-    attributes:
-      logtype: mysql-error
+    file: /var/log/mysqld.log
+  # - name: mysql-error
+  #   file: /var/log/mysqld.log
+  #   attributes:
+  #     logtype: mysql-error
 
 # NRQL the newrelic-cli will use to validate the agent/integration this recipe
 # installed is successfully sending data to New Relic
@@ -41,32 +41,25 @@ validationNrql: "SELECT count(*) from MysqlSample where hostname like '{{.HOSTNA
 
 # Prompts for input from the user. These variables then become
 # available to go-task in the form of {{.VAR_NAME}}
-# inputVars:
-#   - name: "USERNAME"
-#     prompt: "Please enter your NR username below."
-#   - name: "PASSWORD"
-#     prompt: "Please enter your NR password below."
-#     secret: true
-#   - name: "HOSTNAME"
-#     prompt: "Please enter your MySQL hostname below. If none is provided, the default value: localhost, will be used."
-#     default: "localhost"
-#   - name: "DB_PORT"
-#     prompt: "Please enter your MySQL port below. If none is provided, the default value: 3306, will be used."
-#     default: 3306
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "Please enter your NR username below."
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "Please enter your NR password below."
+    secret: true
+  - name: "NR_CLI_DB_HOSTNAME"
+    prompt: "Please enter your MySQL hostname below. If none is provided, the default value: localhost, will be used."
+    default: "localhost"
+  - name: "NR_CLI_DB_PORT"
+    prompt: "Please enter your MySQL port below. If none is provided, the default value: 3306, will be used."
+    default: 3306
+  - name: "NR_CLI_DATABASE"
+    prompt: "Please enter your MySQL database name below."
 
 install:
   version: "3"
 
   silent: true
-
-  variables:
-    - USERNAME: 'newrelic'
-    - PASSWORD: 'testpwd'
-    - DB_HOSTNAME: 'localhost'
-    - DB_PORT: 3306
-    - EXTENDED_METRICS: false
-    - EXTENDED_INNODB_METRICS: false
-    - EXTENDED_MYISAM_METRICS: false
 
   tasks:
     default:
@@ -109,17 +102,16 @@ install:
             - name: mysql-status
               command: status
               arguments:
-                hostname: {{.HOSTNAME}}
-                port: {{.DB_PORT}}
-                username: {{.USERNAME}}
-                password: {{.PASSWORD}}
-                extended_metrics: {{.EXTENDED_METRICS}}
-                extended_innodb_metrics: {{.EXTENDED_INNODB_METRICS}}
-                extended_myisam_metrics: {{.EXTENDED_MYISAM_METRICS}}
-              labels:
-                env: production
-                role: database-status
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                port: {{.NR_CLI_DB_PORT}}
+                username: {{.NR_CLI_DB_USERNAME}}
+                password: {{.NR_CLI_DB_PASSWORD}}
+                database: {{.NR_CLI_DATABASE}}
+                extended_metrics: true
+                extended_innodb_metrics: true
+                extended_myisam_metrics: true
           EOT
+
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service

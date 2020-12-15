@@ -32,35 +32,69 @@
   shell: "systemctl start mysqld"
   become: yes
 
+- name: Get temporary pwd for mysql
+  shell: "grep 'temporary password' /var/log/mysqld.log | awk '{print $13}'"
+  register: PW.stdout
+  become: yes
+
+- name: Create directory for limit file
+  shell: "mkdir /etc/systemd/system/mysqld.service.d"
+  become: yes
+
+- name: Create file for limit
+  shell: "touch /etc/systemd/system/mysqld.service.d/limits.conf"
+  become: yes
+
+- name: Fill conf file
+  command: |
+    tee /etc/systemd/system/mysqld.service.d/limits.conf > /dev/null <<"EOT"
+    [Service]
+    LimitNOFILE = 65535
+    EOT
+  become: yes
+
+- name: Restart daemon
+  shell: systemctl daemon-reload
+  become: yes
+
+- name: Restart Mysql
+  shell: systemctl restart mysqld
+  become: yes
+
 - name: Create Database
   command: |
-    mysql -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
+    mysql -u root -p{{PW}} -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
   become: yes
 
 - name: Create User
   command: |
-    mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'testpwd';"
+    mysql -u root -p{{ PW }} -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'NewLongerBetterTestPwd#11';"
   become: yes
 
-- name: Modify User
+- name: Grant replication permission to user
   command: |
-    mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
+    mysql -u root -p{{ PW }} -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
+  become: yes
+
+- name: Grant select permission to user
+  command: |
+    mysql -u root -p{{ PW }} -ne "GRANT SELECT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
   become: yes
 
 - name: Export USERNAME
-  shell: "echo USERNAME=newrelic >> ~/.bashrc"
+  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
 
 - name: Export PASSWORD
-  shell: "echo PASSWORD=testpwd >> ~/.bashrc"
+  shell: "echo export NR_CLI_DB_PASSWORD=NewLongerBetterTestPwd#11 >> ~/.bashrc"
 
 - name: Export HOSTNAME
-  shell: "echo HOSTNAME=localhost >> ~/.bashrc"
+  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
 
 - name: Export DB_PORT
-  shell: "echo DB_PORT=3306 >> ~/.bashrc"
+  shell: "echo export NR_CLI_DB_PORT=3306 >> ~/.bashrc"
 
-- name: Activate bashrc
-  shell: ". ~/.bashrc"
+- name: Export DATABASE
+  shell: "echo export NR_CLI_DATABASE=MysqlSample >> ~/.bashrc"
 
 - name: Start mysql service
   shell: "systemctl enable --now mysqld"
