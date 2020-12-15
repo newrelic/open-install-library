@@ -25,35 +25,27 @@ processMatch:
 logMatch:
   - name: cassandra-system
     file: /var/log/cassandra/system.log*
-  - name: cassandra-gremlin
+  - name: cassandra-debug
     file: /var/log/cassandra/debug.log*
 
 validationNrql: "SELECT count(*) from CassandraSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
 
 inputVars:
-  - name: "CASSANDRA_DB_USERNAME"
+  - name: "NR_CLI_DB_USERNAME"
     prompt: "Enter NR username"
-  - name: "CASSANDRA_DB_PASSWORD"
+  - name: "NR_CLI_DB_PASSWORD"
     prompt: "Enter NR password"
     secret: true
-  - name: "CASSANDRA_DB_HOSTNAME"
+  - name: "NR_CLI_DB_HOSTNAME"
     prompt: "Confirm default or enter new value"
-    default: "User hostname"
-  - name: "CASSANDRA_DB_PORT"
+    default: "localhost"
+  - name: "NR_CLI_DB_PORT"
     prompt: "Confirm default port or enter new value"
     default: 9042
 
 install:
   version: "3"
   silent: true
-
-  variables:
-    - KEY_STORE: false
-    - KEY_STORE_PASSWORD: false
-    - TRUST_STORE: false
-    - TRUST_STORE_PASSWORD: false
-    - TIMEOUT: 5000
-    - CONFIG_PATH: /etc/cassandra/cassandra.yaml
 
   tasks:
     default:
@@ -84,23 +76,23 @@ install:
             - name: cassandra-db-metrics
               command: metrics
               arguments:
-                hostname: {{.CASSANDRA_DB_HOSTNAME}}
-                port: {{.CASSANDRA_DB_PORT}}
-                username: {{.CASSANDRA_DB_USERNAME}}
-                password: {{.CASSANDRA_DB_PASSWORD}}
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                port: {{.NR_CLI_DB_PORT}}
+                username: {{.NR_CLI_DB_USERNAME}}
+                password: {{.NR_CLI_DB_PASSWORD}}
                 timeout: {{.TIMEOUT}}
-                key_store: {{.KEY_STORE}}
-                key_store_password: {{.KEY_STORE_PASSWORD}}
-                trust_store: {{.TRUST_STORE}}
-                trust_store_password: {{.TRUST_STORE_PASSWORD}}
+                key_store: false
+                key_store_password: false
+                trust_store: false
+                trust_store_password: false
               labels:
                 env: production
                 role: cassandra-status
             - name: cassandra-db-inventory
               command: inventory
               arguments:
-                hostname: {{.CASSANDRA_DB_HOSTNAME}}
-                config_path: {{.CONFIG_PATH}}
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                config_path: /etc/cassandra/cassandra.yaml
               labels: 
                 env: production
                 role: cassandra-status
