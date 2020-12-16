@@ -15,7 +15,7 @@ All you need to do is to place your user config files, and any related secret (p
 docker pull ghcr.io/newrelic/deployer:latest
 docker run -it\
     -v $HOME/configs/:/mnt/deployer/configs/\
-    --entrypoint ruby ghcr.io/newrelic/deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/definitions/awslinux2-infra.json
+    --entrypoint ruby ghcr.io/newrelic/deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/definitions/infra-agent/awslinux2-infra.json
 ```
 
 ## Debug
