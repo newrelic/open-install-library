@@ -35,55 +35,47 @@ validationNrql: "SELECT count(*) from MysqlSample where hostname like '{{.HOSTNA
 # Prompts for input from the user. These variables then become
 # available to go-task in the form of {{.VAR_NAME}}
 inputVars:
-  - name: "USERNAME"
-    prompt: "Please enter your MySQL username below."
-  - name: "PASSWORD"
-    prompt: "Please enter your MySQL password below."
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "Please enter your NR username below."
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "Please enter your NR password below."
     secret: true
-  - name: "HOSTNAME"
+  - name: "NR_CLI_DB_HOSTNAME"
     prompt: "Please enter your MySQL hostname below. If none is provided, the default value: localhost, will be used."
     default: "localhost"
-  - name: "DB_PORT"
+  - name: "NR_CLI_DB_PORT"
     prompt: "Please enter your MySQL port below. If none is provided, the default value: 3306, will be used."
     default: 3306
+  - name: "NR_CLI_DATABASE"
+    prompt: "Please enter your MySQL database name below."
 
 install:
   version: "3"
 
   silent: true
 
-  variables:
-    - EXTENDED_METRICS: false
-    - EXTENDED_INNODB_METRICS: false
-    - EXTENDED_MYISAM_METRICS: false
-
   tasks:
     default:
       cmds:
-        - task: install_integration
         - task: create_user_notification
         - task: setup
         - task: restart
 
-    install_integration:
-      label: "Installing MySQL integration..."
-      cmds:
-        - |
-          sudo zypper -n ref -r newrelic-infra
-        - |
-          sudo zypper -n install nri-mysql -y
     create_user_notification:
       cmds:
         - |
-          echo '_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _
-
-          sudo mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';"
-
-          sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"'
+          echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _\n
+          sudo mysql -e \"CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';\"\n
+          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;\""
     setup:
+      label: "Installing mysql integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+        - |
+          sudo yum install nri-mysql -y
         - |
           if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
@@ -98,17 +90,17 @@ install:
             - name: mysql-status
               command: status
               arguments:
-                hostname: {{.HOSTNAME}}
-                port: {{.DB_PORT}}
-                username: {{.USERNAME}}
-                password: {{.PASSWORD}}
-                extended_metrics: {{.EXTENDED_METRICS}}
-                extended_innodb_metrics: {{.EXTENDED_INNODB_METRICS}}
-                extended_myisam_metrics: {{.EXTENDED_MYISAM_METRICS}}
-              labels:
-                env: production
-                role: database-status
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                port: {{.NR_CLI_DB_PORT}}
+                username: {{.NR_CLI_DB_USERNAME}}
+                password: {{.NR_CLI_DB_PASSWORD}}
+                database: {{.NR_CLI_DATABASE}}
+                extended_metrics: true
+                extended_innodb_metrics: true
+                extended_myisam_metrics: true
+                remote_monitoring: true
           EOT
+
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
