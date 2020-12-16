@@ -18,6 +18,21 @@ processMatch: []
 
 validationNrql: "SELECT count(*) from MssqlInstanceSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
 
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "Please enter your NR username below."
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "Please enter your NR password below."
+    secret: true
+  - name: "NR_CLI_DB_HOSTNAME"
+    prompt: "Please enter your SQL Server hostname or IP below. If none is provided, the default value: 127.0.0.1, will be used."
+    default: "127.0.0.1"
+  - name: "NR_CLI_DB_PORT"
+    prompt: "Please enter your SQL Server port below. If none is provided, the default value: 1433, will be used."
+    default: 1433
+
 install:
   version: "3"
   silent: true
@@ -28,4 +43,20 @@ install:
 
     install:
       cmds:
-        - echo "New Relic infrastructure integration for Microsoft SqlServer installed"
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-mssql/nri-mssql-amd64.msi", "$env:TEMP\nri-mssql-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-mssql-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"'
+        - powershell -command 'Restart-Service newrelic-infra'
+        - echo "New Relic Microsoft SqlServer Integration installed"
+      vars:
+        INT_CONTENT: |
+          integration_name: com.newrelic.mssql
+
+          instances:
+            - name: mssql-server
+              command: all_data
+              arguments:
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                username: {{.NR_CLI_DB_USERNAME}}
+                password: {{.NR_CLI_DB_PASSWORD}}
+                port: {{.NR_CLI_DB_PORT}}
