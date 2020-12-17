@@ -66,8 +66,8 @@ install:
         - |
           echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _\n
           sudo mysql -e \"CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';\"\n
-          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;\"
-          sudo mysql -e \"GRANT SELECT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;\""
+          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';\"\n
+          sudo mysql -e \"GRANT SELECT ON *.* TO 'newrelic'@'localhost';\""
     setup:
       label: "Installing mysql integration..."
       cmds:
@@ -84,7 +84,11 @@ install:
 
           sudo touch /etc/newrelic-infra/integrations.d/mysql-config.yml;
         - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
+          # Check if the provided user can access database.
+          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" | grep 'GRANT SELECT' | awk '{print $2, $3}')
+          EXPECTED=$(echo 'SELECT, REPLICATION')
+          if [ "$CHECK_DB" == "$EXPECTED" ] ; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mysql
 
           instances: 
@@ -101,7 +105,10 @@ install:
                 extended_myisam_metrics: true
                 remote_monitoring: true
           EOT
+          else
+            echo -e "[Error]: Provided user has no access to the desired database.\n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info."
 
+          fi
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
