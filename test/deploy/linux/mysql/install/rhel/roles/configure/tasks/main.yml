@@ -20,6 +20,14 @@
   shell: "yum install -y /usr/bin/systemctl; systemctl --version"
   become: yes
 
+- name: Generate password for newrelic user
+  shell: openssl rand -base64 14
+  register: generatedPassword
+
+- name: Set password as variable
+  set_fact:
+    generatedPassword={{ generatedPassword.stdout }}
+
 - name: Disable mysqld
   shell: "systemctl stop mysqld"
   become: yes
@@ -41,7 +49,7 @@
   shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
 
 - name: Export PASSWORD
-  shell: "echo export NR_CLI_DB_PASSWORD=NewLongerBetterTestPwd#11 >> ~/.bashrc"
+  shell: "echo export NR_CLI_DB_PASSWORD={{ generatedPassword }} >> ~/.bashrc"
 
 - name: Export HOSTNAME
   shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
@@ -92,7 +100,7 @@
 
 - name: Create User
   command: |
-    mysql -u root -pNewLongerBetterPwd#10 -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'NewLongerBetterTestPwd#11' WITH MAX_USER_CONNECTIONS 5;"
+    mysql -u root -pNewLongerBetterPwd#10 -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY '{{ generatedPassword }}' WITH MAX_USER_CONNECTIONS 5;"
   become: yes
 
 - name: Grant replication permission to user
