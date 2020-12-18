@@ -37,6 +37,11 @@ logMatch:
 
 validationNrql: "SELECT count(*) from NginxSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
+inputVars:
+  - name: "NR_CLI_STUB_STATUS_URL"
+    prompt: "Confirm the default NGINX status URL or enter new value"
+    default: "http://127.0.0.1/status"
+
 install:
   version: "3"
   silent: true
@@ -57,7 +62,7 @@ install:
           fi
         - |
           HTTP_STUB_STATUS_MODULE_EXISTS=$(nginx -V 2>&1 | tr ' ' '\n' | grep -o with-http_stub_status_module | wc -l)
-          STUB_STATUS_ENABLED=$(curl http://127.0.0.1/status -s | grep "Active connections:" | wc -l)
+          STUB_STATUS_ENABLED=$(curl {{.NR_CLI_STUB_STATUS_URL}} -s | grep "Active connections:" | wc -l)
           if [ $HTTP_STUB_STATUS_MODULE_EXISTS -eq 0 ] || [ $STUB_STATUS_ENABLED -eq 0 ] ; then
             echo "nginx HTTP status module must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
             exit 2
@@ -85,7 +90,7 @@ install:
               command: metrics
               arguments:
                 # If you're using ngx_http_api_module be certain to use the full path up to and including the version number
-                status_url: http://127.0.0.1/status
+                status_url: {{.NR_CLI_STUB_STATUS_URL}}
 
                 # Name of Nginx status module OHI is to query against. discover | ngx_http_stub_status_module | ngx_http_status_module | ngx_http_api_module
                 status_module: discover
@@ -116,7 +121,7 @@ install:
                 remote_monitoring: true #new users should leave remote_monitoring = true
 
                 # status_url is used to identify the monitored entity to which the inventory will be attached.
-                status_url: http://127.0.0.1/status
+                status_url: {{.NR_CLI_STUB_STATUS_URL}}
           EOT
         - |
           sudo systemctl restart newrelic-infra.service
