@@ -9,6 +9,14 @@
     state: latest
   become: yes
 
+- name: Generate password
+  shell: date +%s | sha256sum | base64 | head -c 32 ; echo
+  register: user_pwd
+
+- name: Assign password
+  set_fact:
+    user_pwd={{ user_pwd.stdout }}
+
 - name: Create Database
   command: |
     mysql -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
@@ -22,7 +30,7 @@
 
 - name: Create User
   command: |
-    mysql -u root -ne "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'testpwd';"
+    mysql -u root -ne "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY '{{ user_pwd.stdout }}';"
   become: yes
 
 - name: Grant replication permission to user
@@ -39,7 +47,7 @@
   shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
 
 - name: Export PASSWORD
-  shell: "echo export NR_CLI_DB_PASSWORD=testpwd >> ~/.bashrc"
+  shell: "echo export NR_CLI_DB_PASSWORD={{ user_pwd.stdout }} >> ~/.bashrc"
 
 - name: Export HOSTNAME
   shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
