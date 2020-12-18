@@ -29,20 +29,20 @@ logMatch:
   - name: cassandra-debug
     file: /var/log/cassandra/debug.log*
 
-validationNrql: "SELECT count(*) from CassandraSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from CassandraSample where hostname like '{{.HOSTNAME}}%' SINCE 10 minutes ago"
 
 inputVars:
   - name: "NR_CLI_DB_USERNAME"
-    prompt: "Enter NR username"
+    prompt: "Enter the username to connect to Cassandra via JMX."
   - name: "NR_CLI_DB_PASSWORD"
-    prompt: "Enter NR password"
+    prompt: "Enter the password to connect to Cassandra via JMX."
     secret: true
   - name: "NR_CLI_DB_HOSTNAME"
-    prompt: "Confirm default or enter new value"
+    prompt: "Confirm default or enter new value for the Cassandra node hostname."
     default: "localhost"
   - name: "NR_CLI_DB_PORT"
-    prompt: "Confirm default port or enter new value"
-    default: 9042
+    prompt: "Confirm default port or enter new value. The port where Cassandra is listening and exposing metrics and variables via JMX."
+    default: 7199
 
 install:
   version: "3"
@@ -71,6 +71,8 @@ install:
           sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
 
         - |
+          echo -e "\nverbose: 1\nlog_file: /home/admin/infra.log" | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+
           sudo tee /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.cassandra
 
@@ -79,27 +81,10 @@ install:
               command: metrics
               arguments:
                 hostname: {{.NR_CLI_DB_HOSTNAME}}
-                port: {{.NR_CLI_DB_PORT}}
+                port: 7199
                 username: {{.NR_CLI_DB_USERNAME}}
                 password: {{.NR_CLI_DB_PASSWORD}}
-                timeout: 2000
-                key_store: false
-                key_store_password: false
-                trust_store: false
-                trust_store_password: false
                 remote_monitoring: true
-              labels:
-                env: production
-                role: cassandra
-            - name: cassandra-db-inventory
-              command: inventory
-              arguments:
-                hostname: {{.NR_CLI_DB_HOSTNAME}}
-                config_path: /etc/cassandra/cassandra.yaml
-                remote_monitoring: true
-              labels: 
-                env: production
-                role: cassandra
           EOT
 
     restart:
