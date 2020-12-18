@@ -1,29 +1,27 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
 name: Infrastructure Agent Installer
 description: New Relic install recipe for the Infrastructure agent
 repository: https://github.com/newrelic/infrastructure-agent
 
-# See http://download.newrelic.com/infrastructure_agent/ for possible permutations
 installTargets:
   - type: host
     os: linux
     platform: amazon
     platformVersion: "2"
 
-# keyword convention for dealing with search terms that could land someone on this instrumentation project
 keywords:
   - Infrastructure
   - Agent
   - Amazon Linux 2
   - Linux2
 
-# Examine Infrastructure events for correlated data
 processMatch:
   - /infra/
 
-validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
-# go-task yaml definition goes here
-# This spec - https://github.com/go-task/task
 install:
   version: "3"
   silent: true
@@ -40,12 +38,12 @@ install:
             sudo touch /etc/newrelic-infra.yml;
           fi
         - |
-          grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NEW_RELIC_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml
+          grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NEW_RELIC_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
 
     install_infra:
       cmds:
-        - sudo curl -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
-        - sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-        - sudo yum install newrelic-infra -y
+        - sudo curl -s -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
+        - sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+        - sudo yum -y -q install newrelic-infra
         - echo "New Relic infrastructure agent installed"
       silent: true

@@ -1,3 +1,6 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
 name: NGINX Open Source Integration
 description: New Relic install recipe for default NGINX Open Source on-host integration (via Infra-Agent)
 repository: https://github.com/newrelic/nri-nginx
@@ -7,17 +10,14 @@ installTargets:
     os: linux
     platform: "suse"
 
-# keyword convention for dealing with search terms that could land someone on this instrumentation project
 keywords:
   - Infrastructure
   - Integration
   - nginx
 
-# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
 processMatch:
   - nginx
 
-# Matches partial list of the Log forwarding parameters
 logMatch:
   - name: nginx
     file: /var/log/nginx/access.log*  # assumes log rotation like access.log.0, access.log.1, etc.
@@ -28,7 +28,12 @@ logMatch:
     attributes:
       logtype: nginx-error
 
-validationNrql: "SELECT count(*) from NginxSample where hostname like '{{.HOSTNAME}}' SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from NginxSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_STUB_STATUS_URL"
+    prompt: "Confirm the default NGINX status URL or enter new value"
+    default: "http://127.0.0.1/status"
 
 install:
   version: "3"
@@ -37,7 +42,24 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: setup
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+        - |
+          HTTP_STUB_STATUS_MODULE_EXISTS=$(nginx -V 2>&1 | tr ' ' '\n' | grep -o with-http_stub_status_module | wc -l)
+          STUB_STATUS_ENABLED=$(curl {{.NR_CLI_STUB_STATUS_URL}} -s | grep "Active connections:" | wc -l)
+          if [ $HTTP_STUB_STATUS_MODULE_EXISTS -eq 0 ] || [ $STUB_STATUS_ENABLED -eq 0 ] ; then
+            echo "nginx HTTP status module must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
+            exit 2
+          fi
 
     setup:
       label: "Installing nginx integration..."
@@ -55,13 +77,7 @@ install:
 
           sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml;
         - |
-          # Check for HTTP stub status module existing and configured
-          HTTP_STUB_STATUS_MODULE_EXISTS=$(nginx -V 2>&1 | tr ' ' '\n' | grep -o with-http_stub_status_module | wc -l)
-          STUB_STATUS_ENABLED=$(curl http://127.0.0.1/status -s | grep "Active connections:" | wc -l)
-
-          if [ $HTTP_STUB_STATUS_MODULE_EXISTS -gt 0 ] && [ $STUB_STATUS_ENABLED -gt 0 ] ; then
-
-            sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<"EOT"
+          sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.nginx
 
           instances:
@@ -69,7 +85,7 @@ install:
               command: metrics
               arguments:
                 # If you're using ngx_http_api_module be certain to use the full path up to and including the version number
-                status_url: http://127.0.0.1/status
+                status_url: {{.NR_CLI_STUB_STATUS_URL}}
 
                 # Name of Nginx status module OHI is to query against. discover | ngx_http_stub_status_module | ngx_http_status_module | ngx_http_api_module
                 status_module: discover
@@ -100,10 +116,7 @@ install:
                 remote_monitoring: true #new users should leave remote_monitoring = true
 
                 # status_url is used to identify the monitored entity to which the inventory will be attached.
-                status_url: http://127.0.0.1/status
+                status_url: {{.NR_CLI_STUB_STATUS_URL}}
           EOT
-          else
-            echo -e "[Error]: nginx HTTP status module must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info."
-
-          fi
-        - sudo systemctl restart newrelic-infra.service
+        - |
+          sudo systemctl restart newrelic-infra.service
