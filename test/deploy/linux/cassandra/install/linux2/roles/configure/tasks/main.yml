@@ -28,14 +28,29 @@
   shell: "sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' /etc/cassandra/conf/cassandra.yaml"
   become: true
 
-- name: Flush system
-  shell: nodetool flush system
-  become: true
+- name: Export USERNAME
+  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_DB_PASSWORD=test >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_DB_PORT=9042 >> ~/.bashrc"
 
 - name: Restart cassandra
   shell: systemctl restart cassandra
   become: true
 
+- name: Wait for port
+  wait_for:
+    host: localhost
+    port: 9042
+    delay: 10
+  become: true
+
 - name: Create user
-  shell: cqlsh localhost -u cassandra -p cassandra -e "CREATE USER test WITH PASSWORD 'test';"
+  shell: cqlsh localhost 9042 -u cassandra -p cassandra -e "CREATE USER test WITH PASSWORD 'test';"
   become: true
