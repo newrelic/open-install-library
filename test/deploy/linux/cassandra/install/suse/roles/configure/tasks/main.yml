@@ -3,21 +3,50 @@
     msg: Install Cassandra
 
 - name: Get latest packages info
-  shell: "zypper update -y"
+  shell: "zypper -n update"
   become: true
 
+- name: Install python
+  shell: zypper -n install python
+  become: true
+  
 - name: Install Java
   shell: "zypper -n install java-1_8_0-openjdk"
   become: true
 
 - name: Get Cassandra tar file
-  shell: "curl -OL https://apache.mirrors.tworzy.net/cassandra/3.11.9/apache-cassandra-3.11.9-bin.tar.gz"
+  shell: curl -OL http://apache.mirror.digitalpacific.com.au/cassandra/3.11.9/apache-cassandra-3.11.9-bin.tar.gz
   become: true
 
 - name: Install Cassandra
-  shell: "tar -xzvf apache-cassandra-?.??.?-bin.tar.gz"
+  shell: "tar -xzvf apache-cassandra-3.11.9-bin.tar.gz"
+  become: true
+
+- name: Allow to create user
+  shell: "sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' apache-cassandra-3.11.9/conf/cassandra.yaml"
   become: true
 
 - name: Run cassandra
   shell: "apache-cassandra-*/bin/cassandra -R"
-  become: yes
+  become: true
+
+- name: Sleep for 15 seconds and continue with play
+  wait_for:
+    timeout: 15
+  delegate_to: localhost
+  
+- name: Login to cassandra
+  shell: apache-cassandra-*/bin/cqlsh localhost 9042 -ucassandra -pcassandra -e "CREATE USER newrelic WITH PASSWORD 'test';"
+  become: true
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_DB_PASSWORD=test >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_DB_PORT=7199 >> ~/.bashrc"
