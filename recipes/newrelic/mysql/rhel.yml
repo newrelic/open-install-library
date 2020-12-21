@@ -22,7 +22,6 @@ keywords:
 
 # Examine Infrastructure events for correlated data
 processMatch:
-  - mysql
   - mysqld
 
 # Matches partial list of the Log forwarding parameters
@@ -60,9 +59,26 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: create_user_notification
         - task: setup
         - task: restart
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+        - |
+          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" | grep 'GRANT SELECT' | awk '{print $2, $3}')
+          EXPECTED=$(echo 'SELECT, REPLICATION')
+          if [ "$CHECK_DB" != "$EXPECTED" ] ; then
+            echo -e "[Error]: Provided user has no access to the desired database.\n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info."
+            exit 2
+          fi
 
     create_user_notification:
       cmds:
@@ -88,11 +104,7 @@ install:
           sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
 
         - |
-          # Check if the provided user can access database.
-          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" | grep 'GRANT SELECT' | awk '{print $2, $3}')
-          EXPECTED=$(echo 'SELECT, REPLICATION')
-          if [ "$CHECK_DB" == "$EXPECTED" ] ; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
+          sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mysql
 
           instances: 
@@ -109,9 +121,7 @@ install:
                 extended_myisam_metrics: true
                 remote_monitoring: true
           EOT
-          else
-            echo -e "[Error]: Provided user has no access to the desired database.\n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info."
-          fi
+
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
