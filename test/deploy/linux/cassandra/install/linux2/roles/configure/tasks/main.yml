@@ -28,6 +28,32 @@
   shell: "sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' /etc/cassandra/conf/cassandra.yaml"
   become: true
 
+- name: Start cassandra
+  shell: service cassandra start
+  become: true
+
+- name: Wait for port
+  wait_for:
+    host: 127.0.0.1
+    port: 9042
+    delay: 10
+  become: true
+
+- name: Ensure Cassandra is ready to accept query
+  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "SELECT dateof(now()) FROM system.local ;"
+  register: output
+  retries: 20
+  delay: 15
+  until: output is not failed
+
+- fail:
+    msg: "Cassandra is not available, details: {{output}}"
+  when: output is failed
+
+- name: Create newrelic login
+  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "CREATE USER newrelic WITH PASSWORD 'test';"
+  become: yes
+
 - name: Export USERNAME
   shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
 
@@ -38,19 +64,4 @@
   shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
 
 - name: Export DB_PORT
-  shell: "echo export NR_CLI_DB_PORT=9042 >> ~/.bashrc"
-
-- name: Restart cassandra
-  shell: systemctl restart cassandra
-  become: true
-
-- name: Wait for port
-  wait_for:
-    host: localhost
-    port: 9042
-    delay: 10
-  become: true
-
-- name: Create user
-  shell: cqlsh localhost 9042 -u cassandra -p cassandra -e "CREATE USER test WITH PASSWORD 'test';"
-  become: true
+  shell: "echo export NR_CLI_DB_PORT=7199 >> ~/.bashrc"
