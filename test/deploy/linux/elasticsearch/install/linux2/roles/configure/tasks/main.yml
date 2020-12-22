@@ -10,6 +10,10 @@
   shell: yum install java-1.8.0-openjdk -y
   become: yes
 
+- name: Add gpg key
+  shell: sudo rpm --import https://packages.elastic.co/GPG-KEY-elasticsearch
+  become: yes
+
 - name: Copy ElasticSearchRepo
   template: 
       src: elasticsearch.repo
@@ -17,18 +21,24 @@
   become: true
 
 - name: Install elasticsearch
-  shell: sudo yum -y install elasticsearch-oss
+  shell: yum install --enablerepo=elasticsearch elasticsearch -y
   become: true
+
+- name: Change timeout
+  shell: echo -e "[Service]\nTimeoutStartSec=180" | sudo tee /etc/systemd/system/elasticsearch.service.d/startup-timeout.conf
 
 - name: Daemon reload
   shell: systemctl daemon-reload
   become: true
 
-- name: Enable elasticsearch
-  shell: systemctl enable elasticsearch.service
-  become: true
-
 - name: Start elasticsearch
-  shell: "systemctl start elasticsearch.service"
+  shell: systemctl start elasticsearch
   become: true
 
+- name: Test elasticsearch
+  shell: curl http://localhost:9200/
+  become: true
+
+- name: Create user
+  shell: /usr/share/elasticsearch/bin/elasticsearch-users useradd newrelic -p test
+  become: true
