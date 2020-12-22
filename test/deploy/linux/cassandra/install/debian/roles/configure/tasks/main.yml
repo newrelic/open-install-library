@@ -1,0 +1,85 @@
+---
+- debug:
+    msg: Install Cassandra
+
+- name: Get latest packages info
+  shell: "apt-get update -y"
+  become: true
+
+- name: Install dependiences
+  shell: sudo apt install apt-transport-https ca-certificates wget dirmngr gnupg software-properties-common -y
+  become: true
+
+- name: Get java keys
+  shell: wget -qO - https://adoptopenjdk.jfrog.io/adoptopenjdk/api/gpg/key/public | sudo apt-key add -
+  become: true
+
+- name: Get java repo
+  shell: sudo add-apt-repository --yes https://adoptopenjdk.jfrog.io/adoptopenjdk/deb/
+  become: yes
+
+- name: update packages
+  shell: apt-get update -y
+  become: yes
+
+- name: install java
+  shell: sudo apt install adoptopenjdk-8-hotspot -y
+  become: yes
+
+- name: add cassandra keys
+  shell: wget -q -O - https://www.apache.org/dist/cassandra/KEYS | sudo apt-key add -
+  become: yes
+
+- name: add cassandra repo
+  shell: sudo sh -c 'echo "deb https://www.apache.org/dist/cassandra/debian 311x main" > /etc/apt/sources.list.d/cassandra.list'
+  become: yes
+
+- name: update packages
+  shell: apt-get update -y
+  become: yes
+
+- name: install cassandra
+  shell: apt install cassandra -y
+  become: yes
+
+- name: Allow to create user
+  shell: "sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' /etc/cassandra/cassandra.yaml"
+  become: yes
+
+- name: restart cassandra
+  shell: systemctl restart cassandra
+  become: yes
+
+- name: Wait for port
+  wait_for:
+    host: 127.0.0.1
+    port: 9042
+    delay: 10
+  become: true
+
+- name: Ensure Cassandra is ready to accept query
+  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "SELECT dateof(now()) FROM system.local ;"
+  register: output
+  retries: 20
+  delay: 15
+  until: output is not failed
+
+- fail:
+    msg: "Cassandra is not available, details: {{output}}"
+  when: output is failed
+
+- name: Create newrelic login
+  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "CREATE USER newrelic WITH PASSWORD 'test';"
+  become: yes
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_DB_PASSWORD=test >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_DB_PORT=7199 >> ~/.bashrc"
