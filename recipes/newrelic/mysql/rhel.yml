@@ -32,7 +32,7 @@ logMatch:
 
 # NRQL the newrelic-cli will use to validate the agent/integration this recipe
 # installed is successfully sending data to New Relic
-validationNrql: "SELECT count(*) from MysqlSample where hostname like '{{.HOSTNAME}}%' SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from MysqlSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
 # Prompts for input from the user. These variables then become
 # available to go-task in the form of {{.VAR_NAME}}
@@ -59,10 +59,18 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
         - task: create_user_notification
+        - task: assert_pre_req
         - task: setup
         - task: restart
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you'd like to create a new user please use these commands as reference. _\n
+          sudo mysql -e \"CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD' WITH MAX_USER_CONNECTIONS 5;\"\n
+          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';\"\n
+          sudo mysql -e \"GRANT SELECT ON *.* TO 'newrelic'@'localhost';\""
 
     assert_pre_req:
       cmds:
@@ -80,13 +88,6 @@ install:
             exit 2
           fi
 
-    create_user_notification:
-      cmds:
-        - |
-          echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you'd like to create a new user please use these commands as reference. _\n
-          sudo mysql -e \"CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD' WITH MAX_USER_CONNECTIONS 5;\"\n
-          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';\"\n
-          sudo mysql -e \"GRANT SELECT ON *.* TO 'newrelic'@'localhost';\""
     setup:
       label: "Installing mysql integration..."
       cmds:
