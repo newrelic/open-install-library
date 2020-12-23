@@ -1,0 +1,120 @@
+name: Apache Open Source Integration
+description: New Relic install recipe for default MySQL Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-apache
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - apache
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - apache2
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch:
+  - name: apache
+    file: /var/log/apache2/*access.log
+  - name: apache error
+    file: /var/log/apache2/error.log
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from ApacheSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+# inputVars:
+#   - name: "NR_CLI_STATUS_URL"
+#     prompt: "Please enter your apache status URL below. If none is provided then default value: http://127.0.0.1/server-status?auto will be used."
+#     default: "http://127.0.0.1/server-status?auto"
+
+install:
+  version: "3"
+
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+        
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing apache integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-apache -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/apache-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/apache-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/apache-config.yml.sample /etc/newrelic-infra/integrations.d/apache-config.yml;
+
+        - | 
+          sudo tee /etc/newrelic-infra/integrations.d/apache-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.apache
+
+          instances:
+              - name: apache-server-metrics
+                command: metrics
+                arguments:
+                    status_url: http://127.0.0.1/server-status?auto
+
+                    # New users should leave this property as `true`, to identify the
+                    # monitored entities as `remote`. Setting this property to `false` (the
+                    # default value) is deprecated and will be removed soon, disallowing
+                    # entities that are identified as `local`.
+                    # Please check the documentation to get more information about local
+                    # versus remote entities:
+                    # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
+                    remote_monitoring: true
+                labels:
+                    env: production
+                    role: load_balancer
+              - name: apache-server-inventory
+                command: inventory
+                arguments:
+
+                    # New users should leave this property as `true`, to identify the
+                    # monitored entities as `remote`. Setting this property to `false` (the
+                    # default value) is deprecated and will be removed soon, disallowing
+                    # entities that are identified as `local`.
+                    # Please check the documentation to get more information about local
+                    # versus remote entities:
+                    # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
+                    remote_monitoring: true
+                labels:
+                    env: production
+                    role: load_balancer
+
+          EOT
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
