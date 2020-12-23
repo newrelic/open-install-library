@@ -1,0 +1,110 @@
+---
+- debug:
+    msg: Install MySQL
+
+- name: Add MySQL Repository
+  yum: 
+    name: https://dev.mysql.com/get/mysql80-community-release-el7-3.noarch.rpm
+    state: present
+  become: yes
+
+- name: Install epel
+  shell: "amazon-linux-extras install epel -y"
+  become: yes
+
+- name: Install the MySQL
+  shell: "yum install mysql-community-server -y"
+  become: yes
+
+- name: Install systemctl
+  shell: "yum install -y /usr/bin/systemctl; systemctl --version"
+  become: yes
+
+- name: Disable mysqld
+  shell: "systemctl stop mysqld"
+  become: yes
+
+- name: Remove /var/lib/mysql/*
+  shell: "rm -rf /var/lib/mysql/*"
+  become: yes
+
+- name: Start mysqld service
+  shell: "systemctl start mysqld"
+  become: yes
+
+- name: Get temporary pwd for mysql
+  shell: "grep 'temporary password' /var/log/mysqld.log | awk '{print $13}'"
+  register: PW
+  become: yes
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_DB_PASSWORD=TestPassword123$ >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_DB_PORT=3306 >> ~/.bashrc"
+
+- name: Export DATABASE
+  shell: "echo export NR_CLI_DATABASE=MysqlSample >> ~/.bashrc"
+
+- name: Set password as variable
+  set_fact:
+    PW={{ PW.stdout }}
+
+- name: Create directory for limit file
+  shell: "mkdir /etc/systemd/system/mysqld.service.d"
+  become: yes
+
+- name: Create file for limit
+  shell: "touch /etc/systemd/system/mysqld.service.d/limits.conf"
+  become: yes
+
+- name: Fill conf file
+  copy: 
+    dest: "/etc/systemd/system/mysqld.service.d/limits.conf"
+    content: |
+      [Service]
+      LimitNOFILE = 65535
+  become: yes
+
+- name: Restart daemon
+  shell: systemctl daemon-reload
+  become: yes
+
+- name: Restart Mysql
+  shell: systemctl restart mysqld
+  become: yes
+
+- name: Alter root pwd
+  command: |
+    mysql -u root -p{{ PW }} --connect-expired-password -ne "ALTER USER 'root'@'localhost' IDENTIFIED BY 'TestPassword123$';"
+  become: yes
+
+- name: Create Database
+  command: |
+    mysql -u root -pTestPassword123$ -ne "CREATE DATABASE IF NOT EXISTS MysqlSample;"
+  become: yes
+
+- name: Create User
+  command: |
+    mysql -u root -pTestPassword123$ -ne "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'TestPassword123$';"
+  become: yes
+
+- name: Grant replication permission to user
+  command: |
+    mysql -u root -pTestPassword123$ -ne "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';"
+  become: yes
+
+- name: Grant select permission to user
+  command: |
+    mysql -u root -pTestPassword123$ -ne "GRANT SELECT ON *.* TO 'newrelic'@'localhost';"
+  become: yes
+
+- name: Start mysql service
+  shell: "systemctl enable --now mysqld"
+  become: yes

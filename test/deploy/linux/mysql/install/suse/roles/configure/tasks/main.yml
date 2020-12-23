@@ -1,0 +1,98 @@
+---
+- debug:
+    msg: Install MySQL
+
+- name: Update packages
+  shell: sudo zypper -n update
+  become: yes
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_DB_PASSWORD=TestPassword1234$ >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_DB_PORT=3306 >> ~/.bashrc"
+
+- name: Export DATABASE
+  shell: "echo export NR_CLI_DATABASE=MysqlSample >> ~/.bashrc"
+
+- name: Install wget
+  shell: "zypper -n install wget"
+  become: yes
+
+- name: Download MySQL SUSE repository
+  shell: "wget https://dev.mysql.com/get/mysql80-community-release-sles12-3.noarch.rpm"
+  become: yes
+
+- name: Install MySQL SUSE repository
+  shell: "rpm -ivh mysql80-community-release-sles12-3.noarch.rpm"
+  become: yes
+
+- name: Import GPG key for MySQL SUSE repository
+  shell: "rpm --import /etc/RPM-GPG-KEY-mysql"
+  become: yes
+
+- name: Refresh zypper repository information
+  shell: "zypper refresh"
+  become: yes
+
+- name: Install MySQL
+  shell: "zypper -n install mysql-community-server"
+  become: yes
+
+- name: Disable mysql
+  shell: "systemctl stop mysql"
+  become: yes
+
+- name: Remove /var/lib/mysql/*
+  shell: "rm -rf /var/lib/mysql/*"
+  become: yes
+
+- name: Start mysqld service
+  shell: "systemctl start mysql"
+  become: yes
+
+- name: Get temporary pwd for mysql
+  shell: "grep 'temporary password' /var/log/mysql/mysqld.log | awk '{print $13}'"
+  register: PW
+  become: yes
+
+- name: Set password as variable
+  set_fact: PW={{ PW.stdout }}
+
+- name: Alter root pwd
+  command: |
+    mysql -u root -p{{ PW }} --connect-expired-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'TestPassword123$';"
+  become: yes
+
+- name: Create Database
+  command: |
+    mysql -u root -pTestPassword123$ -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
+  become: yes
+
+- name: Create User
+  command: |
+    mysql -u root -pTestPassword123$ -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'TestPassword1234$' WITH MAX_USER_CONNECTIONS 5;"
+  become: yes
+
+- name: Grant replication permission to user
+  command: |
+    mysql -u root -pTestPassword123$ -ne "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';"
+  become: yes
+
+- name: Grant select permission to user
+  command: |
+    mysql -u root -pTestPassword123$ -ne "GRANT SELECT ON *.* TO 'newrelic'@'localhost';"
+  become: yes
+
+- name: Enable MySQL service
+  shell: "/sbin/chkconfig --add mysql"
+
+- name: Restart MySQL
+  shell: "systemctl restart mysql"
+  become: yes
