@@ -1,0 +1,67 @@
+---
+- debug:
+    msg: Install Cassandra
+
+- name: Get latest packages info
+  shell: "yum update -y"
+  become: true
+
+- name: Install epel
+  shell: "amazon-linux-extras install epel -y"
+  become: yes
+
+- name: Install Java
+  shell: "yum install java-1.8.0-openjdk -y"
+  become: true
+
+- name: Copy cassandra repo file
+  template:
+    src: cassandra311x.repo
+    dest: /etc/yum.repos.d/cassandra311x.repo
+  become: true
+
+- name: install the Cassandra engine
+  shell: "yum install cassandra -y"
+  become: true
+
+- name: Allow to create user
+  shell: "sudo sed -i 's/authenticator: AllowAllAuthenticator/authenticator: PasswordAuthenticator/g' /etc/cassandra/conf/cassandra.yaml"
+  become: true
+
+- name: Start cassandra
+  shell: service cassandra start
+  become: true
+
+- name: Wait for port
+  wait_for:
+    host: 127.0.0.1
+    port: 9042
+    delay: 10
+  become: true
+
+- name: Ensure Cassandra is ready to accept query
+  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "SELECT dateof(now()) FROM system.local ;"
+  register: output
+  retries: 20
+  delay: 15
+  until: output is not failed
+
+- fail:
+    msg: "Cassandra is not available, details: {{output}}"
+  when: output is failed
+
+- name: Create newrelic login
+  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "CREATE USER newrelic WITH PASSWORD 'test';"
+  become: yes
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_DB_PASSWORD=test >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_DB_PORT=7199 >> ~/.bashrc"
