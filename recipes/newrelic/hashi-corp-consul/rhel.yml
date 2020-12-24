@@ -1,0 +1,101 @@
+name: HashiCorp Consul Open Source Integration
+description: New Relic install recipe for default HashiCorp Consul Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-cassandra
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "amazon"
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - HashiCorpConsul
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - cassandra
+  - cassandradaemon
+  - cqlsh
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: hashiCorpConsul-system
+    file: /var/log/cassandra/system.log*
+  - name: hashiCorpConsul-debug
+    file: /var/log/cassandra/debug.log*
+
+validationNrql: "SELECT count(*) from HashiCorpConsulSample where hostname like '{{.HOSTNAME}}%' SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "Enter the username to connect to Cassandra via JMX."
+    
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing cassandra integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-cassandra -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+
+        - |
+          sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.cassandra
+
+          instances: 
+            - name: cassandra-db-metrics
+              command: metrics
+              arguments:
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                port: {{.NR_CLI_DB_PORT}}
+                username: {{.NR_CLI_DB_USERNAME}}
+                password: {{.NR_CLI_DB_PASSWORD}}
+                remote_monitoring: true
+            - name: cassandra-db-inventory
+              command: inventory
+              arguments:
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                config_path: /etc/cassandra/cassandra.yaml
+                remote_monitoring: true
+          EOT
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
