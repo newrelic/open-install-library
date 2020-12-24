@@ -1,6 +1,6 @@
 name: HashiCorp Consul Open Source Integration
 description: New Relic install recipe for default HashiCorp Consul Open Source on-host integration (via Infra-Agent)
-repository: https://github.com/newrelic/nri-cassandra
+repository: https://github.com/newrelic/nri-consul
 
 installTargets:
   - type: host
@@ -22,23 +22,30 @@ keywords:
 
 # Examine Infrastructure events for correlated data
 processMatch:
-  - cassandra
-  - cassandradaemon
-  - cqlsh
+  - consul
 
 # Matches partial list of the Log forwarding parameters
-logMatch:
-  - name: hashiCorpConsul-system
-    file: /var/log/cassandra/system.log*
-  - name: hashiCorpConsul-debug
-    file: /var/log/cassandra/debug.log*
 
-validationNrql: "SELECT count(*) from HashiCorpConsulSample where hostname like '{{.HOSTNAME}}%' SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from ConsulAgentSample where hostname like '{{.HOSTNAME}}%' SINCE 10 minutes ago"
 
 inputVars:
-  - name: "NR_CLI_DB_USERNAME"
-    prompt: "Enter the username to connect to Cassandra via JMX."
-    
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "Enter the hostname to connect to HashiCorp Consul"
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "Enter the port to connect to HashiCorp Consul"
+    default: 8500
+  - name: "NR_CLI_TOKEN"
+    prompt: "If you're using an ACL Token for authentication, please enter the token: else press [Enter] to continue"
+  - name: "NR_CLI_ENABLE_SSL"
+    prompt: "Are you using SSL? (y/n)"
+  - name: "NR_CLI_CA_BUNDLE_DIR"
+    prompt: "Please enter the certificate authority bundle directory or file."
+  - name: "NR_CLI_CA_BUNDLE_FILE"
+    prompt: "Please enter the certificate authority bundle directory or file."
+  - name: "NR_CLI_TRUST_SERVER_CERTIFICATE"
+    prompt: "Would you like to trust the server certificate? (y/n)"
+
 install:
   version: "3"
   silent: true
@@ -67,33 +74,29 @@ install:
         - |
           sudo yum update -y
         - |
-          sudo yum install nri-cassandra -y
+          sudo yum install nri-consul -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+          if [ -f /etc/newrelic-infra/integrations.d/consul-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/consul-config.yml;
           fi
 
-          sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+          sudo cp /etc/newrelic-infra/integrations.d/consul-config.yml.sample /etc/newrelic-infra/integrations.d/consul-config.yml;
 
         - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
-          integration_name: com.newrelic.cassandra
+          sudo tee -a /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.consul
 
           instances: 
-            - name: cassandra-db-metrics
-              command: metrics
+            - name: consul
+              command: all_data
               arguments:
-                hostname: {{.NR_CLI_DB_HOSTNAME}}
-                port: {{.NR_CLI_DB_PORT}}
-                username: {{.NR_CLI_DB_USERNAME}}
-                password: {{.NR_CLI_DB_PASSWORD}}
-                remote_monitoring: true
-            - name: cassandra-db-inventory
-              command: inventory
-              arguments:
-                hostname: {{.NR_CLI_DB_HOSTNAME}}
-                config_path: /etc/cassandra/cassandra.yaml
-                remote_monitoring: true
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                token: {{.NR_CLI_TOKEN}}
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
+                ca_bundle_dir: 
+                ca_bundle_file: 
+                trust_server_certificate: 
           EOT
 
     restart:
