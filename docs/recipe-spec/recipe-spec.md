@@ -20,9 +20,13 @@ TBD - determine naming scheme when the a given recipe can be distro/os agnostic.
 
 ```yaml
 
-# Integration/Product name
-# Example: Infrastructure Agent Linux Installer
+# Unique handle
+# Example: infrastructure-agent-linuxinstaller
 name: string, required
+
+# Friendly name of the integration
+# Example: Infrastructure Agent Linux Installer
+displayName: string, required
 
 # Example: New Relic install recipe for the Infrastructure agent
 description: string, required
