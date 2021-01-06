@@ -1,66 +1,50 @@
-metadata:
-  #TBD: id ?
-  name: Infrastructure Agent Linux Installer
-  description: New Relic install recipe for the Infrastructure agent
-  repository: https://github.com/newrelic/infrastructure-agent
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
-  # Some variable/indicator for where you're trying to install this that isn't necessarily where you're running the newrelic-cli from
-  # See http://download.newrelic.com/infrastructure_agent/ for possible permutations
-  variant:
-    platform:
-      - linux
-    arch:
-      - "386"
-    targetEnvironment:
-      - vm
+name: infrastructure-agent-installer
+displayName: Infrastructure Agent Installer
+description: New Relic install recipe for the Infrastructure agent
+repository: https://github.com/newrelic/infrastructure-agent
 
-  # keyword convention for dealing with search terms that could land someone on this instrumentation project
-  keywords:
-    - Sample
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
 
-  # tag convention for dealing with search terms that could land someone on this instrumentation project
-  tags:
-    - Node
-    - Node.js
-    - Microsoft Azure Web Apps
+keywords:
+  - Infrastructure
+  - Agent
+  - Amazon Linux 2
+  - Linux2
 
-  # Examine Infrastructure events for correlated data
-  processMatch:
-    - /infra/
+processMatch:
+  - /infra/
 
-  # Examine Metrics, Events, and Logging for correlated data
-  # Used by the UI to determine if you've successfully configured and are ingesting data
-  meltMatch:
-    events:
-      pattern:
-        - /SystemSample/
-    metrics:
-      pattern:
-        - /system.cpu.usage/
-    logging:
-      pattern:
-        - /http/
-      files:
-        - /var\/log\/system.log
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
 install:
-  # go-task yaml definition goes here
-  # This spec - https://github.com/go-task/task
-
   version: "3"
-
+  silent: true
   tasks:
-    install:
+    default:
       cmds:
-        - task: setup_nr_profile
+        - task: setup_license
         - task: install_infra
 
-    setup_nr_profile:
+    setup_license:
       cmds:
-        - echo "Setting up NR Profile"
+        - |
+          if [ ! -f /etc/newrelic-infra.yml ]; then
+            sudo touch /etc/newrelic-infra.yml;
+          fi
+        - |
+          grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NEW_RELIC_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
 
     install_infra:
       cmds:
-        - echo "Installing the Infrastructure agent"
-        - curl -L https://raw.githubusercontent.com/fryckbos/infra-install/master/install.sh {{.NEW_RELIC_LICENSE_KEY}} | sh
+        - sudo curl -s -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
+        - sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+        - sudo yum -y -q install newrelic-infra
+        - echo "New Relic infrastructure agent installed"
       silent: true
