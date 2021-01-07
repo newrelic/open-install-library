@@ -139,7 +139,7 @@ setup_license:
       sudo touch /etc/newrelic-infra.yml;
     - |
       # write the license_key into the newrelic-infra.yml config
-      echo -e "license_key: {{.NEW_RELIC_LICENSE_KEY}}" >> /etc/newrelic-infra.yml
+      echo -e "license_key: {{.NEW_RELIC_LICENSE_KEY}}" | sudo tee -a /etc/newrelic-infra.yml > /dev/null
 ```
 
 ### Installing latest version of a given Agent/OHI should happen automatically
