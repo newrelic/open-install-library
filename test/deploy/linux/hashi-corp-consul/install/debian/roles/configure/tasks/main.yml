@@ -17,16 +17,21 @@
   shell: apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
   become: true
 
+- name: Create consul config directory
+  shell: mkdir -p ~/consul-config/server
+
+- name: Copy consul server config file
+  template:
+    src: config.json
+    dest: ~/consul-config/server/config.json
+  become: true
+
 - name: Install HashiCorp Consul
   apt:
     name: ['consul']
     update_cache: yes
     state: latest
   become: yes
-
-- name: Restart the service
-  shell: systemctl restart consul
-  become: true
 
 - name: Export NR_CLI_HOSTNAME
   shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
@@ -45,3 +50,7 @@
 
 - name: Export NR_CLI_CA_BUNDLE_FILE
   shell: "echo export NR_CLI_CA_BUNDLE_DIR= >> ~/.bashrc"
+
+- name: Start the consul server
+  shell: consul agent -config-dir ~/consul-config/server -client=0.0.0.0
+  become: true
