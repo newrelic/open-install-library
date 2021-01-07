@@ -6,6 +6,7 @@ A collection of recipies designed to support the automated installation and setu
 
 * [Recipe Spec](./recipe-spec/recipe-spec.md)
 * [Testing Framework](./test-framework/README.md)
+* [Kubernetes Testing](./kubernetes.md)
 
 ## Contributing Recipes
 
