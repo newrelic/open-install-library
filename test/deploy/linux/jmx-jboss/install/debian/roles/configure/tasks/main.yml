@@ -1,4 +1,95 @@
 ---
 - debug:
-    msg: Install JMX-Tomcat
+    msg: Install JMX-Jboss
 
+- name: Install Java
+  apt:
+    name: ['default-jdk']
+    update_cache: yes
+    state: latest
+  become: true
+
+- name: Add wildfly group for Jboss
+  shell: groupadd -r wildfly
+  become: true
+
+- name: Add wildfly user for Jboss
+  shell: useradd -r -g wildfly -d /opt/wildfly -s /sbin/nologin wildfly
+  become: true
+  
+- name: Download JBoss package
+  shell: wget https://download.jboss.org/wildfly/16.0.0.Final/wildfly-16.0.0.Final.tar.gz -P /tmp
+  become: true
+
+- name: Unpack Jboss to opt
+  shell: tar xf /tmp/wildfly-16.0.0.Final.tar.gz -C /opt/
+  become: true
+
+- name: Create a symbolic link for Jboss
+  shell: ln -s /opt/wildfly-$WILDFLY_VERSION /opt/wildfly
+  become: true
+
+- name: Change ownership of jboss to wildfly user
+  shell: 'chown -RH wildfly: /opt/wildfly'
+  become: true
+
+- name: Create dir for jboss config
+  shell: mkdir -p /etc/wildfly
+  become: true
+
+- name: Copy config file to the created directory
+  shell: cp /opt/wildfly/docs/contrib/scripts/systemd/wildfly.conf /etc/wildfly/
+  become: true
+
+- name: Copy launch script to bin directory of wildfly
+  shell: cp /opt/wildfly/docs/contrib/scripts/systemd/launch.sh /opt/wildfly/bin/
+  become: true
+
+- name: Add executable flag to scripts in bin directory
+  shell: sh -c 'chmod +x /opt/wildfly/bin/*.sh'
+  become: true
+
+- name: Copy systemd unit file
+  shell: cp /opt/wildfly/docs/contrib/scripts/systemd/wildfly.service /etc/systemd/system/
+  become: true
+
+- name: Reload system-daemon
+  shell: systemctl daemon-reload
+  become: true
+
+- name: Replace standalone file of wildfly
+  template:
+    src: standalone.xml
+    dest: /opt/wildfly/standalone/configuration/standalone.xml
+  become: true
+
+- name: Start and enable wildfly service
+  shell: systemctl start wildfly && systemctl enable wildfly
+  become: true
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_JMX_USER=admin >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_JMX_PASS=admin >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_JMX_HOST=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_JMX_PORT=9999 >> ~/.bashrc"
+  
+- name: Export Enable_SSL
+  shell: "echo export NR_CLI_ENABLE_SSL=n >> ~/.bashrc"
+
+- name: Export KEYSTORE
+  shell: "echo export NR_CLI_KEYSTORE= >> ~/.bashrc"
+
+- name: Export KEYSTORE_PASSWORD
+  shell: "echo export NR_CLI_KEYSTORE_PASSWORD= >> ~/.bashrc"
+
+- name: Export TRUST STORE
+  shell: "echo export NR_CLI_TRUSTSTORE= >> ~/.bashrc"
+
+- name: Export TRUST STORE PASSWORD
+  shell: "echo export NR_CLI_TRUSTSTORE_PASSWORD= >> ~/.bashrc"
