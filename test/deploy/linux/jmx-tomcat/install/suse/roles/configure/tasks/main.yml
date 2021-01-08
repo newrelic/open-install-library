@@ -1,0 +1,67 @@
+---
+- debug:
+    msg: Install JMX-Tomcat
+
+- name: Download java
+  shell: 'curl -v -j -k -L -H "Cookie: oraclelicense=accept-securebackup-cookie" http://download.oracle.com/otn-pub/java/jdk/8u131-b11/d54c1d3a095b4ff2b6607d096fa80163/jdk-8u131-linux-i586.rpm > jdk-8u112-linux-i586.rpm'
+  become: true
+
+- name: Install java
+  shell: rpm -ihv jdk-8u112-linux-i586.rpm
+  become: true
+
+- name: Add java to env
+  shell: /usr/sbin/update-alternatives --install /usr/bin/java java /usr/java/latest/bin/java 20000 --slave /usr/bin/keytool keytool /usr/java/latest/bin/keytool --slave /usr/bin/orbd orbd /usr/java/latest/bin/orbd --slave /usr/bin/pack200 pack200 /usr/java/latest/bin/pack200 --slave /usr/bin/policytool policytool /usr/java/latest/bin/policytool --slave /usr/bin/rmid rmid /usr/java/latest/bin/rmid --slave /usr/bin/rmiregistry rmiregistry /usr/java/latest/bin/rmiregistry --slave /usr/bin/tnameserv tnameserv /usr/java/latest/bin/tnameserv --slave /usr/bin/unpack200 unpack200 /usr/java/latest/bin/unpack200
+  become: true
+
+- name: Fix java errors
+  shell: /usr/sbin/update-alternatives --auto java
+  become: true
+
+- name: Download Tomcat
+  shell: wget https://downloads.apache.org/tomcat/tomcat-7/v7.0.107/bin/apache-tomcat-7.0.107.zip -P /tmp
+  become: true
+
+- name: Unpack Tomcat
+  shell: unzip /tmp/apache-tomcat-7.0.107.zip -d /opt
+  become: true
+
+- name: Copy file with JMX configured
+  template:
+    src: setenv.sh
+    dest: /opt/apache-tomcat-7.0.107/bin/setenv.sh
+  become: true
+
+- name: Set permissions for tomcat scripts
+  shell: chmod 755 /opt/apache-tomcat-7.0.107/bin/*.sh
+  become: true
+
+- name: Start tomcat
+  shell: /opt/apache-tomcat-7.0.107/bin/startup.sh
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_JMX_USER=admin >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_JMX_PASS=admin >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_JMX_HOST=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_JMX_PORT=9999 >> ~/.bashrc"
+
+- name: Export Enable_SSL
+  shell: "echo export NR_CLI_ENABLE_SSL=n >> ~/.bashrc"
+
+- name: Export KEYSTORE
+  shell: "echo export NR_CLI_KEYSTORE= >> ~/.bashrc"
+
+- name: Export KEYSTORE_PASSWORD
+  shell: "echo export NR_CLI_KEYSTORE_PASSWORD= >> ~/.bashrc"
+
+- name: Export TRUST STORE
+  shell: "echo export NR_CLI_TRUSTSTORE= >> ~/.bashrc"
+
+- name: Export TRUST STORE PASSWORD
+  shell: "echo export NR_CLI_TRUSTSTORE_PASSWORD= >> ~/.bashrc"
