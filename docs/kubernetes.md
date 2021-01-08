@@ -9,6 +9,7 @@ You'll need the following:
 * AWS account
 * an AWS specific region (us-east-1 for example)
 * In your region, create a key pair of type `pem` in the EC2 UI and keep both the name of the file you used, and the private key file store on your local machine
+* Ensure your `pem` key file has correct permission by running `sudo chmod 0400 myKeyPair.pem`
 
 ## Provision new cluster with CloudFormation
 
