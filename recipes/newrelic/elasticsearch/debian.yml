@@ -86,7 +86,8 @@ install:
 
           sudo touch /etc/newrelic-infra/integrations.d/elasticsearch-config.yml;
         - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
+          if [ "$NR_CLI_API_USE_SSL" == false]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.elasticsearch
 
           instances:
@@ -101,12 +102,36 @@ install:
                 password: {{.NR_CLI_API_PASSWORD}}
                 port: {{.NR_CLI_API_PORT}}
                 timeout: 30
-                use_ssl: {{.NR_CLI_API_USE_SSL}}
+                use_ssl: false
+                ca_bundle_dir: 
+                ca_bundle_file: 
+                indices_regex:
+                collect_indices: true
+                collect_primaries: true
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.elasticsearch
+
+          instances:
+            - name: elasticsearch
+              command: all
+              arguments:
+                cluster_environment: staging
+                config_path: {{.NR_CLI_API_CONFIG_PATH}}
+                hostname: {{.NR_CLI_API_HOSTNAME}}
+                local_hostname: localhost
+                username: {{.NR_CLI_API_USERNAME}}
+                password: {{.NR_CLI_API_PASSWORD}}
+                port: {{.NR_CLI_API_PORT}}
+                timeout: 30
+                use_ssl: true
                 ca_bundle_dir: {{.NR_CLI_API_CA_BUNDLE_DIR}}
                 ca_bundle_file: {{.NR_CLI_API_CA_BUNDLE_FILE}}
                 indices_regex:
                 collect_indices: true
                 collect_primaries: true
           EOT
+
          
         - sudo systemctl restart newrelic-infra.service
