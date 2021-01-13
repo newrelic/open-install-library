@@ -35,6 +35,7 @@ logMatch:
   - name: tomcat
     file: /var/log/tomcat/catalina.out
 
+
 # NRQL the newrelic-cli will use to validate the agent/integration this recipe
 # installed is successfully sending data to New Relic
 validationNrql: "SELECT count(*) from JVMSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
@@ -100,13 +101,13 @@ install:
           fi
 
           sudo cp /etc/newrelic-infra/integrations.d/jmx-config.yml.sample /etc/newrelic-infra/integrations.d/jmx-config.yml;
-          sudo cp /etc/newrelic-infra/integrations.d/jvm-config.yml.sample /etc/newrelic-infra/integrations.d/jvm-config.yml;
+          sudo cp /etc/newrelic-infra/integrations.d/jvm-metrics.yml.sample /etc/newrelic-infra/integrations.d/jvm-metrics.yml;
 
-            - |
-          IS_TOMCAT=$(pgrep -cf tomcat)
-          IS_JBOSS=$(pgrep -cf jboss)
+        - |
+          IS_TOMCAT=$(ps -aux | grep -o tomcat | wc -l)
+          IS_JBOSS=$(ps -aux | grep -o jboss | wc -l)
           if [ "$NR_CLI_SSL_ENABLED" == "n" ]; then
-            if [ $IS_TOMCAT -gt 0 ]; then
+            if [ "$IS_TOMCAT" -gt 1 ]; then
               sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
               sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
@@ -115,13 +116,13 @@ install:
             - name: jmx
               command: all_data
               arguments:
-                jmx_host: {{.NR_CLI_DB_HOSTNAME}}
-                jmx_port: {{.NR_CLI_DB_PORT}}
-                jmx_user: {{.NR_CLI_DB_USERNAME}}
-                jmx_pass: {{.NR_CLI_DB_PASSWORD}}
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml,/etc/newrelic-infra/integrations.d/tomcat-metrics.yml"
           EOT
-            elif [ "$IS_JBOSS" -gt 0 ]; then
+            elif [ "$IS_JBOSS" -gt 1 ]; then
               sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
@@ -129,10 +130,10 @@ install:
             - name: jmx
               command: all_data
               arguments:
-                jmx_host: {{.NR_CLI_DB_HOSTNAME}}
-                jmx_port: {{.NR_CLI_DB_PORT}}
-                jmx_user: {{.NR_CLI_DB_USERNAME}}
-                jmx_pass: {{.NR_CLI_DB_PASSWORD}}
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 jmx_remote: true
                 jmx_remote_jboss_standalone: true
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
@@ -145,15 +146,15 @@ install:
             - name: jmx
               command: all_data
               arguments:
-                jmx_host: {{.NR_CLI_DB_HOSTNAME}}
-                jmx_port: {{.NR_CLI_DB_PORT}}
-                jmx_user: {{.NR_CLI_DB_USERNAME}}
-                jmx_pass: {{.NR_CLI_DB_PASSWORD}}
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
           EOT
             fi
           else
-            if [ "$IS_TOMCAT" -gt 0 ]; then
+            if [ "$IS_TOMCAT" -gt 1 ]; then
               sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
               sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
@@ -162,17 +163,17 @@ install:
             - name: jmx
               command: all_data
               arguments:
-                jmx_host: {{.NR_CLI_DB_HOSTNAME}}
-                jmx_port: {{.NR_CLI_DB_PORT}}
-                jmx_user: {{.NR_CLI_DB_USERNAME}}
-                jmx_pass: {{.NR_CLI_DB_PASSWORD}}
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 key_store: {{.NR_CLI_KEYSTORE}}
                 key_store_password: {{.NR_CLI_KEYSTORE_PASSWORD}}
                 trust_store: {{.NR_CLI_TRUSTSTORE}}
                 trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml,/etc/newrelic-infra/integrations.d/tomcat-metrics.yml"
           EOT
-            elif [ "$IS_JBOSS" -gt 0 ]; then
+            elif [ "$IS_JBOSS" -gt 1 ]; then
               sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
@@ -180,10 +181,10 @@ install:
             - name: jmx
               command: all_data
               arguments:
-                jmx_host: {{.NR_CLI_DB_HOSTNAME}}
-                jmx_port: {{.NR_CLI_DB_PORT}}
-                jmx_user: {{.NR_CLI_DB_USERNAME}}
-                jmx_pass: {{.NR_CLI_DB_PASSWORD}}
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 key_store: {{.NR_CLI_KEYSTORE}}
                 key_store_password: {{.NR_CLI_KEYSTORE_PASSWORD}}
                 trust_store: {{.NR_CLI_TRUSTSTORE}}
@@ -200,10 +201,10 @@ install:
             - name: jmx
               command: all_data
               arguments:
-                jmx_host: {{.NR_CLI_DB_HOSTNAME}}
-                jmx_port: {{.NR_CLI_DB_PORT}}
-                jmx_user: {{.NR_CLI_DB_USERNAME}}
-                jmx_pass: {{.NR_CLI_DB_PASSWORD}}
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 key_store: {{.NR_CLI_KEYSTORE}}
                 key_store_password: {{.NR_CLI_KEYSTORE_PASSWORD}}
                 trust_store: {{.NR_CLI_TRUSTSTORE}}
