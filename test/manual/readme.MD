@@ -34,7 +34,7 @@ Once you have the password, use a `Remote Desktop Connection` client with the cr
 
 # Tearing down
 
-To teardown all the hosts, re-run the deployer in batch mode with the `-t` option.
+To teardown all the hosts, re-run the deployer in batch mode with the option `-m teardown` (instead of `-m deploy`).
 
 Run the snippet below after replacing:
 * The path `<absolute_path>` with the absolute path to the manual `definitions` folder (docker requires absolute path for mounting directories)
@@ -44,5 +44,5 @@ Run the snippet below after replacing:
 docker run -i \
 -v ~/configs/:/mnt/deployer/configs/ \
 -v <absolute_path>/definitions/:/mnt/deployer/definitions/ \
---entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m deploy -l debug -t
+--entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m teardown -l debug
 ```
