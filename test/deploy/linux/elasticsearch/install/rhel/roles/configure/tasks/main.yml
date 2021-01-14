@@ -1,0 +1,77 @@
+---
+- debug:
+    msg: Install ElasticSearch
+
+- name: Update packages
+  shell: yum update -y
+  become: yes
+
+- name: Install java
+  shell: yum install java-1.8.0-openjdk -y
+  become: yes
+
+- name: Add gpg key
+  shell: sudo rpm --import https://packages.elastic.co/GPG-KEY-elasticsearch
+  become: yes
+
+- name: Copy ElasticSearchRepo
+  template: 
+      src: elasticsearch.repo
+      dest: /etc/yum.repos.d/elasticsearch.repo
+  become: true
+
+- name: Install elasticsearch
+  shell: yum install --enablerepo=elasticsearch elasticsearch -y
+  become: true
+
+- name: Create folder
+  shell: sudo mkdir /etc/systemd/system/elasticsearch.service.d
+  become: true
+
+- name: Change timeout
+  shell: echo -e "[Service]\nTimeoutStartSec=180" | sudo tee /etc/systemd/system/elasticsearch.service.d/startup-timeout.conf
+  become: true
+
+- name: Daemon reload
+  shell: systemctl daemon-reload
+  become: true
+
+- name: Start elasticsearch
+  shell: systemctl start elasticsearch
+  become: true
+
+- name: Test elasticsearch
+  shell: curl http://localhost:9200/
+  become: true
+
+- name: Create user
+  shell: "/usr/share/elasticsearch/bin/elasticsearch-users useradd newrelic -p testpassword -r superuser"
+  become: true
+
+- name: Restart ElasticSearch
+  shell: systemctl restart elasticsearch
+  become: true 
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_API_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_API_PASSWORD=testpassword >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_API_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export ES_PORT
+  shell: "echo export NR_CLI_API_PORT=9200 >> ~/.bashrc"
+
+- name: Export CLI_CONFIG
+  shell: "echo export NR_CLI_CONFIG_PATH=/etc/elasticsearch/elasticsearch.yml >> ~/.bashrc"
+
+- name: Export USE_SSL
+  shell: "echo export NR_CLI_API_USE_SSL=false >> ~/.bashrc"
+
+- name: Export CA_BUNDLE_DIR
+  shell: "echo export NR_CLI_API_CA_BUNDLE_DIR=notUsed >> ~/.bashrc"
+
+- name: Export CA_BUNDLE_FILE
+  shell: "echo export NR_CLI_API_CA_BUNDLE_FILE=notUsed >> ~/.bashrc"
