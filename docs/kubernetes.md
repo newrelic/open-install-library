@@ -80,3 +80,9 @@ cd microservices-demo/deploy/kubernetes
 kubectl create namespace sock-shop
 kubectl convert -f . | kubectl create -f -
 ```
+
+## Un-install newrelic instrumentation
+
+Assuming you've deployed newrelic instrumentation using the manifest file, you can un-install the newrelic instrumentation by running the command below (assuming you SSH into the bastion host).
+
+`kubectl delete -f <manifest.yaml>`

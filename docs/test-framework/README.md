@@ -3,9 +3,8 @@
 Our test framework has been constructed around the use of another project
 known as the [Deployer](https://github.com/newrelic/demo-deployer). The Deployer
 takes a [test definition file](https://github.com/newrelic/demo-deployer/tree/main/documentation/deploy_config)
-(also known as a `deploy config`), and translates that defintion into actions
-like provisioning resources/services and executing commands/scripts. You can loosly think
-of the deployer as a wrapper around Ansible.
+(also known as a `deploy config`), and translates that definition into actions
+like provisioning resources/services and executing commands/scripts. 
 
 The Deployer:
 
@@ -26,10 +25,9 @@ to make it easy to use locally and in our GitHub Actions workflows.
 
 ## Getting Started
 
-Recipes can be tested locally by either using the Deployer, or Terraform (DEPRECATED):
+Recipes can be tested locally by either using the Deployer
 
 * [Deployer](./deployer.md)
-* [Terraform](./terraform.md)
 
 ## Automated Testing on Pull Request
 
@@ -43,9 +41,9 @@ The [validation](../.github/workflows/validation.yaml) workflow will on every Pu
 
 ## Non-Regression Testing
 
-The [Non Regression Test](../.github/workflows/nonregression.yaml) workflow will on push to main. This workflow:
+The [Non Regression Test](../.github/workflows/nonregression.yaml) workflow will execute on push to main. This workflow:
 
-* Uses the batch operation (optimized for parallel execution) of the Deployer to run _every_ test definition file in `test/defintions`
+* Uses the batch operation (optimized for parallel execution) of the Deployer to run _every_ test definition file in `test/definitions`
 * Outputs the collective success/failure state
 
 ## Test Definition Files

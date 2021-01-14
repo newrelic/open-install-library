@@ -7,6 +7,7 @@ A collection of recipes designed to support the automated installation and setup
 * [Recipe Spec](./recipe-spec/recipe-spec.md)
 * [Testing Framework](./test-framework/README.md)
 * [Kubernetes Testing](./kubernetes.md)
+* [Manual Testing](../test/manual/readme.MD)
 
 ## Contributing Recipes
 
