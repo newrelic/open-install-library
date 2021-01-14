@@ -2,3 +2,100 @@
 - debug:
     msg: Install JMX-Tomcat
 
+- name: update packages
+  shell: yum update -y
+  become: true
+
+- name: install wget
+  shell: yum -y install wget
+  become: true
+
+- name: install java
+  shell: yum -y install java-1.8.0-openjdk
+  become: true 
+
+- name: download jetty
+  shell: wget https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-distribution/9.4.17.v20190418/jetty-distribution-9.4.17.v20190418.tar.gz
+  become: true 
+
+- name: extract file
+  shell: tar -zxvf jetty-distribution-9.4.17.v20190418.tar.gz
+  become: true 
+
+- name: move jetty directory to opt
+  shell: mv jetty-distribution-9.4.17.v20190418 /opt/jetty
+  become: true
+
+- name: Create user
+  shell: useradd -m jetty
+  become: true 
+
+- name: change ownership of jetty
+  shell: chown -R jetty:jetty /opt/jetty/
+  become: true 
+
+- name: Create jetty pid
+  shell: mkdir /var/run/jetty
+  become: true 
+
+- name: Change ownership of jetty pid
+  shell: chown -R jetty:jetty /var/run/jetty
+  become: true 
+
+- name: Create symlink
+  shell: ln -s /opt/jetty/bin/jetty.sh /etc/init.d/jetty
+  become: true 
+
+- name: add jetty web server to the startup
+  shell: chkconfig --add jetty
+  become: true 
+
+- name: Create jetty base
+  shell: mkdir /opt/jetty/my_base/
+  become: true 
+
+- name: enable http connector and web deployer
+  shell: cd /opt/jetty/my_base/ java -jar /opt/jetty/start.jar --add-to-start=http,deploy
+  become: true 
+
+- name: Allow user to write files in jetty base
+  shell: chown -R jetty:jetty /opt/jetty/my_base/
+  become: true 
+
+- name: Replace jetty file
+  template:
+    src: jetty
+    dest: /etc/default/jetty
+  become: true
+
+- name: start jetty
+  shell: systemctl start jetty.service
+  become: true
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_JMX_USERNAME=admin >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_JMX_PASSWORD=admin >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_JMX_HOST=localhost >> ~/.bashrc"
+
+- name: Export DB_PORT
+  shell: "echo export NR_CLI_JMX_PORT=9999 >> ~/.bashrc"
+
+- name: Export Enable_SSL
+  shell: "echo export NR_CLI_ENABLE_SSL=n >> ~/.bashrc"
+
+- name: Export KEYSTORE
+  shell: "echo export NR_CLI_KEYSTORE=dummy >> ~/.bashrc"
+
+- name: Export KEYSTORE_PASSWORD
+  shell: "echo export NR_CLI_KEYSTORE_PASSWORD=dummy >> ~/.bashrc"
+
+- name: Export TRUST STORE
+  shell: "echo export NR_CLI_TRUSTSTORE=dummy >> ~/.bashrc"
+
+- name: Export TRUST STORE PASSWORD
+  shell: "echo export NR_CLI_TRUSTSTORE_PASSWORD=dummy >> ~/.bashrc"
+
