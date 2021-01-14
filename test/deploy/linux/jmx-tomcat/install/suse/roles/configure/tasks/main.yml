@@ -18,13 +18,41 @@
   shell: /usr/sbin/update-alternatives --auto java
   become: true
 
+- name: add tomcatgroup
+  shell: groupadd tomcat
+  become: true
+
+- name: add tomcat user
+  shell: useradd -s /bin/false -g tomcat -d /opt/tomcat tomcat
+  become: true
+
 - name: Download Tomcat
   shell: wget https://downloads.apache.org/tomcat/tomcat-7/v7.0.107/bin/apache-tomcat-7.0.107.zip -P /tmp
+  become: true
+
+- name: export JAVA_HOME
+  shell: export JAVA_HOME=$(readlink -f /usr/bin/javac | sed "s:/bin/javac::")
   become: true
 
 - name: Unpack Tomcat
   shell: unzip /tmp/apache-tomcat-7.0.107.zip -d /opt
   become: true
+
+- name: Give ownership 
+  shell: chgrp -R tomcat /opt/apache-tomcat-7.0.107/
+  become: true
+
+- name: give read access
+  shell: chmod -R g+r /opt/apache-tomcat-7.0.107/conf
+  become: true
+
+- name: give execute access
+  shell: chmod g+x /opt/apache-tomcat-7.0.107/conf
+  become: true
+
+- name: Make the tomcat user the owner of the webapps, work, temp, and logs directories
+  shell: chown -R tomcat /opt/apache-tomcat-7.0.107/webapps/ /opt/apache-tomcat-7.0.107/work/ /opt/apache-tomcat-7.0.107/temp/ /opt/apache-tomcat-7.0.107/logs/
+  become: true 
 
 - name: Copy file with JMX configured
   template:
@@ -32,12 +60,22 @@
     dest: /opt/apache-tomcat-7.0.107/bin/setenv.sh
   become: true
 
+- name: Create service tomcat file
+  template:
+    src: tomcat.service
+    dest: /etc/systemd/system/tomcat.service
+  become: true
+
 - name: Set permissions for tomcat scripts
   shell: chmod 755 /opt/apache-tomcat-7.0.107/bin/*.sh
   become: true
 
+- name: reload daemon
+  shell: systemctl daemon-reload
+  become: true
+  
 - name: Start tomcat
-  shell: /opt/apache-tomcat-7.0.107/bin/startup.sh
+  shell: systemctl start tomcat && systemctl enable tomcat
   become: true
 
 - name: Export USERNAME
