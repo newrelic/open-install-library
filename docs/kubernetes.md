@@ -42,6 +42,10 @@ The CloudFormation UI should be prefilled to load this existing template from an
 * For `Number of nodes` use `4`
 * For `Maximum number of nodes` use `5`
 
+### AWS Quick Start configuration
+
+* For `Quick Start S3 bucket Region` enter the same region than what you've selected in the pre-req (us-east-1 for example)
+
 ### Next UI screens
 
 Once all previous inputs are entered, click `Next`
