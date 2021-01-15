@@ -26,6 +26,10 @@ Test definitions files are located under the path [test/definitions](test/defini
 
 More information about the test framework testing can be found at [Test Framework](docs/test-framework/README.md).
 
+### Manual testing
+
+Refer to [Manual Testing instructions](test/manual/readme.MD)
+
 ## Support
 
 New Relic hosts and moderates an online forum where customers can interact with New Relic employees as well as other customers to get help and share best practices. Like all official New Relic open source projects, there's a related Community topic in the New Relic Explorers Hub. You can find this project's topic/threads here:
