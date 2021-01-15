@@ -1,0 +1,63 @@
+---
+- debug:
+    msg: Install ElasticSearch
+
+- name: Get latest packages info
+  shell: "apt update -y"
+  become: true
+
+- name: Install needed dependencies
+  shell: "apt -y install gnupg2 apt-transport-https wget"
+  become: true
+
+- name: Import ElasticSearch GPG Key
+  shell: "wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -"
+  become: true
+
+- name: Add Elasticsearch APT repository
+  shell: sh -c 'echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" > /etc/apt/sources.list.d/elastic-7.x.list'
+  become: true
+
+- name: Refresh packages
+  shell: "apt update -y"
+  become: true
+
+- name: Install ElasticSearch
+  shell: "apt install elasticsearch -y"
+  become: true
+
+- name: Restart systemd service daemon
+  shell: "systemctl daemon-reload"
+  become: true
+
+- name: Add user to elasticsearch
+  shell: "/usr/share/elasticsearch/bin/elasticsearch-users useradd newrelic -p testpassword -r superuser"
+  become: true
+
+- name: Restart ElasticSearch
+  shell: "systemctl enable elasticsearch && systemctl restart elasticsearch"
+  become: true
+
+- name: Export USERNAME
+  shell: "echo export NR_CLI_API_USERNAME=newrelic >> ~/.bashrc"
+
+- name: Export PASSWORD
+  shell: "echo export NR_CLI_API_PASSWORD=testpassword >> ~/.bashrc"
+
+- name: Export HOSTNAME
+  shell: "echo export NR_CLI_API_HOSTNAME=localhost >> ~/.bashrc"
+
+- name: Export ES_PORT
+  shell: "echo export NR_CLI_API_PORT=9200 >> ~/.bashrc"
+
+- name: Export CLI_CONFIG
+  shell: "echo export NR_CLI_CONFIG_PATH=/etc/elasticsearch/elasticsearch.yml >> ~/.bashrc"
+
+- name: Export USE_SSL
+  shell: "echo export NR_CLI_API_USE_SSL=false >> ~/.bashrc"
+
+- name: Export CA_BUNDLE_DIR
+  shell: "echo export NR_CLI_API_CA_BUNDLE_DIR=notUsed >> ~/.bashrc"
+
+- name: Export CA_BUNDLE_FILE
+  shell: "echo export NR_CLI_API_CA_BUNDLE_FILE=notUsed >> ~/.bashrc"
