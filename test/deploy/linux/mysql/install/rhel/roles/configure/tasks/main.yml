@@ -2,6 +2,16 @@
 - debug:
     msg: Install MySQL
 
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
 - name: Add MySQL Repository
   yum: 
     name: https://dev.mysql.com/get/mysql80-community-release-el7-3.noarch.rpm
@@ -36,21 +46,6 @@
   shell: "grep 'temporary password' /var/log/mysqld.log | awk '{print $13}'"
   register: PW
   become: yes
-
-- name: Export USERNAME
-  shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
-
-- name: Export PASSWORD
-  shell: "echo export NR_CLI_DB_PASSWORD=TestPassword123$ >> ~/.bashrc"
-
-- name: Export HOSTNAME
-  shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
-
-- name: Export DB_PORT
-  shell: "echo export NR_CLI_DB_PORT=3306 >> ~/.bashrc"
-
-- name: Export DATABASE
-  shell: "echo export NR_CLI_DATABASE=MysqlSample >> ~/.bashrc"
 
 - name: Set password as variable
   set_fact:
@@ -90,20 +85,38 @@
     mysql -u root -pTestPassword123$ -ne "CREATE DATABASE IF NOT EXISTS MysqlSample;"
   become: yes
 
-- name: Create User
-  command: |
-    mysql -u root -pTestPassword123$ -ne "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'TestPassword123$';"
-  become: yes
+- block:
+  - name: Remove previous created user
+    command: |
+      mysql -u root -pTestPassword123$ -ne "DROP USER 'newrelic'@'localhost';"
+    become: yes
+    ignore_errors: yes
+  - name: Create User
+    command: |
+      mysql -u root -pTestPassword123$ -ne "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'TestPassword123$';"
+    become: yes
+  - name: Grant replication permission to user
+    command: |
+      mysql -u root -pTestPassword123$ -ne "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';"
+    become: yes
+  - name: Grant select permission to user
+    command: |
+      mysql -u root -pTestPassword123$ -ne "GRANT SELECT ON *.* TO 'newrelic'@'localhost';"
+    become: yes
+  when: create_newrelic_user|bool
 
-- name: Grant replication permission to user
-  command: |
-    mysql -u root -pTestPassword123$ -ne "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';"
-  become: yes
-
-- name: Grant select permission to user
-  command: |
-    mysql -u root -pTestPassword123$ -ne "GRANT SELECT ON *.* TO 'newrelic'@'localhost';"
-  become: yes
+- block:
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_DB_PASSWORD=TestPassword123$ >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export DB_PORT
+    shell: "echo export NR_CLI_DB_PORT=3306 >> ~/.bashrc"
+  - name: Export DATABASE
+    shell: "echo export NR_CLI_DATABASE=MysqlSample >> ~/.bashrc"
+  when: create_env_var|bool
 
 - name: Start mysql service
   shell: "systemctl enable --now mysqld"

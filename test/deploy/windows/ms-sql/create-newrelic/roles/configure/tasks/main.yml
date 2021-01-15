@@ -1,5 +1,10 @@
 ---
 
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
 - name: Ensure SqlServer is installed
   win_shell: |
     sqlcmd -S localhost -I -Q "SELECT GETDATE()";
@@ -58,14 +63,13 @@
     msg: "SqlServer is not installed on the host"
   when: output is failed
 
-- name: Export USERNAME
-  win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
-
-- name: Export PASSWORD
-  win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_PASSWORD','{{ ansible_password }}',[System.EnvironmentVariableTarget]::User)"
-
-- name: Export HOSTNAME
-  win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_HOSTNAME','127.0.0.1',[System.EnvironmentVariableTarget]::User)"
-
-- name: Export NR_CLI_DB_PORT
-  win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_PORT','1433',[System.EnvironmentVariableTarget]::User)"
+- block:
+  - name: Export USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
+  - name: Export PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_PASSWORD','{{ ansible_password }}',[System.EnvironmentVariableTarget]::User)"
+  - name: Export HOSTNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_HOSTNAME','127.0.0.1',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_DB_PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_PORT','1433',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool

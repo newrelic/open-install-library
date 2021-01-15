@@ -1,5 +1,10 @@
 ---
 
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
 - name: Configure nginx default route with status module
   blockinfile:
     path: /etc/nginx/conf.d/default.conf
@@ -11,10 +16,11 @@
         }
   become: yes
 
-- name: Export NR_CLI_STUB_STATUS_URL
-  shell: "echo export NR_CLI_STUB_STATUS_URL=http://127.0.0.1/status >> ~/.bashrc"
+- block:
+  - name: Export NR_CLI_STUB_STATUS_URL
+    shell: "echo export NR_CLI_STUB_STATUS_URL=http://127.0.0.1/status >> ~/.bashrc"
+  when: create_env_var|bool
 
 - name: Restart nginx
   shell: "systemctl restart nginx"
   become: yes
-  

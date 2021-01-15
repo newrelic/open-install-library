@@ -2,6 +2,16 @@
 - debug:
     msg: Install NGINX reverse proxy
 
+- name: Set default open_status_url (default not open)
+  set_fact:
+    open_status_url: "false"
+  when: open_status_url is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
 - name: Get latest packages info
   shell: "apt update"
   become: true
@@ -10,19 +20,23 @@
   shell: "apt install nginx -y"
   become: true
 
-- name: Configure nginx default route with status module
-  blockinfile:
-    path: /etc/nginx/sites-enabled/default
-    insertafter: "^server {"
-    marker: "# {mark} Enable status for default route"
-    block: |
-        location = /status {
-            stub_status;
-        }
-  become: yes
-  
-- name: Export NR_CLI_STUB_STATUS_URL
-  shell: "echo export NR_CLI_STUB_STATUS_URL=http://127.0.0.1/status >> ~/.bashrc"
+- block:
+  - name: Configure nginx default route with status module
+    blockinfile:
+      path: /etc/nginx/sites-enabled/default
+      insertafter: "^server {"
+      marker: "# {mark} Enable status for default route"
+      block: |
+          location = /status {
+              stub_status;
+          }
+    become: yes
+  when: open_status_url|bool
+
+- block:
+  - name: Export NR_CLI_STUB_STATUS_URL
+    shell: "echo export NR_CLI_STUB_STATUS_URL=http://127.0.0.1/status >> ~/.bashrc"
+  when: create_env_var|bool
 
 - name: Restart nginx
   shell: "systemctl restart nginx"
