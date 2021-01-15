@@ -2,15 +2,32 @@
 - debug:
     msg: Install NGINX reverse proxy
 
+- name: Set default open-status-url (default not open)
+  set_fact:
+    open-status-url: "false"
+  when: open-status-url is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
 - name: install the NGINX engine
   shell: "amazon-linux-extras install -y nginx1"
   become: true
 
-- name: copy nginx config file
-  template:
-    src: default-status-nginx.conf
-    dest: /etc/nginx/default.d/default.conf
-  become: true
+- block:
+  - name: copy nginx config file
+    template:
+      src: default-status-nginx.conf
+      dest: /etc/nginx/default.d/default.conf
+    become: true
+  when: open-status-url|bool
+
+- block:
+  - name: Export NR_CLI_STUB_STATUS_URL
+    shell: "echo export NR_CLI_STUB_STATUS_URL=http://127.0.0.1/status >> ~/.bashrc"
+  when: create_env_var|bool
 
 - name: Restart nginx
   shell: "systemctl restart nginx"

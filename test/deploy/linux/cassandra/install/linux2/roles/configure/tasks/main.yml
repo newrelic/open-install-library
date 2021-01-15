@@ -2,6 +2,11 @@
 - debug:
     msg: Install Cassandra
 
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
 - name: Get latest packages info
   shell: "yum update -y"
   become: true
@@ -53,3 +58,14 @@
 - name: Create newrelic login
   shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "CREATE USER newrelic WITH PASSWORD 'test';"
   become: yes
+
+- block:
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_DB_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_DB_PASSWORD=test >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export DB_PORT
+    shell: "echo export NR_CLI_DB_PORT=7199 >> ~/.bashrc"
+  when: create_env_var|bool
