@@ -18,7 +18,15 @@
   shell: wget https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-distribution/9.4.17.v20190418/jetty-distribution-9.4.17.v20190418.tar.gz
   become: true 
 
-- name: extract file
+- name: Download CometD
+  shell: wget https://download.cometd.org/cometd-5.0.0-distribution.tar.gz
+  become: true
+
+- name: Extract CometD
+  shell: tar zxvf jetty-distribution-5.0.0.tar.gz
+  become: true
+
+- name: extract jetty
   shell: tar -zxvf jetty-distribution-9.4.17.v20190418.tar.gz
   become: true 
 
@@ -70,10 +78,18 @@
     dest: /etc/default/jetty
   become: true
 
-- name: Replace start.ini file
-  template:
-    src: start.ini
-    dest: /opt/jetty/my_base/start.ini
+- name: Enable jetty modules 
+  shell: java -jar start.jar --add-to-start=http,websocket,deploy
+  args:
+    chdir: /opt/jetty/
+  become: true 
+
+- name: Copy start.ini
+  shell: cp /opt/jetty/start.ini /opt/jetty/my_base/start.ini
+  become: true
+
+- name: Add CometD war file
+  shell: cp ~/cometd-5.0.0/cometd-demo/target/cometd-demo-5.0.0.war /opt/jetty/my_base/webapps
   become: true
 
 - name: start jetty
