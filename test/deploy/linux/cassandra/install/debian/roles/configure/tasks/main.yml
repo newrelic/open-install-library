@@ -2,6 +2,11 @@
 - debug:
     msg: Install Cassandra
 
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
 - name: Set default create_env_var (default not create)
   set_fact:
     create_env_var: "false"
@@ -55,13 +60,6 @@
   shell: systemctl restart cassandra
   become: yes
 
-- name: Wait for port
-  wait_for:
-    host: 127.0.0.1
-    port: 9042
-    delay: 10
-  become: true
-
 - name: Ensure Cassandra is ready to accept query
   shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "SELECT dateof(now()) FROM system.local ;"
   register: output
@@ -76,6 +74,7 @@
 - name: Create newrelic login
   shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "CREATE USER newrelic WITH PASSWORD 'test';"
   become: yes
+  when: create_newrelic_user|bool
 
 - block:
   - name: Export USERNAME
