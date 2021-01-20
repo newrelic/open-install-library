@@ -1,6 +1,6 @@
 name: redis-open-source-integration
 displayName: Apache Open Source Integration
-description: New Relic install recipe for default Apache Open Source on-host integration (via Infra-Agent)
+description: New Relic install recipe for default Redis Open Source on-host integration (via Infra-Agent)
 repository: https://github.com/newrelic/nri-redis
 
 installTargets:
@@ -29,9 +29,7 @@ processMatch:
 # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
 logMatch:
   - name: redis
-    file: /var/log/httpd/*access.log
-  - name: apache error
-    file: /var/log/httpd/error.log
+    file: /var/log/redis/redis-server.log
 
 # NRQL the newrelic-cli will use to validate the agent/integration this recipe
 # installed is successfully sending data to New Relic
@@ -39,23 +37,16 @@ validationNrql: "SELECT count(*) from RedisSample where hostname like '{{.HOSTNA
 
 inputVars:
   - name: "NR_CLI_HOSTNAME"
-    prompt: "Please enter your Redis hostname below. If none is provided then the default value: localhost, will be used."
-    default: "hostname"
+    prompt: "Please enter your Redis hostname below. If none is provided, the default value: localhost, will be used."
+    default: "localhost"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "Please enter a password if your Redis server is password protected."
+    secret: true
   - name: "NR_CLI_PORT"
-    prompt: "Please enter your Redis port below. If none is provided, the default value: 9200, will be used."
-    default: 6739
-  - name: "NR_CLI_UNIX_SOCKET_PATH"
-    prompt: "Please enter your Redis unix socket path below. If not using unix socket path please leave this field empty."
-    default: "None"
+    prompt: "Please enter your Redis port below. If none is provided, the default value: 6379, will be used."
+    default: 6379
   - name: "NR_CLI_KEYS"
     prompt: "If you would like to see metrics related to the length of selected keys, please enter the keys as a comma separated list in the following format 0:KEY_1, 1:KEY_2:"
-    default: "None"
-  - name: "NR_CLI_KEYS_LIMIT"
-    prompt: "Please eneter your Redis key limit. If none is provided, the default value: 30, will be used."
-    default: 30
-  - name: "NR_CLI_PASSWORD"
-    prompt: "Prompt Please enter a password if your Redis server is password protected"
-    default: "testpassword"
 
 install:
 
@@ -80,7 +71,7 @@ install:
         - |
           STUB_STATUS_ENABLED=$(curl {{.NR_CLI_STATUS_URL}} -s | grep "IdleWorkers:" | wc -l)
           if [ $STUB_STATUS_ENABLED -eq 0 ] ; then
-            echo "Status page is not returning data. Apache2 must be correctly configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info." >> /dev/stderr
+            echo "Status page is not returning data. Redis must be correctly configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info." >> /dev/stderr
             exit 2
           fi
 
@@ -110,15 +101,18 @@ install:
                 arguments:
                     hostname: {{.NR_CLI_HOSTNAME}}
                     port: {{.NR_CLI_PORT}}
-                    unix_socket_path: {{.NR_CLI_UNIX_SOCKET_PATH}}
-                    use_unix_socket: {{.NR_CLI_KEYS}}
+                    use_unix_socket: true
                     keys: {{.NR_CLI_KEYS}}
-                    keys_limit: {{.NR_CLI_KEYS_LIMIT}}
-                    password: {{.NR_CLI_PASSWORD}}
+                    keys_limit: 30
                     config_inventory: true
                     remote_monitoring: true
               - name: redis-inventory
                 command: inventory
+                arguments:
+                    hostname: {{.NR_CLI_HOSTNAME}}
+                    port: {{.NR_CLI_PORT}}
+                    remote_monitoring: true
+                    use_unix_socket: true
           EOT
 
     restart:
