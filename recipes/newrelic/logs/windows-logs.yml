@@ -1,0 +1,54 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: logs-integration
+displayName: Logs integration
+description: New Relic install recipe for basic Logging via Infra-Agent
+repository: https://github.com/newrelic/infrastructure-agent/tree/master/assets/examples/logging
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Logs
+
+processMatch: []
+
+validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' SINCE 10 minutes ago"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - powershell -command '$logs = "C:\\Program Files\\New Relic\\newrelic-infra\\logging.d\\logs.yml"; if (Test-Path $logs) { Remove-Item $logs }'
+        - powershell -command 'echo "{{.LOGS_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\logging.d\\logs.yml"'
+        - powershell -command 'Restart-Service -Name newrelic-infra'
+        - echo "New Relic Log for Windows configured and newrelic-infra agent restarted"
+      vars:
+        LOGS_CONTENT: |
+          logs:
+            - name: windows-security
+              winlog:
+                channel: Security
+                collect-eventids:
+                - 4740
+                - 4728
+                - 4732
+                - 4756
+                - 4735
+                - 4624
+                - 4625
+                - 4648
+
+            - name: windows-application
+              winlog:
+                channel: Application
