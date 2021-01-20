@@ -1,0 +1,138 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: redis-open-source-integration
+displayName: Redis Open Source Integration
+description: New Relic install recipe for default Redis Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-redis
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - redis
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - redis
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch:
+  - name: redis
+    file: /var/log/redis/redis-server.log
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from RedisSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "Please enter your Redis hostname below. If none is provided, the default value: localhost, will be used."
+    default: "localhost"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "Please enter a password if your Redis server is password protected."
+    secret: true
+  - name: "NR_CLI_PORT"
+    prompt: "Please enter your Redis port below. If none is provided, the default value: 6379, will be used."
+    default: 6379
+  - name: "NR_CLI_KEYS"
+    prompt: "If you would like to see metrics related to the length of selected keys, please enter the keys as a comma separated list in the following format 0:KEY_1, 1:KEY_2:"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+        
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing redis integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-redis -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/redis-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/redis-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/redis-config.yml.sample /etc/newrelic-infra/integrations.d/redis-config.yml;
+
+        - |
+          sudo tee /etc/newrelic-infra/integrations.d/redis-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.redis
+
+          instances:
+            - name: redis-metrics
+              command: metrics
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                keys: {{.NR_CLI_KEYS}}
+                config_inventory: true
+                keys_limit: 30
+
+                # New users should leave this property as `true`, to identify the
+                # monitored entities as `remote`. Setting this property to `false` (the
+                # default value) is deprecated and will be removed soon, disallowing
+                # entities that are identified as `local`.
+                # Please check the documentation to get more information about local
+                # versus remote entities:
+                # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
+                remote_monitoring: true
+
+                # New users should leave this property as `true`, to uniquely identify the monitored entities when using
+                # Unix sockets.
+                use_unix_socket: true
+
+            - name: redis-inventory
+              command: inventory
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+
+                # New users should leave this property as `true`, to identify the
+                # monitored entities as `remote`. Setting this property to `false` (the
+                # default value) is deprecated and will be removed soon, disallowing
+                # entities that are identified as `local`.
+                # Please check the documentation to get more information about local
+                # versus remote entities:
+                # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
+                remote_monitoring: true
+
+                # New users should leave this property as `true`, to uniquely identify the monitored entities when using
+                # Unix sockets.
+                use_unix_socket: true
+          EOT
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service

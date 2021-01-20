@@ -1,0 +1,30 @@
+---
+- debug:
+    msg: Install Redis
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Install redis
+  apt:
+    name: ['redis']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- name: Restart Redis
+  shell: "systemctl enable redis && systemctl restart redis"
+  become: true
+
+- block:
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_PASSWORD=notUsed >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_KEYS=None >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export ES_PORT
+    shell: "echo export NR_CLI_PORT=6379 >> ~/.bashrc"
+  when: create_env_var|bool
