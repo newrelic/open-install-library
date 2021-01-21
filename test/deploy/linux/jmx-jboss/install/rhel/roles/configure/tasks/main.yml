@@ -2,9 +2,14 @@
 - debug:
     msg: Install JMX-Jboss
 
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
 - name: Install Java
   yum:
-    name: ['java']
+    name: ["java"]
     update_cache: yes
     state: latest
   become: true
@@ -16,7 +21,7 @@
 - name: Add wildfly user for Jboss
   shell: useradd -r -g wildfly -d /opt/wildfly -s /sbin/nologin wildfly
   become: true
-  
+
 - name: Download JBoss package
   shell: wget https://download.jboss.org/wildfly/18.0.1.Final/wildfly-18.0.1.Final.tar.gz -P /tmp
   become: true
@@ -38,7 +43,7 @@
   become: true
 
 - name: Change ownership of jboss to wildfly user
-  shell: 'chown -RH wildfly: /opt/wildfly-18.0.1.Final'
+  shell: "chown -RH wildfly: /opt/wildfly-18.0.1.Final"
   become: true
 
 - name: Create dir for jboss config
@@ -65,12 +70,6 @@
   shell: systemctl daemon-reload
   become: true
 
-# - name: Replace standalone file of wildfly
-#   template:
-#     src: standalone.xml
-#     dest:  /opt/wildfly-18.0.1.Final/standalone/configuration/standalone.xml
-#   become: true
-
 - name: Start and enable wildfly service
   shell: systemctl start wildfly && systemctl enable wildfly
   become: true
@@ -91,29 +90,23 @@
   shell: systemctl restart wildfly
   become: true
 
-- name: Export USERNAME
-  shell: "echo export NR_CLI_JMX_USERNAME=admin1234 >> ~/.bashrc"
-
-- name: Export PASSWORD
-  shell: "echo export NR_CLI_JMX_PASSWORD=Password1! >> ~/.bashrc"
-
-- name: Export HOSTNAME
-  shell: "echo export NR_CLI_JMX_HOST=localhost >> ~/.bashrc"
-
-- name: Export DB_PORT
-  shell: "echo export NR_CLI_JMX_PORT=9990 >> ~/.bashrc"
-  
-- name: Export Enable_SSL
-  shell: "echo export NR_CLI_SSL_ENABLED=n >> ~/.bashrc"
-
-- name: Export KEYSTORE
-  shell: "echo export NR_CLI_KEYSTORE=notUsed >> ~/.bashrc"
-
-- name: Export KEYSTORE_PASSWORD
-  shell: "echo export NR_CLI_KEYSTORE_PASSWORD=notUsed >> ~/.bashrc"
-
-- name: Export TRUST STORE
-  shell: "echo export NR_CLI_TRUSTSTORE=notUsed >> ~/.bashrc"
-
-- name: Export TRUST STORE PASSWORD
-  shell: "echo export NR_CLI_TRUSTSTORE_PASSWORD=notUsed >> ~/.bashrc"
+- block:
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_JMX_USERNAME=admin1234 >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_JMX_PASSWORD=Password1! >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_JMX_HOST=localhost >> ~/.bashrc"
+  - name: Export DB_PORT
+    shell: "echo export NR_CLI_JMX_PORT=9990 >> ~/.bashrc"
+  - name: Export Enable_SSL
+    shell: "echo export NR_CLI_SSL_ENABLED=n >> ~/.bashrc"
+  - name: Export KEYSTORE
+    shell: "echo export NR_CLI_KEYSTORE=notUsed >> ~/.bashrc"
+  - name: Export KEYSTORE_PASSWORD
+    shell: "echo export NR_CLI_KEYSTORE_PASSWORD=notUsed >> ~/.bashrc"
+  - name: Export TRUST STORE
+    shell: "echo export NR_CLI_TRUSTSTORE=notUsed >> ~/.bashrc"
+  - name: Export TRUST STORE PASSWORD
+    shell: "echo export NR_CLI_TRUSTSTORE_PASSWORD=notUsed >> ~/.bashrc"
+  when: create_env_var|bool
