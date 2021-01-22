@@ -1,0 +1,112 @@
+---
+- debug:
+    msg: Install JMX-Jboss
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Install Java
+  apt:
+    name: ['default-jdk']
+    update_cache: yes
+    state: latest
+  become: true
+
+- name: Add wildfly group for Jboss
+  shell: groupadd -r wildfly
+  become: true
+
+- name: Add wildfly user for Jboss
+  shell: useradd -r -g wildfly -d /opt/wildfly -s /sbin/nologin wildfly
+  become: true
+  
+- name: Download JBoss package
+  shell: wget https://download.jboss.org/wildfly/18.0.1.Final/wildfly-18.0.1.Final.tar.gz -P /tmp
+  become: true
+
+- name: Unpack Jboss to opt
+  shell: tar xf /tmp/wildfly-18.0.1.Final.tar.gz -C /opt/
+  become: true
+
+- name: Download CometD
+  shell: wget https://download.cometd.org/cometd-5.0.0-distribution.tar.gz
+  become: true
+
+- name: Extract CometD
+  shell: tar zxvf cometd-5.0.0-distribution.tar.gz -C /tmp/
+  become: true
+
+- name: Create a symbolic link for Jboss
+  shell: ln -s /opt/wildfly-18.0.1.Final /opt/wildfly
+  become: true
+
+- name: Change ownership of jboss to wildfly user
+  shell: 'chown -RH wildfly: /opt/wildfly-18.0.1.Final'
+  become: true
+
+- name: Create dir for jboss config
+  shell: mkdir -p /etc/wildfly
+  become: true
+
+- name: Copy config file to the created directory
+  shell: cp /opt/wildfly-18.0.1.Final/docs/contrib/scripts/systemd/wildfly.conf /etc/wildfly/
+  become: true
+
+- name: Copy launch script to bin directory of wildfly
+  shell: cp /opt/wildfly-18.0.1.Final/docs/contrib/scripts/systemd/launch.sh /opt/wildfly-18.0.1.Final/bin/
+  become: true
+
+- name: Add executable flag to scripts in bin directory
+  shell: sh -c 'chmod +x /opt/wildfly-18.0.1.Final/bin/*.sh'
+  become: true
+
+- name: Copy systemd unit file
+  shell: cp /opt/wildfly-18.0.1.Final/docs/contrib/scripts/systemd/wildfly.service /etc/systemd/system/
+  become: true
+
+- name: Reload system-daemon
+  shell: systemctl daemon-reload
+  become: true
+
+- name: Start and enable wildfly service
+  shell: systemctl start wildfly && systemctl enable wildfly
+  become: true
+
+- name: Create management user
+  shell: /opt/wildfly/bin/add-user.sh admin1234 Password1! --silent
+  become: true
+
+- name: Install JBoss Custom Connector
+  shell: mkdir -p /usr/lib/nrjmx/connectors && sudo cp /opt/wildfly/bin/client/* /usr/lib/nrjmx/connectors/
+  become: true
+
+- name: Deploy CometD war file
+  shell: cp /tmp/cometd-5.0.0/cometd-demo/target/cometd-demo-5.0.0.war /opt/wildfly-18.0.1.Final/standalone/deployments/
+  become: true
+
+- name: Restart wildfly service
+  shell: systemctl restart wildfly
+  become: true
+
+- block:
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_JMX_USERNAME=admin1234 >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_JMX_PASSWORD=Password1! >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_JMX_HOST=localhost >> ~/.bashrc"
+  - name: Export DB_PORT
+    shell: "echo export NR_CLI_JMX_PORT=9990 >> ~/.bashrc"
+  - name: Export Enable_SSL
+    shell: "echo export NR_CLI_SSL_ENABLED=n >> ~/.bashrc"
+  - name: Export KEYSTORE
+    shell: "echo export NR_CLI_KEYSTORE=notUsed >> ~/.bashrc"
+  - name: Export KEYSTORE_PASSWORD
+    shell: "echo export NR_CLI_KEYSTORE_PASSWORD=notUsed >> ~/.bashrc"
+  - name: Export TRUST STORE
+    shell: "echo export NR_CLI_TRUSTSTORE=notUsed >> ~/.bashrc"
+  - name: Export TRUST STORE PASSWORD
+    shell: "echo export NR_CLI_TRUSTSTORE_PASSWORD=notUsed >> ~/.bashrc"
+  when: create_env_var|bool
