@@ -1,0 +1,67 @@
+---
+- debug:
+    msg: Install MongoDB
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Install necessary dependencies
+  apt:
+    name: ['dirmngr','gnupg','apt-transport-https','software-properties-common','ca-certificates']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- name: Add the MongoDB GPG key
+  shell: curl -fsSL https://www.mongodb.org/static/pgp/server-4.2.asc | sudo apt-key add -
+
+- name: Enable MongoDB repository
+  shell: add-apt-repository 'deb https://repo.mongodb.org/apt/debian buster/mongodb-org/4.2 main'
+  become: yes
+
+- name: Install MongoDB
+  apt:
+    name: ['mongodb-org']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- name: Copy commands file for MongoDB
+  template: 
+      src: commands.js
+      dest: /tmp
+  become: true
+
+- name: Use commands file
+  shell: mongo < /tmp/commands.js
+
+- name: Enable mongodb service
+  shell: "systemctl enable mongod --now"
+  become: yes
+
+- block:
+  - name: Export CLUSTER_NAME
+    shell: "echo export NR_CLI_DB_CLUSTERNAME=test >> ~/.bashrc"
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_DB_USERNAME=test >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_DB_PASSWORD=test >> ~/.bashrc"
+  - name: Export AUTHSOURCE
+    shell: "echo export NR_CLI_DB_AUTH=admin >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_DB_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export PORT
+    shell: "echo export NR_CLI_DB_PORT=27017 >> ~/.bashrc"
+  - name: Export ENABLE_SSL
+    shell: "echo export NR_CLI_SSL=n >> ~/.bashrc"
+  - name: Export NR_CLI_CERT_AUTH_FILE
+    shell: "echo export NR_CLI_CERT_AUTH_FILE=notUsed >> ~/.bashrc"
+  - name: Export NR_CLI_SKIP_SSL_VERIFY
+    shell: "echo export NR_CLI_SKIP_SSL_VERIFY=y >> ~/.bashrc"
+  - name: Export NR_CLI_CLIENT_CERT_FILE
+    shell: "echo export NR_CLI_SKIP_SSL_VERIFY=notUsed >> ~/.bashrc"
+  - name: Export NR_CLI_CERT_PASSPHRASE
+    shell: "echo export NR_CLI_CERT_PASSPHRASE=notUsed >> ~/.bashrc"
+  when: create_env_var|bool
