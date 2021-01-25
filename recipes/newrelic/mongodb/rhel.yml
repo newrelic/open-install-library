@@ -1,55 +1,76 @@
-# Visit our schema definition for additional information on this file format
-# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
 name: mongodb-open-source-integration
 displayName: MongoDB Open Source Integration
 description: New Relic install recipe for default MongoDB Open Source on-host integration (via Infra-Agent)
 repository: https://github.com/newrelic/nri-mongodb
+
 installTargets:
   - type: host
     os: linux
-    platform: amazon
+    platform: "amazon"
     platformVersion: "2"
   - type: host
     os: linux
-    platform: "centos"
+    platform: "redhat"
   - type: host
     os: linux
-    platform: "redhat"
-# keyword convention for dealing with search terms that could land someone on this instrumentation project
+    platform: "centos"
+
 keywords:
   - Infrastructure
   - Integration
   - mongodb
-# Examine Infrastructure events for correlated data
+
 processMatch:
   - mongodb
   - mongod
-# Matches partial list of the Log forwarding parameters
-# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+
 logMatch:
   - name: MongoDB log
-    file: /var/log/mongodb/*.log
-# NRQL the newrelic-cli will use to validate the agent/integration this recipe
-# installed is successfully sending data to New Relic
-validationNrql: "SELECT count(*) from MongoSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
-# Prompts for input from the user. These variables then become
-# available to go-task in the form of {{.VAR_NAME}}
+    file: /var/log/mongodb/mongod.log
+
+validationNrql: "SELECT count(*) from MongoSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
 inputVars:
-  - name: "NR_CLI_DB_USERNAME"
-    prompt: "Please enter your NR username below."
-  - name: "NR_CLI_DB_PASSWORD"
-    prompt: "Please enter your NR password below."
+  - name: "NR_CLI_USERNAME"
+    prompt: "Please enter your MongoDb username below."
+  - name: "NR_CLI_CLUSTER_NAME"
+    prompt: "Please enter your MongoDb culster name below."
+  - name: "NR_CLI_PASSWORD"
+    prompt: "Please enter your MongoDb password below."
     secret: true
+  - name: "NR_CLI_AUTH"
+    prompt: "Please confirm auth source for MongoDb below."
+    default: "admin"
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "Please enter your MongoDb hostname below. If none is provided the default value: localhost will be used."
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "Please enter your MonogDb PORT below. If none is provided the default value: 27017 will be used."
+    default: 27017
+  - name: "NR_CLI_SSL"
+    prompt: "Are you using SSL? (y/n)"
+  - name: "NR_CLI_CERT_AUTH_FILE"
+    prompt: "Please enter the path to your Certificate Authority file."
+  - name: "NR_CLI_SKIP_SSL_VERIFY"
+    prompt: "Would you like to verify the certificate sent by the host? (y/n)"
+  - name: "NR_CLI_CLIENT_CERT_FILE"
+    prompt: "Please enter the path to your Client Certificate file, if required."
+  - name: "NR_CLI_CERT_PASSPHRASE"
+    prompt: "Please enter your passphrase to decrypt the PEM key file, if required."
+
 install:
+
   version: "3"
   silent: true
+
   tasks:
     default:
       cmds:
         - task: create_user_notification
-        - task: assert_pre_req
         - task: setup
         - task: restart
+        
     create_user_notification:
       cmds:
         - |
@@ -82,118 +103,157 @@ install:
           fi
           sudo cp /etc/newrelic-infra/integrations.d/mongodb-config.yml.sample /etc/newrelic-infra/integrations.d/mongodb-config.yml;
         - | 
-          sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+          if [ "{{.NR_CLI_SSL}}" == "y" ]; then
+            if [ "{{.NR_CLI_SKIP_SSL_VERIFY}}" == "n" ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mongodb
           instances: 
             - name: all
               command: all
               arguments:
-                # The mongos to connect to
                 host: {{.NR_CLI_HOSTNAME}}
-                # The port the mongos is running on
                 port: {{.NR_CLI_PORT}}
-                # The username of the user created to monitor the cluster.
-                # This user should exist on the cluster as a whole as well
-                # as on each of the individual mongods.
-                username: monitor
-                # The password for the monitoring user
-                password: password
-                # The database on which the monitoring user is stored
-                auth_source: admin
-                # A user-defined cluster name. Required.
-                cluster_name: testcluster
-                # Connect using SSL
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
                 ssl: true
-                # Skip verification of the certificate sent by the host.
-                # This can make the connection susceptible to man-in-the-middle attacks,
-                # and should only be used for testing
-                ssl_insecure_skip_verify: true
-                # Path to the CA certs file
-                ssl_ca_certs: /sample/path/to/ca_certs
-                # Client Certificate to present to the server (optional)
-                pem_key_file: /sample/file.pem
-                # Passphrase to decrypt PEMKeyFile file (optional)
-                passphrase: secret
-                # A JSON map of database names to an array of collection names. If empty,
-                # defaults to all databases and collections. If the list of collections is null,
-                # collects all collections for the database.
-                filters: '{"db1":null,"db2":["collection1","collection2"],"db3":[]}'
-                # The number of entities to collect metrics for concurrently. Tunable to
-                # limit CPU and memory usage
+                ssl_insecure_skip_verify: false
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                pem_key_file: {{.NR_CLI_CLIENT_CERT_FILE}}
+                passphrase: {{.NR_CLI_CERT_PASSPHRASE}}
+                filters: '{"db1":null,"db2":null,"db3":null}'
                 concurrent_collections: 50
             - name: metrics
               command: metrics
               arguments:
-                # The mongos to connect to
-                host: my-mongos.company.localnet
-                # The port the mongos is running on
-                port: 27017
-                # The username of the user created to monitor the cluster.
-                # This user should exist on the cluster as a whole as well
-                # as on each of the individual mongods.
-                username: monitor
-                # The password for the monitoring user
-                password: password
-                # The database on which the monitoring user is stored
-                auth_source: admin
-                # A user-defined cluster name. Required.
-                cluster_name: testcluster
-                # Connect using SSL
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
                 ssl: true
-                # Skip verification of the certificate sent by the host.
-                # This can make the connection susceptible to man-in-the-middle attacks,
-                # and should only be used for testing
+                ssl_insecure_skip_verify: false
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                pem_key_file: {{.NR_CLI_CLIENT_CERT_FILE}}
+                passphrase: {{.NR_CLI_CERT_PASSPHRASE}}
+                filters: '{"db1":null,"db2":null,"db3":null}'
+                concurrent_collections: 50
+            - name: inventory
+              command: inventory
+              arguments:
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
+                ssl: true
+                ssl_insecure_skip_verify: false
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                pem_key_file: {{.NR_CLI_CLIENT_CERT_FILE}}
+                passphrase: {{.NR_CLI_CERT_PASSPHRASE}}
+                filters: '{"db1":null,"db2":null,"db3":null}'
+                concurrent_collections: 50
+          EOT
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.mongodb
+          instances: 
+            - name: all
+              command: all
+              arguments:
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
+                ssl: true
                 ssl_insecure_skip_verify: true
-                # Path to the CA certs file
-                ssl_ca_certs: /sample/path/to/ca_certs
-                # Client Certificate to present to the server (optional)
-                pem_key_file: /sample/file.pem
-                # Passphrase to decrypt PEMKeyFile file (optional)
-                passphrase: secret
-                # A JSON map of database names to an array of collection names. If empty,
-                # defaults to all databases and collections. If the list of collections is null,
-                # collects all collections for the database.
-                filters: '{"db1":null,"db2":["collection1","collection2"],"db3":[]}'
-                # The number of entities to collect metrics for concurrently. Tunable to
-                # limit CPU and memory usage
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                filters: '{"db1":null,"db2":null,"db3":null}'
+                concurrent_collections: 50
+            - name: metrics
+              command: metrics
+              arguments:
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
+                ssl: true
+                ssl_insecure_skip_verify: true
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                filters: '{"db1":null,"db2":null,"db3":null}'
                 concurrent_collections: 50
             - name: inventory
               command: inventory
               arguments:
                 # The mongos to connect to
-                host: my-mongos.company.localnet
-                # The port the mongos is running on
-                port: 27017
-                # The username of the user created to monitor the cluster.
-                # This user should exist on the cluster as a whole as well
-                # as on each of the individual mongods.
-                username: monitor
-                # The password for the monitoring user
-                password: password
-                # The database on which the monitoring user is stored
-                auth_source: admin
-                # A user-defined cluster name. Required.
-                cluster_name: testcluster
-                # Connect using SSL
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
                 ssl: true
-                # Skip verification of the certificate sent by the host.
-                # This can make the connection susceptible to man-in-the-middle attacks,
-                # and should only be used for testing
                 ssl_insecure_skip_verify: true
-                # Path to the CA certs file
-                ssl_ca_certs: /sample/path/to/ca_certs
-                # Client Certificate to present to the server (optional)
-                pem_key_file: /sample/file.pem
-                # Passphrase to decrypt PEMKeyFile file (optional)
-                passphrase: secret
-                # A JSON map of database names to an array of collection names. If empty,
-                # defaults to all databases and collections. If the list of collections is null,
-                # collects all collections for the database.
-                filters: '{"db1":null,"db2":["collection1","collection2"],"db3":[]}'
-                # The number of entities to collect metrics for concurrently. Tunable to
-                # limit CPU and memory usage
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                filters: '{"db1":null,"db2":null,"db3":null}'
                 concurrent_collections: 50
           EOT
+            fi
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.mongodb
+          instances: 
+            - name: all
+              command: all
+              arguments:
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
+                ssl: false
+                ssl_insecure_skip_verify: false
+                ssl_ca_certs: /sample/path/to/ca_certs
+                filters: '{"db1":null,"db2":null,"db3":null}'
+                concurrent_collections: 50
+            - name: metrics
+              command: metrics
+              arguments:
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
+                ssl: false
+                ssl_insecure_skip_verify: false
+                ssl_ca_certs: /sample/path/to/ca_certs
+                filters: '{"db1":null,"db2":null,"db3":null}'
+                concurrent_collections: 50
+            - name: inventory
+              command: inventory
+              arguments:
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                auth_source: {{.NR_CLI_AUTH}}
+                cluster_name: {{.NR_CLI_CLUSTERNAME}}
+                ssl: false
+                ssl_insecure_skip_verify: false
+                ssl_ca_certs: /sample/path/to/ca_certs
+                filters: '{"db1":null,"db2":null,"db3":null}'
+                concurrent_collections: 50
+          EOT
+          fi
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
