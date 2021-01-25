@@ -1,0 +1,41 @@
+---
+- debug:
+    msg: Install Redis
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: update packages
+  shell: yum update -y
+  become: true
+
+- name: Copy Epel repo file
+  shell: amazon-linux-extras install epel -y
+  become: true 
+
+- name: install Redis from EPEL repository
+  shell: yum install redis -y
+  become: true 
+
+- name: Copy redis config
+  template: 
+      src: redis.conf
+      dest: /etc/redis.conf
+  become: true
+
+- name: run redis
+  shell: service redis start
+  become: true 
+
+- block:
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=notUsed >> ~/.bashrc"
+  - name: Export KEYS
+    shell: "echo export NR_CLI_KEYS=None >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export PORT
+    shell: "echo export NR_CLI_PORT=6379 >> ~/.bashrc"
+  when: create_env_var|bool
