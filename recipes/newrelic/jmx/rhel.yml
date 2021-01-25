@@ -1,0 +1,212 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: jmx-open-source-integration
+displayName: JMX Open Source Integration
+description: New Relic install recipe for default JMX Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-jmx
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "amazon"
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "redhat"
+  - type: host
+    os: linux
+    platform: "centos"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - jmx
+  - jvm
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - java
+  - jboss
+  - tomcat
+  - jetty
+  # Once https://github.com/newrelic/newrelic-cli/pull/637 is merged, change to the following:
+  # - java.*jboss
+  # - java.*tomcat
+  # - java.*jetty
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from JVMSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  - name: "NR_CLI_JMX_USERNAME"
+    prompt: "Please enter your username."
+  - name: "NR_CLI_JMX_PASSWORD"
+    prompt: "Please enter your password."
+    secret: true
+  - name: "NR_CLI_JMX_HOST"
+    prompt: "Please enter your hostname below. If none is provided, the default value: localhost, will be used."
+    default: "localhost"
+  - name: "NR_CLI_JMX_PORT"
+    prompt: "Please enter your port below. If none is provided, the default value: 9999, will be used."
+    default: 9999
+  - name: "NR_CLI_SSL_ENABLED"
+    prompt: "Are you using SSL? (y/n)"
+  - name: "NR_CLI_KEYSTORE"
+    prompt: "Enter key store file path if applicable."
+  - name: "NR_CLI_KEYSTORE_PASSWORD"
+    prompt: "Enter key store password if applicable."
+  - name: "NR_CLI_TRUSTSTORE"
+    prompt: "Enter trust store file path if applicable."
+  - name: "NR_CLI_TRUSTSTORE_PASSWORD"
+    prompt: "Enter trust store password if applicable."
+
+install:
+  version: "3"
+
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing jmx integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+        - |
+          sudo yum install nri-jmx -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/jmx-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/jmx-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/jvm-metrics.yml.sample /etc/newrelic-infra/integrations.d/jvm-metrics.yml;
+
+        - |
+          IS_TOMCAT=$(ps -aux | grep -o tomcat | wc -l)
+          IS_JBOSS=$(ps -aux | grep -o jboss | wc -l)
+          if [ "{{.NR_CLI_SSL_ENABLED}}" == "n" ]; then
+            if [ "$IS_TOMCAT" -gt 1 ]; then
+              sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
+              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
+                collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml,/etc/newrelic-infra/integrations.d/tomcat-metrics.yml"
+          EOT
+            elif [ "$IS_JBOSS" -gt 1 ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
+                connection_url: 'service:jmx:remote+http://{{.NR_CLI_JMX_HOST}}:{{.NR_CLI_JMX_PORT}}'
+                collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
+          EOT
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
+                collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
+          EOT
+            fi
+          else
+            if [ "$IS_TOMCAT" -gt 1 ]; then
+              sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
+              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
+                key_store: {{.NR_CLI_KEYSTORE}}
+                key_store_password: {{.NR_CLI_KEYSTORE_PASSWORD}}
+                trust_store: {{.NR_CLI_TRUSTSTORE}}
+                trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
+                collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml,/etc/newrelic-infra/integrations.d/tomcat-metrics.yml"
+          EOT
+            elif [ "$IS_JBOSS" -gt 1 ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
+                connection_url: 'service:jmx:remote+http://{{.NR_CLI_JMX_HOST}}:{{.NR_CLI_JMX_PORT}}'
+                key_store: {{.NR_CLI_KEYSTORE}}
+                key_store_password: {{.NR_CLI_KEYSTORE_PASSWORD}}
+                trust_store: {{.NR_CLI_TRUSTSTORE}}
+                trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
+                collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
+          EOT
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
+                key_store: {{.NR_CLI_KEYSTORE}}
+                key_store_password: {{.NR_CLI_KEYSTORE_PASSWORD}}
+                trust_store: {{.NR_CLI_TRUSTSTORE}}
+                trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
+                collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
+          EOT
+            fi
+          fi
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
