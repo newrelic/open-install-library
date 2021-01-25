@@ -1,0 +1,42 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: logs-docker-integration
+displayName: Docker Logs integration
+description: New Relic install recipe for docker Logging via Infra-Agent
+repository: https://github.com/newrelic/infrastructure-agent/tree/master/assets/examples/logging
+
+installTargets:
+  - type: host
+    os: linux
+
+keywords:
+  - Logs
+
+processMatch:
+  - docker
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch:
+  - name: docker log
+    file: /var/lib/docker/containers/*/*.log
+
+validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' FACET entity.guids SINCE 10 minutes ago"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          if [ -d /var/lib/docker/containers ]; then
+              echo "Docker detected"
+          fi
