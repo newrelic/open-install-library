@@ -1,0 +1,49 @@
+---
+# Parameters:
+# newrelic_personal_api_key: The newrelic personal api key. It typically starts with NRAK-
+# newrelic_account_id: (optional) The newrelic account id
+# newrelic_region: (optional) The newrelic region. Typically "US".
+
+- fail:
+    msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
+  when: newrelic_personal_api_key is not defined
+
+- name: Prepare environment variables for newrelic-cli execution
+  set_fact:
+    env_vars: "NEW_RELIC_API_KEY={{ newrelic_personal_api_key }} NEW_RELIC_CLI_PRERELEASEFEATURES=ALLOW"
+
+- name: Adding newrelic accountId environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} NEW_RELIC_ACCOUNT_ID={{ newrelic_account_id }}"
+  when: newrelic_account_id is defined
+
+- name: Adding newrelic region environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} NEW_RELIC_REGION={{ newrelic_region }}"
+  when: newrelic_region is defined
+  
+- name: Get CLI environment variables
+  shell: "/bin/bash -ic 'env' | grep NR_CLI_"
+  register: cli_env_vars
+  ignore_errors: yes
+
+- set_fact:
+    cli_env_dict: "{{ cli_env_dict | default({}) | combine ( { item.split('=')[0]: item.split('=')[1] } ) }}"
+  with_items: "{{cli_env_vars.stdout_lines}}"
+  when: cli_env_vars is defined
+
+- name: Build final env_vars
+  set_fact:
+    env_vars: "{{ env_vars }} {{item.key}}={{item.value}}"
+  loop: "{{ q('dict', cli_env_dict|default({})) }}"
+
+- name: Install newrelic-cli
+  shell: "curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | bash"
+
+- name: Install with all default assumed
+  shell: "{{ env_vars }} /usr/local/bin/newrelic install -y"
+  register: output
+  become: true
+
+- debug:
+    msg: "output:{{ output.stdout }}"
