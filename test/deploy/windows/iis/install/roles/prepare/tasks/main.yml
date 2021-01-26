@@ -1,5 +1,29 @@
 ---
 
+- name: Set default install_sdk (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: install_sdk is undefined
+
 - name: Installing IIS
   win_shell: |
     Install-WindowsFeature -name Web-Server -IncludeManagementTools
+
+- name: Installing Asp.net
+  win_shell: |
+    Install-WindowsFeature -name Web-Asp-net45
+
+- block:
+  - name: Install Chocolatey
+    win_shell: |
+      if (!(Get-Command choco.exe -ErrorAction SilentlyContinue)) {
+      Set-ExecutionPolicy Bypass -Scope Process -Force;
+      [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+      iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))}
+  - name: Install visual studio community
+    win_shell: |
+      choco install visualstudio2019community -y
+  - name: Reboot and wait for readyness
+    ansible.windows.win_reboot:
+      reboot_timeout: 600
+  when: install_sdk|bool
