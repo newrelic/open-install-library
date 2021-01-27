@@ -1,0 +1,30 @@
+---
+- debug:
+    msg: Install Apache
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Install Memcached
+  apt:
+    name: ['memcached']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- name: Start memcached service
+  shell: "systemctl start memcached"
+  become: yes
+
+- block:
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_USERNAME=no authentication >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=no authentication >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export ES_PORT
+    shell: "echo export NR_CLI_PORT=11211 >> ~/.bashrc"
+  when: create_env_var|bool
