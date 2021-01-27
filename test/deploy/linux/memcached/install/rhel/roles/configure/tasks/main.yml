@@ -1,0 +1,35 @@
+---
+- debug:
+    msg: Install JMX-Tomcat
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: update packages
+  shell: yum update -y
+  become: true
+
+- name: install memcached
+  shell: sudo yum install memcached
+  become: true;
+
+- name: install php extenstion
+  shell: yum install php-pecl-memcache
+  become: true
+
+- name: run memcached
+  shell: systemctl start memcached
+  become: true
+
+- block:
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export PORT
+    shell: "echo export NR_CLI_PORT=11211 >> ~/.bashrc"
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_USERNAME=no authentication >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=no authentication >> ~/.bashrc"
+  when: create_env_var|bool
