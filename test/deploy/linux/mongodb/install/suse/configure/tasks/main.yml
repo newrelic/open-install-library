@@ -1,0 +1,70 @@
+---
+- debug:
+    msg: Install MongoDB
+
+- name: Import the MongoDB public key.
+  shell: rpm --import https://www.mongodb.org/static/pgp/server-4.4.asc
+  become: true
+
+- name: Add mongo repository
+  shell: zypper addrepo --gpgcheck "https://repo.mongodb.org/zypper/suse/12/mongodb-org/4.4/x86_64/" mongodb
+  become: true
+
+- name: Copy test.js file
+  template:
+    src: test.js
+    dest: /
+  become: true
+
+- name: Copy initiate.js file
+  template:
+    src: initiate.js
+    dest: /
+  become: true
+
+- name: Install mongo
+  shell: zypper -n install mongodb-org
+  become: true
+
+- name: Copy mongod.conf file
+  template:
+    src: mongod.conf
+    dest: /etc/
+  become: true
+
+- name: start mongodb
+  shell: systemctl start mongod
+  become: true
+
+- name: Initiate script
+  shell: mongo < /initiate.js
+  become: true
+
+- name: Start script
+  shell: mongo < /test.js
+  become: true
+
+- block:
+  - name: Export CLUSTER_NAME
+    shell: "echo export NR_CLI_CLUSTERNAME=test >> ~/.bashrc"
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_USERNAME=username >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=password >> ~/.bashrc"
+  - name: Export AUTHSOURCE
+    shell: "echo export NR_CLI_AUTH=admin >> ~/.bashrc"
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export PORT
+    shell: "echo export NR_CLI_PORT=27017 >> ~/.bashrc"
+  - name: Export ENABLE_SSL
+    shell: "echo export NR_CLI_SSL=n >> ~/.bashrc"
+  - name: Export NR_CLI_CERT_AUTH_FILE
+    shell: "echo export NR_CLI_CERT_AUTH_FILE=notUsed >> ~/.bashrc"
+  - name: Export NR_CLI_SKIP_SSL_VERIFY
+    shell: "echo export NR_CLI_SKIP_SSL_VERIFY=y >> ~/.bashrc" 
+  - name: Export NR_CLI_CLIENT_CERT_FILE
+    shell: "echo export NR_CLI_CLIENT_CERT_FILE=notUsed >> ~/.bashrc" 
+  - name: Export NR_CLI_CERT_PASSPHRASE
+    shell: "echo export NR_CLI_CERT_PASSPHRASE=notUsed >> ~/.bashrc" 
+  when: create_env_var|bool
