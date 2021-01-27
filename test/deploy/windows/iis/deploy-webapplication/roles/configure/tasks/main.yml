@@ -1,0 +1,49 @@
+---
+
+- name: Remove Default Web Site
+  win_shell: |
+    Import-Module WebAdministration
+    $iisWebsiteName = "Default Web Site"
+    if (Test-Path IIS:\Sites\$iisWebsiteName -pathType container)
+    {
+    Remove-WebSite -Name $iisWebsiteName
+    }
+
+- name: Remove WebApplication1 Web Site
+  win_shell: |
+    Import-Module WebAdministration
+    $iisWebsiteName = "{{ service_id }}"
+    if (Test-Path IIS:\Sites\$iisWebsiteName -pathType container)
+    {
+    Remove-WebSite -Name $iisWebsiteName
+    }
+
+- name: Download WebApplication1
+  win_shell: |
+    Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Force
+    $url = "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/windows/aspnet/WebApplication1.zip"
+    $file = "$env:temp\WebApplication1.zip"
+    [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+    (New-Object -TypeName System.Net.WebClient).DownloadFile($url, $file)
+    Expand-Archive -LiteralPath $file -DestinationPath C:\inetpub\wwwroot
+
+- name: Install WebApplication1 web site
+  win_shell: |
+    Import-Module WebAdministration
+    $iisAppPoolName = "temp"
+    $iisAppPoolDotNetVersion = "v4.0"
+    $iisWebsiteFolderPath = "C:\inetpub\wwwroot\WebApplication1"
+    $iisWebsiteName = "{{ service_id }}"
+    $iisWebsiteBindings = @(
+      @{protocol="http";bindingInformation="*:{{ service_port }}:"}
+    )
+    if (!(Test-Path IIS:\AppPools\$iisAppPoolName -pathType container))
+    {
+    New-Item IIS:\AppPools\$iisAppPoolName
+    Set-ItemProperty IIS:\AppPools\$iisAppPoolName -name "managedRuntimeVersion" -value $iisAppPoolDotNetVersion
+    }
+    if (!(Test-Path IIS:\Sites\$iisWebsiteName -pathType container))
+    {
+    New-Item IIS:\Sites\$iisWebsiteName -bindings $iisWebsiteBindings -physicalPath $iisWebsiteFolderPath
+    Set-ItemProperty IIS:\Sites\$iisWebsiteName -name applicationPool -value $iisAppPoolName
+    }
