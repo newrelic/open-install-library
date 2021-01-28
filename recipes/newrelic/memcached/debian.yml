@@ -1,0 +1,107 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: memcached-open-source-integration
+displayName: Memcached Open Source Integration
+description: New Relic install recipe for default Memcached Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-memcached
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - memcached
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - memcached
+  - memcache
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: memcached
+    file: /var/log/memcached.log
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from MemcachedSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  - name: "NR_CLI_USERNAME"
+    prompt: "Please enter your username if you are using authentication, else press [enter]"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "Please enter your password if you are using authentication, else press [enter]"
+    secret: true
+  - name: "NR_CLI_HOST"
+    prompt: "Hostname Memcached is running on (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "Port Memcached is running on (default: 11211)"
+    default: 11211
+
+install:
+  version: "3"
+
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+    setup:
+      label: "Installing memcached integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-memcached -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/memcached-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/memcached-config.yml;
+          fi
+        - |
+          sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.memcached
+          instances:
+            - name: memcached
+              command: all_data
+              arguments:
+                # Hostname of the memcached instance.
+                # Defaults to localhost.
+                host: {{.NR_CLI_HOST}}
+                # Port memcached is running on.
+                # Defaults to 11211
+                port: {{.NR_CLI_PORT}}
+                # Memcached SASL username. Only required if
+                # authentication is enabled.
+                # username: {{.NR_CLI_USERNAME}}
+                # Memcached SASL password. Only required if
+                # authentication is enabled.
+                # password: {{.NR_CLI_PASSWORD}}
+          EOT
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
