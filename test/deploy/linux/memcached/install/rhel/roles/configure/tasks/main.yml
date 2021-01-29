@@ -19,8 +19,48 @@
   shell: yum install php-pecl-memcache -y
   become: true
 
-- name: run memcached
-  shell: systemctl start memcached
+- name: install memcached extension
+  shell: yum install libmemcached -y
+  become: true 
+
+- name: Copy memcached config file
+  template:
+    src: memcached
+    dest: /etc/sysconfig/memcached
+  become: true
+
+- name: restart memcached
+  shell: systemctl restart memcached
+  become: true
+
+- name: check logs
+  shell: journalctl -u memcached
+  become: true 
+
+- name: install sasl
+  shell: yum install cyrus-sasl-devel cyrus-sasl-plain -y
+  become: true
+
+- name: create sasl directory
+  shell: mkdir -p /etc/sasl12
+  become: true 
+
+- name: Copy sasl config file
+  template:
+    src: memcached.conf
+    dest: /etc/sasl12/memcached.conf
+  become: true
+
+- name: create sasl user
+  shell: echo test | saslpasswd2 -a memcached -c -f /etc/sasl2/memcached-sasldb2 user
+  become: true
+
+- name: add permisions
+  shell: sudo chown memcached:memcached /etc/sasl2/memcached-sasldb2
+  become: true
+
+- name: restart memcached
+  shell: systemctl restart memcached
   become: true
 
 - block:
@@ -29,7 +69,7 @@
   - name: Export PORT
     shell: "echo export NR_CLI_PORT=11211 >> ~/.bashrc"
   - name: Export USERNAME
-    shell: "echo export NR_CLI_USERNAME='"no authentication"' >> ~/.bashrc"
+    shell: "echo export NR_CLI_USERNAME=user >> ~/.bashrc"
   - name: Export PASSWORD
-    shell: "echo export NR_CLI_PASSWORD='"no authentication"' >> ~/.bashrc"
+    shell: "echo export NR_CLI_PASSWORD=test >> ~/.bashrc"
   when: create_env_var|bool
