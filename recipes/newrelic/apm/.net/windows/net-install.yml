@@ -1,0 +1,47 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: dotnet-agent-installer
+displayName: .net Agent Installer
+description: New Relic install recipe for .net application on Windows
+repository: https://github.com/newrelic/newrelic-dotnet-agent
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Apm
+  - .net
+  - dotnet
+  - aspnet
+  - core
+
+processMatch:
+  - w3wp.exe
+
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: remove_any_previous
+        - task: install
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product -Filter "Name like 'New Relic .NET Agent%'"; $app.Uninstall()'
+
+    install:
+      cmds:
+        - |
+          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+          (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi");
+          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" | Out-Null;
+        - echo "New Relic .net agent installed"
