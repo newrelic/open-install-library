@@ -1,6 +1,6 @@
 ---
 - debug:
-    msg: Install JMX-Tomcat
+    msg: Install Memcached
 
 - name: Set default create_env_var (default not create)
   set_fact:
@@ -31,42 +31,30 @@
 - block:
   - name: Copy memcached config file
     template:
-      src: memcached
-      dest: /etc/sysconfig/memcached
+      src: memcached.conf
+      dest: /etc/sysconfig/memcached.conf
     become: true
-  when: configure_sasl|bool
-
-- name: restart memcached
-  shell: systemctl restart memcached
-  become: true
-
-- name: check logs
-  shell: journalctl -u memcached
-  become: true 
-
-- name: install sasl
-  shell: yum install cyrus-sasl-devel cyrus-sasl-plain -y
-  become: true
-
-- name: create sasl directory
-  shell: mkdir -p /etc/sasl12
-  become: true 
-
-- block:
+  - name: restart memcached
+    shell: systemctl restart memcached
+    become: true
   - name: Copy sasl config file
     template:
-      src: memcached.conf
+      src: sasl/memcached.conf
       dest: /etc/sasl12/memcached.conf
     become: true
+  - name: install sasl
+    shell: yum install cyrus-sasl-devel cyrus-sasl-plain -y
+    become: true
+  - name: create sasl directory
+    shell: mkdir -p /etc/sasl12
+    become: true 
+  - name: create sasl user
+    shell: echo test | saslpasswd2 -a memcached -c -f /etc/sasl2/memcached-sasldb2 user
+    become: true
+  - name: add permisions
+    shell: sudo chown memcached:memcached /etc/sasl2/memcached-sasldb2
+    become: true
   when: configure_sasl|bool
-
-- name: create sasl user
-  shell: echo test | saslpasswd2 -a memcached -c -f /etc/sasl2/memcached-sasldb2 user
-  become: true
-
-- name: add permisions
-  shell: sudo chown memcached:memcached /etc/sasl2/memcached-sasldb2
-  become: true
 
 - name: restart memcached
   shell: systemctl restart memcached
