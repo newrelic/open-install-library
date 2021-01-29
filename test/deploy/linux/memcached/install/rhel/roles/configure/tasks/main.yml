@@ -7,6 +7,11 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
+- name: Set default configure_sasl (default not create)
+  set_fact:
+    configure_sasl: "false"
+  when: configure_sasl is undefined
+
 - name: update yum packages
   shell: yum update -y
   become: true
@@ -23,11 +28,13 @@
   shell: yum install libmemcached -y
   become: true 
 
-- name: Copy memcached config file
-  template:
-    src: memcached
-    dest: /etc/sysconfig/memcached
-  become: true
+- block:
+  - name: Copy memcached config file
+    template:
+      src: memcached
+      dest: /etc/sysconfig/memcached
+    become: true
+  when: configure_sasl|bool
 
 - name: restart memcached
   shell: systemctl restart memcached
@@ -45,11 +52,13 @@
   shell: mkdir -p /etc/sasl12
   become: true 
 
-- name: Copy sasl config file
-  template:
-    src: memcached.conf
-    dest: /etc/sasl12/memcached.conf
-  become: true
+- block:
+  - name: Copy sasl config file
+    template:
+      src: memcached.conf
+      dest: /etc/sasl12/memcached.conf
+    become: true
+  when: configure_sasl|bool
 
 - name: create sasl user
   shell: echo test | saslpasswd2 -a memcached -c -f /etc/sasl2/memcached-sasldb2 user
