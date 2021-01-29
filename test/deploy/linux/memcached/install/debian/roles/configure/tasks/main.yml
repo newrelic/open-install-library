@@ -7,40 +7,48 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
-- name: Install Memcached and sasl2
+- name: Set default configure_sasl (default not create)
+  set_fact:
+    configure_sasl: "false"
+  when: configure_sasl is undefined
+
+- name: Install Memcached
   apt:
-    name: ['memcached', 'sasl2-bin']
+    name: ['memcached']
     update_cache: yes
     state: latest
   become: true
 
-- name: Copy memcached repo file
-  template:
-    src: memcached.conf
-    dest: /etc/memcached.conf
-  become: true
-
-- name: Restart memcached
-  shell: "systemctl restart memcached"
-  become: true
-
-- name: Create sasl dir
-  shell: mkdir /etc/sasl2
-  become: true
-
-- name: Copy sasl file
-  template:
-    src: sasl/memcached.conf
-    dest: /etc/sasl2/memcached.conf
-  become: true
-
-- name: Create sasl user
-  shell: echo test | saslpasswd2 -a memcached -c -f /etc/sasl2/memcached-sasldb2 user
-  become: true
-
-- name: Change ownership of sasl db
-  shell: chown memcache:memcache /etc/sasl2/memcached-sasldb2
-  become: true
+-block:
+  - name: Install sasl2
+    apt:
+      name: ['sasl2-bin']
+      update_cache: yes
+      state: latest
+    become: true
+  - name: Copy memcached repo file
+    template:
+      src: memcached.conf
+      dest: /etc/memcached.conf
+    become: true
+  - name: Restart memcached
+    shell: "systemctl restart memcached"
+    become: true
+  - name: Create sasl dir
+    shell: mkdir /etc/sasl2
+    become: true
+  - name: Copy sasl file
+    template:
+      src: sasl/memcached.conf
+      dest: /etc/sasl2/memcached.conf
+    become: true
+  - name: Create sasl user
+    shell: echo test | saslpasswd2 -a memcached -c -f /etc/sasl2/memcached-sasldb2 user
+    become: true
+  - name: Change ownership of sasl db
+    shell: chown memcache:memcache /etc/sasl2/memcached-sasldb2
+    become: true
+  when: configure_sasl|bool
 
 - name: Start memcached service
   shell: "systemctl restart memcached"
