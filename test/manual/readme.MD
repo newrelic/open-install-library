@@ -2,7 +2,7 @@
 
 The recipe installation can be tested manually. To do so, the Deployer can be used to provisioned new hosts in AWS, using similar setup than the automated tests, without any instrumentation installed on them.
 
-# Provision new set of hosts
+## Provision new set of hosts
 
 Get the latest docker image of the Deployer
 
@@ -13,6 +13,7 @@ docker pull ghcr.io/newrelic/deployer:latest
 Then start the provisioning of all hosts using the Deployer in batch mode.
 
 Run the snippet below after replacing:
+
 * The path `<absolute_path>` with the absolute path to the manual `definitions` folder (docker requires absolute path for mounting directories)
 * The file `<my_user_config_filename>.json` with your actual deployer user config filename (assumed to be in your ~/configs folder)
 
@@ -23,20 +24,43 @@ docker run -i \
 --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m deploy -l debug
 ```
 
-# Testing
+## Testing
 
 Once all hosts are provisioned, you can SSH to the instance, and run the newrelic-cli as indicated from the UI.
+
+## Auto Config Default Params
+
+Use the `ohi-auto-config` directory for provisioning instances with integrations already configured. When running `newrelic install`, these are the values to be used with the CLI prompts:
+
+```bash
+docker run -it \
+  -v $HOME/configs/:/mnt/deployer/configs/ \
+  -v <absolute_path>/open-install-library/test/manual/definitions/ohi-auto-config/:/mnt/deployer/ohi-auto-config/ \
+  --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d ohi-auto-config -s 20 -m deploy -l debug
+```
+
+| Recipe        | Prompt Values                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Apache        | Status URL: http://127.0.0.1/server-status?auto                                                                                                                                                                                 |
+| Cassandra     | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 7199                                                                                                                                           |
+| Elasticsearch | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 9200 <br>Config file: /etc/elasticsearch/elasticsearch.yml <br>Use SSL to connect? (true/false): false <br>Default the rest (just press enter) |
+| JMX (JBoss)   | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 9990 <br>Are you using SSL? (y/n): n <br>Default the rest (just press enter)                                                                   |
+| MySQL         | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 3306 <br>Database Name: MysqlSample                                                                                                            |
+| MS SQL        | Username: newrelic <br>Password: the RDP password used to logon <br>Hostname: 127.0.0.1 <br>Port: 1433                                                                                                                                           |
+| Nginx         | NGINX status URL: http://127.0.0.1/status                                                                                                                                                                                       |
+| Redis         | Hostname: localhost <br>Password: Virtuoso4all! <br>Port: 6379 <br>Keyspace Metrics: '{}'                                                                                                                                       |
 
 ## Windows
 
 For the Windows host, you'll want to get the password from the AWS Console. While on the EC2 UI, right click the Windows instance, and click Connect. Then use your pem key to decrypt the password.
 Once you have the password, use a `Remote Desktop Connection` client with the credential `Administrator` and the password you've decrypted in AWS.
 
-# Tearing down
+## Tearing down
 
 To teardown all the hosts, re-run the deployer in batch mode with the option `-m teardown` (instead of `-m deploy`).
 
 Run the snippet below after replacing:
+
 * The path `<absolute_path>` with the absolute path to the manual `definitions` folder (docker requires absolute path for mounting directories)
 * The file `<my_user_config_filename>.json` with your actual deployer user config filename (assumed to be in your ~/configs folder)
 
