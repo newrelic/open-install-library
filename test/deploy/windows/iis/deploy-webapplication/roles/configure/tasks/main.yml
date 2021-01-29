@@ -9,7 +9,7 @@
     Remove-WebSite -Name $iisWebsiteName
     }
 
-- name: Remove WebApplication1 Web Site
+- name: Remove WebApplication {{ service_id }} Web Site
   win_shell: |
     Import-Module WebAdministration
     $iisWebsiteName = "{{ service_id }}"
@@ -18,21 +18,21 @@
     Remove-WebSite -Name $iisWebsiteName
     }
 
-- name: Download WebApplication1
+- name: Download WebApplication {{ service_id }}
   win_shell: |
     Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Force
-    $url = "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/windows/aspnet/WebApplication1.zip"
-    $file = "$env:temp\WebApplication1.zip"
+    $url = "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/windows/aspnet/WebApplication.zip"
+    $file = "$env:temp\WebApplication.zip"
     [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
     (New-Object -TypeName System.Net.WebClient).DownloadFile($url, $file)
-    Expand-Archive -LiteralPath $file -DestinationPath C:\inetpub\wwwroot
+    Expand-Archive -LiteralPath $file -DestinationPath C:\inetpub\wwwroot\{{ service_id }}
 
-- name: Install WebApplication1 web site
+- name: Install WebApplication web site
   win_shell: |
     Import-Module WebAdministration
     $iisAppPoolName = "{{ service_id }}"
     $iisAppPoolDotNetVersion = "v4.0"
-    $iisWebsiteFolderPath = "C:\inetpub\wwwroot\WebApplication1"
+    $iisWebsiteFolderPath = "C:\inetpub\wwwroot\{{ service_id }}"
     $iisWebsiteName = "{{ service_id }}"
     $iisWebsiteBindings = @(
       @{protocol="http";bindingInformation="*:{{ service_port }}:"}
@@ -47,3 +47,7 @@
     New-Item IIS:\Sites\$iisWebsiteName -bindings $iisWebsiteBindings -physicalPath $iisWebsiteFolderPath
     Set-ItemProperty IIS:\Sites\$iisWebsiteName -name applicationPool -value $iisAppPoolName
     }
+
+- name: Open port {{ service_port }}
+  win_shell: |
+    netsh advfirewall firewall add rule name="Open Port {{ service_port }}" dir=in action=allow protocol=TCP localport={{ service_port }}
