@@ -7,6 +7,11 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
+- name: Set default setup_database (default not create)
+  set_fact:
+    setup_database: "false"
+  when: setup_database is undefined
+
 - name: Install necessary dependencies
   apt:
     name: ['dirmngr','gnupg','apt-transport-https','software-properties-common','ca-certificates']
@@ -28,18 +33,6 @@
     state: latest
   become: yes
 
-- name: Copy commands file for MongoDB
-  template: 
-      src: commands.js
-      dest: /tmp
-  become: yes
-
-- name: Copy initiate file for MongoDB
-  template: 
-      src: initiate_script.js
-      dest: /tmp
-  become: yes
-
 - name: Copy config file for MongoDB
   template: 
       src: mongod.conf
@@ -54,15 +47,29 @@
   pause:
     seconds: 10
 
-- name: Use initaite file
-  shell: mongo < /tmp/initiate_script.js
-  args:
-    executable: /bin/bash
+- block:
+  - name: Copy commands file for MongoDB
+    template: 
+        src: commands.js
+        dest: /tmp
+    become: yes
 
-- name: Use commands file
-  shell: mongo < /tmp/commands.js
-  args:
-    executable: /bin/bash
+  - name: Copy initiate file for MongoDB
+    template: 
+        src: initiate_script.js
+        dest: /tmp
+    become: yes
+
+  - name: Use initiate file
+    shell: mongo < /tmp/initiate_script.js
+    args:
+      executable: /bin/bash
+
+  - name: Use commands file
+    shell: mongo < /tmp/commands.js
+    args:
+      executable: /bin/bash
+  when: setup_database|bool
 
 - block:
   - name: Export CLUSTER_NAME
