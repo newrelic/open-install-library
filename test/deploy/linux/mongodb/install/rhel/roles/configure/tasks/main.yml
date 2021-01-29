@@ -16,15 +16,30 @@
   shell: yum update -y
   become: true 
 
+- name: Copy mongodb repo file
+  template:
+    src: mongodb-org-4.4.repo
+    dest: /etc/yum.repos.d/mongodb-org-4.4.repo
+  become: true
+   
+- name: install mongodb
+  shell: yum install -y mongodb-org
+  become: true
+
+- name: Copy mongod.conf file
+  template:
+    src: mongod.conf
+    dest: /etc/
+  become: true
+
+- name: start mongodb service
+  shell: systemctl restart mongod
+  become: true
+
 - block:
-  - name: Copy mongodb repo file
+  - name: Copy commands.js file
     template:
-      src: mongodb-org-4.4.repo
-      dest: /etc/yum.repos.d/mongodb-org-4.4.repo
-    become: true
-  - name: Copy test.js file
-    template:
-      src: test.js
+      src: commands.js
       dest: /
     become: true
   - name: Copy initiate.js file
@@ -32,31 +47,13 @@
       src: initiate.js
       dest: /
     become: true
-  when: setup_database|bool
-   
-- name: install mongodb
-  shell: yum install -y mongodb-org
-  become: true
-
-- block:
-  - name: Copy mongod.conf file
-    template:
-      src: mongod.conf
-      dest: /etc/
+  - name: Initiate script
+    shell: mongo < /initiate.js
+    become: true
+  - name: Start script
+    shell: mongo < /commands.js
     become: true
   when: setup_database|bool
-
-- name: start mongodb
-  shell: systemctl start mongod
-  become: true
-
-- name: Initiate script
-  shell: mongo < /initiate.js
-  become: true
-
-- name: Start script
-  shell: mongo < /test.js
-  become: true
 
 - block:
   - name: Export CLUSTER_NAME
