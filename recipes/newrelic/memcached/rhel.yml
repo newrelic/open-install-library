@@ -1,0 +1,125 @@
+name: memcached-open-source-integration
+displayName: Memcached Open Source Integration
+description: New Relic install recipe for default Memcached Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-memcached
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - memcached
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - memcached
+  - memcache
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+# logMatch:
+#   - name: memcached
+#     file: /var/log/memcached/*access_log
+
+validationNrql: "SELECT count(*) from MemcachedSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "Memcached Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "Memcached Port (default: 11211)"
+    default: "11211"
+  - name: "NR_CLI_USERNAME"
+    prompt: "SASL Username (if applicable)"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "SASL Password (if applicable)"
+    secret: true
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+        
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing memcached integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-memcached -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/memcached-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/memcached-config.yml;
+          fi
+        - | 
+          if [ -z {{.NR_CLI_USERNAME}} ] && [ -z {{.NR_CLI_PASSWORD}} ]; then
+            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.memcached
+
+          instances:
+            - name: memcached
+              command: all_data
+              arguments:
+                # Hostname of the memcached instance.
+                # Defaults to localhost.
+                host: {{.NR_CLI_HOSTNAME}}
+                # Port memcached is running on.
+                # Defaults to 11211
+                port: {{.NR_CLI_PORT}}
+          EOT
+          else
+            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.memcached
+
+          instances:
+            - name: memcached
+              command: all_data
+              arguments:
+                # Hostname of the memcached instance.
+                # Defaults to localhost.
+                host: {{.NR_CLI_HOSTNAME}}
+                # Port memcached is running on.
+                # Defaults to 11211
+                port: {{.NR_CLI_PORT}}
+                # Memcached SASL username. Only required if
+                # authentication is enabled.
+                username: {{.NR_CLI_USERNAME}}
+                # Memcached SASL password. Only required if
+                # authentication is enabled.
+                password: {{.NR_CLI_PASSWORD}}
+          EOT
+          fi
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
