@@ -7,27 +7,25 @@
     is_core_app: "false"
   when: is_core_app is undefined
 
-- block:
-  - name: Set var for .net apps
-    set_fact:
-      web_app_pool_version = "v4.0"
-    when: web_app_pool_version is undefined
-  - name: Set default web_app_url
-    set_fact:
-      web_app_url = "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/windows/aspnet/WebApplication.zip"
-    when: web_app_url is undefined
-  when: (is_core_app|bool) == False
+- name: Set default app pool version
+  set_fact:
+    web_app_pool_version: "v4.0"
+  when: web_app_pool_version is undefined and (is_core_app|bool == False)
 
-- block:
-  - name: Set var for .net Core apps
-    set_fact:
-      web_app_pool_version = ""
-    when: web_app_pool_version is undefined
-  - name: Set default web_app_url
-    set_fact:
-      web_app_url = "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/windows/aspnet/CoreWebApplicationIis.zip"
-    when: web_app_url is undefined
-  when: is_core_app|bool
+- name: Set default app pool version for .net core
+  set_fact:
+    web_app_pool_version: ""
+  when: web_app_pool_version is undefined and (is_core_app|bool)
+
+- name: Set default download url
+  set_fact:
+    web_app_url: "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/windows/aspnet/WebApplication.zip"
+  when: web_app_url is undefined and (is_core_app|bool == False)
+
+- name: Set default download url for .net core
+  set_fact:
+    web_app_url: "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/windows/aspnet/CoreWebApplicationIis.zip"
+  when: web_app_url is undefined and (is_core_app|bool)
 
 - name: Remove Default Web Site
   win_shell: |
@@ -47,7 +45,7 @@
     Remove-WebSite -Name $iisWebsiteName
     }
 
-- name: Download WebApplication {{ service_id }}
+- name: Download WebApplication {{ service_id }} from {{ web_app_url }}
   win_shell: |
     Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Force
     $url = "{{ web_app_url }}"
