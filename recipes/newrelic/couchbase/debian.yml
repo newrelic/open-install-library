@@ -1,6 +1,3 @@
-# Visit our schema definition for additional information on this file format
-# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
-
 name: couchbase-open-source-integration
 displayName: Couchbase Open Source Integration
 description: New Relic install recipe for default Couchbase Open Source on-host integration (via Infra-Agent)
@@ -18,20 +15,18 @@ installTargets:
 keywords:
   - Infrastructure
   - Integration
-  - Couchbase
+  - couchbase
 
-# Examine Infrastructure events for correlated data
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
 processMatch:
   - couchbase
 
 # Matches partial list of the Log forwarding parameters
 logMatch:
-  - name: Error
-    file: /opt/couchbase/var/lib/couchbase/logs/error.log
-  - name: Couchbase
-    file: /opt/couchbase/var/lib/couchbase/logs/couchdb.log
+  - name: couchbase
+    file: /var/log/couchbase/couchbase*.log 
 
-validationNrql: "SELECT count(*) from CouchbaseClusterSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from CouchbaseNodeSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
 inputVars:
   - name: "NR_CLI_API_USERNAME"
@@ -44,8 +39,8 @@ inputVars:
   - name: "NR_CLI_API_PORT"
     prompt: "Couchbase Port (default: 8091)"
     default: 8091
-  - name: "NR_CLI_QUERY_PORT"
-    prompt: "Couchbase Query port (default: 8093)"
+  - name: "NR_CLI_API_QUERY_PORT"
+    prompt: "Couchbase query port (default: 8093)"
     default: 8093
   - name: "NR_CLI_API_USE_SSL"
     prompt: "Use SSL to connect? (true/false)"
@@ -56,8 +51,8 @@ inputVars:
     prompt: "SSL Certificate File (if applicable)"
 
 install:
+
   version: "3"
-  
   silent: true
 
   tasks:
@@ -65,7 +60,6 @@ install:
       cmds:
         - task: assert_pre_req
         - task: setup
-        - task: restart
 
     assert_pre_req:
       cmds:
@@ -75,23 +69,23 @@ install:
             echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
-
     setup:
       label: "Installing couchbase integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
-          sudo apt-get update
+          sudo apt-get update -y
         - |
           sudo apt-get install nri-couchbase -y
         - |
           if [ -f /etc/newrelic-infra/integrations.d/couchbase-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/couchbase-config.yml;
           fi
+          sudo touch /etc/newrelic-infra/integrations.d/couchbase-config.yml;
         - |
           if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
-            sudo tee /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.couchbase
           instances:
             - name: couchbase
@@ -99,12 +93,12 @@ install:
               arguments:
                 hostname: {{.NR_CLI_API_HOSTNAME}}
                 port: {{.NR_CLI_API_PORT}}
-                query_port: {{.NR_CLI_QUERY_PORT}}
+                query_port: {{.NR_CLI_API_QUERY_PORT}}
                 username: {{.NR_CLI_API_USERNAME}}
                 password: {{.NR_CLI_API_PASSWORD}}
           EOT
           else
-            sudo tee /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.couchbase
           instances:
             - name: couchbase
@@ -112,7 +106,7 @@ install:
               arguments:
                 hostname: {{.NR_CLI_API_HOSTNAME}}
                 port: {{.NR_CLI_API_PORT}}
-                query_port: {{.NR_CLI_QUERY_PORT}}
+                query_port: {{.NR_CLI_API_QUERY_PORT}}
                 username: {{.NR_CLI_API_USERNAME}}
                 password: {{.NR_CLI_API_PASSWORD}}
                 use_ssl: {{.NR_CLI_API_USE_SSL}}
@@ -120,7 +114,5 @@ install:
                 ca_bundle_file: {{.NR_CLI_API_CA_BUNDLE_FILE}}
           EOT
           fi
-
-    restart:
-      cmds:
+         
         - sudo systemctl restart newrelic-infra.service
