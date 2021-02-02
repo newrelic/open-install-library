@@ -1,0 +1,119 @@
+name: couchbase-open-source-integration
+displayName: Couchbase Open Source Integration
+description: New Relic install recipe for default Couchbase Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-couchbase
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "suse"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - couchbase
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - couchbase
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: couchbase
+    file: /var/log/couchbase/couchbase*.log 
+
+validationNrql: "SELECT count(*) from CouchbaseNodeSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_API_USERNAME"
+    prompt: "Couchbase Username"
+  - name: "NR_CLI_API_PASSWORD"
+    prompt: "Couchbase Password"
+  - name: "NR_CLI_API_HOSTNAME"
+    prompt: "Couchbase Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_API_PORT"
+    prompt: "Couchbase Port (default: 8091)"
+    default: 8091
+  - name: "NR_CLI_API_QUERY_PORT"
+    prompt: "Couchbase query port (default: 8093)"
+    default: 8093
+  - name: "NR_CLI_API_USE_SSL"
+    prompt: "Use SSL to connect? (true/false)"
+    default: false
+  - name: "NR_CLI_API_CA_BUNDLE_DIR"
+    prompt: "SSL certificate Directory (if applicable)"
+  - name: "NR_CLI_API_CA_BUNDLE_FILE"
+    prompt: "SSL Certificate File (if applicable)"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing couchbase integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-couchbase -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/couchbase-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/couchbase-config.yml;
+          fi
+
+          sudo touch /etc/newrelic-infra/integrations.d/couchbase-config.yml;
+        - |
+          if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.couchbase
+
+          instances:
+            - name: couchbase
+              command: all_data
+              arguments:
+                hostname: {{.NR_CLI_API_HOSTNAME}}
+                port: {{.NR_CLI_API_PORT}}
+                query_port: {{.NR_CLI_API_QUERY_PORT}}
+                username: {{.NR_CLI_API_USERNAME}}
+                password: {{.NR_CLI_API_PASSWORD}}
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.couchbase
+
+          instances:
+            - name: couchbase
+              command: all_data
+              arguments:
+                hostname: {{.NR_CLI_API_HOSTNAME}}
+                port: {{.NR_CLI_API_PORT}}
+                query_port: {{.NR_CLI_API_QUERY_PORT}}
+                username: {{.NR_CLI_API_USERNAME}}
+                password: {{.NR_CLI_API_PASSWORD}}
+                use_ssl: {{.NR_CLI_API_USE_SSL}}
+                ca_bundle_dir: {{.NR_CLI_API_CA_BUNDLE_DIR}}
+                ca_bundle_file: {{.NR_CLI_API_CA_BUNDLE_FILE}}
+          EOT
+          fi
+         
+        - sudo systemctl restart newrelic-infra.service
