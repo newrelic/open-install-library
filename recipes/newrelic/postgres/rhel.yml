@@ -1,0 +1,141 @@
+name: postgres-open-source-integration
+displayName: Postgres Open Source Integration
+description: New Relic install recipe for default Postgres Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-postgresql
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "amazon"
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "redhat"
+  - type: host
+    os: linux
+    platform: "centos"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - postgres
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - postgres
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: postgresql
+    file: /var/log/postgresql/postgresql*.log
+
+validationNrql: "SELECT count(*) from PostgresqlDatabaseSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_USERNAME"
+    prompt: "Postgres Username"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "Postgres Password"
+  - name: "NR_CLI_DATABASE"
+    prompt: "Postgres Database (default: postgres)"
+    default: "postgres"
+  - name: "NR_CLI_PORT"
+    prompt: "Postgres Port (default: 5432)"
+    default: 5432
+  - name: "NR_CLI_SSL"
+    prompt: "Use SSL to connect? (true/false)"
+  - name: "NR_CLI_CERT_AUTH_FILE"
+    prompt: "Certificate Authority file (if applicable)"
+  - name: "NR_CLI_TRUST_SERVER_CERTIFICATE"
+    prompt: "Trust certificate? (true/false)"
+  - name: "NR_CLI_CLIENT_CERT_FILE"
+    prompt: "Client Certificate file (if applicable)"
+  - name: "NR_CLI_CERT_KEY"
+    prompt: "PEM key file (if applicable)"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: create_user_notification
+        - taks: assert_pre_req
+        - task: setup
+
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "Note: In order for this integration to function you need to either create or have an existing user with READ Permissions on pg_stat_database, pg_stat_database_conflicts and pg_stat_bgwriter.
+          If you\'d like to create a new user with these permissions please follow these steps within your PostgresSQL Instance:
+          CREATE USER new_relic WITH PASSWORD \'PASSWORD\'; GRANT SELECT ON pg_stat_database TO new_relic; GRANT SELECT ON pg_stat_database_conflicts TO new_relic; GRANT SELECT ON pg_stat_bgwriter TO new_relic;"
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing postgresql integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-postgresql -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
+          fi
+          sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
+        - |
+          if [ {{.NR_CLI_SSL}} == false ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.postgresql
+          instances:
+            - name: postgres
+              command: all_data
+              arguments:
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                hostname: localhost
+                database: {{.NR_CLI_DATABASE}}
+                port: {{.NR_CLI_PORT}}
+                collection_list: 'ALL'
+                collect_db_lock_metrics: false
+                enable_ssl: {{.NR_CLI_SSL}}
+                timeout: 10
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.postgresql
+          instances:
+            - name: postgres
+              command: all_data
+              arguments:
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                hostname: localhost
+                database: {{.NR_CLI_DATABASE}}
+                port: {{.NR_CLI_PORT}}
+                collection_list: 'ALL'
+                collect_db_lock_metrics: false
+                enable_ssl: {{.NR_CLI_SSL}}
+                trust_server_certificate: {{.NR_CLI_TRUST_SERVER_CERTIFICATE}}
+                ssl_root_cert_location: {{.NR_CLI_CERT_AUTH_FILE}}
+                ssl_cert_location: {{.NR_CLI_CLIENT_CERT_FILE}}
+                ssl_key_location: {{.NR_CLI_CERT_KEY}}
+                timeout: 10
+          EOT
+          fi
+         
+        - sudo systemctl restart newrelic-infra.service
