@@ -82,6 +82,7 @@ install:
             echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
+
     setup:
       label: "Installing postgresql integration..."
       cmds:
@@ -95,8 +96,29 @@ install:
           if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
           fi
-        - | 
-          sudo tee /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+          sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
+        - |
+          if [ "$NR_CLI_SSL" == false ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.postgresql
+          instances:
+            - name: postgres
+              command: all_data
+              arguments:
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                hostname: localhost
+                database: {{.NR_CLI_DATABASE}}
+                port: {{.NR_CLI_PORT}}
+                collection_list: 'ALL'
+                collect_db_lock_metrics: false
+                ssl_root_cert_location: {{.NR_CLI_CERT_AUTH_FILE}}
+                ssl_cert_location: {{.NR_CLI_CLIENT_CERT_FILE}}
+                ssl_key_location: {{.NR_CLI_CERT_KEY}}
+                timeout: 10
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.postgresql
           instances:
             - name: postgres
@@ -116,5 +138,6 @@ install:
                 ssl_key_location: {{.NR_CLI_CERT_KEY}}
                 timeout: 10
           EOT
+          fi
          
         - sudo systemctl restart newrelic-infra.service
