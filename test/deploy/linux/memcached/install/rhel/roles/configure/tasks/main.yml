@@ -1,0 +1,72 @@
+---
+- debug:
+    msg: Install Memcached
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default configure_sasl (default not create)
+  set_fact:
+    configure_sasl: "false"
+  when: configure_sasl is undefined
+
+- name: update yum packages
+  shell: yum update -y
+  become: true
+
+- name: install memcached
+  shell: yum install memcached -y
+  become: true
+
+- name: install php extenstion
+  shell: yum install php-pecl-memcache -y
+  become: true
+
+- name: install memcached extension
+  shell: yum install libmemcached -y
+  become: true 
+
+- block:
+  - name: Copy memcached config file
+    template:
+      src: memcached
+      dest: /etc/sysconfig/memcached
+    become: true
+  - name: restart memcached
+    shell: systemctl restart memcached
+    become: true
+  - name: create sasl directory
+    shell: mkdir -p /etc/sasl2
+    become: true 
+  - name: Copy sasl config file
+    template:
+      src: sasl/memcached.conf
+      dest: /etc/sasl2/memcached.conf
+    become: true
+  - name: install sasl
+    shell: yum install cyrus-sasl-devel cyrus-sasl-plain -y
+    become: true
+  - name: create sasl user
+    shell: echo Virtuoso4all! | saslpasswd2 -a memcached -c -f /etc/sasl2/memcached-sasldb2 newrelic
+    become: true
+  - name: add permisions
+    shell: chown memcached:memcached /etc/sasl2/memcached-sasldb2
+    become: true
+  when: configure_sasl|bool
+
+- name: restart memcached
+  shell: systemctl restart memcached
+  become: true
+
+- block:
+  - name: Export HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export PORT
+    shell: "echo export NR_CLI_PORT=11211 >> ~/.bashrc"
+  - name: Export USERNAME
+    shell: "echo export NR_CLI_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=Virtuoso4all! >> ~/.bashrc"
+  when: create_env_var|bool
