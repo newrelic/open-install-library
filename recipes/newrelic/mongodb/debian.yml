@@ -1,0 +1,244 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: mongodb-open-source-integration
+displayName: MongoDB Open Source Integration
+description: New Relic install recipe for default MongoDB Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-mongodb
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - mongodb
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - mongodb
+  - mongod
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch:
+  - name: MongoDB log
+    file: /var/log/mongodb/mongod.log
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from MongoDatabaseSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "MongoDB Username"
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "MongoDB Password"
+    secret: true
+  - name: "NR_CLI_DB_CLUSTERNAME"
+    prompt: "MongoDB Cluster Name"
+  - name: "NR_CLI_DB_AUTH"
+    prompt: "MongoDB Auth Source (default: admin)"
+    default: "admin"
+  - name: "NR_CLI_DB_HOSTNAME"
+    prompt: "MongoDB Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_DB_PORT"
+    prompt: "MongoDB Port (default: 27017)"
+    default: 27017
+  - name: "NR_CLI_SSL"
+    prompt: "Use SSL to connect? (y/n)"
+  - name: "NR_CLI_CERT_AUTH_FILE"
+    prompt: "Certificate Authority file (if applicable)"
+  - name: "NR_CLI_SKIP_SSL_VERIFY"
+    prompt: "Verify certificate? (y/n)"
+  - name: "NR_CLI_CLIENT_CERT_FILE"
+    prompt: "Client Certificate file (if applicable)"
+  - name: "NR_CLI_CERT_PASSPHRASE"
+    prompt: "Passphrase to decrypt the PEM key file (if applicable)"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: create_user_notification
+        - task: setup
+        - task: restart
+        
+    create_user_notification:
+      cmds:
+        - |
+          echo "_ Note: These steps must be completed in order for the MongoDB integration to function properly.
+          In the MongoDB shell, enter use admin.
+          Use the following command to create the listCollections role.
+          db.createRole({role: "listCollections", privileges: [{ resource: {db:"",collection:""}, actions: ["listCollections"] }], roles: []})
+          Use the following commands to create a new user, and assign clusterMonitor and listCollections roles to the user:
+          db.createUser({ user: "username", pwd: "password", roles: [ "clusterMonitor", "listCollections" ]})"
+
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+        - |
+          MONGODB_EXISTS=$(mongo --eval 'db.runCommand({ connectionStatus: 1 })' | grep "ok" | awk '{print $1 $2 $3}')
+          if [ $MONGODB_EXISTS != "ok:1"]; then
+            echo "Cannot estabilish connection to mongodb, please verify that it's installed correctly."
+            exit 2
+          fi
+
+    setup:
+      label: "Installing mongodb integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-mongodb -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/mongodb-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/mongodb-config.yml;
+          fi
+        - | 
+          if [ "{{.NR_CLI_SSL}}" == "y" ]; then
+            if [ "{{.NR_CLI_SKIP_SSL_VERIFY}}" == "n" ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.mongodb
+
+          instances: 
+            - name: all
+              command: all
+              arguments:
+                # The mongos to connect to
+                host: {{.NR_CLI_DB_HOSTNAME}}
+                # The port the mongos is running on
+                port: {{.NR_CLI_DB_PORT}}
+                # The username of the user created to monitor the cluster.
+                # This user should exist on the cluster as a whole as well
+                # as on each of the individual mongods.
+                username: {{.NR_CLI_DB_USERNAME}}
+                # The password for the monitoring user
+                password: {{.NR_CLI_DB_PASSWORD}}
+                # The database on which the monitoring user is stored
+                auth_source: {{.NR_CLI_DB_AUTH}}
+                # A user-defined cluster name. Required.
+                cluster_name: {{.NR_CLI_DB_CLUSTERNAME}}
+                # Connect using SSL
+                ssl: true
+                # Skip verification of the certificate sent by the host.
+                # This can make the connection susceptible to man-in-the-middle attacks,
+                # and should only be used for testing
+                ssl_insecure_skip_verify: true
+                # Path to the CA certs file
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                # Client Certificate to present to the server (optional)
+                pem_key_file: {{.NR_CLI_CLIENT_CERT_FILE}}
+                # Passphrase to decrypt PEMKeyFile file (optional)
+                passphrase: {{.NR_CLI_CERT_PASSPHRASE}}
+                # A JSON map of database names to an array of collection names. If empty,
+                # defaults to all databases and collections. If the list of collections is null,
+                # collects all collections for the database.
+                filters: '{"admin":null}'
+                # The number of entities to collect metrics for concurrently. Tunable to
+                # limit CPU and memory usage
+                concurrent_collections: 50
+          EOT
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.mongodb
+
+          instances: 
+            - name: all
+              command: all
+              arguments:
+                # The mongos to connect to
+                host: {{.NR_CLI_DB_HOSTNAME}}
+                # The port the mongos is running on
+                port: {{.NR_CLI_DB_PORT}}
+                # The username of the user created to monitor the cluster.
+                # This user should exist on the cluster as a whole as well
+                # as on each of the individual mongods.
+                username: {{.NR_CLI_DB_USERNAME}}
+                # The password for the monitoring user
+                password: {{.NR_CLI_DB_PASSWORD}}
+                # The database on which the monitoring user is stored
+                auth_source: {{.NR_CLI_DB_AUTH}}
+                # A user-defined cluster name. Required.
+                cluster_name: {{.NR_CLI_DB_CLUSTERNAME}}
+                # Connect using SSL
+                ssl: true
+                # Skip verification of the certificate sent by the host.
+                # This can make the connection susceptible to man-in-the-middle attacks,
+                # and should only be used for testing
+                ssl_insecure_skip_verify: false
+                # Path to the CA certs file
+                ssl_ca_certs: {{.NR_CLI_CERT_AUTH_FILE}}
+                # A JSON map of database names to an array of collection names. If empty,
+                # defaults to all databases and collections. If the list of collections is null,
+                # collects all collections for the database.
+                filters: '{"admin":null}'
+                # The number of entities to collect metrics for concurrently. Tunable to
+                # limit CPU and memory usage
+                concurrent_collections: 50
+          EOT
+            fi
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.mongodb
+
+          instances: 
+            - name: all
+              command: all
+              arguments:
+                # The mongos to connect to
+                host: {{.NR_CLI_DB_HOSTNAME}}
+                # The port the mongos is running on
+                port: {{.NR_CLI_DB_PORT}}
+                # The username of the user created to monitor the cluster.
+                # This user should exist on the cluster as a whole as well
+                # as on each of the individual mongods.
+                username: {{.NR_CLI_DB_USERNAME}}
+                # The password for the monitoring user
+                password: {{.NR_CLI_DB_PASSWORD}}
+                # The database on which the monitoring user is stored
+                auth_source: {{.NR_CLI_DB_AUTH}}
+                # A user-defined cluster name. Required.
+                cluster_name: {{.NR_CLI_DB_CLUSTERNAME}}
+                # Connect using SSL
+                ssl: false
+                # Skip verification of the certificate sent by the host.
+                # This can make the connection susceptible to man-in-the-middle attacks,
+                # and should only be used for testing
+                ssl_insecure_skip_verify: true
+                # Path to the CA certs file
+                ssl_ca_certs: /sample/path/to/ca_certs
+                # A JSON map of database names to an array of collection names. If empty,
+                # defaults to all databases and collections. If the list of collections is null,
+                # collects all collections for the database.
+                filters: '{"admin":null}'
+                # The number of entities to collect metrics for concurrently. Tunable to
+                # limit CPU and memory usage
+                concurrent_collections: 50
+          EOT
+          fi
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service

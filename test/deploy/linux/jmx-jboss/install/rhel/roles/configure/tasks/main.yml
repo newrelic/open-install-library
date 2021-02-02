@@ -7,6 +7,11 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
+- name: Set default create_env_var (default not create)
+  set_fact:
+    configure_jmx_connection: "false"
+  when: configure_jmx_connection is undefined
+
 - name: Install Java
   yum:
     name: ["java"]
@@ -28,14 +33,6 @@
 
 - name: Unpack Jboss to opt
   shell: tar xf /tmp/wildfly-18.0.1.Final.tar.gz -C /opt/
-  become: true
-
-- name: Download CometD
-  shell: wget https://download.cometd.org/cometd-5.0.0-distribution.tar.gz
-  become: true
-
-- name: Extract CometD
-  shell: tar zxvf cometd-5.0.0-distribution.tar.gz -C /tmp/
   become: true
 
 - name: Create a symbolic link for Jboss
@@ -74,17 +71,27 @@
   shell: systemctl start wildfly && systemctl enable wildfly
   become: true
 
-- name: Create management user
-  shell: /opt/wildfly/bin/add-user.sh admin1234 Password1! --silent
-  become: true
+- block: 
+  - name: Create management user
+    shell: /opt/wildfly/bin/add-user.sh newrelic Virtuoso4all! --silent
+    become: true
 
-- name: Install JBoss Custom Connector
-  shell: mkdir -p /usr/lib/nrjmx/connectors && sudo cp /opt/wildfly/bin/client/* /usr/lib/nrjmx/connectors/
-  become: true
+  - name: Install JBoss Custom Connector
+    shell: mkdir -p /usr/lib/nrjmx/connectors && sudo cp /opt/wildfly/bin/client/* /usr/lib/nrjmx/connectors/
+    become: true
+  
+  - name: Download CometD
+    shell: wget https://download.cometd.org/cometd-5.0.0-distribution.tar.gz
+    become: true
 
-- name: Deploy CometD war file
-  shell: cp /tmp/cometd-5.0.0/cometd-demo/target/cometd-demo-5.0.0.war /opt/wildfly-18.0.1.Final/standalone/deployments/
-  become: true
+  - name: Extract CometD
+    shell: tar zxvf cometd-5.0.0-distribution.tar.gz -C /tmp/
+    become: true
+
+  - name: Deploy CometD war file
+    shell: cp /tmp/cometd-5.0.0/cometd-demo/target/cometd-demo-5.0.0.war /opt/wildfly-18.0.1.Final/standalone/deployments/
+    become: true
+  when: configure_jmx_connection|bool
 
 - name: Restart wildfly service
   shell: systemctl restart wildfly
@@ -92,9 +99,9 @@
 
 - block:
   - name: Export USERNAME
-    shell: "echo export NR_CLI_JMX_USERNAME=admin1234 >> ~/.bashrc"
+    shell: "echo export NR_CLI_JMX_USERNAME=newrelic >> ~/.bashrc"
   - name: Export PASSWORD
-    shell: "echo export NR_CLI_JMX_PASSWORD=Password1! >> ~/.bashrc"
+    shell: "echo export NR_CLI_JMX_PASSWORD=Virtuoso4all! >> ~/.bashrc"
   - name: Export HOSTNAME
     shell: "echo export NR_CLI_JMX_HOST=localhost >> ~/.bashrc"
   - name: Export DB_PORT
