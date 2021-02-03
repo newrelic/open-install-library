@@ -1,0 +1,88 @@
+---
+- debug:
+    msg: Install RabbitMQ
+
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: update packages
+  shell: yum update -y 
+  become: true 
+
+- name: install epel repo
+  shell: yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+  become: true 
+
+- name: enable epel
+  shell: yum-config-manager --enable epel
+  become: true 
+
+- name: Install erlang
+  shell: yum install -y erlang --enablerepo=epel
+  become: true 
+
+- name: Install package named yum-plugin-versionlock
+  shell: yum install -y yum-plugin-versionlock
+  become: true
+
+- name: gcc package
+  shell: yum versionlock gcc-*
+  become: true
+
+- name: install socat
+  shell: yum install -y socat
+  become: true 
+
+- name: install logrotate
+  shell: yum install -y logrotate
+  become: true 
+
+- name: install rabbitmq
+  shell: wget http://www.rabbitmq.com/releases/rabbitmq-server/v3.6.10/rabbitmq-server-3.6.10-1.el6.noarch.rpm
+  become: true 
+
+- name: unpack rabbitmq repo
+  shell: rpm -Uvh rabbitmq-server-3.6.10-1.el6.noarch.rpm
+  become: true 
+
+- name: run rabbitmq 
+  shell: /sbin/service rabbitmq-server start
+  become: true 
+
+- block:
+  - name: create user
+    shell: rabbitmqctl add_user newrelic Virtuoso4all!
+    become: true 
+  when: create_newrelic_user|bool
+
+- block:
+  - name: Export NR_CLI_USERNAME
+    shell: "echo export NR_CLI_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export NR_CLI_PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=Virtuoso4all! >> ~/.bashrc"
+  - name: Export NR_CLI_PORT
+    shell: "echo export NR_CLI_PORT=15672 >> ~/.bashrc"
+  - name: Export NR_CLI_HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export NR_CLI_SSL
+    shell: "echo export NR_CLI_SSL=false >> ~/.bashrc"
+  - name: Export NR_CLI_CONF_PATH
+    shell: "echo export NR_CLI_CONF_PATH=/etc/rabbitmq/rabbitmq.conf"
+  - name: Export NR_CLI_QUEUES
+    shell: "echo export NR_CLI_QUEUES=notUsed"
+  - name: Export NR_CLI_EXCHANGES
+    shell: "echo export NR_CLI_EXCHANGES=notUsed"
+  - name: Export NR_CLI_VHOST
+    shell: "echo export NR_CLI_VHOST=notUsed"
+  - name: Export NR_CLI_API_CA_BUNDLE_DIR
+    shell: "echo export NR_CLI_API_CA_BUNDLE_DIR=notUsed"
+  - name: Export NR_CLI_API_CA_BUNDLE_FILE
+    shell: "echo export NR_CLI_API_CA_BUNDLE_FILE=notUsed"
+  when: create_env_var|bool
