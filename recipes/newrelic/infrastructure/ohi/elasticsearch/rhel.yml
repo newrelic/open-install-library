@@ -6,10 +6,14 @@ repository: https://github.com/newrelic/nri-elasticsearch
 installTargets:
   - type: host
     os: linux
-    platform: "debian"
+    platform: "amazon"
+    platformVersion: "2"
   - type: host
     os: linux
-    platform: "ubuntu"
+    platform: "redhat"
+  - type: host
+    os: linux
+    platform: "centos"
 
 # keyword convention for dealing with search terms that could land someone on this instrumentation project
 keywords:
@@ -27,7 +31,7 @@ logMatch:
   - name: elasticsearch
     file: /var/log/elasticsearch/elasticsearch*.log 
 
-validationNrql: "SELECT count(*) from ElasticsearchClusterSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from ElasticsearchClusterSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
 inputVars:
   - name: "NR_CLI_API_USERNAME"
@@ -59,17 +63,7 @@ install:
   tasks:
     default:
       cmds:
-        - taks: assert_pre_req
         - task: setup
-
-    assert_pre_req:
-      cmds:
-        - |
-          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
-          if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
-            exit 1
-          fi
 
     setup:
       label: "Installing elasticsearch integration..."
@@ -77,9 +71,9 @@ install:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
-          sudo apt-get update
+          sudo yum update -y
         - |
-          sudo apt-get install nri-elasticsearch -y
+          sudo yum install nri-elasticsearch -y
         - |
           if [ -f /etc/newrelic-infra/integrations.d/elasticsearch-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/elasticsearch-config.yml;
@@ -87,7 +81,7 @@ install:
 
           sudo touch /etc/newrelic-infra/integrations.d/elasticsearch-config.yml;
         - |
-          if [ "$NR_CLI_API_USE_SSL" == false ]; then
+          if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
             sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.elasticsearch
 
