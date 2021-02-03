@@ -1,0 +1,56 @@
+---
+- debug:
+    msg: Install Couchbase
+
+- name: Set default initialize_cluster (default not create)
+  set_fact:
+    initialize_cluster: "false"
+  when: initialize_cluster is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Download the meta package
+  shell: curl -O https://packages.couchbase.com/releases/couchbase-release/couchbase-release-1.0-amd64.deb
+
+- name: Install the meta package
+  shell: dpkg -i ./couchbase-release-1.0-amd64.deb
+  become: true
+
+- name: Reload local package database
+  shell: apt-get update -y
+  become: true
+
+- name: Install latest release of couchbase-server-community
+  shell: apt-get install couchbase-server-community
+  become: true
+
+- name: Wait for couchbase
+  pause:
+    seconds: 20 
+
+- block:
+  - name: Initialize cluster
+    shell: /opt/couchbase/bin/couchbase-cli cluster-init --cluster 127.0.0.1:8091 --cluster-name Test --cluster-username newrelic --cluster-password Virtuoso4all! --cluster-ramsize 1300 --cluster-analytics-ramsize 1024 --services data
+  when: initialize_cluster|bool
+
+- block:
+  - name: Export NR_CLI_USERNAME
+    shell: "echo export NR_CLI_API_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export NR_CLI_PASSWORD
+    shell: "echo export NR_CLI_API_PASSWORD=Virtuoso4all! >> ~/.bashrc"
+  - name: Export NR_CLI_API_PORT
+    shell: "echo export NR_CLI_API_PORT=8091 >> ~/.bashrc"
+  - name: Export NR_CLI_QUERY_PORT
+    shell: "echo export NR_CLI_API_QUERY_PORT=8093 >> ~/.bashrc"
+  - name: Export NR_CLI_HOSTNAME
+    shell: "echo export NR_CLI_API_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export USE_SSL
+    shell: "echo export NR_CLI_API_USE_SSL=false >> ~/.bashrc"
+  - name: Export CA_BUNDLE_DIR
+    shell: "echo export NR_CLI_API_CA_BUNDLE_DIR=notUsed >> ~/.bashrc"
+  - name: Export CA_BUNDLE_FILE
+    shell: "echo export NR_CLI_API_CA_BUNDLE_FILE=notUsed >> ~/.bashrc"
+  when: create_env_var|bool
