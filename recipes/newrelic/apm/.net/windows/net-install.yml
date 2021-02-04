@@ -2,8 +2,8 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 name: dotnet-agent-installer
-displayName: .net Agent Installer
-description: New Relic install recipe for .net application on Windows
+displayName: .NET Agent Installer
+description: New Relic install recipe for .NET application on Windows
 repository: https://github.com/newrelic/newrelic-dotnet-agent
 
 installTargets:
@@ -12,7 +12,7 @@ installTargets:
 
 keywords:
   - Apm
-  - .net
+  - .NET
   - dotnet
   - aspnet
   - core
@@ -33,6 +33,7 @@ install:
         - task: stop
         - task: remove_any_previous
         - task: install
+        - task: configure
         - task: start
         - task: ensure_sites_started
 
@@ -48,10 +49,24 @@ install:
     install:
       cmds:
         - |
-          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+          powershell -command '
+          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls";
           (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi");
-          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" | Out-Null;
-        - echo "New Relic .net agent installed"
+          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} | Out-Null;'
+        - echo "New Relic .NET agent installed"
+
+    configure:
+      cmds:
+        - |
+          powershell -command '
+          $configPath = "$env:ProgramData\New Relic\.NET Agent\newrelic.config";
+          $file = Resolve-Path("$configPath");
+          $xdoc = New-Object System.Xml.XmlDocument;
+          $xdoc.PreserveWhitespace = $true;
+          $xdoc.Load($file);
+          $xdoc.configuration.application.RemoveAll();
+          $xdoc.Save($configPath)'
+        - echo "New Relic .NET agent configured"
 
     start:
       cmds:
