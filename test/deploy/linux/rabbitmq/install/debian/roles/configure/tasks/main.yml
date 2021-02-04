@@ -1,0 +1,72 @@
+---
+- debug:
+    msg: Install RabbitMq
+
+- name: update packages
+  shell: apt-get update -y
+  become: true
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Install rabbitmq
+  apt:
+    name: ['rabbitmq-server']
+    update_cache: yes
+    state: latest
+  become: true
+
+- name: Enable management plugin
+  shell: rabbitmq-plugins enable rabbitmq_management
+  become: true
+
+- block:
+  - name: create user
+    shell: rabbitmqctl add_user newrelic Virtuoso4all!
+    become: true 
+  - name: add user tags
+    shell: rabbitmqctl set_user_tags newrelic administrator
+    become: true 
+  - name:  add permissions
+    shell: rabbitmqctl set_permissions -p / newrelic ".*" ".*" ".*"
+    become: true 
+  - name: Create exchange
+    shell: rabbitmqadmin declare exchange --vhost=/ name=newrelic type=direct
+  - name: Create queue out
+    shell: rabbitmqadmin declare queue --vhost=/ name=newrelic_out durable=true
+  - name: Create binding
+    shell: rabbitmqadmin -u newrelic -p Virtuoso4all! -V / declare binding source=newrelic destination=newrelic_out
+  when: create_newrelic_user|bool
+
+- block:
+  - name: Export NR_CLI_USERNAME
+    shell: "echo export NR_CLI_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export NR_CLI_PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=Virtuoso4all! >> ~/.bashrc"
+  - name: Export NR_CLI_PORT
+    shell: "echo export NR_CLI_PORT=15672 >> ~/.bashrc"
+  - name: Export NR_CLI_HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export NR_CLI_SSL
+    shell: "echo export NR_CLI_SSL=false >> ~/.bashrc"
+  - name: Export NR_CLI_RABBIT_CONFIG_PATH
+    shell: "echo export NR_CLI_RABBIT_CONFIG_PATH=/etc/rabbitmq/rabbitmq.conf >> ~/.bashrc"
+  - name: Export NR_CLI_QUEUES
+    shell: "echo export NR_CLI_QUEUES=newrelic_out >> ~/.bashrc"
+  - name: Export NR_CLI_EXCHANGES
+    shell: "echo export NR_CLI_EXCHANGES=newrelic >> ~/.bashrc"
+  - name: Export NR_CLI_VHOST
+    shell: "echo export NR_CLI_VHOST=/ >> ~/.bashrc"
+  - name: Export NR_CLI_API_CA_BUNDLE_DIR
+    shell: "echo export NR_CLI_API_CA_BUNDLE_DIR=notUsed >> ~/.bashrc"
+  - name: Export NR_CLI_API_CA_BUNDLE_FILE
+    shell: "echo export NR_CLI_API_CA_BUNDLE_FILE=notUsed >> ~/.bashrc"
+  when: create_env_var|bool
+
