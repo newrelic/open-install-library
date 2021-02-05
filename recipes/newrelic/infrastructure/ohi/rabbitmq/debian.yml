@@ -32,24 +32,25 @@ inputVars:
     prompt: "RabbitMQ Username"
   - name: "NR_CLI_PASSWORD"
     prompt: "RabbitMQ Password"
-  - name: "NR_CLI_SSL"
-    prompt: "Use SSL to connect? (true/false)"
   - name: "NR_CLI_PORT"
-    prompt: "Rabbit MQ Port (default: 15672)"
+    prompt: "RabbitMQ Management Plugin Port (default: 15672)"
     default: 15672
   - name: "NR_CLI_HOSTNAME"
-    prompt: "RabbitMQ hostname (default: localhost)"
+    prompt: "RabbitMQ Hostname (default: localhost)"
     default: "localhost"
   - name: "NR_CLI_RABBIT_CONFIG_PATH"
-    prompt: "Please enter your RabbitMQ Configuration File Path"
+    prompt: "RabbitMQ Configuration File Path"
+    default: /etc/rabbitmq/rabbitmq.conf
   - name: "NR_CLI_QUEUES"
-    prompt: "Please enter a comma separated list of the queue names you'd like to collect data from:"
+    prompt: 'Queue Names to Collect (expected: ["myQueue1", "myQueue2"])'
   - name: "NR_CLI_EXCHANGES"
-    prompt: "If desired, please enter a comma separated list of the exchanges you'd like to collect data from:"
-  - name: NR_CLI_VHOST
-    prompt: "if desired, please enter a comma separated list of the Vhosts you'd like to collect data from:"
+    prompt: 'Exchange Names to Collect (expected: ["myExchange1", "myExchange2"])'
+  - name: NR_CLI_VHOSTS
+    prompt: 'Vhost Names to Collect (expected: ["myVhost1", "myVhost2"]'
+  - name: "NR_CLI_SSL"
+    prompt: "Use SSL to connect? (true/false)"
   - name: "NR_CLI_API_CA_BUNDLE_DIR"
-    prompt: "SSL certificate Directory (if applicable)"
+    prompt: "SSL Certificate Directory (if applicable)"
   - name: "NR_CLI_API_CA_BUNDLE_FILE"
     prompt: "SSL Certificate File (if applicable)"
 
@@ -94,7 +95,6 @@ install:
           if [ -f /etc/newrelic-infra/integrations.d/rabbitmq-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/rabbitmq-config.yml;
           fi
-          sudo touch /etc/newrelic-infra/integrations.d/rabbitmq-config.yml;
         - |
           if [ {{.NR_CLI_SSL}} == false ]; then
             sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
@@ -103,17 +103,18 @@ install:
             - name: rabbitmq
               command: all
               arguments:
-                      hostname: {{.NR_CLI_HOSTNAME}}
-                      port: {{.NR_CLI_PORT}}
-                      username: {{.NR_CLI_USERNAME}}
-                      password: {{.NR_CLI_PASSWORD}}
-                      queues: '["{{.NR_CLI_QUEUES}}"]'
-                      config_path: {{.NR_CLI_RABBIT_CONFIG_PATH}}
-                      queues_regexes: 
-                      exchanges: '["{{.NR_CLI_EXCHANGES}}"]'
-                      exchanges_regexes:
-                      vhosts: '["{{.NR_CLI_VHOST}}"]'
-                      vhosts_regexes: 
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                use_ssl: {{.NR_CLI_SSL}}
+                config_path: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                queues: '{{.NR_CLI_QUEUES}}'
+                queues_regexes: 
+                exchanges: '{{.NR_CLI_EXCHANGES}}'
+                exchanges_regexes:
+                vhosts: '{{.NR_CLI_VHOSTS}}'
+                vhosts_regexes: 
           EOT
           else
             sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
@@ -122,20 +123,20 @@ install:
             - name: rabbitmq
               command: all
               arguments:
-                      hostname: {{.NR_CLI_HOSTNAME}}
-                      port: {{.NR_CLI_PORT}}
-                      username: {{.NR_CLI_USERNAME}}
-                      password: {{.NR_CLI_PASSWORD}}
-                      ca_bundle_dir: {{.NR_CLI_BUNDLE_DIR}}
-                      ca_bundle_file: {{.NR_CLI_BUNDLE_FILE}}
-                      use_ssl: {{.NR_CLI_USE_SSL}}
-                      config_path: {{.NR_CLI_RABBIT_CONFIG_PATH}}
-                      queues: '["{{.NR_CLI_QUEUES}}"]'
-                      queues_regexes:
-                      exchanges: '["{{.NR_CLI_EXCHANGES}}"]'
-                      exchanges_regexes:
-                      vhosts: '["{{.NR_CLI_VHOST}}"]'
-                      vhosts_regexes:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                ca_bundle_dir: {{.NR_CLI_BUNDLE_DIR}}
+                ca_bundle_file: {{.NR_CLI_BUNDLE_FILE}}
+                use_ssl: {{.NR_CLI_SSL}}
+                config_path: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                queues: '{{.NR_CLI_QUEUES}}'
+                queues_regexes:
+                exchanges: '{{.NR_CLI_EXCHANGES}}'
+                exchanges_regexes:
+                vhosts: '{{.NR_CLI_VHOSTS}}'
+                vhosts_regexes:
           EOT
           fi
         - sudo systemctl restart newrelic-infra.service
