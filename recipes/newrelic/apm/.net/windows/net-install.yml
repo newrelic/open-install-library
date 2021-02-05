@@ -1,0 +1,81 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: dotnet-agent-installer
+displayName: .NET Agent Installer
+description: New Relic install recipe for .NET application on Windows
+repository: https://github.com/newrelic/newrelic-dotnet-agent
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Apm
+  - .NET
+  - dotnet
+  - aspnet
+  - core
+
+processMatch:
+  - w3wp.exe
+
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: stop
+        - task: remove_any_previous
+        - task: install
+        - task: configure
+        - task: start
+        - task: ensure_sites_started
+
+    stop:
+      cmds:
+        - cmd /c "iisreset /stop"
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product -Filter "Name like 'New Relic .NET Agent%'"; $app.Uninstall()'
+
+    install:
+      cmds:
+        - |
+          powershell -command '
+          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls";
+          (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi");
+          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} | Out-Null;'
+        - echo "New Relic .NET agent installed"
+
+    configure:
+      cmds:
+        - |
+          powershell -command '
+          $configPath = "$env:ProgramData\New Relic\.NET Agent\newrelic.config";
+          $file = Resolve-Path("$configPath");
+          $xdoc = New-Object System.Xml.XmlDocument;
+          $xdoc.PreserveWhitespace = $true;
+          $xdoc.Load($file);
+          $xdoc.configuration.application.RemoveAll();
+          if ("{{.NEW_RELIC_REGION}}" -like "STAGING"){
+            $xdoc.configuration.service.SetAttribute("host", "staging-collector.newrelic.com")
+          }
+          $xdoc.Save($configPath)'
+        - echo "New Relic .NET agent configured"
+
+    start:
+      cmds:
+        - cmd /c "iisreset /start"
+
+    ensure_sites_started:
+      ignore_error: true
+      cmds:
+        - powershell -command 'Get-WebURL "IIS:\Sites\*" | ForEach-Object { echo $_.ResponseUri.AbsoluteUri }'
