@@ -1,0 +1,43 @@
+---
+- debug:
+    msg: Install HaProxy
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default configure_haproxy (default not create)
+  set_fact:
+    configure_haproxy: "false"
+  when: configure_haproxy is undefined
+
+- name: Install Haproxy
+  yum:
+    name: ['haproxy']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- block:
+  - name: Copy haproxy cfg repo file
+    template:
+      src: haproxy.cfg
+      dest: /etc/haproxy/haproxy.cfg
+    become: true
+  when: configure_haproxy|bool
+
+- name: Start haproxy service
+  shell: "systemctl restart haproxy"
+  become: yes
+
+- block:
+  - name: Export NR_CLI_USERNAME
+    shell: "echo export NR_CLI_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export NR_CLI_PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=Virtuoso4all! >> ~/.bashrc"
+  - name: Export NR_CLI_STATS_URL
+    shell: "echo export NR_CLI_STATS_URL=http://localhost:1936/haproxy_stats >> ~/.bashrc"
+  - name: Export NR_CLI_CLUSTER_NAME
+    shell: "echo export NR_CLI_CLUSTER_NAME=test >> ~/.bashrc"
+  when: create_env_var|bool
