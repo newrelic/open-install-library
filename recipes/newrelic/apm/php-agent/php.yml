@@ -16,9 +16,16 @@ keywords:
 processMatch:
   - /php-fpm/
 
+inputVars:
+  - name: "NR_PHP_APPLICATION"
+    prompt: "What is the name of your PHP application?"
+    default: "PHP Application"
+  - name: "NR_PHP_RESTART"
+    prompt: "Restart the PHP application after installation? (y/n)"
+    default: "y"
+
 install:
   version: "3"
-  silent: true
 
   env:
     NEW_RELIC_DISTRIBUTED_TRACING_ENABLED: true
@@ -41,20 +48,22 @@ install:
           fi
           DEBIAN_FRONTEND=noninteractive sudo apt update
           DEBIAN_FRONTEND=noninteractive apt -y install newrelic-php5
-      silent: true
 
     config_newrelic_ini:
       cmds:
         - echo "TODO: configure newrelic.ini"
-        - exit 1
-      silent: true
 
     finalize_agent_config:
       cmds:
         - echo "TODO: finalize agent config"
-      silent: true
+        - NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" NR_PHP_APPLICATION="{{.NR_PHP_APPLICATION}}" newrelic-install install
 
     restart_services:
       cmds:
-        - echo "TODO: restart services"
-      silent: true
+        - |
+          if [ -z "{{.NR_PHP_RESTART}}" ]; then
+            echo "Restarting php-fpm"
+            sudo service php-fpm restart
+          else
+            echo "You will need to restart your PHP application in order for instrumentation to be enabled."
+          fi
