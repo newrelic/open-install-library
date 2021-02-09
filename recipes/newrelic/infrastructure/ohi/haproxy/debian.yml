@@ -24,29 +24,36 @@ processMatch:
 
 logMatch:
   - name: haproxy
-    file: /var/log/haproxy.log 
+    file: /var/log/haproxy.log
 
 validationNrql: "SELECT count(*) from HAProxyBackendSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
 
 inputVars:
   - name: "NR_CLI_USERNAME"
-    prompt: "HAProxy username"
+    prompt: "HAProxy Username"
   - name: "NR_CLI_PASSWORD"
-    prompt: "HAProxy password"
+    prompt: "HAProxy Password"
     secret: true
   - name: "NR_CLI_STATS_URL"
-    prompt: "HAProxy stats url"
+    prompt: "HAProxy Stats URL"
+  - name: "NR_CLI_CLUSTER_NAME"
+    prompt: "HAProxy Cluster Name"
 
 install:
-
   version: "3"
   silent: true
 
   tasks:
     default:
       cmds:
+        - task: create_user_notification
         - task: assert_pre_req
         - task: setup
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "The HAProxy statistics page must enabled and accessible to enable this integration."
 
     assert_pre_req:
       cmds:
@@ -70,8 +77,6 @@ install:
           if [ -f /etc/newrelic-infra/integrations.d/haproxy-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/haproxy-config.yml;
           fi
-
-          sudo touch /etc/newrelic-infra/integrations.d/haproxy-config.yml;
         - |
           sudo tee -a /etc/newrelic-infra/integrations.d/haproxy-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.haproxy
@@ -88,8 +93,7 @@ install:
                 username: {{.NR_CLI_USERNAME}}
                 # Basic auth password
                 password: {{.NR_CLI_PASSWORD}}
-                cluster_name: my_haproxy_1
+                cluster_name: {{.NR_CLI_CLUSTER_NAME}}
           EOT
         - |
           sudo systemctl restart newrelic-infra.service
-
