@@ -1,0 +1,100 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: haproxy-open-source-integration
+displayName: HAProxy Open Source Integration
+description: New Relic install recipe for default HAProxy Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-haproxy
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+keywords:
+  - Infrastructure
+  - Integration
+  - haproxy
+
+processMatch:
+  - haproxy
+
+logMatch:
+  - name: haproxy
+    file: /var/log/haproxy.log
+
+validationNrql: "SELECT count(*) from HAProxyBackendSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_USERNAME"
+    prompt: "HAProxy Username"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "HAProxy Password"
+    secret: true
+  - name: "NR_CLI_STATS_URL"
+    prompt: "HAProxy Stats URL"
+  - name: "NR_CLI_CLUSTER_NAME"
+    prompt: "HAProxy Cluster Name"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: create_user_notification
+        - task: assert_pre_req
+        - task: setup
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "The HAProxy statistics page must enabled and accessible to enable this integration."
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing HAProxy integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-haproxy -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/haproxy-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/haproxy-config.yml;
+          fi
+          sudo touch /etc/newrelic-infra/integrations.d/haproxy-config.yml;
+        - |
+          sudo tee -a /etc/newrelic-infra/integrations.d/haproxy-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.haproxy
+
+          instances:
+            - name: haproxy
+              # Command can be all_data, metrics, or inventory
+              command: all_data
+              arguments:
+                # The URL to the enabled stats page on the
+                # HAProxy instance
+                stats_url: {{.NR_CLI_STATS_URL}}
+                # Basic auth username
+                username: {{.NR_CLI_USERNAME}}
+                # Basic auth password
+                password: {{.NR_CLI_PASSWORD}}
+                cluster_name: {{.NR_CLI_CLUSTER_NAME}}
+          EOT
+        - |
+          sudo systemctl restart newrelic-infra.service
