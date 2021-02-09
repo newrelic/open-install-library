@@ -37,7 +37,8 @@ def lambda_handler(event, context):
     if len(instance_ids) > 0:
         print('Terminating instances:'+str(instance_ids) +"...")
         ec2.terminate_instances(InstanceIds=instance_ids)
-        print('Terminated instances SUCCESS')
+
+    print('Terminated ' +str(len(instance_ids)) +' instances')
 
     return {
         'statusCode': 200,
