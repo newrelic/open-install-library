@@ -82,9 +82,10 @@ install:
             exit 1
           fi
         - |
-          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" | grep 'GRANT SELECT' | awk '{print $2, $3}')
-          EXPECTED=$(echo 'SELECT, REPLICATION')
-          if [ "$CHECK_DB" != "$EXPECTED" ] ; then
+          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} --port {{.NR_CLI_DB_PORT}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" | grep 'GRANT SELECT' | awk '{print $2, $3}')
+          EXPECTED_SELECT_REPLICATION=$(echo 'SELECT, REPLICATION')
+          EXPECTED_ALL_PRIVILEGES=$(echo 'ALL PRIVILEGES')
+          if [ "$CHECK_DB" != "$EXPECTED_SELECT_REPLICATION" ] ||  [ "$CHECK_DB" != "$EXPECTED_ALL_PRIVILEGES" ]; then
             echo -e "[Error]: Provided user has no access to the desired database.\n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info."
             exit 2
           fi
@@ -108,7 +109,7 @@ install:
           sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mysql
 
-          instances: 
+          instances:
             - name: mysql-status
               command: status
               arguments:
