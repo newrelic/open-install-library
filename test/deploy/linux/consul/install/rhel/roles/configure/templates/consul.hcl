@@ -37,7 +37,7 @@ ui = true
 # ensure availability in the case of node failure. Server nodes also participate in a
 # WAN gossip pool with server nodes in other datacenters. Servers act as gateways to
 # other datacenters and forward traffic as appropriate.
-server = true
+server = false
 
 # bootstrap_expect
 # This flag provides the number of expected servers in the datacenter. Either this value
