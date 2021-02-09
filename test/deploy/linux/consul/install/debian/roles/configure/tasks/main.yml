@@ -1,0 +1,65 @@
+---
+- debug:
+    msg: Install HashiCorp Consul
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default configure_consul (default not create)
+  set_fact:
+    configure_consul: "false"
+  when: configure_consul is undefined
+
+- name: Install apt-repo
+  apt:
+    name: ['software-properties-common']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- name: Add official HashiCorp GPG Key
+  shell: curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+  become: true
+
+- name: Add official HashiCorp Linux Repository
+  shell: apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+  become: true
+
+- block:
+  - name: Create consul config directory
+    shell: mkdir -p ~/consul-config/server
+  - name: Copy consul server config file
+    template:
+      src: config.json
+      dest: ~/consul-config/server/config.json
+    become: true
+  when: configure_consul|bool
+
+- name: Install HashiCorp Consul
+  apt:
+    name: ['consul']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- block:
+  - name: Export NR_CLI_HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export NR_CLI_PORT
+    shell: "echo export NR_CLI_PORT=8500 >> ~/.bashrc"
+  - name: Export NR_CLI_TOKEN
+    shell: "echo export NR_CLI_TOKEN= >> ~/.bashrc"
+  - name: Export NR_CLI_ENABLE_SSL
+    shell: "echo export NR_CLI_ENABLE_SSL=n >> ~/.bashrc"
+  - name: Export NR_CLI_BUNDLE_DIR
+    shell: "echo export NR_CLI_CA_BUNDLE_DIR= >> ~/.bashrc"
+  - name: Export NR_CLI_FILE_DIR
+    shell: "echo export NR_CLI_CA_BUNDLE_DIR= >> ~/.bashrc"
+  when: create_env_var|bool
+
+- name: Start the consul server
+  shell: consul agent -config-dir ~/consul-config/server -client=0.0.0.0 &
+  become: true
+
