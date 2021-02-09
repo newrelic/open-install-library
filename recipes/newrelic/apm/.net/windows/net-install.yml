@@ -30,12 +30,29 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: stop
         - task: remove_any_previous
         - task: install
         - task: configure
         - task: start
         - task: ensure_sites_started
+
+    assert_pre_req:
+      cmds:
+        - |
+          powershell -command '
+          $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
+          if($iisEnabled.State -ne "Enabled"){
+            // IIS is not installed
+            exit 1
+          }
+          $aspNet45Enabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-ASPNET45 | select State
+          if($aspNet45Enabled.State -ne "Enabled"){
+            // ASP.NET is not installed
+            exit 2
+          }
+          '
 
     stop:
       cmds:
