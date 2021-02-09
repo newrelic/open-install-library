@@ -26,7 +26,7 @@ client_addr = "0.0.0.0"
 # ui
 # Enables the built-in web UI server and the required HTTP routes. This eliminates
 # the need to maintain the Consul web UI files separately from the binary.
-ui = true
+# ui = true
 
 # server
 # This flag is used to control if an agent is in server or client mode. When provided,
@@ -37,7 +37,7 @@ ui = true
 # ensure availability in the case of node failure. Server nodes also participate in a
 # WAN gossip pool with server nodes in other datacenters. Servers act as gateways to
 # other datacenters and forward traffic as appropriate.
-server = false
+server = true
 
 # bootstrap_expect
 # This flag provides the number of expected servers in the datacenter. Either this value
@@ -46,7 +46,7 @@ server = false
 # bootstraps the cluster. This allows an initial leader to be elected automatically.
 # This cannot be used in conjunction with the legacy -bootstrap flag. This flag requires
 # -server mode.
-#bootstrap_expect=3
+bootstrap_expect=3
 
 # encrypt
 # Specifies the secret key to use for encryption of Consul network traffic. This key must

@@ -7,6 +7,11 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
+- name: Set default configure_consul (default not create)
+  set_fact:
+    configure_consul: "false"
+  when: configure_consul is undefined
+
 - name: Update packages
   shell: yum update -y
   become: true
@@ -23,16 +28,17 @@
   shell: yum install consul -y
   become: true 
 
-- name: Copy consul config file
-  template:
-    src: consul.hcl
-    dest: /etc/consul.d/consul.hcl
-  become: true
+- block:
+  - name: Copy consul config file
+    template:
+      src: consul.hcl
+      dest: /etc/consul.d/consul.hcl
+    become: true
+  - name: start consul
+    shell: consul agent -config-dir /etc/consul.d/consul.hcl -client=0.0.0.0 &
+    become: true
+  when: configure_consul|bool
 
-- name: start consul
-  shell: systemctl start consul
-  become: true
-  
 - block:
   - name: Export NR_CLI_HOSTNAME
     shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
