@@ -12,37 +12,13 @@
     create_newrelic_user: "false"
   when: create_newrelic_user is undefined
 
-- name: Move lock-frontend
-  shell: mv /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock-frontend.bak
-  become: true
-
-- name: Move lock
-  shell: mv /var/lib/dpkg/lock /var/lib/dpkg/lock.bak
-  become: true
-
-- name: Remove .dat
-  shell: rm /var/cache/debconf/*.dat 
-  become: true 
-
-- name: Correct dpkg errors
-  shell: yes | dpkg --configure -a
-  become: true
-
-- name: Install python-apt
-  shell: apt-get install python-apt
-  become: true
-
-- name: Update apt Cache
-  apt: 
-    update_cache: yes
-  become: true
-
-- name: Wait for APT Lock
-  shell:  while fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done;
+- name: Wait for unattended-upgrade to finish
+  shell: while pgrep unattended; do sleep 10; done;
 
 - name: Install rabbitmq
   apt:
     name: ['rabbitmq-server']
+    update_cache: yes
     state: latest
   become: true
 
