@@ -1,0 +1,158 @@
+name: rabbitmq-open-source-integration
+displayName: RabbitMQ Open Source Integration
+description: New Relic install recipe for default RabbitMQ Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-rabbitmq
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "amazon"
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "redhat"
+  - type: host
+    os: linux
+    platform: "centos"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - rabbitmq
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - rabbitmq
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: rabbitmq
+    file: /var/log/rabbitmq/*.log
+
+validationNrql: "SELECT count(*) from RabbitmqNodeSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_USERNAME"
+    prompt: "RabbitMQ Username"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "RabbitMQ Password"
+  - name: "NR_CLI_PORT"
+    prompt: "RabbitMQ Management Plugin Port (default: 15672)"
+    default: 15672
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "RabbitMQ Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_RABBIT_CONFIG_PATH"
+    prompt: "RabbitMQ Configuration File Path"
+    default: /etc/rabbitmq/rabbitmq.conf
+  - name: "NR_CLI_QUEUES"
+    prompt: 'Queue Names to Collect (expected: ["myQueue1", "myQueue2"])'
+  - name: "NR_CLI_EXCHANGES"
+    prompt: 'Exchange Names to Collect (expected: ["myExchange1", "myExchange2"])'
+  - name: NR_CLI_VHOSTS
+    prompt: 'Vhost Names to Collect (expected: ["myVhost1", "myVhost2"]'
+  - name: "NR_CLI_SSL"
+    prompt: "Use SSL to connect? (true/false)"
+  - name: "NR_CLI_API_CA_BUNDLE_DIR"
+    prompt: "SSL Certificate Directory (if applicable)"
+  - name: "NR_CLI_API_CA_BUNDLE_FILE"
+    prompt: "SSL Certificate File (if applicable)"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: create_user_notification
+        - taks: assert_pre_req
+        - task: rabbitmq_plugin_installed
+        - task: setup
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "To capture data from the RabbitMQ integration, you'll first need to meet these prerequisites:
+          - RabbitMQ Management Plugin is configured
+          - RabbitMQ command line tool, rabbitmqctl, is in the PATH of the root user."
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    rabbitmq_plugin_installed:
+      cmds:
+        - |
+          PLUGIN_EXIST=$(sudo cat /etc/rabbitmq/enabled_plugins | grep "rabbitmq_management" | wc -l)
+          if [ $PLUGIN_EXIST -eq 0 ]; then
+            echo "The RabbitMQ Management plugin is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing rabbitmq integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-rabbitmq -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/rabbitmq-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/rabbitmq-config.yml;
+          fi
+        - |
+          if [ {{.NR_CLI_SSL}} == false ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.rabbitmq
+
+          instances:
+            - name: rabbitmq
+              command: all
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                use_ssl: {{.NR_CLI_SSL}}
+                config_path: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                queues: '{{.NR_CLI_QUEUES}}'
+                queues_regexes:
+                exchanges: '{{.NR_CLI_EXCHANGES}}'
+                exchanges_regexes: 
+                vhosts: '{{.NR_CLI_VHOSTS}}'
+                vhosts_regexes: 
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.rabbitmq
+
+          instances:
+            - name: rabbitmq
+              command: all
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                ca_bundle_dir: {{.NR_CLI_API_CA_BUNDLE_DIR}}
+                ca_bundle_file: {{.NR_CLI_API_CA_BUNDLE_FILE}}
+                use_ssl: {{.NR_CLI_SSL}}
+                config_path: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                queues: '{{.NR_CLI_QUEUES}}'
+                queues_regexes:
+                exchanges: '{{.NR_CLI_EXCHANGES}}'
+                exchanges_regexes:
+                vhosts: '{{.NR_CLI_VHOSTS}}'
+                vhosts_regexes:
+          EOT
+          fi
+
+        - sudo systemctl restart newrelic-infra.service

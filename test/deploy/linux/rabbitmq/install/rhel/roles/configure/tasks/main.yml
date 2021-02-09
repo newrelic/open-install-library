@@ -1,0 +1,107 @@
+---
+- debug:
+    msg: Install RabbitMQ
+
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: update packages
+  shell: yum update -y 
+  become: true 
+
+- name: Copy rabbitmq-server repo file 
+  template:
+    src: rabbitmq_rabbitmq-server.repo
+    dest: /etc/yum.repos.d/rabbitmq_rabbitmq-server.repo
+  become: true
+
+- name: Copy rabbitmq-erlang repo file 
+  template:
+    src: rabbitmq_erlang.repo
+    dest: /etc/yum.repos.d/rabbitmq_erlang.repo
+  become: true
+
+- name: install rabbitmq
+  shell: yum install rabbitmq-server -y
+  become: true 
+
+- name: install python3
+  shell: yum install python3 -y
+  become: true 
+
+- name: enable rabbitmq-server
+  shell: systemctl enable rabbitmq-server
+  become: true 
+
+- name: run rabbitmq
+  shell: systemctl start rabbitmq-server
+  become: true 
+
+- name: enable plugin
+  shell: rabbitmq-plugins enable rabbitmq_management
+  become: true
+
+- name: Get the cli and make it available to use.
+  shell: wget http://127.0.0.1:15672/cli/rabbitmqadmin
+  become: true 
+
+- name: change permissions
+  shell: chmod +x rabbitmqadmin
+  become: true 
+
+- name: move directory
+  shell: mv rabbitmqadmin /etc/rabbitmq
+  become: true 
+
+- block:
+  - name: create user
+    shell: rabbitmqctl add_user newrelic Virtuoso4all!
+    become: true 
+  - name: add user tags
+    shell: rabbitmqctl set_user_tags newrelic administrator
+    become: true 
+  - name:  add permissions
+    shell: rabbitmqctl set_permissions -p / newrelic ".*" ".*" ".*"
+    become: true 
+  - name: make exchange
+    shell: /etc/rabbitmq/rabbitmqadmin -u newrelic -p Virtuoso4all! -V / declare exchange name=exchange type=direct
+    become: true
+  - name: make queue
+    shell: /etc/rabbitmq/rabbitmqadmin -u newrelic -p Virtuoso4all! -V / declare queue name=queue durable=true
+    become: true 
+  - name: make binding
+    shell: /etc/rabbitmq/rabbitmqadmin -u newrelic -p Virtuoso4all! -V / declare binding source=exchange destination=queue
+    become: true
+  when: create_newrelic_user|bool
+
+- block:
+  - name: Export NR_CLI_USERNAME
+    shell: "echo export NR_CLI_USERNAME=newrelic >> ~/.bashrc"
+  - name: Export NR_CLI_PASSWORD
+    shell: "echo export NR_CLI_PASSWORD=Virtuoso4all! >> ~/.bashrc"
+  - name: Export NR_CLI_PORT
+    shell: "echo export NR_CLI_PORT=15672 >> ~/.bashrc"
+  - name: Export NR_CLI_HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export NR_CLI_SSL
+    shell: "echo export NR_CLI_SSL=false >> ~/.bashrc"
+  - name: Export NR_CLI_RABBIT_CONFIG_PATH
+    shell: "echo export NR_CLI_RABBIT_CONFIG_PATH=/etc/rabbitmq/rabbitmq.conf >> ~/.bashrc"
+  - name: Export NR_CLI_QUEUES
+    shell: echo export NR_CLI_QUEUES=[] >> ~/.bashrc
+  - name: Export NR_CLI_EXCHANGES
+    shell: echo export NR_CLI_EXCHANGES=[] >> ~/.bashrc
+  - name: Export NR_CLI_VHOSTS
+    shell: echo export NR_CLI_VHOSTS=[] >> ~/.bashrc
+  - name: Export NR_CLI_API_CA_BUNDLE_DIR
+    shell: "echo export NR_CLI_API_CA_BUNDLE_DIR=notUsed >> ~/.bashrc"
+  - name: Export NR_CLI_API_CA_BUNDLE_FILE
+    shell: "echo export NR_CLI_API_CA_BUNDLE_FILE=notUsed >> ~/.bashrc"
+  when: create_env_var|bool
