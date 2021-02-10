@@ -1,0 +1,98 @@
+name: varnish-open-source-integration
+displayName: Varnish Open Source Integration
+description: New Relic install recipe for default Varnish Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-varnish
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - varnish
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - httpd
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch:
+  - name: varnish
+    file: /var/log/httpd/*access_log
+  - name: varnish error
+    file: /var/log/httpd/*error_log
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from VarnishSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_VARNISH_PARAMS_CONFIG_FILE"
+    prompt: "Please enter the path of the varnish.params configuration file if it has been changed from the default. Else press [Enter] to continue. <br/>Note: If you do not input a path, New Relic will automatically look for the file in /etc/default/varnish/varnish.params and /etc/sysconfig/varnish/varnish.params"
+    default: "/etc/varnish/varnish.params"
+  - name: "NR_CLI_INSTANCE_NAME"
+    prompt: "Please enter your desired instance name in order to identify the data in New Relic"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+        
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing varnish integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-varnish -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/varnish-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/varnish-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/varnish-config.yml.sample /etc/newrelic-infra/integrations.d/varnish-config.yml;
+
+        - | 
+          sudo tee /etc/newrelic-infra/integrations.d/varnish-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.varnish
+
+          instances:
+          - name: varnish_all
+            command: all_data
+            arguments:
+              params_config_file: {{.NR_CLI_VARNISH_PARAMS_CONFIG_FILE}}
+              instance_name: {{.NR_CLI_INSTANCE_NAME}}
+          EOT
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
