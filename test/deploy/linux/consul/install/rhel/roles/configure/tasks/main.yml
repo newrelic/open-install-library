@@ -1,0 +1,57 @@
+---
+- debug:
+    msg: Install HashiCorp Consul
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default configure_consul (default not create)
+  set_fact:
+    configure_consul: "false"
+  when: configure_consul is undefined
+
+- name: Update packages
+  shell: yum update -y
+  become: true
+
+- name: Install yum utils
+  shell: yum install -y yum-utils
+  become: true
+
+- name: Add official HashiCorp Linux Repository
+  shell: sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+  become: true
+
+- name: Install HashiCorp Consul
+  shell: yum install consul -y
+  become: true 
+
+- block:
+  - name: Copy consul config file
+    template:
+      src: consul.hcl
+      dest: /etc/consul.d/consul.hcl
+    become: true
+  - name: start consul
+    shell: consul agent -config-dir /etc/consul.d/consul.hcl -client=0.0.0.0 &
+    become: true
+  when: configure_consul|bool
+
+- block:
+  - name: Export NR_CLI_HOSTNAME
+    shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
+  - name: Export NR_CLI_PORT
+    shell: "echo export NR_CLI_PORT=8500 >> ~/.bashrc"
+  - name: Export NR_CLI_TOKEN
+    shell: "echo export NR_CLI_TOKEN=test >> ~/.bashrc"
+  - name: Export NR_CLI_ENABLE_SSL
+    shell: "echo export NR_CLI_ENABLE_SSL=false >> ~/.bashrc"
+  - name: Export NR_CLI_TRUST_SERVER_CERTIFICATE
+    shell: "echo export NR_CLI_TRUST_SERVER_CERTIFICATE=false >> ~/.bashrc"
+  - name: Export NR_CLI_BUNDLE_DIR
+    shell: "echo export NR_CLI_BUNDLE_DIR=notUsed >> ~/.bashrc"
+  - name: Export NR_CLI_FILE_DIR
+    shell: "echo export NR_CLI_FILE_DIR=notUsed >> ~/.bashrc"
+  when: create_env_var|bool

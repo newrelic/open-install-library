@@ -1,0 +1,148 @@
+name: hashi-corp-consul-open-source-integration
+displayName: HashiCorp Consul Open Source Integration
+description: New Relic install recipe for default HashiCorp Consul Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-consul
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "amazon"
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - HashiCorpConsul
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - consul
+
+# Matches partial list of the Log forwarding parameters
+
+validationNrql: "SELECT count(*) from ConsulAgentSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 20 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "HashiCorp Consul Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "HashiCorp Consul Port (default: 8500)"
+    default: 8500
+  - name: "NR_CLI_TOKEN"
+    prompt: "ACL Authentication Token (if applicable)"
+  - name: "NR_CLI_ENABLE_SSL"
+    prompt: "Use SSL to connect? (true/false)"
+  - name: "NR_CLI_TRUST_SERVER_CERTIFICATE"
+    prompt: "Trust certificate? (true/false)"
+  - name: "NR_CLI_BUNDLE_DIR"
+    prompt: "SSL Certificate Directory (if applicable)"
+  - name: "NR_CLI_FILE_DIR"
+    prompt: "SSL Certificate File (if applicable)"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: create_user_notification
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "To capture data from the HashiCorp Consul integration, you'll first need to meet these prerequisites:
+          - If using ACL, the credentials for the Consul integration must have the following policies: agent:read, node:read, and service:read."
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+    setup:
+      label: "Installing HashiCorp Consul integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-consul -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/consul-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/consul-config.yml;
+          fi
+        - |
+          if [ -z "{{.NR_CLI_TOKEN}}" || "{{.NR_CLI_TOKEN}}" == "test" ]; then
+            if [ "{{.NR_CLI_ENABLE_SSL}}" == false ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.consul
+          instances:
+            - name: consul
+              command: all_data
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
+          EOT
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.consul
+          instances:
+            - name: consul
+              command: all_data
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
+                trust_server_certificate: {{.NR_CLI_TRUST_SERVER_CERTIFICATE}}
+                ca_bundle_dir: {{.NR_CLI_BUNDLE_DIR}}
+                ca_bundle_file: {{.NR_CLI_FILE_DIR}}
+          EOT
+            fi
+          else
+            if [ "{{.NR_CLI_ENABLE_SSL}}" == false ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.consul
+          instances:
+            - name: consul
+              command: all_data
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                token: {{.NR_CLI_TOKEN}}
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
+          EOT
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.consul
+          instances:
+            - name: consul
+              command: all_data
+              arguments:
+                hostname: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+                token: {{.NR_CLI_TOKEN}}
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
+                trust_server_certificate: {{.NR_CLI_TRUST_SERVER_CERTIFICATE}}
+                ca_bundle_dir: {{.NR_CLI_BUNDLE_DIR}}
+                ca_bundle_file: {{.NR_CLI_FILE_DIR}}
+          EOT
+            fi
+          fi
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
