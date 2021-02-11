@@ -1,0 +1,119 @@
+---
+- debug:
+    msg: Install Nagios Cache
+
+- name: install httpd php dependency
+  shell: yum install httpd php -y
+  become: true 
+
+- name: install gcc gilbc dependency
+  shell: yum install gcc glibc glibc-common -y
+  become: true 
+
+- name: install gd-devel dependency
+  shell: yum install gd gd-devel -y
+  become: true
+
+- name: add nagios user to the system
+  shell: adduser -m nagios
+  become: true 
+
+- name: add group
+  shell: sudo groupadd nagcmd
+  become: true 
+
+- name: change usermod for nagios
+  shell: sudo usermod -a -G nagcmd nagios
+  become: true
+
+- name: change usermod for apache
+  shell: sudo usermod -a -G nagcmd apache
+  become: true 
+
+- name: download nagios
+  shell: wget http://prdownloads.sourceforge.net/sourceforge/nagios/nagios-4.0.8.tar.gz -P /etc/ 
+  become: true 
+
+- name: download nagios plugins
+  shell: wget http://nagios-plugins.org/download/nagios-plugins-2.0.3.tar.gz -P /etc/
+  become: true 
+
+- name: unpack nagios
+  shell: tar zxvf /etc/nagios-4.0.8.tar.gz -C /etc/
+  become: true
+
+- name: run configuration script
+  shell: ./configure --with-command-group=nagcmd
+  args:
+    chdir: /etc/nagios-4.0.8/
+  become: true
+
+- name: run make all
+  shell: sudo make all
+  args:
+    chdir: /etc/nagios-4.0.8/
+  become: true
+
+- name: run make install
+  shell: make install
+  args:
+    chdir: /etc/nagios-4.0.8/
+  become: true
+
+- name: run make install-init
+  shell: make install-init
+  args:
+    chdir: /etc/nagios-4.0.8/
+  become: true
+
+- name: run make install-config
+  shell: make install-config
+  args:
+    chdir: /etc/nagios-4.0.8/
+  become: true
+
+- name: run make install-commandmode
+  shell: make install-commandmode
+  args:
+    chdir: /etc/nagios-4.0.8/
+  become: true
+
+- name: run make install-webconf
+  shell: make install-webconf
+  args:
+    chdir: /etc/nagios-4.0.8/
+  become: true
+
+- name: unpack nagios plugins
+  shell: tar zxvf /etc/nagios-plugins-2.0.3.tar.gz -C /etc/
+  become: true
+
+- name: compile and install plugins
+  shell: sudo ./configure --with-nagios-user=nagios --with-nagios-group=nagios
+  args:
+    chdir: /etc/nagios-plugins-2.0.3/
+  become: true
+
+- name: run make command
+  shell: sudo make
+  args:
+    chdir: /etc/nagios-plugins-2.0.3/
+  become: true
+
+- name: run make install command
+  shell: sudo make install
+  args:
+    chdir: /etc/nagios-plugins-2.0.3/
+  become: true
+
+- name: add nagios to the list of system services
+  shell: chkconfig --add nagios
+  become: true
+
+- name: Verify config files
+  shell: /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
+  become: true
+
+- name: run nagios 
+  shell: service nagios start
+  become: true

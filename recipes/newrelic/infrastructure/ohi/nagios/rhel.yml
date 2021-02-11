@@ -1,0 +1,88 @@
+name: nagios-open-source-integration
+displayName: nagios Open Source Integration
+description: New Relic install recipe for default Nagios Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-nagios
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+keywords:
+  - Infrastructure
+  - Integration
+  - nagios
+
+processMatch:
+  - nagios
+
+logMatch:
+  - name: apache
+    file: /var/log/httpd/*access_log
+  - name: apache error
+    file: /var/log/httpd/*error_log
+
+validationNrql: "SELECT count(*) from NagiosSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+        
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing nagios integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-nagios -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/nagios-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/nagios-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/nagios-config.yml.sample /etc/newrelic-infra/integrations.d/nagios-config.yml;
+
+        - | 
+          sudo tee /etc/newrelic-infra/integrations.d/service_checks.yml > /dev/null <<"EOT"
+          service_checks:
+            - name: check_users
+              command: ["/usr/local/nagios/libexec/check_users", "-w", "5", "-c", "10"]
+              parse_output: true
+              labels:
+                env: staging
+                key1: val1
+            - name: check_apt
+              command: ["/usr/local/nagios/libexec/check_apt"]
+            EOT
+        - |
+          sudo chown 0600 /etc/newrelic-infra/integrations.d/service_checks.yml
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
