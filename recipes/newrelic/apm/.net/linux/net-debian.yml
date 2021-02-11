@@ -2,8 +2,8 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 name: dotnet-agent-installer
-displayName: .net Agent Installer
-description:  New Relic install recipe for .net application on Linux
+displayName: .NET Agent Installer
+description:  New Relic install recipe for .NET application on Linux
 repository: https://github.com/newrelic/newrelic-dotnet-agent
 
 installTargets:
@@ -13,7 +13,7 @@ installTargets:
 
 keywords:
   - Apm
-  - .net
+  - .NET
   - dotnet
   - aspnet
   - core
@@ -28,10 +28,49 @@ install:
   tasks:
     default:
       cmds:
-        - task: do_it
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+        - task: configure
 
-    do_it:
+    assert_pre_req:
       cmds:
         - |
-          echo "TODO install .net agent"
+          results=$(dpkg-query -W -f='${Status}\n' dotnet-runtime-*)
+          if [ $? -ne 0 ]; then
+            # Did not find the dotnet-runtime package, don't install the agent
+            exit 1
+          fi
+
+    remove_any_previous:
+      cmds:
+        - sudo apt-get purge -y newrelic-netcore20-agent
+        - |
+          AGENTPROFILE=/etc/profile.d/newrelic-netcore20-agent-path.sh
+          if test -f "$AGENTPROFILE"; then
+              sudo rm $AGENTPROFILE
+          fi
+
+    install:
+      cmds:
+        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
+        - wget -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+        - sudo apt-get update
+        - sudo apt-get install newrelic-netcore20-agent
+        - echo "New Relic .NET agent installed"
+
+    configure:
+      cmds:
+        - |
+          echo "Setup startup environment variables"
+          echo 'export NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}' | sudo tee -a /etc/profile.d/newrelic-netcore20-agent-path.sh
+          
+          echo "Setup session environment variables for child processes"
+          export NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}
+          export CORECLR_NEWRELIC_HOME=/usr/local/newrelic-netcore20-agent
+          export CORECLR_ENABLE_PROFILING=1
+          export CORECLR_PROFILER={36032161-FFC0-4B61-B559-F6C5D41BAE5A}
+          export CORECLR_PROFILER_PATH=$CORECLR_NEWRELIC_HOME/libNewRelicProfiler.so
+
+
 
