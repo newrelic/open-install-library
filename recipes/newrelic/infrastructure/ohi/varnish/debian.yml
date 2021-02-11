@@ -1,0 +1,102 @@
+name: varnish-cache-open-source-integration
+displayName: Varnish Cache Open Source Integration
+description: New Relic install recipe for default Varnish Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-varnish
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - varnish
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - varnishd
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: Logs
+    file: /var/log/varnish/varnishcna.log
+
+validationNrql: "SELECT count(*) from VarnishSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_INSTANCE_NAME"
+    prompt: "Instance Name (used to identify data in New Relic)"
+  - name: "NR_CLI_PARAMS_CONFIG_FILE"
+    prompt: "Location of varnish.params (omit to check defaults)"
+
+install:
+  version: "3"
+  silent: true
+  tasks:
+    default:
+      cmds:
+        - task: create_user_notification
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "To capture data from the Varnish Cache integration, the location of the varnish.params config file must be known.
+          If the params_config_file input is empty, the following locations will automatically be checked:
+          -   /etc/default/varnish/varnish.params
+          -   /etc/sysconfig/varnish/varnish.params"
+
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing Varnish Cache integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update -y
+        - |
+          sudo apt-get install nri-varnish -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/varnish-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/varnish-config.yml;
+          fi
+        - |
+          if [ -z {{.NR_CLI_PARAMS_CONFIG_FILE}} ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/varnish-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.varnish
+          instances:
+            - name: varnish
+              command: all_data
+              arguments:
+                instance_name: {{.NR_CLI_INSTANCE_NAME}}
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/varnish-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.varnish
+          instances:
+            - name: varnish
+              command: all_data
+              arguments:
+                params_config_file: {{.NR_CLI_PARAMS_CONFIG_FILE}}
+                instance_name: {{.NR_CLI_INSTANCE_NAME}} 
+          EOT
+          fi
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
