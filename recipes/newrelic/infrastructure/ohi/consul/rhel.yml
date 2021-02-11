@@ -31,19 +31,21 @@ validationNrql: "SELECT count(*) from ConsulAgentSample where hostname like '{{.
 
 inputVars:
   - name: "NR_CLI_HOSTNAME"
-    prompt: "Enter the hostname to connect to HashiCorp Consul"
+    prompt: "HashiCorp Consul Hostname (default: localhost)"
     default: "localhost"
   - name: "NR_CLI_PORT"
-    prompt: "Enter the port to connect to HashiCorp Consul"
+    prompt: "HashiCorp Consul Port (default: 8500)"
     default: 8500
   - name: "NR_CLI_TOKEN"
-    prompt: "If you're using an ACL Token for authentication, please enter the token: else press [Enter] to continue"
+    prompt: "ACL Authentication Token (if applicable)"
   - name: "NR_CLI_ENABLE_SSL"
-    prompt: "Are you using SSL? (y/n)"
+    prompt: "Use SSL to connect? (true/false)"
+  - name: "NR_CLI_TRUST_SERVER_CERTIFICATE"
+    prompt: "Trust certificate? (true/false)"
   - name: "NR_CLI_BUNDLE_DIR"
-    prompt: "Please enter the certificate authority bundle directory or file."
+    prompt: "SSL Certificate Directory (if applicable)"
   - name: "NR_CLI_FILE_DIR"
-    prompt: "Please enter the certificate authority bundle directory or file."
+    prompt: "SSL Certificate File (if applicable)"
 
 install:
   version: "3"
@@ -52,10 +54,16 @@ install:
   tasks:
     default:
       cmds:
+        - task: create_user_notification
         - task: assert_pre_req
         - task: setup
         - task: restart
 
+    create_user_notification:
+      cmds:
+        - |
+          echo "To capture data from the HashiCorp Consul integration, you'll first need to meet these prerequisites:
+          - If using ACL, the credentials for the Consul integration must have the following policies: agent:read, node:read, and service:read."
     assert_pre_req:
       cmds:
         - |
@@ -77,10 +85,9 @@ install:
           if [ -f /etc/newrelic-infra/integrations.d/consul-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/consul-config.yml;
           fi
-          sudo cp /etc/newrelic-infra/integrations.d/consul-config.yml.sample /etc/newrelic-infra/integrations.d/consul-config.yml;
-        - | 
-          if [ -z "{{.NR_CLI_TOKEN}}" || "{{.NR_CLI_TOKEN}}" == "n" ]; then
-            if [ "{{.NR_CLI_ENABLE_SSL}}" == "n" ]; then
+        - |
+          if [ -z "{{.NR_CLI_TOKEN}}" || "{{.NR_CLI_TOKEN}}" == "test" ]; then
+            if [ "{{.NR_CLI_ENABLE_SSL}}" == false ]; then
               sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.consul
           instances:
@@ -89,6 +96,7 @@ install:
               arguments:
                 hostname: {{.NR_CLI_HOSTNAME}}
                 port: {{.NR_CLI_PORT}}
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
           EOT
             else
               sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
@@ -99,13 +107,14 @@ install:
               arguments:
                 hostname: {{.NR_CLI_HOSTNAME}}
                 port: {{.NR_CLI_PORT}}
-                enable_ssl: true
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
+                trust_server_certificate: {{.NR_CLI_TRUST_SERVER_CERTIFICATE}}
                 ca_bundle_dir: {{.NR_CLI_BUNDLE_DIR}}
                 ca_bundle_file: {{.NR_CLI_FILE_DIR}}
           EOT
             fi
-            else
-            if [ "{{.NR_CLI_ENABLE_SSL}}" == "n" ]; then
+          else
+            if [ "{{.NR_CLI_ENABLE_SSL}}" == false ]; then
               sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.consul
           instances:
@@ -115,6 +124,7 @@ install:
                 hostname: {{.NR_CLI_HOSTNAME}}
                 port: {{.NR_CLI_PORT}}
                 token: {{.NR_CLI_TOKEN}}
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
           EOT
             else
               sudo tee /etc/newrelic-infra/integrations.d/consul-config.yml > /dev/null <<"EOT"
@@ -126,11 +136,12 @@ install:
                 hostname: {{.NR_CLI_HOSTNAME}}
                 port: {{.NR_CLI_PORT}}
                 token: {{.NR_CLI_TOKEN}}
-                enable_ssl: true
+                enable_ssl: {{.NR_CLI_ENABLE_SSL}}
+                trust_server_certificate: {{.NR_CLI_TRUST_SERVER_CERTIFICATE}}
                 ca_bundle_dir: {{.NR_CLI_BUNDLE_DIR}}
                 ca_bundle_file: {{.NR_CLI_FILE_DIR}}
           EOT
-          fi
+            fi
           fi
     restart:
       cmds:
