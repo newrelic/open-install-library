@@ -1,0 +1,80 @@
+---
+- debug:
+    msg: Install Nagios
+
+- name: Install required packages
+  apt:
+    name: ['wget','curl','build-essential','unzip','openssl','libssl-dev','apache2','php',libapache2-mod-php','php-gd','libgd-dev']
+    update_cache: true
+    state: latest
+  become: yes
+
+- name: Download Nagios
+  shell: wget https://github.com/NagiosEnterprises/nagioscore/releases/download/nagios-4.4.6/nagios-4.4.6.tar.gz /tmp
+
+- name: Extract Nagios
+  shell: tar xvzf /tmp/nagios-4.4.6.tar.gz /opt
+
+- name: Compile extracted files
+  shell: ./opt/nagios-4.4.6/configure --with-https-conf=/etc/apache2/sites-enabled
+
+- name: Create Nagios user
+  shell: adduser nagios
+  become: true
+
+- name: Add www-data to Nagios group
+  shell: usermod -a -G nagios www-data
+  become: true
+
+- name: Make all nagios
+  shell: /opt/nagios-4.4.6/make all
+  become: true
+
+- name: Make install nagios
+  shell: /opt/nagios-4.4.6/make install
+  become: true
+
+- name: Make install daemon
+  shell: /opt/nagios-4.4.6/make install-daemoninit
+  become: true
+
+- name: Make install commandmode
+  shell: /opt/nagios-4.4.6/make install-commandmode
+  become: true
+
+- name: Make install config
+  shell: /opt/nagios-4.4.6/make install-config
+  become: true
+
+- name: Make Apache Webserver Conf
+  shell: /opt/nagios-4.4.6/make install-webconf
+  become: true
+
+- name: Enable apache rewrite and cgi modules
+  shell: a2enmod rewrite cgi
+  become: true
+
+- name: Download Nagios plugins
+  shell: wget https://github.com/nagios-plugins/nagios-plugins/releases/download/release-2.3.3/nagios-plugins-2.3.3.tar.gz /tmp
+
+- name: Extract nagios plugins
+  shell: tar xvf /tmp/nagios-plugins-2.3.3.tar.gz /opt
+
+- name: Configure plugins
+  shell: ./opt/nagios-plugins-2.3.3/configure --with-nagios-user=nagios --with-nagios-group=nagios
+
+- name: Make Nagios Plugins
+  shell: /opt/nagios-plugins-2.3.3/make
+  become: true
+
+- name: Make Install Nagios Plugins
+  shell: /opt/nagios-plugins-2.3.3/make install
+  become: true
+
+- name: Restart Apache2
+  shell: systemctl restart apache2
+  become: true
+
+- name: Start Nagios
+  shell: systemctl start nagios.service
+  become: true
