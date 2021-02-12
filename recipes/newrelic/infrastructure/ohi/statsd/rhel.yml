@@ -1,0 +1,87 @@
+name: statsd-open-source-integration
+displayName: StatsD Open Source Integration
+description: New Relic install recipe for default StatsD Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-apache
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+keywords:
+  - Infrastructure
+  - Integration
+  - statsd
+
+processMatch:
+  - statsd
+  - dockerd
+
+# logMatch:
+#   - name: apache
+#     file: /var/log/httpd/*access_log
+#   - name: apache error
+#     file: /var/log/httpd/*error_log
+
+validationNrql: "SELECT count(*) FROM Metric WHERE environment = 'production'"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: docker_exist
+        - task: setup
+        - task: restart
+        
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    docker_exist:
+      cmds:
+        - |
+          DOCKER_EXIST=$(sudo service docker status | grep "Active" | wc -l)
+          if [ $DOCKER_EXIST -eq 0 ]; then
+            echo "The Docker service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing StatsD integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-statsd -y
+        - |
+          sudo docker run \
+          -d --restart unless-stopped \
+          --name newrelic-statsd \
+          -h $(hostname) \
+          -e NR_ACCOUNT_ID={{newrelic_account_id}} \
+          -e NR_API_KEY={{newrelic_personal_api_key}} \
+          -p 8125:8125/udp \
+          newrelic/nri-statsd:2.0.0
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
