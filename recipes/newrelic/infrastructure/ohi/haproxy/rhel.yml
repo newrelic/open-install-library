@@ -24,7 +24,7 @@ processMatch:
 
 logMatch:
   - name: haproxy
-    file: /var/log/haproxy.log 
+    file: /var/log/haproxy.log
 
 validationNrql: "SELECT count(*) from HAProxyBackendSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
@@ -39,38 +39,37 @@ inputVars:
   - name: "NR_CLI_CLUSTER_NAME"
     prompt: "HAProxy Cluster Name"
 
-install:
+preInstall:
+  info: |2
+      To capture data from the HAProxy integration, you'll first need to meet these prerequisites:
+      - The HAProxy statistics page must enabled and accessible to enable this integration.
 
+install:
   version: "3"
   silent: true
 
   tasks:
     default:
       cmds:
-        - task: create_user_notification
         - task: assert_pre_req
         - task: setup
-
-    create_user_notification:
-      cmds:
-        - |
-          echo "The HAProxy statistics page must enabled and accessible to enable this integration."
 
     assert_pre_req:
       cmds:
         - |
           SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
           if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
+
     setup:
       label: "Installing HAProxy integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
-          sudo yum update -y 
+          sudo yum update -y
         - |
           sudo yum install nri-haproxy -y
         - |
