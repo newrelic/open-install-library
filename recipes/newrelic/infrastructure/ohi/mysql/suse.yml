@@ -52,26 +52,26 @@ inputVars:
   - name: "NR_CLI_DATABASE"
     prompt: "MySQL Database Name"
 
-preInstall:
-  prompt: |2
-      You'll need to have a MySQL user with replication permissions for enabling
-      this integration. If you'd like to create a new user please use these 
-      commands as reference:
-
-      > sudo mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';"
-      > sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
-      > sudo mysql -e "GRANT SELECT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
-
 install:
+
   version: "3"
   silent: true
 
   tasks:
     default:
       cmds:
+        - task: create_user_notification
         - task: assert_pre_req
         - task: setup
         - task: restart
+
+    create_user_notification:
+      cmds:
+        - |
+          echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _\n
+          sudo mysql -e \"CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';\"\n
+          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';\"\n
+          sudo mysql -e \"GRANT SELECT ON *.* TO 'newrelic'@'localhost';\""
 
     assert_pre_req:
       cmds:
@@ -82,7 +82,7 @@ install:
             exit 1
           fi
         - |
-          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} --port {{.NR_CLI_DB_PORT}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep 'GRANT SELECT' | awk '{print $2, $3}')
+          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} --port {{.NR_CLI_DB_PORT}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" | grep 'GRANT SELECT' | awk '{print $2, $3}')
           EXPECTED_SELECT_REPLICATION=$(echo 'SELECT, REPLICATION')
           EXPECTED_ALL_PRIVILEGES=$(echo 'ALL PRIVILEGES')
           if [ "$CHECK_DB" != "$EXPECTED_SELECT_REPLICATION" ] &&  [ "$CHECK_DB" != "$EXPECTED_ALL_PRIVILEGES" ]; then
@@ -96,9 +96,9 @@ install:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
-          sudo zypper -n --quiet ref -r newrelic-infra
+          sudo zypper -n ref -r newrelic-infra
         - |
-          sudo zypper -n --quiet install nri-mysql
+          sudo zypper -n install nri-mysql
         - |
           if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
