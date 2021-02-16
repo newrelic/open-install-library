@@ -54,32 +54,35 @@ inputVars:
   - name: "NR_CLI_CERT_KEY"
     prompt: "PEM key file (if applicable)"
 
-install:
+preInstall:
+  info: |2
+      You'll need a user with READ permissions to 
+      collect data from this integration. If you'd like to create a new user 
+      please use these commands as reference:
 
+      Note: username, password, and similar user-specific values must be replaced.
+      
+      > CREATE USER newrelic WITH PASSWORD 'PASSWORD'
+      > GRANT SELECT ON pg_stat_database TO newrelic
+      > GRANT SELECT ON pg_stat_database_conflicts TO newrelic
+      > GRANT SELECT ON pg_stat_bgwriter TO newrelic
+
+install:
   version: "3"
   silent: true
 
   tasks:
     default:
       cmds:
-        - task: create_user_notification
         - taks: assert_pre_req
         - task: setup
-
-
-    create_user_notification:
-      cmds:
-        - |
-          echo "Note: In order for this integration to function you need to either create or have an existing user with READ Permissions on pg_stat_database, pg_stat_database_conflicts and pg_stat_bgwriter.
-          If you\'d like to create a new user with these permissions please follow these steps within your PostgresSQL Instance:
-          CREATE USER newrelic WITH PASSWORD \'PASSWORD\'; GRANT SELECT ON pg_stat_database TO newrelic; GRANT SELECT ON pg_stat_database_conflicts TO newrelic; GRANT SELECT ON pg_stat_bgwriter TO newrelic;"
 
     assert_pre_req:
       cmds:
         - |
           SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
           if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
 
@@ -137,5 +140,5 @@ install:
                 timeout: 10
           EOT
           fi
-         
+
         - sudo systemctl restart newrelic-infra.service
