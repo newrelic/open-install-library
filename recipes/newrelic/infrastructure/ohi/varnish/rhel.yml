@@ -40,6 +40,14 @@ inputVars:
   - name: "NR_CLI_PARAMS_CONFIG_FILE"
     prompt: "Location of varnish.params (omit to check defaults)"
 
+preInstall:
+  info: |2
+      To capture data from the Varnish Cache integration, the location of the varnish.params config file must be known.
+      
+      If the params_config_file input is empty, the following locations will automatically be checked:
+      -  /etc/default/varnish/varnish.params
+      -  /etc/sysconfig/varnish/varnish.params
+
 install:
   version: "3"
   silent: true
@@ -47,25 +55,16 @@ install:
   tasks:
     default:
       cmds:
-        - task: create_user_notification
         - task: assert_pre_req
         - task: setup
         - task: restart
-
-    create_user_notification:
-      cmds:
-        - |
-          echo "To capture data from the Varnish Cache integration, the location of the varnish.params config file must be known.
-          If the params_config_file input is empty, the following locations will automatically be checked:
-          -   /etc/default/varnish/varnish.params
-          -   /etc/sysconfig/varnish/varnish.params"
 
     assert_pre_req:
       cmds:
         - |
           SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
           if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
 
