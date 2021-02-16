@@ -3,6 +3,7 @@
 # newrelic_personal_api_key: The newrelic personal api key. It typically starts with NRAK-
 # newrelic_account_id: (optional) The newrelic account id
 # newrelic_region: (optional) The newrelic region. Typically "US".
+# newrelic_cli_path: (optional) The newrelic-cli to use instead of using latest published
 
 - fail:
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
@@ -37,8 +38,21 @@
     env_vars: "{{ env_vars }} {{item.key}}={{item.value}}"
   loop: "{{ q('dict', cli_env_dict|default({})) }}"
 
+- name: Copy newrelic-cli if local exists
+  ansible.builtin.copy:
+    src: "{{ newrelic_cli_path }}"
+    dest: /usr/local/bin/newrelic
+    mode: '0777'
+  become: true
+  when: newrelic_cli_path is defined
+
 - name: Install newrelic-cli
   shell: "curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | bash"
+  when: newrelic_cli_path is not defined
+
+- name: Display CLI version
+  shell: "/usr/local/bin/newrelic version"
+  become: true
 
 - name: Install with all default assumed
   shell: "{{ env_vars }} /usr/local/bin/newrelic install -y"
