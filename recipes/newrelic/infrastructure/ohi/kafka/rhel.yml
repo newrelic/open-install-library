@@ -1,0 +1,101 @@
+name: kafka-open-source-integration
+displayName: Kafka Open Source Integration
+description: New Relic install recipe for default kafka Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-kafka
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - kafka
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - kafka
+  - zookeeper
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch:
+  - name: kafka
+    file: ~/home/kafka/kafka_2.13-2.6.1/kafka.log
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from KafkaBrokerSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+        
+    assert_pre_req:
+      cmds:
+        - |
+          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
+          if [ $SERVICE_EXIST -eq 0 ]; then
+            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            exit 1
+          fi
+
+    setup:
+      label: "Installing kafka integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-kafka -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/kafka-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/kafka-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/kafka-config.yml.sample /etc/newrelic-infra/integrations.d/kafka-config.yml;
+
+        - | 
+          sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.kafka
+
+          instances:
+            # - name: kafka-metrics
+            #   command: metrics
+            #   arguments:
+            #     zookeeper_hosts: '[{"host": "localhost", "port": 2181}]'
+            #     producers: '[{"name": "my-producer", "host": "my-producer.my.localnet", "port": 9989}]'
+            #     consumers: '[{"name": "my-consumer", "host": "my-consumer.my.localnet", "port": 9987}]'
+            #     topic_mode: List
+            #     collect_topic_size: false
+            #     topic_list: '["topic_1", "topic_2"]'
+            - name: kafka-inventory
+              command: inventory
+              arguments:
+                zookeeper_hosts: '[{"host": "localhost", "port": 2181}]'
+                topic_mode: Regex
+                topic_regex: 'topic_[0-9]+'
+
+          EOT
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
