@@ -1,0 +1,47 @@
+---
+- debug:
+    msg: Install Kafka
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Install Java
+  apt:
+    name: ['default-jre', 'default-jdk']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- name: Create Kafka user
+  shell: useradd kafka -m
+  become: yes
+
+- name: Add sudo to kafka user
+  shell: adduser kafka sudo
+  become: yes
+
+- name: Create downloads
+  shell: mkdir ~/Downloads
+  become: yes
+  become_user: kafka
+
+- name: Download Kafka
+  shell: curl "https://archive.apache.org/dist/kafka/2.1.1/kafka_2.11-2.1.1.tgz" -o ~/Downloads/kafka.tgz
+  become_user: kafka
+
+- name: Create Kafka dir
+  shell: mkdir ~/kafka
+  become_user: kafka
+
+- name: Extract Kafka
+  shell: tar -xvzf ~/Downloads/kafka.tgz --strip 1 -C ~/kafka
+  become_user: kafka
+
+- block:
+  - name: Export Variable
+    shell: "echo export variable=var >> ~/.bashrc"
+  when: create_env_var|bool
+
+
