@@ -33,13 +33,6 @@ logMatch:
 # installed is successfully sending data to New Relic
 validationNrql: "SELECT count(*) from ApacheSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
 
-# Prompts for input from the user. These variables then become
-# available to go-task in the form of {{.VAR_NAME}}
-inputVars:
-  - name: "NR_CLI_STATUS_URL"
-    prompt: "Apache status URL (default: http://127.0.0.1/server-status?auto)"
-    default: "http://127.0.0.1/server-status?auto"
-
 install:
 
   version: "3"
@@ -49,6 +42,7 @@ install:
     default:
       cmds:
         - task: assert_pre_req
+        - task: user_inputs
         - task: setup
         - task: restart
         
@@ -67,9 +61,15 @@ install:
             exit 2
           fi
 
-    setup:
-      label: "Installing apache integration..."
+    user_inputs:
       cmds:
+        - |
+        if [ -z $NR_CLI_STATUS_URL ]; then
+            echo "Apache status URL (default: http://127.0.0.1/server-status?auto):"
+            read NR_CLI_STATUS_URL
+            echo ""
+        fi
+
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
