@@ -1,4 +1,4 @@
-if [ $# -lt 1 ];
+if [ ${'{#'}} -lt 1 ];
 then
   echo "USAGE: $0 [-daemon] [-name servicename] [-loggc] classname [opts]"
   exit 1
