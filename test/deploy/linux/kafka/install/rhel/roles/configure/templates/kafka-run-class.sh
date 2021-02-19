@@ -92,7 +92,7 @@ if [ -z "$UPGRADE_KAFKA_STREAMS_TEST_VERSION" ]; then
   done
 else
   VERSION_NO_DOTS=`echo $UPGRADE_KAFKA_STREAMS_TEST_VERSION | sed 's/\.//g'`
-  SHORT_VERSION_NO_DOTS=${VERSION_NO_DOTS:0:((${#VERSION_NO_DOTS} - 1))} # remove last char, ie, bug-fix number
+  SHORT_VERSION_NO_DOTS=${VERSION_NO_DOTS:0:((${{'{#'}}VERSION_NO_DOTS} - 1))}
   for file in "$base_dir"/streams/upgrade-system-tests-$SHORT_VERSION_NO_DOTS/build/libs/kafka-streams-upgrade-system-tests*.jar;
   do
     if should_include_file "$file"; then
@@ -241,7 +241,7 @@ if [ -z "$KAFKA_JVM_PERFORMANCE_OPTS" ]; then
   KAFKA_JVM_PERFORMANCE_OPTS="-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent -XX:MaxInlineLevel=15 -Djava.awt.headless=true"
 fi
 
-while [ $# -gt 0 ]; do
+while [ ${'{#'}} -gt 0 ]; do
   COMMAND=$1
   case $COMMAND in
     -name)
@@ -281,7 +281,7 @@ if [ "x$GC_LOG_ENABLED" = "xtrue" ]; then
 fi
 
 
-CLASSPATH=${CLASSPATH#:}
+CLASSPATH=${CLASSPATH{'{#'}}:}
 
 
 (( CYGWIN )) && CLASSPATH=$(cygpath --path --mixed "${CLASSPATH}")
