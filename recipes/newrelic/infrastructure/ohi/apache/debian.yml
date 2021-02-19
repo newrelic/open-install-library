@@ -56,25 +56,28 @@ install:
     user_inputs:
       cmds:
         - |
-          echo "Try1: {{.REQUEST}}"
+          if [ -z $NR_CLI_STATUS_URL ]; then
+              echo "Apache status URL (default: http://127.0.0.1/server-status?auto):"
+              read NR_CLI_STATUS_URL
+              echo ""
+         
+          fi
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update
-        - |
           sudo apt-get install nri-apache -y
-        - |
           if [ -f /etc/newrelic-infra/integrations.d/apache-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/apache-config.yml;
           fi
           sudo cp /etc/newrelic-infra/integrations.d/apache-config.yml.sample /etc/newrelic-infra/integrations.d/apache-config.yml;
-        - | 
           sudo tee /etc/newrelic-infra/integrations.d/apache-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.apache
+
           instances:
               - name: apache-server-metrics
                 command: metrics
                 arguments:
-                    status_url: {{.REQUEST}}
+                    status_url: ${NR_CLI_STATUS_URL}
+
                     # New users should leave this property as `true`, to identify the
                     # monitored entities as `remote`. Setting this property to `false` (the
                     # default value) is deprecated and will be removed soon, disallowing
@@ -83,10 +86,12 @@ install:
                     # versus remote entities:
                     # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
                     remote_monitoring: true
+
               - name: apache-server-inventory
                 command: inventory
                 arguments:
                     status_url: $NR_CLI_STATUS_URL
+
                     # New users should leave this property as `true`, to identify the
                     # monitored entities as `remote`. Setting this property to `false` (the
                     # default value) is deprecated and will be removed soon, disallowing
@@ -95,14 +100,13 @@ install:
                     # versus remote entities:
                     # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
                     remote_monitoring: true
+
           EOT
-      vars:
-        REQUEST:
-          sh: read -p "Apache status URL (default: http://127.0.0.1/server-status?auto):" url echo $url
+
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
 
-# 0 approach: https://taskfile.dev/#/usage?id=dynamic-variables
-# 1st approach: Move to a single pipeline
-# 2nd approach: Export to a tmp file that would get removed at the end of execution
+0 approach: https://taskfile.dev/#/usage?id=dynamic-variables
+1st approach: Move to a single pipeline
+2nd approach: Export to a tmp file that would get removed at the end of execution
