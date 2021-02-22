@@ -1,0 +1,92 @@
+---
+- debug:
+    msg: Install Nagios
+
+- name: Install required packages
+  apt:
+    name: ['wget','curl','build-essential','unzip','openssl','libssl-dev','apache2','php','libapache2-mod-php','php-gd','libgd-dev']
+    update_cache: true
+    state: latest
+  become: yes
+
+- name: Download Nagios
+  shell: wget -O /tmp/nagios-4.4.6.tar.gz https://github.com/NagiosEnterprises/nagioscore/releases/download/nagios-4.4.6/nagios-4.4.6.tar.gz
+
+- name: Extract Nagios
+  shell: tar xvzf /tmp/nagios-4.4.6.tar.gz -C /opt
+  become: true
+
+- name: Compile extracted files
+  shell: cd /opt/nagios-4.4.6 && ./configure --with-https-conf=/etc/apache2/sites-enabled
+  become: true
+
+- name: Create nagios group
+  shell: addgroup nagios
+  become: true
+
+- name: Create nagios user
+  user:
+    name: nagios
+    groups:
+      - nagios
+    state: present
+  become: true
+
+- name: Add www-data to Nagios group
+  shell: usermod -a -G nagios www-data
+  become: true
+
+- name: Make all nagios
+  shell: cd /opt/nagios-4.4.6 && make all
+  become: true
+
+- name: Make install nagios
+  shell: cd /opt/nagios-4.4.6 && make install
+  become: true
+
+- name: Make install daemon
+  shell: cd /opt/nagios-4.4.6 && make install-daemoninit
+  become: true
+
+- name: Make install commandmode
+  shell: cd /opt/nagios-4.4.6 && make install-commandmode
+  become: true
+
+- name: Make install config
+  shell: cd /opt/nagios-4.4.6 && make install-config
+  become: true
+
+- name: Make Apache Webserver Conf
+  shell: cd /opt/nagios-4.4.6 && make install-webconf
+  become: true
+
+- name: Enable apache rewrite and cgi modules
+  shell: a2enmod rewrite cgi
+  become: true
+
+- name: Download Nagios plugins
+  shell: wget -O /tmp/nagios-plugins-2.3.3.tar.gz https://github.com/nagios-plugins/nagios-plugins/releases/download/release-2.3.3/nagios-plugins-2.3.3.tar.gz
+
+- name: Extract nagios plugins
+  shell: tar xvf /tmp/nagios-plugins-2.3.3.tar.gz -C /opt/
+  become: true
+
+- name: Configure plugins
+  shell: cd /opt/nagios-plugins-2.3.3 && ./configure --with-nagios-user=nagios --with-nagios-group=nagios
+  become: true
+
+- name: Make Nagios Plugins
+  shell: cd /opt/nagios-plugins-2.3.3 && make
+  become: true
+
+- name: Make Install Nagios Plugins
+  shell: cd /opt/nagios-plugins-2.3.3 && make install
+  become: true
+
+- name: Restart Apache2
+  shell: systemctl restart apache2
+  become: true
+
+- name: Start Nagios
+  shell: systemctl start nagios.service
+  become: true
