@@ -47,6 +47,15 @@ inputVars:
   - name: "NR_CLI_FILE_DIR"
     prompt: "SSL Certificate File (if applicable)"
 
+preInstall:
+  info: |2
+      To capture data from the HashiCorp Consul integration, you'll first need to meet these prerequisites:
+      - HashiCorp Consul version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/hashicorp-consul-monitoring-integration#comp-req)
+      - If using ACL, the credentials for the Consul integration must have the following policies: 
+        * agent:read
+        * node:read
+        * service:read
+
 install:
   version: "3"
   silent: true
@@ -54,24 +63,19 @@ install:
   tasks:
     default:
       cmds:
-        - task: create_user_notification
         - task: assert_pre_req
         - task: setup
         - task: restart
 
-    create_user_notification:
-      cmds:
-        - |
-          echo "To capture data from the HashiCorp Consul integration, you'll first need to meet these prerequisites:
-          - If using ACL, the credentials for the Consul integration must have the following policies: agent:read, node:read, and service:read."
     assert_pre_req:
       cmds:
         - |
           SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
           if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
+
     setup:
       label: "Installing HashiCorp Consul integration..."
       cmds:
@@ -143,6 +147,7 @@ install:
           EOT
             fi
           fi
+
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service

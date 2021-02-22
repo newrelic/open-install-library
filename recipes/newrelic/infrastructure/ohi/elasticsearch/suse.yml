@@ -22,7 +22,7 @@ processMatch:
 # Matches partial list of the Log forwarding parameters
 logMatch:
   - name: elasticsearch
-    file: /var/log/elasticsearch/elasticsearch*.log 
+    file: /var/log/elasticsearch/elasticsearch*.log
 
 validationNrql: "SELECT count(*) from ElasticsearchClusterSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
 
@@ -48,8 +48,12 @@ inputVars:
   - name: "NR_CLI_API_CA_BUNDLE_FILE"
     prompt: "SSL Certificate File (if applicable)"
 
-install:
+preInstall:
+  info: |2
+      To capture data from the Elasticsearch integration, you'll first need to meet these prerequisites:
+      - Elasticsearch version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/elasticsearch-monitoring-integration#req)
 
+install:
   version: "3"
   silent: true
 
@@ -59,12 +63,12 @@ install:
         - task: setup
 
     setup:
-      label: "Installing elasticsearch integration..."
+      label: "Installing Elasticsearch integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
-          sudo zypper -n update 
+          sudo zypper -n update
         - |
           sudo zypper -n install nri-elasticsearch
         - |
@@ -90,6 +94,7 @@ install:
                 password: {{.NR_CLI_API_PASSWORD}}
                 port: {{.NR_CLI_API_PORT}}
                 timeout: 30
+                use_ssl: {{.NR_CLI_API_USE_SSL}}
                 indices_regex:
                 collect_indices: true
                 collect_primaries: true
@@ -118,5 +123,5 @@ install:
                 collect_primaries: true
           EOT
           fi
-         
+
         - sudo systemctl restart newrelic-infra.service
