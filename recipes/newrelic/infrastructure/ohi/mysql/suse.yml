@@ -52,45 +52,49 @@ inputVars:
   - name: "NR_CLI_DATABASE"
     prompt: "MySQL Database Name"
 
-install:
+preInstall:
+  info: |2
+      To capture data from the MySQL integration, you'll first need to meet these prerequisites:
+      - MySQL version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#req)
+      - User with replication permissions
+      
+      To create a new user, use these commands as reference (Note: username, 
+      password, and similar user-specific values must be replaced):
 
+      > sudo mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';"
+      > sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
+      > sudo mysql -e "GRANT SELECT ON *.* TO 'newrelic'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
+
+install:
   version: "3"
   silent: true
 
   tasks:
     default:
       cmds:
-        - task: create_user_notification
         - task: assert_pre_req
         - task: setup
         - task: restart
-
-    create_user_notification:
-      cmds:
-        - |
-          echo "_ Note: __ You need to have a MySQL user with replication permissions for enabling this integration. If you’d like to create a new user please use these commands as reference. _\n
-          sudo mysql -e \"CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD';\"\n
-          sudo mysql -e \"GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';\"\n
-          sudo mysql -e \"GRANT SELECT ON *.* TO 'newrelic'@'localhost';\""
 
     assert_pre_req:
       cmds:
         - |
           SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
           if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
+            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
         - |
-          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" | grep 'GRANT SELECT' | awk '{print $2, $3}')
-          EXPECTED=$(echo 'SELECT, REPLICATION')
-          if [ "$CHECK_DB" != "$EXPECTED" ] ; then
+          CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} --port {{.NR_CLI_DB_PORT}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep 'GRANT SELECT' | awk '{print $2, $3}')
+          EXPECTED_SELECT_REPLICATION=$(echo 'SELECT, REPLICATION')
+          EXPECTED_ALL_PRIVILEGES=$(echo 'ALL PRIVILEGES')
+          if [ "$CHECK_DB" != "$EXPECTED_SELECT_REPLICATION" ] &&  [ "$CHECK_DB" != "$EXPECTED_ALL_PRIVILEGES" ]; then
             echo -e "[Error]: Provided user has no access to the desired database.\n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info."
             exit 2
           fi
 
     setup:
-      label: "Installing mysql integration..."
+      label: "Installing MySQL integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
@@ -108,7 +112,7 @@ install:
           sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mysql
 
-          instances: 
+          instances:
             - name: mysql-status
               command: status
               arguments:
