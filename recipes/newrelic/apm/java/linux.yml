@@ -9,6 +9,8 @@ repository: https://github.com/newrelic/newrelic-java-agent
 installTargets:
   - type: application
     os: linux
+    platform: "amazon"
+    platformVersion: "2"
 
 keywords:
   - java
@@ -24,5 +26,35 @@ install:
   tasks:
     default:
       cmds:
+        - task: setup
+        - task: install_agent
+
+    setup:
+      label: "Installing Curl, JQ, Java Introspector..."
+      cmds:
         - |
-          echo ""
+          sudo yum install -q -y curl jq
+        - |
+          curl -s -O https://go-java-testing-bucket.s3-us-west-2.amazonaws.com/nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm
+        - |
+          sudo yum install -y -q nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm || true
+
+    install_agent:
+      label: "Finding Java processes and installing Java agent"
+      cmds:
+        - |
+          FOUND_JAVA_PROCESSES=$(nri-lsi-java -list)
+          if [ "$FOUND_JAVA_PROCESSES" == "" ] ||  [ "$FOUND_JAVA_PROCESSES" == "[  ]" ]; then
+            echo "No Java processes found running on the host"
+          else
+            JAVA_PROCESSES=$(echo "$FOUND_JAVA_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
+            for JAVA_PID in "${JAVA_PROCESSES[@]}"
+            do
+              INTROSPECTION_DATA=$(nri-lsi-java -introspect ${JAVA_PID})
+              DISPLAY_NAME=$( echo "${INTROSPECTION_DATA}" | jq .data[0].events[0].displayName )
+              echo -n "Enter App Name ${DISPLAY_NAME}: "
+              read APM_NAME
+              APM_NAME=${APM_NAME:-${DISPLAY_NAME}}
+              LSI_OUTPUT=$(nri-lsi-java -apm ${JAVA_PID} -license {{.NEW_RELIC_LICENSE_KEY}} -appName ${APM_NAME} -region {{.NEW_RELIC_REGION}})
+            done
+          fi
