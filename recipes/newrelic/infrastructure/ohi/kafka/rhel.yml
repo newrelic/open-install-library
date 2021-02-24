@@ -173,6 +173,7 @@ install:
             echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
+
     setup:
       label: "Installing kafka integration..."
       cmds:
@@ -186,33 +187,78 @@ install:
           if [ -f /etc/newrelic-infra/integrations.d/kafka-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/kafka-config.yml;
           fi
+
           sudo cp /etc/newrelic-infra/integrations.d/kafka-config.yml.sample /etc/newrelic-infra/integrations.d/kafka-config.yml;
-        - | 
-          sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
+
+        - |
+          if [ "{{.NR_CLI_USING_JMX_CONNECTION_OPTIONS}}" == "y" ]; then
+            sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
+            integration_name: com.newrelic.kafka
+            echo "config file here"
+            EOT
+          else
+            echo "Not using default JMX connection options."
+          fi
+
+          if [ "{{.NR_CLI_USING_AUTHORIZATION}}" == "y" ]; then
+            if [ "{{.NR_CLI_USING_SSL}}" == "y" ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
+              integration_name: com.newrelic.kafka
+              echo "config file here"
+              EOT
+            else
+              echo "Not using SSL."
+            fi
+
+            if [ "{{.NR_CLI_USING_JMX_SSL}}" == "y" ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
+              integration_name: com.newrelic.kafka
+              echo "config file here"
+              EOT
+            else
+              echo "Not using JMX SSL."
+            fi
+
+            if [ "{{.NR_CLI_USING_SASL}}" == "y" ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
+              integration_name: com.newrelic.kafka
+              echo "config file here"
+              EOT
+            else
+              echo "Not using SASL."
+            fi
+
+          else
+            sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.kafka
+
           instances:
             - name: kafka-metrics
               command: metrics
               arguments:
-                zookeeper_hosts: '[{"host": "localhost", "port": 2181}]'
-                producers: '[{"name": "my-producer", "host": "localhost", "port": 9989}]'
-                consumers: '[{"name": "my-consumer", "host": "localhost", "port": 9987}]'
+                zookeeper_hosts: '[{{.NR_CLI_ZOOKEPER_HOSTS}}]'
+                producers: '[{{.NR_CLI_PRODUCER_CONFIG}}]'
+                consumers: '[{{.NR_CLI_CONSUMER_CONFIG}}]'
                 topic_mode: {{.NR_CLI_COLLECTION_FILTERING_TOPIC_MODE}}
                 collect_topic_size: {{.NR_CLI_COLLECTION_FILTERING_COLLECT_TOPIC_SIZE}}
                 topic_list: '["{{.NR_CLI_COLLECTION_FILTERING_TOPIC_LIST}}"]'
+
             - name: kafka-inventory
               command: inventory
               arguments:
-                zookeeper_hosts: '[{"host": "localhost", "port": 2181}]'
+                zookeeper_hosts: '[{{.NR_CLI_ZOOKEPER_HOSTS}}]'
                 topic_mode: {{.NR_CLI_COLLECTION_FILTERING_TOPIC_MODE}}
                 topic_list: '["{{.NR_CLI_COLLECTION_FILTERING_TOPIC_LIST}}"]'
                 
             - name: kafka-consumer-offsets
               command: consumer_offset
               arguments:
-                zookeeper_hosts: '[{"host": "localhost", "port": 2181}]'
+                zookeeper_hosts: '[{{.NR_CLI_ZOOKEPER_HOSTS}}]'
                 consumer_group_regex: '{{.NR_CLI_COLLECTION_FILTERING_CONSUMER_GROUP_REGEX}}'
+
           EOT
+          fi
+
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
