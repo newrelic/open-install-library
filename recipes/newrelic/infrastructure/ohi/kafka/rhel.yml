@@ -48,6 +48,8 @@ inputVars:
   - name: "NR_CLI_AUTODISCOVER_STRATEGY"
     prompt: "Method of discovering brokers (zookeeper / bootstrap) (default: zookeper)" 
     default: "zookeeper"
+  - name: "NR_CLI_ZOOKEPER_HOSTS"
+    prompt: "List of Zookeeper hosts in json format"
   - name: "NR_CLI_ZOOKEPER_AUTH_SCHEME"
     prompt: "zookeeper authentication scheme (digest, none)"
     defult: none
@@ -63,14 +65,20 @@ inputVars:
     default: localhost
   - name: "NR_CLI_BOOTSTRAP_BROKER_KAFKA_PORT"
     prompt: "Port for bootstrap broker"
+    default: "Port for bootstrap broker"
   - name: "NR_CLI_BOOTSTRAP_BROKER_JMX_PORT"
     promot: "JMX Port broker"
+    default: "JMX port for broker"
   - name: "NR_CLI_BOOTSTRAP_BROKER_KAFKA_PROTOCOL"
     prompt: "Kafka protocol broker"
   - name: "NR_CLI_BOOTSTRAP_BROKER_JMX_USER"
     prompt: "JMX user broker"
   - name: "NR_CLI_BOOTSTRAP_BROKER_JMX_PASSWORD"
     prompt: "JMX user password"
+  - name: "NR_CLI_PRODUCER_CONFIG"
+    prompt: 'Producer name / hostname(optional if default present) / port(optional if default present) / username(optional if default present) / password(optional if default present) (example: {"name": "my-producer", "host": "localhost", "port": 9989}'
+  - name: "NR_CLI_CONSUMER_CONFIG"
+    prompt: 'Consumer name / hostname(optional if default present) / port(optional if default present) / username(optional if default present) / password (optional if default present) (example: {"name": "my-consumer", "host": "localhost", "port": 9987})'
   - name: "NR_CLI_USING_COLLECTION_FILTERING"
     prompt: "Are you using Collection filtering ? (y/n)"
     default: n
@@ -88,10 +96,10 @@ inputVars:
     prompt: "Collection filtering collect topic size (true/false)"
     default: false
   - name: "NR_CLI_COLLECTION_FILTERING_TOPIC_LIST"
-    prompt: "Array of topics to monitor (only if topic_mode is set top list)"
+    prompt: 'Array of topics to monitor (only if topic_mode is set top list'
   - name: "NR_CLI_COLLECTION_FILTERING_TOPIC_REGEX"
     prompt: "Regex pattern to monitor topics (only if topic_mode is set to regex)"
-  - name: "NR_CLI_COLLECTION_FILTERING_TOPIC_BUCKET"
+  - name: 'NR_CLI_COLLECTION_FILTERING_TOPIC_BUCKET'
     prompt: "Used to split topic collection across multiple instances"
     default: 1/1
   - name: "NR_CLI_USING_SASL"
@@ -195,7 +203,6 @@ install:
             echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
             exit 1
           fi
-
     setup:
       label: "Installing kafka integration..."
       cmds:
@@ -209,9 +216,10 @@ install:
           if [ -f /etc/newrelic-infra/integrations.d/kafka-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/kafka-config.yml;
           fi
-
           sudo cp /etc/newrelic-infra/integrations.d/kafka-config.yml.sample /etc/newrelic-infra/integrations.d/kafka-config.yml;
-
+        - | 
+          sudo tee /etc/newrelic-infra/integrations.d/kafka-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.kafka
           instances:
             - name: kafka-metrics
               command: metrics
@@ -222,7 +230,6 @@ install:
                 topic_mode: {{.NR_CLI_COLLECTION_FILTERING_TOPIC_MODE}}
                 collect_topic_size: {{.NR_CLI_COLLECTION_FILTERING_COLLECT_TOPIC_SIZE}}
                 topic_list: '["{{.NR_CLI_COLLECTION_FILTERING_TOPIC_LIST}}"]'
-
             - name: kafka-inventory
               command: inventory
               arguments:
@@ -235,10 +242,7 @@ install:
               arguments:
                 zookeeper_hosts: '[{"host": {{.NR_CLI_ZOOKEEPER_HOST}}, "port": {{.NR_CLI_ZOOKEEPER_PORT}}}]'
                 consumer_group_regex: '{{.NR_CLI_COLLECTION_FILTERING_CONSUMER_GROUP_REGEX}}'
-
           EOT
-          fi
-
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
