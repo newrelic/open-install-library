@@ -21,11 +21,11 @@ processMatch:
 
 logMatch:
   - name: nginx
-    file: /var/log/nginx/access.log*  # assumes log rotation like access.log.0, access.log.1, etc.
+    file: /var/log/nginx/access.log* # assumes log rotation like access.log.0, access.log.1, etc.
     attributes:
       logtype: nginx
   - name: nginx
-    file: /var/log/nginx/error.log*   # assumes log rotation like error.log.0, error.log.1, etc.
+    file: /var/log/nginx/error.log* # assumes log rotation like error.log.0, error.log.1, etc.
     attributes:
       logtype: nginx-error
 
@@ -36,8 +36,14 @@ inputVars:
     prompt: "NGINX status URL (default: http://127.0.0.1/status)"
     default: "http://127.0.0.1/status"
 
-install:
+preInstall:
+  info: |2
+      To capture data from the NGINX integration, you'll first need to enable
+      and configure the applicable extension module:
+      - For NGINX Open Source: HTTP stub status module 
+      - For NGINX Plus: HTTP status module and HTTP API module
 
+install:
   version: "3"
   silent: true
 
@@ -50,20 +56,16 @@ install:
     assert_pre_req:
       cmds:
         - |
-          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
-          if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." >> /dev/stderr
-            exit 1
-          fi
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
         - |
           STUB_STATUS_ENABLED=$(curl {{.NR_CLI_STUB_STATUS_URL}} -s | grep "Active connections:" | wc -l)
           if [ $STUB_STATUS_ENABLED -eq 0 ] ; then
-            echo "nginx HTTP status module must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
+            echo "NGINX HTTP status module must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
             exit 2
           fi
 
     setup:
-      label: "Installing nginx integration..."
+      label: "Installing NGINX integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
