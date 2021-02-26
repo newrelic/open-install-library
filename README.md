@@ -1,4 +1,4 @@
-[![Community Plus header](https://github.com/newrelic/opensource-website/raw/master/src/images/categories/Community_Plus.png)](https://opensource.newrelic.com/oss-category/#community-plus)
+[![Community Project header](https://github.com/newrelic/opensource-website/raw/master/src/images/categories/Community_Project.png)](https://opensource.newrelic.com/oss-category/#community-project)
 
 # Open Install Library
 
@@ -17,6 +17,14 @@ Deliver a consistent user experience, open source ecosystem, and platform servic
 - to realizing a win with New Relic
 
 in 5 minutes or less.
+
+## Commands
+
+```bash
+# Installs the newrelic-cli and invokes the install command
+# Replace <API_KEY> AND <ACCOUNT_ID> with your own
+curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | bash && sudo NEW_RELIC_API_KEY=<API_KEY> NEW_RELIC_ACCOUNT_ID=<ACCOUNT_ID> /usr/local/bin/newrelic install
+```
 
 ## Docs
 
