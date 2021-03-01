@@ -18,21 +18,24 @@ processMatch: []
 validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' FACET entity.guids SINCE 10 minutes ago"
 
 install:
-
   version: "3"
   silent: true
 
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: setup
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
 
     setup:
       cmds:
         - powershell -command '$logs = "C:\\Program Files\\New Relic\\newrelic-infra\\logging.d\\logs.yml"; if (Test-Path $logs) { Remove-Item $logs }'
         - powershell -command 'echo "{{.LOGS_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\logging.d\\logs.yml"'
         - powershell -command 'Restart-Service -Name newrelic-infra'
-        - echo "New Relic Log for Windows configured and newrelic-infra agent restarted"
       vars:
         LOGS_CONTENT: |
           logs:
@@ -52,3 +55,9 @@ install:
             - name: windows-application
               winlog:
                 channel: Application
+
+postInstall:
+  info: |2
+      ⚙️  The Logs configuration file can be found in C:\Program Files\New Relic\newrelic-infra\logging.d\logs.yml
+      Edit these files to make changes or configure advanced features for the Logs integration. See the docs for options:
+      Logs: https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters

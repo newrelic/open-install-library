@@ -18,13 +18,11 @@ keywords:
   - Amazon Linux 2
   - Linux2
 
-processMatch:
-  - /infra/
+processMatch: []
 
 validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
 install:
-
   version: "3"
   silent: true
 
@@ -33,6 +31,7 @@ install:
       cmds:
         - task: setup_license
         - task: install_infra
+        - task: restart
 
     setup_license:
       cmds:
@@ -42,7 +41,7 @@ install:
           fi
           sudo touch /etc/newrelic-infra.yml;
         - |
-          grep -q '^license_key' /etc/newrelic-infra.yml && sudo sed -i 's/^license_key.*/license_key: {{.NEW_RELIC_LICENSE_KEY}}/' /etc/newrelic-infra.yml || echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+          echo -e "license_key: {{.NEW_RELIC_LICENSE_KEY}}" | sudo tee -a /etc/newrelic-infra.yml > /dev/null
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
@@ -54,3 +53,13 @@ install:
         - sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
         - sudo yum -y -q install newrelic-infra
       silent: true
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The Infrastructure Agent configuration file can be found in /etc/newrelic-infra.yml
+      Edit this file to make changes or configure advanced features for the agent. See the docs for options:
+      https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings

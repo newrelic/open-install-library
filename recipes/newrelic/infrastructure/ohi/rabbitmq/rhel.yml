@@ -62,8 +62,9 @@ inputVars:
 preInstall:
   info: |2
       To capture data from the RabbitMQ integration, you'll first need to meet these prerequisites:
+      - RabbitMQ version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/rabbitmq-monitoring-integration#comp-req)
       - RabbitMQ Management Plugin is configured
-      - RabbitMQ command line tool, rabbitmqctl, is in the PATH of the root user.
+      - RabbitMQ command line tool, rabbitmqctl, is in the PATH of the root user
 
 install:
   version: "3"
@@ -79,11 +80,7 @@ install:
     assert_pre_req:
       cmds:
         - |
-          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
-          if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
-            exit 1
-          fi
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
 
     rabbitmq_plugin_installed:
       cmds:
@@ -95,7 +92,7 @@ install:
           fi
 
     setup:
-      label: "Installing rabbitmq integration..."
+      label: "Installing RabbitMQ integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
@@ -155,3 +152,9 @@ install:
           fi
 
         - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The RabbitMQ configuration file can be found in /etc/newrelic-infra/integrations.d/rabbitmq-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/rabbitmq-monitoring-integration#config

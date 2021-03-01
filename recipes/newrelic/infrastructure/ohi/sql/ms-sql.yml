@@ -2,7 +2,7 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 name: mssql-server-integration-installer
-displayName: Microsoft SqlServer Integration Installer
+displayName: Microsoft Sql Server Integration Installer
 description: New Relic install recipe for the Microsoft SqlServer Integration
 repository: https://github.com/newrelic/nri-mssql
 
@@ -35,8 +35,13 @@ inputVars:
     prompt: "SQL Server Port (default: 1433)"
     default: 1433
 
-install:
+preInstall:
+  info: |2
+      To capture data from the Microsoft SQL Server integration, you'll first need to meet these prerequisites:
+      - Microsoft SQL Server version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/microsoft-sql-server-monitoring-integration#about)
+      - Microsoft SQL Server user with user privileges for both CONNECT and VIEW SERVER STATE, and READ access permissions
 
+install:
   version: "3"
   silent: true
 
@@ -49,21 +54,21 @@ install:
 
     assert_pre_req:
       cmds:
-        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is NOT installed on the host, but is required to install this integration." }'
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
         - powershell -command '$output = sqlcmd -S {{.NR_CLI_DB_HOSTNAME}},{{.NR_CLI_DB_PORT}} -U {{.NR_CLI_DB_USERNAME}} -P "{{.NR_CLI_DB_PASSWORD}}" -Q "SELECT GETDATE()"; if ( -not ($output -like "*rows affected*") ) { Write-Error "Cannot connect to the SQL Server instance {{.NR_CLI_DB_HOSTNAME}} with the provided username {{.NR_CLI_DB_USERNAME}} and password." }'
 
     remove_any_previous:
       ignore_error: true
       cmds:
-        - powershell -command '$app = Get-WmiObject -Class Win32_Product -Filter "Name = 'New Relic Infrastructure Integration, nri-mssql'"; $app.Uninstall()'
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-mssql*"}; if ($app) { $app.Uninstall() }'
 
     install:
+      label: "Installing Microsoft SQL Server integration..."
       cmds:
         - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-mssql/nri-mssql-amd64.msi", "$env:TEMP\nri-mssql-amd64.msi");'
         - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-mssql-amd64.msi" | Out-Null;'
         - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"'
         - powershell -command 'Restart-Service newrelic-infra'
-        - echo "New Relic Microsoft SqlServer Integration installed"
       vars:
         INT_CONTENT: |
           integration_name: com.newrelic.mssql
@@ -76,3 +81,9 @@ install:
                 username: {{.NR_CLI_DB_USERNAME}}
                 password: {{.NR_CLI_DB_PASSWORD}}
                 port: {{.NR_CLI_DB_PORT}}
+
+postInstall:
+  info: |2
+      ⚙️  The Microsoft SQL Server configuration file can be found in C:\Program Files\New Relic\newrelic-infra\integrations.d\mssql-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/microsoft-sql-server-monitoring-integration#config

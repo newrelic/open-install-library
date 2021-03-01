@@ -32,11 +32,11 @@ validationNrql: "SELECT count(*) from MongoDatabaseSample where hostname like '{
 
 inputVars:
   - name: "NR_CLI_USERNAME"
-    prompt: "MongoDb Username"
+    prompt: "MongoDB Username"
   - name: "NR_CLI_PASSWORD"
-    prompt: "MongoDb Password"
+    prompt: "MongoDB Password"
   - name: "NR_CLI_CLUSTERNAME"
-    prompt: "MongoDb Culster Name"
+    prompt: "MongoDB Cluster Name"
     secret: true
   - name: "NR_CLI_AUTH"
     prompt: "MongoDB Auth Source (default: admin)"
@@ -60,21 +60,24 @@ inputVars:
 
 preInstall:
   info: |2
-      You'll need a user with clusterMonitor and listcollections roles to 
-      collect data from this integration. If you'd like to create a new user 
-      please use these commands as reference:
-      
-      In the MongoDB shell, execute the following commands to create a 
-      listCollections role and a new user, then assign clusterMonitor and 
-      listCollections roles to the new user. 
+      To capture data from the MongoDB integration, you'll first need to meet these prerequisites:
+      - MongoDB version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#comp-req)
+      - User with clusterMonitor and listCollections roles
+
+      In the MongoDB shell, execute the following commands to create a
+      listCollections role and a new user, then assign clusterMonitor and
+      listCollections roles to the new user.
       Note: username, password, and similar user-specific values must be replaced.
-      
-      In the MongoDB shell, enter
+
+      In the MongoDB shell run the following command
+      > rs.initiate()
+
+      Switch to the admin database
       > use admin
 
       Use the following command to create the listCollections role:
       > db.createRole({role: "listCollections", privileges: [{ resource: {db:"",collection:""}, actions: ["listCollections"] }], roles: []})
-      
+
       Use the following commands to create a new user, and assign clusterMonitor and listCollections roles to the user:
       > db.createUser({ user: "username", pwd: "password", roles: [ "clusterMonitor", "listCollections" ]})
 
@@ -92,14 +95,16 @@ install:
     assert_pre_req:
       cmds:
         - |
-          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
-          if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
-            exit 1
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
+        - |
+          MONGODB_EXISTS=$(mongo --eval 'db.runCommand({ connectionStatus: 1 })' | grep "ok" | awk '{print $1 $2 $3}')
+          if [ $MONGODB_EXISTS != "ok:1"]; then
+            echo "Cannot estabilish connection to mongodb, please verify that it's installed correctly."
+            exit 2
           fi
 
     setup:
-      label: "Installing mongodb integration..."
+      label: "Installing MongoDB integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
@@ -116,7 +121,7 @@ install:
             if [ "{{.NR_CLI_SKIP_SSL_VERIFY}}" == "n" ]; then
               sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mongodb
-          instances: 
+          instances:
             - name: all
               command: all
               arguments:
@@ -137,7 +142,7 @@ install:
             else
               sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mongodb
-          instances: 
+          instances:
             - name: all
               command: all
               arguments:
@@ -157,7 +162,7 @@ install:
             else
               sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mongodb
-          instances: 
+          instances:
             - name: all
               command: all
               arguments:
@@ -178,3 +183,9 @@ install:
     restart:
       cmds:
         - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The MongoDB configuration file can be found in /etc/newrelic-infra/integrations.d/mongodb-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config

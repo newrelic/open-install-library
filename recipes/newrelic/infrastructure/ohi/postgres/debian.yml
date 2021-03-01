@@ -1,5 +1,5 @@
 name: postgres-open-source-integration
-displayName: Postgres Open Source Integration
+displayName: PostgreSQL Open Source Integration
 description: New Relic install recipe for default Postgres Open Source on-host integration (via Infra-Agent)
 repository: https://github.com/newrelic/nri-postgresql
 
@@ -52,11 +52,12 @@ inputVars:
 
 preInstall:
   info: |2
-      You'll need a user with READ permissions to 
-      collect data from this integration. If you'd like to create a new user 
-      please use these commands as reference:
-
-      Note: username, password, and similar user-specific values must be replaced.
+      To capture data from the RabbitMQ integration, you'll first need to meet these prerequisites:
+      - PostgreSQL version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req)
+      - User with READ permissions
+      
+      To create a new user, use these commands as reference (Note: username, 
+      password, and similar user-specific values must be replaced):
       
       > CREATE USER newrelic WITH PASSWORD 'PASSWORD'
       > GRANT SELECT ON pg_stat_database TO newrelic
@@ -76,14 +77,10 @@ install:
     assert_pre_req:
       cmds:
         - |
-          SERVICE_EXIST=$(sudo systemctl status newrelic-infra.service | grep "Active" | wc -l)
-          if [ $SERVICE_EXIST -eq 0 ]; then
-            echo "The newrelic-infra agent service is not installed on the host, but is required to install this integration." >> /dev/stderr
-            exit 1
-          fi
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
 
     setup:
-      label: "Installing postgresql integration..."
+      label: "Installing PostgreSQL integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
@@ -138,3 +135,9 @@ install:
           fi
 
         - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The PostgreSQL configuration file can be found in /etc/newrelic-infra/integrations.d/postgresql-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#config

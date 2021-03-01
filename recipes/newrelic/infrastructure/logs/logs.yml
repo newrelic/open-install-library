@@ -13,8 +13,7 @@ installTargets:
 keywords:
   - Logs
 
-processMatch:
-  - /logs/
+processMatch: []
 
 validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' FACET entity.guids SINCE 10 minutes ago"
 
@@ -29,7 +28,13 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: setup
+
+    assert_pre_req:
+      cmds:
+        - |
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
 
     setup:
       cmds:
@@ -59,3 +64,10 @@ install:
           done
         - echo -e "{{.DISCOVERED_LOG_FILES}}" | sudo tee /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
         - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The Logs configuration file (base configuration) can be found in /etc/newrelic-infra/logging.d/logging.yml
+      ⚙️  The Logs configuration file for discovered processes can be found in /etc/newrelic-infra/logging.d/discovered.yml
+      Edit these files to make changes or configure advanced features for the Logs integration. See the docs for options:
+      https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
