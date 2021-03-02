@@ -120,6 +120,11 @@ install: string, required
         - curl -L https://raw.githubusercontent.com/fryckbos/infra-install/master/install.sh {{.NEW_RELIC_LICENSE_KEY}} | sh
       silent: true
 
+# Optional post-install configuration items.
+# Useful for things like including prompt info on dependencies and what vars could be supplied to the CLI to automate this recipe.
+# Can be extended in the future for any post-install hooks we'd want the newrelic-cli to run.
+postInstall: object, optional
+  info: string, optional    # Message/Docs notice displayed to user after running the recipe
 ```
 
 ## Schema Validator
