@@ -1,0 +1,75 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: logs-integration
+displayName: Logs integration
+description: New Relic install recipe for basic Logging via Infra-Agent
+repository: https://github.com/newrelic/infrastructure-agent/tree/master/assets/examples/logging
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+keywords:
+  - Logs
+
+processMatch:
+  - /logs/
+
+validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' FACET entity.guids SINCE 10 minutes ago"
+
+inputVars:
+  - name: "LOG_FILES"
+    prompt: "Which log files would you like to tail?"
+    default: "/var/log/alternatives.log,/var/log/cloud-init.log,/var/log/auth.log"
+
+install:
+  version: "3"
+  silent: true
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+
+    assert_pre_req:
+      cmds:
+        - |
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
+
+    setup:
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/logging.d"
+        - |
+          if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
+            sudo rm /etc/newrelic-infra/logging.d/logging.yml;
+          fi
+
+          sudo touch /etc/newrelic-infra/logging.d/logging.yml;
+        - |
+          # Enable infra-agent logs to New Relic
+          sudo sed -i "s,.*verbose:.*,," /etc/newrelic-infra.yml
+          sudo sed -i "s,.*log_format:.*,," /etc/newrelic-infra.yml
+          echo -e "verbose: 3\nlog_format: json" | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+          sudo sed -i '/^$/d' /etc/newrelic-infra.yml
+        - |
+          echo "logs:" | sudo tee /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+          for i in $(echo {{.LOG_FILES}} | sed "s/,/ /g"); do
+            if [ -f $i ]; then
+              NAME=$(basename $i)
+              echo -e "  - name: $NAME\n    file: $i" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+            else
+              echo "ERROR log file $i not found"
+            fi
+          done
+        - echo -e "{{.DISCOVERED_LOG_FILES}}" | sudo tee /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+        - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The Logs configuration file (base configuration) can be found in /etc/newrelic-infra/logging.d/logging.yml
+      ⚙️  The Logs configuration file for discovered processes can be found in /etc/newrelic-infra/logging.d/discovered.yml
+      Edit these files to make changes or configure advanced features for the Logs integration. See the docs for options:
+      https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
