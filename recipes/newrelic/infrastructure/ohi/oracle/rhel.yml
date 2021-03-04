@@ -1,0 +1,136 @@
+name: oracle-open-source-integration
+displayName: oracle Open Source Integration
+description: New Relic install recipe for default oracle Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-oracledb
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - oracle
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - oracledb
+
+# Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
+logMatch:
+  - name: oracledb
+    file: /var/log/oracledb/*access_log
+  - name: oracle error
+    file: /var/log/oracledb/*error_log
+
+# NRQL the newrelic-cli will use to validate the agent/integration this recipe
+# installed is successfully sending data to New Relic
+validationNrql: "SELECT count(*) from OracleDatabaseSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_ORACLEDB_USERNAME"
+    prompt: "OracleDB username"
+  - name: "NR_CLI_ORACLEDB_PASSWORD"
+    prompt: "OracleDB password"
+  - name: "NR_CLI_ORACLEDB_HOST"
+    prompt: "OracleDB host"
+  - name: "NR_CLI_ORACLEDB_PORT"
+    prompt: "OracleDB port"
+  - name: "NR_CLI_ORACLEDB_HOME_PATH"
+    prompt: "OracleDB homepath"
+    default: "/etc/oracledb/"
+  - name: "NR_CLI_ORACLEDB_SERVICE_NAME"
+    prompt: "OracleDB Service name"
+    default: "ORCL"
+  - name: "NR_CLI_ORACLEDB_CUSTOM_METRICS_CONFIG"
+    prompt: "Path to OracleDB custom metrics config"
+  - name: "NR_CLI_ORACLEDB_SYS_DBA"
+    prompt: "Enable OracleDB_SYS_DBA ? "
+    default: false
+  - name: "NR_CLI_ORACLEDB_SYS_OPER"
+    prompt: "Enable OracleDB_SYS_OPER ? "
+    default: false
+  - name: "NR_CLI_ORACLEDB_EXTENDED_METRICS"
+    prompt: "Enable extended metrincs for OracleDB?"
+    default: false
+
+preInstall:
+  info: |2
+      To capture data from the oracle integration, you'll first need to meet these prerequisites:
+      - oracle version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/oracle-monitoring-integration#comp-req)
+      - oracle status module enabled and configured for oracle instance
+      - oracle status module endpoint (default server-status) available
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    assert_pre_req:
+      cmds:
+        - |
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
+
+    setup:
+      label: "Installing oracledb integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum update -y
+        - |
+          sudo yum install nri-oracledb -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/oracledb-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/oracledb-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/oracledb-config.yml.sample /etc/newrelic-infra/integrations.d/oracledb-config.yml;
+
+        - |
+          sudo tee /etc/newrelic-infra/integrations.d/oracle-config.yml > /dev/null <<"EOT"
+          integration_name: com.newrelic.oracle
+
+          instances:
+              - name: oracledb
+                command: all-data
+                arguments:
+                    service_name: {{.NR_CLI_ORACLEDB_SERVICE_NAME}}
+                    username: {{.NR_CLI_ORACLEDB_USERNAME}}
+                    password: {{.NR_CLI_ORACLEDB_PASSWORD}}
+                    is_sys_dba: {{.NR_CLI_ORACLEDB_SYS_DBA}}
+                    oracle_home: {{.NR_CLI_ORACLEDB_HOME_PATH}}
+                    is_sys_oper: {{.NR_CLI_ORACLEDB_SYS_OPER}}
+                    hostname: {{.NR_CLI_ORACLEDB_HOST}}
+                    port: {{.NR_CLI_ORACLEDB_PORT}}
+                    extended_metrics: {{.NR_CLI_ORACLEDB_EXTENDED_METRICS}}
+                    custom_metrics_query: SQL query
+                    custom_metrics_config: {{.NR_CLI_ORACLEDB_CUSTOM_METRICS_CONFIG}}
+
+          EOT
+
+    restart:
+      cmds:
+        - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The oracle configuration file can be found in /etc/newrelic-infra/integrations.d/oracledb-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/oracle-monitoring-integration#config
