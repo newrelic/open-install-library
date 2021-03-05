@@ -1,0 +1,143 @@
+name: oracledb-open-source-integration
+displayName: OracleDb Open Source Integration
+description: New Relic install recipe for default OracleDb Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-oracledb
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - oracledb
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - oracledb
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: oracle
+    file: tbd
+
+validationNrql: "SELECT count(*) from OracleDatabaseSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_SERVICE_NAME"
+    prompt: "OracleDb service name of the instance"
+  - name: "NR_CLI_PORT"
+    prompt: "OracleDb instance port (default: 1521)"
+    default: 1521
+  - name: "NR_CLI_USERNAME"
+    prompt: "OracleDb username"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "OracleDb password"
+  - name: "NR_CLI_IS_SYS_DBA"
+    prompt: "User has SysDBA permissions (true/false)"
+    default: false
+  - name: "NR_CLI_IS_SYS_OPER"
+    prompt: "User has SysOper permissions (true/false)"
+    default: false
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "OracleDb instance hostname"
+  - name: "NR_CLI_ORACLE_HOME"
+    prompt: "Path to ORACLE_HOME"
+  - name: "NR_CLI_EXTENDED_METRICS"
+    prompt: "Collect extended metrics (true/false)"
+    default: false
+
+preInstall:
+  info: |2
+      To capture data from the OracleDb integration, you'll first need to meet these prerequisites:
+      - OracleDb version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/oracle-database-monitoring-integration#comp-req)
+      - User with necessary permissions (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/oracle-database-monitoring-integration#users-privileges)
+      
+      To create a new user, use these commands as reference (Note: username, 
+      user_password, and similar user-specific values must be replaced):
+      
+      > CREATE USER username IDENTIFIED BY "user_password";
+      > GRANT CONNECT TO username;
+      > GRANT SELECT ON cdb_data_files TO username;
+      > GRANT SELECT ON cdb_pdbs TO username;
+      > GRANT SELECT ON cdb_users TO username;
+      > GRANT SELECT ON gv_$sysmetric TO username;
+      > GRANT SELECT ON gv_$pgastat TO username;
+      > GRANT SELECT ON gv_$instance TO username;
+      > GRANT SELECT ON gv_$filestat TO username;
+      > GRANT SELECT ON gv_$parameter TO username;
+      > GRANT SELECT ON sys.dba_data_files TO username;
+      > GRANT SELECT ON DBA_TABLESPACES TO username;
+      > GRANT SELECT ON DBA_TABLESPACE_USAGE_METRICS TO username;
+      > GRANT SELECT ON gv_$session TO username;
+      > GRANT SELECT ON gv_$sesstat TO username;
+      > GRANT SELECT ON gv_$statname TO username;
+      > GRANT SELECT ON gv_$rowcache TO username;
+      > GRANT SELECT ON gv_$sga TO username;
+      > GRANT SELECT ON gv_$sysstat TO username;
+      > GRANT SELECT ON v_$database TO username;
+      > GRANT SELECT ON gv_$librarycache TO username;
+      > GRANT SELECT ON gv_$sqlarea TO username;
+      > GRANT SELECT ON gv_$system_event TO username;
+      > GRANT SELECT ON dba_tablespaces TO username;
+      > GRANT SELECT ON gv_$session_wait TO username;
+      > GRANT SELECT ON gv_$rollstat TO username;
+      > GRANT SELECT ON v_$instance TO username;
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - taks: assert_pre_req
+        - task: setup
+
+    assert_pre_req:
+      cmds:
+        - |
+          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
+
+    setup:
+      label: "Installing OracleDb integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo apt-get update
+        - |
+          sudo apt-get install nri-oracledb -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/oracledb-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/oracledb-config.yml;
+          fi
+          sudo touch /etc/newrelic-infra/integrations.d/oracledb-config.yml;
+        - |
+          integration_name: com.newrelic.oracledb
+          instances:
+            - name: oracledb
+              command: all_data
+              arguments: 
+                  username: {{.NR_CLI_USERNAME}}
+                  password: {{.NR_CLI_PASSWORD}}
+                  hostname: {{.NR_CLI_HOSTNAME}}
+                  port: {{.NR_CLI_PORT}}
+                  oracle_home: {{.NR_CLI_ORACLE_HOME}}
+                  is_sys_dba: {{.NR_CLI_IS_SYS_DBA}}
+                  is_sys_oper: {{.NR_CLI_IS_SYS_OPER}}
+                  service_name: {{.NR_CLI_SERVICE_NAME}}
+                  extended_metrics: {{.NR_CLI_EXTENDED_METRICS}}
+
+        - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The Oracle configuration file can be found in /etc/newrelic-infra/integrations.d/oracledb-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/oracle-database-monitoring-integration#config
