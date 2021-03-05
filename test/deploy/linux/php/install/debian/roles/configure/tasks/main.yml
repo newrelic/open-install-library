@@ -1,0 +1,50 @@
+---
+- debug:
+    msg: Install PHP
+
+- name: update apt
+  shell: "apt update"
+  become: yes
+
+- name: install php
+  shell: "apt install wordpress php libapache2-mod-php mysql-server php-mysql -y"
+  become: yes
+
+- template:
+    src: wordpress.conf
+    dest: /etc/apache2/sites-available/wordpress.conf
+  become: yes
+
+- name: enable wordpress site
+  shell: "a2ensite wordpress"
+  become: yes
+
+- name: enable mod rewrite
+  shell: "a2enmod rewrite"
+  become: yes
+
+- name: restart apache2
+  shell: "service apache2 reload"
+  become: yes
+
+- template:
+    src: config-localhost.php
+    dest: /etc/wordpress/config-{{ ip }}.php
+  become: yes
+
+- template:
+    src: all_databases.sql
+    dest: all_databases.sql
+  become: yes
+
+- name: seed database
+  shell: "mysql < all_databases.sql"
+  become: yes
+
+- name: start mysql service
+  shell: "service mysql start"
+  become: yes
+
+- name: msyql flush privliges
+  shell: mysql -e "FLUSH PRIVILEGES;"
+  become: yes
