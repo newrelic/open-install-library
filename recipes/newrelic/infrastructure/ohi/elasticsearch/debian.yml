@@ -65,11 +65,16 @@ install:
       cmds:
         - taks: assert_pre_req
         - task: setup
+        - task: restart
 
     assert_pre_req:
       cmds:
         - |
-          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            exit 1
+          fi
 
     setup:
       label: "Installing Elasticsearch integration..."
@@ -133,7 +138,14 @@ install:
           EOT
           fi
 
-        - sudo systemctl restart newrelic-infra.service
+    restart:
+      cmds:
+        - |
+          if [ -f /etc/init.d/newrelic-infra ]; then
+            sudo /etc/init.d/newrelic-infra restart > /dev/null;
+          else
+            sudo systemctl restart newrelic-infra.service
+          fi
 
 postInstall:
   info: |2
