@@ -23,22 +23,6 @@
   shell: yum install -y /etc/compat-libstdc++-33-3.2.3-72.el7.x86_64.rpm 
   become: true 
 
-- name: get oracle instant client
-  shell: wget https://download.oracle.com/otn_software/linux/instantclient/185000/oracle-instantclient18.5-basic-18.5.0.0.0-3.x86_64.rpm -P /etc/
-  become: true
-
-- name: install oracle insant client
-  shell: yum install -y /etc/oracle-instantclient18.5-basic-18.5.0.0.0-3.x86_64.rpm
-  become: true
-
-- name: get sqlplus
-  shell: wget https://download.oracle.com/otn_software/linux/instantclient/185000/oracle-instantclient18.5-sqlplus-18.5.0.0.0-3.x86_64.rpm -P /etc/
-  become: true
-
-- name: install sqlplus
-  shell: yum install -y /etc/oracle-instantclient18.5-sqlplus-18.5.0.0.0-3.x86_64.rpm
-  become: true
-
 - name: get oracle database preinstall 
   shell: curl -o oracle-database-preinstall-18c-1.0-1.el7.x86_64.rpm https://yum.oracle.com/repo/OracleLinux/OL7/latest/x86_64/getPackage/oracle-database-preinstall-18c-1.0-1.el7.x86_64.rpm
   become: true
@@ -51,15 +35,63 @@
   shell: wget https://download.oracle.com/otn-pub/otn_software/db-express/oracle-database-xe-18c-1.0-1.x86_64.rpm -P /etc/
   become: true
 
-# TODO: CHANGE DISK SPACE (MORE THAN 12GB)
+- name: install oracle database
+  shell: yum -y localinstall /etc/oracle-database-xe-18c-1.0-1.x86_64.rpm
+  become: true 
 
-# - name: install oracle database
-#   shell: yum -y localinstall /etc/oracle-database-xe-18c-1.0-1.x86_64.rpm
-#   become: true 
+- name: update oracle file
+  template:
+    src: oracle-xe-18c
+    dest: /etc/init.d/oracle-xe-18c
+  become: true 
 
-# - name: run oracle db
-#   shell: /etc/init.d/oracle-xe-18c configure
-#   become: true 
+- name: update oracle config file
+  template:
+    src: oracle-xe-18c.conf
+    dest: /etc/sysconfig/oracle-xe-18c.conf
+  become: true 
+
+- name: copy queries
+  template:
+    src: queries.sql
+    dest: /etc/queries.sql
+  become: true 
+
+- name: run oracle db
+  shell: echo "oracle" | echo "oracle" | /etc/init.d/oracle-xe-18c configure
+  become: true 
+
+- name: get oracle instant client
+  shell: wget https://download.oracle.com/otn_software/linux/instantclient/185000/oracle-instantclient18.5-basic-18.5.0.0.0-3.x86_64.rpm -P /opt/oracle/product/18c/dbhomeXE/
+  become: true
+
+- name: install oracle insant client
+  shell: yum install -y /opt/oracle/product/18c/dbhomeXE/oracle-instantclient18.5-basic-18.5.0.0.0-3.x86_64.rpm
+  become: true
+
+- name: get sqlplus
+  shell: wget https://download.oracle.com/otn_software/linux/instantclient/185000/oracle-instantclient18.5-sqlplus-18.5.0.0.0-3.x86_64.rpm -P /opt/oracle/product/18c/dbhomeXE
+  become: true
+
+- name: install sqlplus
+  shell: yum install -y /opt/oracle/product/18c/dbhomeXE/oracle-instantclient18.5-sqlplus-18.5.0.0.0-3.x86_64.rpm
+  become: true
+
+- name: export ORACLE_HOME variable
+  shell: export ORACLE_HOME=/opt/oracle/product/18c/dbhomeXE
+  become: true
+
+- name: export ORACLE_SID variable
+  shell: export ORACLE_SID=XE
+  become: true
+
+- name: fix error for sqlplus connect
+  shell: LD_LIBRARY_PATH=/opt/oracle/product/18c/dbhomeXE/lib:$LD_LIBRARY_PATH | export LD_LIBRARY_PATH | cd /opt/oracle/product/18c/dbhomeXE/lib/ | ln -s /opt/oracle/product/18c/dbhomeXE/inventory/Scripts/ext/lib/libclntshcore.so.18.1 | chown oracle:oinstall libclntshcore.so.18.1
+  become: true 
+
+- name: Connect via SQLPLUS
+  shell: echo oracle | sqlplus64 sys as SYSDBA < /etc/queries.sql
+  become: true
 
 - block:
   - name: Export USERNAME
@@ -71,11 +103,11 @@
   - name: Export DB_PORT
     shell: "echo export NR_CLI_ORACLEDB_PORT=1521 >> ~/.bashrc"
   - name: Export ORACLE_HOME_PATH
-    shell: "echo export NR_CLI_ORACLEDB_HOME_PATH=/etc/oracledb >> ~/.bashrc"
+    shell: "echo export NR_CLI_ORACLEDB_HOME_PATH=/opt/oracle/product/18c/dbhomeXE >> ~/.bashrc"
   - name: Export ORACLE_SERVICE_NAME
     shell: "echo export NR_CLI_ORACLEDB_SERVICE_NAME=ORCL >> ~/.bashrc"
   - name: Export ORACLE_CUSTOM_METRICS_CONFIG
-    shell: "echo export NR_CLI_ORACLEDB_CUSTOM_METRICS_CONFIG=/path/to/yaml/file  >> ~/.bashrc"
+    shell: "echo export NR_CLI_ORACLEDB_CUSTOM_METRICS_CONFIG=/etc/queries.sql  >> ~/.bashrc"
   - name: Export ORACLE_SYS_DBA
     shell: "echo export NR_CLI_ORACLEDB_SYS_DBA=false  >> ~/.bashrc"
   - name: Export ORACLE_SYS_OPER
