@@ -17,39 +17,111 @@
     name: ['libaio*', 'alien']
     update_cache: yes
     state: latest
-  become: yes
+  become: true
 
 - name: Create dir for database download
   shell: mkdir /opt/distr
-  become: yes
+  become: true
 
 - name: Download Oracle Database XE 18c
   get_url:
     url: https://download.oracle.com/otn-pub/otn_software/db-express/oracle-database-xe-18c-1.0-1.x86_64.rpm
     dest: /opt/distr/oracle-database-xe-18c-1.0-1.x86_64.rpm
-  become: yes
+  become: true
+
+- name: Download Oracle InstantClient 18.5c
+  get_url:
+    url: https://download.oracle.com/otn_software/linux/instantclient/185000/oracle-instantclient18.5-basic-18.5.0.0.0-3.x86_64.rpm
+    dest: /tmp/oracle-instantclient18.5-basic-18.5.0.0.0-3.x86_64.rpm
+  become: true
+
+- name: Download Oracle SqlPlus package
+  get_url:
+    url: https://download.oracle.com/otn_software/linux/instantclient/185000/oracle-instantclient18.5-sqlplus-18.5.0.0.0-3.x86_64.rpm
+    dest: /tmp/oracle-instantclient18.5-sqlplus-18.5.0.0.0-3.x86_64.rpm
+  become: true
+
+- name: Convert Oracle InstantClient file into deb file
+  shell: alien --scripts /tmp/oracle-instantclient18.5-basic-18.5.0.0.0-3.x86_64.rpm
+  args:
+    chdir: /tmp/
+  become: true
+
+- name: Convert Oracle SqlPlus file into deb file
+  shell: alien --scripts /tmp/oracle-instantclient18.5-sqlplus-18.5.0.0.0-3.x86_64.rpm
+  args:
+    chdir: /tmp/
+  become: true
 
 - name: Convert Oracle Database XE 18c file into deb file
   shell: alien --scripts /opt/distr/oracle-database-xe-18c-1.0-1.x86_64.rpm
-  wait_for:
-    path: /opt/distr/oracle-database-xe-18c_1.0-2_amd64.deb
-  become: yes
+  args:
+    chdir: /tmp/
+  become: true
 
 - name: Install Oracle Database XE 18c
-  shell: dpkg -i /opt/distr/oracle-database-xe-18c_1.0-2_amd64.deb
-  wait_for:
-    path: /etc/sysconfig/oracle-xe-18c.conf
-  become: yes
+  shell: dpkg -i /tmp/oracle-database-xe-18c_1.0-2_amd64.deb
+  become: true
+
+- name: Install Oracle InstantClient
+  shell: dpkg -i /tmp/oracle-instantclient18.5-basic_18.5.0.0.0-4_amd64.deb
+  become: true
+
+- name: Install Oracle SqlPlus package
+  shell: dpkg -i /tmp/oracle-instantclient18.5-sqlplus_18.5.0.0.0-4_amd64.deb
+  become: true
+
+- name: Replace oracle-xe-18c.conf file
+  template:
+    src: oracle-xe-18c.conf
+    dest: /etc/sysconfig/oracle-xe-18c.conf
+  become: true
+
+- name: Replace oracle-xe-18c script file
+  template:
+    src: oracle-xe-18c
+    dest: /etc/init.d/oracle-xe-18c
+  become: true
+
+- name: Export LD_LIBRARY_PATH
+  shell: "echo export LD_LIBRARY_PATH=/opt/oracle/product/18c/dbhomeXE/lib:$LD_LIBRARY_PATH >> ~/.bashrc"
+
+- name: Set ownership for oracle
+  shell: chown oracle:oinstall /opt/oracle/product/18c/dbhomeXE/lib/libclntshcore.so.18.1
+  become: true
+
+- name: Export ORACLE_HOME
+  shell: "echo export ORACLE_HOME=/opt/oracle/product/18c/dbhomeXE >> ~/.bashrc"
+
+- name: Export ORACLE_SID
+  shell: "echo export ORACLE_SID=XE >> ~/.bashrc"
+
+- name: Configure OracleDB
+  shell: (echo "test"; echo "test";) | /etc/init.d/oracle-xe-18c configure
+  become: true 
+
+- name: Copy queries.sql file
+  template:
+    src: queries.sql
+    dest: /tmp/queries.sql
+  become: true
+
+- name: Set permissions for queries.sql
+  shell: chmod 0755 /tmp/queries.sql
+  become: true
+
+- name: Run queries on the DB
+  shell: echo test | sqlplus64 sys as SYSDBA @/tmp/queries.sql
 
 - block:
   - name: Export NR_CLI_SERVICE_NAME
-    shell: "echo export NR_CLI_SERVICE_NAME=test >> ~/.bashrc"
+    shell: "echo export NR_CLI_SERVICE_NAME=XE >> ~/.bashrc"
   - name: Export NR_CLI_PORT
     shell: "echo export NR_CLI_PORT=1521 >> ~/.bashrc"
   - name: Export NR_CLI_USERNAME
-    shell: "echo export NR_CLI_USERNAME=NewRelicUser >> ~/.bashrc"
+    shell: "echo export NR_CLI_USERNAME=NEWRELIC >> ~/.bashrc"
   - name: Export NR_CLI_PASSWORD
-    shell: "echo export NR_CLI_PASSWORD=Virtuoso4all! >> ~/.bashrc"
+    shell: "echo export NR_CLI_PASSWORD=Virtuoso4all >> ~/.bashrc"
   - name: Export NR_CLI_IS_SYS_DBA
     shell: "echo export NR_CLI_IS_SYS_DBA=false >> ~/.bashrc"
   - name: Export NR_CLI_IS_SYS_OPER
@@ -57,7 +129,7 @@
   - name: Export NR_CLI_HOSTNAME
     shell: "echo export NR_CLI_HOSTNAME=localhost >> ~/.bashrc"
   - name: Export NR_CLI_ORACLE_HOME
-    shell: "echo export NR_CLI_ORACLE_HOME=tbd >> ~/.bashrc"
+    shell: "echo export NR_CLI_ORACLE_HOME=/opt/oracle/product/18c/dbhomeXE >> ~/.bashrc"
   - name: Export NR_CLI_EXTENDED_METRICS
     shell: "echo export NR_CLI_EXTENDED_METRICS=false >> ~/.bashrc"
   when: create_env_var|bool
