@@ -82,7 +82,11 @@ install:
     assert_pre_req:
       cmds:
         - |
-          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            exit 1
+          fi
         - |
           CHECK_DB=$(mysql -u{{.NR_CLI_DB_USERNAME}} --port {{.NR_CLI_DB_PORT}} -p{{.NR_CLI_DB_PASSWORD}} -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep 'GRANT SELECT' | awk '{print $2, $3}')
           EXPECTED_SELECT_REPLICATION=$(echo 'SELECT, REPLICATION')
@@ -129,7 +133,12 @@ install:
 
     restart:
       cmds:
-        - sudo systemctl restart newrelic-infra.service
+        - |
+          if [ -f /etc/init.d/newrelic-infra ]; then
+            sudo /etc/init.d/newrelic-infra restart > /dev/null;
+          else
+            sudo systemctl restart newrelic-infra.service
+          fi
 
 postInstall:
   info: |2

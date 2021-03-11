@@ -56,17 +56,17 @@ inputVars:
 
 preInstall:
   info: |2
-      To capture data from the RabbitMQ integration, you'll first need to meet these prerequisites:
+      To capture data from the PostgreSQL integration, you'll first need to meet these prerequisites:
       - PostgreSQL version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req)
       - User with READ permissions
       
       To create a new user, use these commands as reference (Note: username, 
       password, and similar user-specific values must be replaced):
       
-      > CREATE USER newrelic WITH PASSWORD 'PASSWORD'
-      > GRANT SELECT ON pg_stat_database TO newrelic
-      > GRANT SELECT ON pg_stat_database_conflicts TO newrelic
-      > GRANT SELECT ON pg_stat_bgwriter TO newrelic
+      > CREATE USER new_relic WITH PASSWORD 'PASSWORD';
+      > GRANT SELECT ON pg_stat_database TO new_relic;
+      > GRANT SELECT ON pg_stat_database_conflicts TO new_relic;
+      > GRANT SELECT ON pg_stat_bgwriter TO new_relic;
 
 install:
   version: "3"
@@ -81,7 +81,11 @@ install:
     assert_pre_req:
       cmds:
         - |
-          sudo systemctl is-active --quiet newrelic-infra || (echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr; exit 1)
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            exit 1
+          fi
 
     setup:
       label: "Installing PostgreSQL integration..."
