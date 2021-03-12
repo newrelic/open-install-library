@@ -1,0 +1,35 @@
+---
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Download Cygwin
+  win_shell: |
+    New-Item -Path C:\cygwin64 -ItemType Directory -Force
+    $exePath = "C:\cygwin64\setup-x86_64.exe"
+    (New-Object Net.WebClient).DownloadFile('https://cygwin.com/setup-x86_64.exe', $exePath)
+  register: output
+
+- fail:
+    msg: "Failed to download Cygwin!"
+  when: output is failed
+
+- name: Install Cygwin
+  win_shell: |
+    cmd /c start /wait $exePath -qnNdO -R C:/cygwin64 -s http://cygwin.mirror.constant.com -l C:/cygwin64/var/cache/setup -P mingw64-i686-gcc-g++ -P mingw64-x86_64-gcc-g++ -P gcc-g++ -P autoconf -P automake -P bison -P libtool -P make -P python -P gettext-devel -P intltool -P libiconv -P pkg-config -P wget -P curl
+    C:\cygwin64\bin\bash -lc true
+  register: inst_out
+
+- fail:
+    msg: "Failed to install Cygwin!"
+  when: inst_out is failed
+
+
+- block:
+  - name: Export NR_CLI_INSTANCE_NAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_INSTANCE_NAME','newrelic',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_PARAMS_CONFIG_FILE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PARAMS_CONFIG_FILE','tbd',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool

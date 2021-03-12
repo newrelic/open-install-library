@@ -1,0 +1,79 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: varnish-cache-open-integration-installer
+displayName: Varnish Cache Integration Installer
+description: New Relic install recipe for the Varnish Cache Integration
+repository: https://github.com/newrelic/nri-varnish
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Integration
+  - Varnish
+  - Windows
+
+processMatch:
+  - varnishd.exe #??
+
+validationNrql: "SELECT count(*) from VarnishSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  - name: "NR_CLI_INSTANCE_NAME"
+    prompt: "Instance Name (used to identify data in New Relic)"
+  - name: "NR_CLI_PARAMS_CONFIG_FILE"
+    prompt: "Location of varnish.params (omit to check defaults)"
+
+preInstall:
+  info: |2
+      To capture data from the Varnish Cache integration, you'll first need to meet these prerequisites:
+      - Varnish Cache version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/varnish-cache-monitoring-integration/#comp-req)
+      - Location of the varnish.params config file must be known
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-varnish*"}; if ($app) { $app.Uninstall() }'
+
+    install:
+      label: "Installing Varnish Cache integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-varnish/nri-varnish-amd64.msi", "$env:TEMP\nri-varnish-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-varnish-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\varnish-config.yml"'
+        - powershell -command 'Restart-Service newrelic-infra'
+      vars:
+        INT_CONTENT: |
+          integration_name: com.newrelic.varnish
+
+          instances:
+            - name: varnish
+              command: all_data
+              arguments:
+                params_config_file: {{.NR_CLI_PARAMS_CONFIG_FILE}}
+                instance_name: {{.NR_CLI_INSTANCE_NAME}} 
+
+postInstall:
+  info: |2
+      ⚙️  The Varnish Cache configuration file can be found in C:\Program Files\New Relic\newrelic-infra\integrations.d\varnish-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/varnish-cache-monitoring-integration/#config
