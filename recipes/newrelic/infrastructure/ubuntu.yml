@@ -58,6 +58,33 @@ install:
             echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >> /dev/stderr
             exit 12
           fi
+        - |
+          IS_CAT_INSTALLED=$(which cat | wc -l)
+          if [ $IS_CAT_INSTALLED -eq 0 ] ; then
+            echo "cat is required to run the newrelic install. Please install cat and re-run the installation." >> /dev/stderr
+            exit 13
+          fi
+        - |
+          IS_TEE_INSTALLED=$(which tee | wc -l)
+          if [ $IS_TEE_INSTALLED -eq 0 ] ; then
+            echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >> /dev/stderr
+            exit 14
+          fi
+        - |
+          IS_TOUCH_INSTALLED=$(which touch | wc -l)
+          if [ $IS_TOUCH_INSTALLED -eq 0 ] ; then
+            echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >> /dev/stderr
+            exit 15
+          fi
+        - |
+          IS_INFRA_AVAILABLE=$(curl -Is https://download.newrelic.com/infrastructure_agent/linux/apt/dists/{{.DEBIAN_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
+          if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
+            echo "there is no newrelic infrastructure agent available for the distribution '{{.DEBIAN_CODENAME}}'." >> /dev/stderr
+            exit 21
+          fi
+      vars:
+        DEBIAN_CODENAME:
+          sh: awk -F= '/DISTRIB_CODENAME/ {print $2}' /etc/lsb-release
 
     setup_license:
       cmds:
@@ -80,12 +107,12 @@ install:
       cmds:
         - sudo curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo apt-key add -
         - sudo rm -f /etc/apt/sources.list.d/newrelic-infra.list
-        - printf "deb [arch=amd64] https://download.newrelic.com/infrastructure_agent/linux/apt {{.DISTRIB_CODENAME}} main" | sudo tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+        - printf "deb [arch=amd64] https://download.newrelic.com/infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | sudo tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
         - sudo apt-get update -yq
         - sudo apt-get install newrelic-infra -y -qq
       vars:
-        DISTRIB_CODENAME:
-          sh: cat /etc/lsb-release | grep DISTRIB_CODENAME | awk -F = '{print $2}'
+        DEBIAN_CODENAME:
+          sh: awk -F= '/DISTRIB_CODENAME/ {print $2}' /etc/lsb-release
       silent: true
 
     restart:
