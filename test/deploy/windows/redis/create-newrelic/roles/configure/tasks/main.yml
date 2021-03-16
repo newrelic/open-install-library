@@ -1,68 +1,24 @@
 ---
 
-- name: Set default create_newrelic_user (default not create)
-  set_fact:
-    create_newrelic_user: "false"
-  when: create_newrelic_user is undefined
-
 - name: Set default create_env_var (default not create)
   set_fact:
     create_env_var: "false"
   when: create_env_var is undefined
 
-- name: Ensure SqlServer is installed
-  win_shell: |
-    sqlcmd -S localhost -I -Q "SELECT GETDATE()";
+- name: Download Redis install file
+  win_shell: curl https://github.com/microsoftarchive/redis/releases/download/win-3.2.100/Redis-x64-3.2.100.msi -O Redis-x64-3.2.100.msi
+  args:
+    chdir: C:\
   register: output
 
 - fail:
-    msg: "SqlServer is not installed on the host"
+    msg: "Redis was not downloaded on the host"
   when: output is failed
 
-- name: Set SqlServer Authentication mode to Mixed to allow username/password login
-  win_shell: |
-    Import-Module -Name SQLPS
-    $sql = [Microsoft.SqlServer.Management.Smo.Server]::new("localhost")
-    $sql.Settings.LoginMode = 'Mixed'
-    $sql.Alter()
-    Get-Service -Name 'MSSQLSERVER' | Restart-Service -Force
-
-- block:
-  - name: Create newrelic login
-    win_shell: |
-      sqlcmd -S localhost -I -Q "`
-      USE master;`
-      CREATE LOGIN newrelic WITH PASSWORD = '{{ ansible_password }}';`
-      GRANT CONNECT SQL TO newrelic;`
-      GRANT VIEW SERVER STATE TO newrelic;`
-      GRANT VIEW ANY DEFINITION TO newrelic;`
-      GO"
-  - name: Give newrelic permissions for various DBs
-    win_shell: |
-      sqlcmd -S localhost -I -Q "`
-      DECLARE @name SYSNAME`
-      DECLARE db_cursor CURSOR `
-      READ_ONLY FORWARD_ONLY`
-      FOR`
-      SELECT NAME`
-      FROM master.sys.databases`
-      WHERE NAME NOT IN ('master','msdb','tempdb','model','rdsadmin','distribution')`
-      OPEN db_cursor`
-      FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0`
-      BEGIN`
-          PRINT('Creating user for DB '+@name)`
-          EXECUTE('USE [' + @name + ']; CREATE USER newrelic FOR LOGIN newrelic;' );`
-          PRINT('User created for DB '+@name)`
-          FETCH next FROM db_cursor INTO @name`
-      END`
-      CLOSE db_cursor`
-      DEALLOCATE db_cursor`
-      GO"
-  - name: Test login works
-    win_shell: |
-      sqlcmd -S localhost -U newrelic -P "{{ ansible_password }}" -Q "SELECT GETDATE()"
-    register: output
-  when: create_newrelic_user|bool
+- name: Install Redis
+  win_shell: Redis-x64-3.2.100.msi
+  args:
+    chdir: C:\
 
 - fail:
     msg: "SqlServer is not installed on the host"
