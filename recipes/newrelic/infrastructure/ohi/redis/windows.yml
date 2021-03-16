@@ -1,0 +1,98 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: redis-open-source-integration
+displayName: Redis Open Source Integration
+description: New Relic install recipe for default Redis Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-redis
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Integration
+  - redis
+  - Windows
+
+processMatch:
+  - redis
+
+validationNrql: "SELECT count(*) from RedisSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "Redis Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "Redis Password (if your Redis server is password protected)"
+    secret: true
+  - name: "NR_CLI_PORT"
+    prompt: "Redis Port (default: 6379)"
+    default: 6379
+  - name: "NR_CLI_KEYS"
+    prompt: "Keyspace Metrics (expected: single-line JSON format)"
+
+preInstall:
+  info: |2
+      To capture data from the Redis integration, you'll first need to meet these prerequisites:
+      - Redis version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration#comp-req)
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-redis*"}; if ($app) { $app.Uninstall() }'
+        
+    install:
+      label: "Installing Redis integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-redis/nri-redis-amd64.msi", "$env:TEMP\nri-redis-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-redis-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\redis-config.yml"'
+        - powershell -command 'Restart-Service newrelic-infra'
+      vars:
+        INT_CONTENT: |
+        integration_name: com.newrelic.redis
+
+        instances:
+          - name: redis-metrics
+            command: metrics
+            arguments:
+              hostname: {{.NR_CLI_HOSTNAME}}
+              port: {{.NR_CLI_PORT}}
+              keys: {{.NR_CLI_KEYS}}
+              config_inventory: true
+              password: {{.NR_CLI_PASSWORD}}
+              keys_limit: 30
+              use_unix_socket: true
+
+          - name: redis-inventory
+            command: inventory
+            arguments:
+              hostname: {{.NR_CLI_HOSTNAME}}
+              port: {{.NR_CLI_PORT}}
+              password: ${{.NR_CLI_PASSWORD}}
+              use_unix_socket: true
+
+postInstall:
+  info: |2
+      ⚙️  The Redis configuration file can be found in /etc/newrelic-infra/integrations.d/redis-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration#config
