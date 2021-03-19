@@ -1,0 +1,69 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: rabbitmq-open-source-integration
+displayName: RabbitMq Open Source Integration
+description: New Relic install recipe for default RabbitMq Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-rabbitmq
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Integration
+  - Rabbit
+  - RabbitMq
+  - Windows
+
+processMatch:
+  - 
+
+validationNrql: "SELECT count(*) from RabbitmqVhostSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+# Prompts for input from the user. These variables then become
+# available to go-task in the form of {{.VAR_NAME}}
+inputVars:
+  
+
+preInstall:
+  info: |2
+      To capture data from the RabbitMq integration, you'll first need to meet these prerequisites:
+      - RabbitMq version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/rabbitmq-monitoring-integration/#comp-req)
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-rabbitmq*"}; if ($app) { $app.Uninstall() }'
+        
+    install:
+      label: "Installing Redis integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-rabbitmq/nri-rabbitmq-amd64.msi", "$env:TEMP\nri-rabbitmq-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-rabbitmq-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\rabbitmq-config.yml"'
+        - powershell -command 'Restart-Service newrelic-infra'
+      vars:
+        INT_CONTENT: |
+          
+
+postInstall:
+  info: |2
+      ⚙️  The RabbitMq configuration file can be found in /etc/newrelic-infra/integrations.d/rabbitmq-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/rabbitmq-monitoring-integration/#config
