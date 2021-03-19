@@ -81,6 +81,11 @@ inputVars: list, optional
 # installed is successfully sending data to New Relic
 validationNrql: string, optional
 
+# Optional URL to display after installation success
+successLink: object, optional
+  type: string, required        # required link type.  valid values are (host, explorer)
+  filter: string, optional      # optional filter value for explorer links
+
 # Optional pre-install configuration items.
 # Useful for things like including prompt info on dependencies and what vars could be supplied to the CLI to automate this recipe.
 # Can be extended in the future for any pre-install hooks we'd want the newrelic-cli to run.
