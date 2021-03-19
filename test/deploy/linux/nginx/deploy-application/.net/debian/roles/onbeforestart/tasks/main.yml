@@ -2,10 +2,20 @@
 - debug:
     msg: Install .NET App
 
-- name: Set default download url for web app
+- name: Set default is_selfcontained (default to false)
   set_fact:
-    web_app_url: "https://virtuoso-testing.s3-us-west-2.amazonaws.com/virt-coreapp.zip"
-  when: web_app_url is undefined
+    is_selfcontained: "false"
+  when: is_selfcontained is undefined
+
+- name: Set default download url for self contained web app
+  set_fact:
+    web_app_url: "https://virtuoso-testing.s3-us-west-2.amazonaws.com/selfcontained-net5webapplication.zip"
+  when: web_app_url is undefined and (is_selfcontained|bool)
+
+- name: Set default download url for framwork dependent web app
+  set_fact:
+    web_app_url: "https://virtuoso-testing.s3-us-west-2.amazonaws.com/frameworkdependent-net5webapplication.zip"
+  when: web_app_url is undefined and (is_selfcontained|bool == False)
 
 - name: Update packages
   shell: |
@@ -17,27 +27,48 @@
   shell: apt install unzip -y
   become: true
 
-- name: Copy web app service file
+- name: Copy web app selfcontained-net5webapplication file
   template:
-    src: kestrel-coreapp.service
-    dest: /etc/systemd/system/kestrel-coreapp.service
+    src: selfcontained-net5webapplication.service
+    dest: /etc/systemd/system/selfcontained-net5webapplication.service
+  when: is_selfcontained|bool
+  become: true
+
+- name: Copy web app frameworkdependent-net5webapplication file
+  template:
+    src: frameworkdependent-net5webapplication.service
+    dest: /etc/systemd/system/frameworkdependent-net5webapplication.service
+  when: is_selfcontained|bool == False
   become: true
 
 - name: Install and start web app
   shell: |
-    mkdir -p /var/www/coreapp
+    mkdir ~/{{ service_id }}
+    cd ~/{{ service_id }}
     url="{{ web_app_url }}"
-    curl $url -o /tmp/virt-coreapp.zip
-    unzip /tmp/virt-coreapp.zip -d /var/www/coreapp
-    chown -R ubuntu:ubuntu /var/www/coreapp
-    chmod a+x /var/www/coreapp/virt-coreapp
-    systemctl start kestrel-coreapp.service
+    curl $url -O
+    zip=$(find . -name "*.zip")
+    name=$(basename $zip .zip)
+    mkdir -p /var/www/$name
+    unzip ./$zip -d /var/www/$name
+    chown -R ubuntu:ubuntu /var/www/$name
+    chmod a+x /var/www/$name/net5webapplication
+    systemctl daemon-reload
+    systemctl start $name.service
   become: true
 
-- name: Copy nxinx sites-enabled file
+- name: Copy selfcontained-net5webapplication nginx site file
   template:
-    src: default-nginx-site
-    dest: /etc/nginx/sites-available/default
+    src: selfcontained-net5webapplication-nginx-site
+    dest: /etc/nginx/sites-enabled/selfcontained-net5webapplication
+  when: is_selfcontained|bool
+  become: true
+
+- name: Copy frameworkdependent-net5webapplication nginx site file
+  template:
+    src: frameworkdependent-net5webapplication-nginx-site
+    dest: /etc/nginx/sites-enabled/frameworkdependent-net5webapplication
+  when: is_selfcontained|bool == False
   become: true
 
 - name: Restart Nginx
