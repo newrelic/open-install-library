@@ -1,0 +1,76 @@
+name: memcached-open-source-integration
+displayName: Memcached Open Source Integration
+description: New Relic install recipe for default Memcached Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-memcached
+
+installTargets:
+  - type: host
+    os: windows
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - memcached
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - memcached.exe
+
+validationNrql: "SELECT count(*) from MemcachedSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "Memcached Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "Memcached Port (default: 11211)"
+    default: "11211"
+
+preInstall:
+  info: |2
+      To capture data from the Memcached integration, you'll first need to meet these prerequisites:
+      - Memcached version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/memcached-monitoring-integration#comp-req)
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-memcached*"}; if ($app) { $app.Uninstall() }'
+
+    install:
+      label: "Installing Memcached integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-memcached/nri-memcached-amd64.msi", "$env:TEMP\nri-memcached-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-memcached-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\memcached-config.yml"'
+        - powershell -command 'Restart-Service newrelic-infra'
+      vars:
+        INT_CONTENT: |
+          integration_name: com.newrelic.memcached
+
+          instances:
+            - name: memcached
+              command: all_data
+              arguments:
+                host: {{.NR_CLI_HOSTNAME}}
+                port: {{.NR_CLI_PORT}}
+
+postInstall:
+  info: |2
+      ⚙️  The Memcached configuration file can be found in /etc/newrelic-infra/integrations.d/memcached-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/memcached-monitoring-integration#config

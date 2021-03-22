@@ -1,0 +1,46 @@
+---
+- debug:
+    msg: Install Memcached
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Download Memcached zip file
+  win_shell: curl https://bintray.com/jefty/generic/download_file?file_path=memcached-1.6.7-win64-mingw.zip -O memcached.zip
+  args:
+    chdir: C:\Progra~1
+  register: output
+
+- fail:
+    msg: "Memcached zip file was not downloaded on the host"
+  when: output is failed
+
+- name: Unzip Memcached file
+  win_shell: expand-archive -path 'C:\Progra~1\memcached.zip' -destinationpath 'C:\Progra~1\memcached'
+
+- name: install choco
+  win_shell: Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+  
+- name: Install nssm
+  win_shell: choco install nssm -y
+
+- name: Copu nssm.exe to memcached folder
+  win_shell: nssm install memcached.exe C:\Progra~1\memcached\memcached-1.6.7-win64-mingw\bin\memcached.exe
+
+- name: install memcached as service
+  win_shell: nssm set memcached.exe Application C:\Progra~1\memcached\memcached-1.6.7-win64-mingw\bin\memcached.exe
+
+- name: set memcached exe2
+  win_shell: nssm set memcached.exe AppDirectory C:\Progra~1\memcached\memcached-1.6.7-win64-mingw\bin
+
+- name: start memcached as service
+  win_shell: net start memcached.exe
+
+- block:
+  - name: Export HOSTNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_HOSTNAME','localhost',[System.EnvironmentVariableTarget]::User)"
+  - name: Export PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PORT','11211',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool
