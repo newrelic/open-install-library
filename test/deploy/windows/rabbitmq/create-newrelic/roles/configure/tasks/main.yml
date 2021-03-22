@@ -1,0 +1,90 @@
+---
+- debug:
+    msg: Install RabbitMq
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Install chocolatey
+  win_shell: iex ((new-object net.webclient).DownloadString('https://chocolatey.org/install.ps1'))
+
+- name: Install Erlang
+  win_shell: choco install -y erlang --version 22.3
+
+- name: Install rabbitmq
+  win_shell: choco install -y rabbitmq --version 3.8.11
+
+- name: Export Erlang Path
+  win_shell: "[System.Environment]::SetEnvironmentVariable('ERLANG_SERVICE_MANAGER_PATH','C:\Program Files\erl10.7\erts-10.7\bin',[System.EnvironmentVariableTarget]::User)"
+
+- name: Enable management plugin
+  win_shell: & 'C:\Program Files\RabbitMQ Server\rabbitmq_server-3.8.11\sbin\rabbitmq-plugins.bat' enable rabbitmq_management
+
+- name: Ensure that rabbitmq isn't installed
+  win_shell: & 'C:\Program Files\RabbitMQ Server\rabbitmq_server-3.8.11\sbin\rabbitmq-service.bat' stop
+
+- name: Install rabbitmq as service
+  win_shell: & 'C:\Program Files\RabbitMQ Server\rabbitmq_server-3.8.11\sbin\rabbitmq-service.bat' install 
+
+- name: Start rabbitmq
+  win_shell: & 'C:\Program Files\RabbitMQ Server\rabbitmq_server-3.8.11\sbin\rabbitmq-service.bat' start 
+
+- block:
+  - name: Download rabbitmqadmin
+    win_shell: curl http://localhost:15672/cli/rabbitmqadmin -O rabbitmqadmin.exe
+    args:
+      chdir: C:\
+  - name: Install Python3
+    win_shell: choco install -y python3 --version 3.9.2
+  - name: create user
+    win_shell: .\rabbitmqctl.bat add_user newrelic Virtuoso4all!
+  - name: add user tags
+    win_shell: .\rabbitmqctl.bat set_user_tags newrelic administrator
+  - name:  add permissions
+    win_shell: .\rabbitmqctl.bat set_permissions -p / newrelic ".*" ".*" ".*"
+  - name: Create exchange
+    shell: py .\rabbitmqadmin.exe declare exchange --vhost=/ name=newrelic type=direct
+    args:
+      chdir: C:\
+  - name: Create queue out
+    shell: py .\rabbitmqadmin.exe declare queue --vhost=/ name=newrelic_out durable=true
+    args:
+      chdir: C:\
+  - name: Create binding
+    shell: py .\rabbitmqadmin.exe -u newrelic -p Virtuoso4all! -V / declare binding source=newrelic destination=newrelic_out
+    args:
+      chdir: C:\
+  when: create_newrelic_user|bool
+
+- block:
+  - name: Export NR_CLI_USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PASSWORD','Virtuoso4all!',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PORT','15672',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_HOSTNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_HOSTNAME','localhost',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_SSL
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_SSL','false',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_RABBIT_CONFIG_PATH
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_RABBIT_CONFIG_PATH','tbd',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_QUEUES
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_QUEUES','[]',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_EXCHANGES
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_EXCHANGES','[]',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_VHOSTS
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_VHOSTS','[]',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_API_CA_BUNDLE_DIR
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_CA_BUNDLE_DIR','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_API_CA_BUNDLE_FILE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_CA_BUNDLE_FILE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool
+
