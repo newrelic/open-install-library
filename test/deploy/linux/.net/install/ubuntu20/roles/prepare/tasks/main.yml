@@ -2,10 +2,30 @@
 - debug:
     msg: Install ASP.NET Core 5.0 Runtime
 
-- name: Add Microsoft package signing key and add Microsoft package repository for Ubuntu 20.4
+- name: Get package name
+  shell: cat /etc/os-release | grep "PRETTY_NAME=\"" | awk -F = '{print $2}' | awk -F " " '{print $1}' | sed 's/["]//g'
+  register: package_name
+
+- name: Get package version
+  shell: cat /etc/os-release | grep "VERSION_ID=\"" | awk -F = '{print $2}' | awk -F " " '{print $1}' | sed 's/["]//g'
+  register: package_version
+
+- name:
+  set_fact:
+    package_url: "https://packages.microsoft.com/config/{{package_name.stdout | lower }}/{{package_version.stdout | lower }}/packages-microsoft-prod.deb"
+
+- debug:
+    msg: "Using download URL of {{package_url}}"
+
+- name: Download Microsoft package repository
+  get_url:
+    url: "{{package_url}}"
+    dest: /root/packages-microsoft-prod.deb
+  become: true
+
+- name: Add Microsoft package signing key and add Microsoft package repository
   shell: |
-    wget https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
-    dpkg -i packages-microsoft-prod.deb
+    dpkg -i /root/packages-microsoft-prod.deb
   become: true
 
 - name: Update packages
