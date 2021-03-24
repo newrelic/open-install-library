@@ -61,7 +61,51 @@ install:
     remove_any_previous:
       ignore_error: true
       cmds:
-        - powershell -command '$app = Get-WmiObject -Class Win32_Product -Filter "Name like 'New Relic .NET Agent%'"; if ($app) { $app.Uninstall() }'
+        - |
+          powershell -command '
+          function Find-UninstallCommand {
+            param (
+              [Parameter(Mandatory)]
+              [string]$Match
+            )
+
+            $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+
+            $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+
+            $allKeys = $baseKeys + $wowKeys
+
+            $uninstallIds = New-Object System.Collections.ArrayList
+            foreach ($key in $allKeys) {
+              $keyData = Get-Item -Path HKLM:\$key
+              $name = $keyData.GetValue("DisplayName")
+              if ($name -and $name -match $Match) {
+                $keyId = Split-Path $key -Leaf
+                $uninstallIds.Add($keyId) | Out-Null
+              }
+            }
+
+            if ($uninstallIds.Count -gt 1) {
+              Write-Host "ERROR: More than one product was detected for the Match ""$Match"".  Please narrow the match so that only one product is found."
+              #exit 10022
+            }
+
+            if ($uninstallIds.Count -eq 0) {
+              Write-Host "WARNING: No products were detected for the Match ""$Match""."
+              return ""
+            }
+
+            return "msiexec /x """ +$uninstallIds[0] + """ /qn"
+          }
+
+          $uninstallCommand = Find-UninstallCommand -Match "New Relic .NET Agent"
+          if ($uninstallCommand) {
+            Invoke-Expression $uninstallCommand
+            Start-Sleep -s 15
+          }
+          '
 
     install:
       cmds:
