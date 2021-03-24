@@ -17,52 +17,41 @@
     web_app_url: "https://virtuoso-testing.s3-us-west-2.amazonaws.com/frameworkdependent-net5webapplication.zip"
   when: web_app_url is undefined and (is_selfcontained|bool == False)
 
-- name: Copy web app selfcontained-net5webapplication file
-  template:
-    src: selfcontained-net5webapplication.service
-    dest: /etc/systemd/system/selfcontained-net5webapplication.service
+- name: Init template variable for self contained application
+  set_fact:
+    nginx_service_description: Self Contained .NET 5 APP.NET Core 5 Web app
+    nginx_proxy_port: 5000
   when: is_selfcontained|bool
-  become: true
 
-- name: Copy web app frameworkdependent-net5webapplication file
-  template:
-    src: frameworkdependent-net5webapplication.service
-    dest: /etc/systemd/system/frameworkdependent-net5webapplication.service
+- name: Init template variable for framework dependent application
+  set_fact:
+    nginx_service_description: Framework Dependent .NET 5 APP.NET Core 5 Web app
+    nginx_proxy_port: 5001
   when: is_selfcontained|bool == False
-  become: true
 
 - name: Install and start web app
   shell: |
+    rm -rf ~/{{ service_id }}
+    rm -rf /var/www/{{service_id}}
     mkdir ~/{{ service_id }}
     cd ~/{{ service_id }}
     url="{{ web_app_url }}"
     curl $url -O
     zip=$(find . -name "*.zip")
-    name=$(basename $zip .zip)
-    mkdir -p /var/www/$name
-    unzip ./$zip -d /var/www/$name
-    chown -R {{remote_user}}:{{remote_user}} /var/www/$name
-    chmod a+x /var/www/$name/net5webapplication
-    systemctl daemon-reload
-    systemctl start $name.service
+    mkdir -p /var/www/{{service_id}}
+    unzip ./$zip -d /var/www/{{service_id}}
+    chown -R {{remote_user}}:{{remote_user}} /var/www/{{service_id}}
+    chmod a+x /var/www/{{service_id}}/net5webapplication
   become: true
 
-- name: Copy selfcontained-net5webapplication nginx site file
+- name: Copy web app nginx service file
   template:
-    src: selfcontained-net5webapplication-nginx-site
-    dest: /etc/nginx/sites-enabled/selfcontained-net5webapplication
-  when: is_selfcontained|bool
+    src: nginx.service
+    dest: /etc/systemd/system/{{service_id}}.service
   become: true
 
-- name: Copy frameworkdependent-net5webapplication nginx site file
+- name: Copy nginx site file
   template:
-    src: frameworkdependent-net5webapplication-nginx-site
-    dest: /etc/nginx/sites-enabled/frameworkdependent-net5webapplication
-  when: is_selfcontained|bool == False
-  become: true
-
-- name: Restart Nginx
-  shell: |
-    nginx -t
-    nginx -s reload
+    src: nginx.site
+    dest: /etc/nginx/sites-enabled/{{service_id}}.site
   become: true
