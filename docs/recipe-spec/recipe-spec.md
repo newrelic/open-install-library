@@ -81,7 +81,7 @@ inputVars: list, optional
 # installed is successfully sending data to New Relic
 validationNrql: string, optional
 
-# Optional URL to display after installation success
+# Metadata to support generating a URL after installation success
 successLinkConfig: object, optional
   type: string, required        # required link type.  valid values are (host, explorer)
   filter: string, optional      # optional filter value for explorer links
