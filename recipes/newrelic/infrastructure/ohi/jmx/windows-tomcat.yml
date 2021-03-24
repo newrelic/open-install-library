@@ -1,0 +1,81 @@
+name: jmx-open-source-integration
+displayName: JMX Open Source Integration
+description: New Relic install recipe for default JMX Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-jmx
+
+installTargets:
+  - type: host
+    os: windows
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - jmx
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - jmx.exe
+
+validationNrql: "SELECT count(*) from JMXSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "JMX Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "JMX Port (default: 11211)"
+    default: "11211"
+
+preInstall:
+  info: |2
+      To capture data from the JMX integration, you'll first need to meet these prerequisites:
+      - Java 8 or higher
+
+      Note: This integration does not support the IIOP protocol.
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-jmx*"}; if ($app) { $app.Uninstall() }'
+
+    install:
+      label: "Installing JMX integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-jmx/nri-jmx-amd64.msi", "$env:TEMP\nri-jmx-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-jmx-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jmx-config.yml"'
+        - powershell  Copy-Item "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jvm-metrics.yml.sample" -Destination C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jvm-metrics.yml"
+        - powershell -command 'Restart-Service newrelic-infra'
+      vars:
+        INT_CONTENT: |
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                connection_url: 'service:jmx:remote+http://{{.NR_CLI_JMX_HOST}}:{{.NR_CLI_JMX_PORT}}'
+                collection_files: "C:\Program Files\New Relic\newrelic-infra\integrations.d\jvm-metrics.yml"
+
+postInstall:
+  info: |2
+      ⚙️  The JMX configuration file can be found in /etc/newrelic-infra/integrations.d/jmx-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/jmx-monitoring-integration#config

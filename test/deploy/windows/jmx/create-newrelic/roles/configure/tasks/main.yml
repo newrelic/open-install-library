@@ -1,0 +1,81 @@
+---
+- debug:
+    msg: Install JMX-Tomcat
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: install choco
+  win_shell: Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+
+- name: install jdk8
+  win_shell: choco install jdk8 -y
+
+- name: create env vars for JAVA_HOME
+  win_shell: $env:JAVA_HOME="C:\Program Files\Java\jdk1.8.0_211"
+
+- name: Download Memcached zip file
+  win_shell: curl https://apache.mirrors.tworzy.net/tomcat/tomcat-9/v9.0.44/bin/apache-tomcat-9.0.44-windows-x64.zip -O /tomcat.zip
+  args:
+    chdir: C:\Progra~1
+  register: output
+
+- fail:
+    msg: "Tomcat zip file was not downloaded on the host"
+  when: output is failed
+
+- name: Unzip Tomcat.zip file
+  win_shell: expand-archive -path 'C:\Progra~1\tomcat.zip' -destinationpath 'C:\Progra~1\tomcat'
+
+- name: create env vars for CATALINA_HOME
+  win_shell: $env:CATALINA_HOME="C:\Program Files\tomcat\apache-tomcat-9.0.44\bin"
+
+- name: copy setenv file
+  template:
+    src: setenv.bat
+    dest: C:\Progra~1\tomcat\apache-tomcat-9.0.44\bin\setenv.bat
+  register: output
+
+- name: run tomcat9.exe
+- name: run install script
+  win_shell: .\tomcat9.exe
+    args:
+    chdir: C:\Progra~1\tomcat\apache-tomcat-9.0.44\bin\
+  register: output
+
+  win_shell: .\service.bat install
+  args:
+    chdir: C:\Progra~1\tomcat\apache-tomcat-9.0.44\bin\
+  register: output
+
+- name: Run startup script
+  win_shell: .\starup.bat
+  args:
+    chdir: C:\Progra~1\tomcat\apache-tomcat-9.0.44\bin\
+  register: output
+
+- name: Run Tomcat as service
+  win_shell: Start-Service Tomcat9
+
+- block:
+  - name: Export NR_CLI_JMX_USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_USERNAME','admin',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_PASSWORD','admin',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_HOST
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_HOST','localhost',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_PORT','9999',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_SSL_ENABLED
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_SSL_ENABLED','n',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_KEYSTORE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_KEYSTORE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_KEYSTORE_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_KEYSTORE_PASSWORD','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_TRUSTSTORE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_TRUSTSTORE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_TRUSTSTORE_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_TRUSTSTORE_PASSWORD','notUsed',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool
