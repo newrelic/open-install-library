@@ -82,7 +82,7 @@ inputVars: list, optional
 validationNrql: string, optional
 
 # Optional URL to display after installation success
-successLink: object, optional
+successLinkConfig: object, optional
   type: string, required        # required link type.  valid values are (host, explorer)
   filter: string, optional      # optional filter value for explorer links
 
