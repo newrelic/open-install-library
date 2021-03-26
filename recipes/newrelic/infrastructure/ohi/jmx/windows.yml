@@ -28,6 +28,9 @@ inputVars:
   - name: "NR_CLI_JMX_PORT"
     prompt: "JMX Port (default: 9999)"
     default: "9999"
+  - name: "NR_CLI_SSL_ENABLED"
+    prompt: "Are you using SSL? (y/n)"
+
 
 preInstall:
   info: |2
@@ -61,11 +64,41 @@ install:
       cmds:
         - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-jmx/nri-jmx-amd64.msi", "$env:TEMP\nri-jmx-amd64.msi");'
         - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-jmx-amd64.msi" | Out-Null;'
-        - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jmx-config.yml"'
+        # - powershell -command 'echo "{{.INT_CONTENT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jmx-config.yml"'
+        - powershell -command '$IS_TOMCAT=(Get-Service Tomcat* | Measure-Object -line).Lines
+          if({{.NR_CLI_SSL_ENABLED}} -ilike "y")
+          {
+            if($IS_TOMCAT -eq 1)
+            {
+              echo "{{.TOMCAT_SSL}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jmx-config.yml"
+            }
+          } else {
+            if($IS_TOMCAT -eq 1)
+              {
+                echo "{{.TOMCAT}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jmx-config.yml"
+              }
+          }'
         - powershell -command 'Copy-Item -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jvm-metrics.yml.sample" -Destination "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jvm-metrics.yml"'
         - powershell -command 'Restart-Service newrelic-infra'
       vars:
-        INT_CONTENT: |
+        TOMCAT_SSL: |
+          integration_name: com.newrelic.jmx
+
+          instances: 
+            - name: jmx
+              command: all_data
+              arguments:
+                jmx_host: {{.NR_CLI_JMX_HOST}}
+                jmx_port: {{.NR_CLI_JMX_PORT}}
+                jmx_user: {{.NR_CLI_JMX_USERNAME}}
+                jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
+                key_store: {{.NR_CLI_KEYSTORE}}
+                key_store_password: {{.NR_CLI_KEYSTORE_PASSWORD}}
+                trust_store: {{.NR_CLI_TRUSTSTORE}}
+                trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
+                collection_files: `"C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\jvm-metrics.yml`"
+          
+        TOMCAT: |
           integration_name: com.newrelic.jmx
 
           instances: 
