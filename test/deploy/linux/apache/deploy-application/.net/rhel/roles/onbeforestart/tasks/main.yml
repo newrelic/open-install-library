@@ -12,6 +12,21 @@
     is_selfcontained: "false"
   when: is_selfcontained is undefined
 
+- name: Set default use_executable for how to run the .NET process (default to false)
+  set_fact:
+    use_executable: "false"
+  when: use_executable is undefined
+
+- name: Set startup_command to executable (not dotnet xx.dll)
+  set_fact:
+    startup_command: "/var/www/selfcontained-net5webapplication/net5webapplication"
+  when: use_executable|bool
+
+- name: Set startup_command to dotnet command (use dotnet xx.dll)
+  set_fact:
+    startup_command: "/usr/bin/dotnet /var/www/frameworkdependent-net5webapplication/net5webapplication.dll"
+  when: use_executable|bool = False
+
 - name: Set default download url for self contained web app
   set_fact:
     web_app_url: "https://virtuoso-testing.s3-us-west-2.amazonaws.com/selfcontained-net5webapplication.zip"
@@ -22,18 +37,10 @@
     web_app_url: "https://virtuoso-testing.s3-us-west-2.amazonaws.com/frameworkdependent-net5webapplication.zip"
   when: web_app_url is undefined and (is_selfcontained|bool == False)
 
-- name: Copy web app selfcontained-net5webapplication file
+- name: Copy web app net5webapplication file
   template:
-    src: selfcontained-net5webapplication.service
-    dest: /etc/systemd/system/selfcontained-net5webapplication.service
-  when: is_selfcontained|bool
-  become: true
-
-- name: Copy web app frameworkdependent-net5webapplication file
-  template:
-    src: frameworkdependent-net5webapplication.service
-    dest: /etc/systemd/system/frameworkdependent-net5webapplication.service
-  when: is_selfcontained|bool == False
+    src: net5webapplication.service
+    dest: /etc/systemd/system/{{ service_id }}.service
   become: true
 
 - name: Install and start web app
@@ -41,28 +48,18 @@
     mkdir ~/{{ service_id }}
     cd ~/{{ service_id }}
     url="{{ web_app_url }}"
-    curl $url -O
-    zip=$(find . -name "*.zip")
-    name=$(basename $zip .zip)
-    mkdir -p /var/www/$name
-    unzip ./$zip -d /var/www/$name
-    chmod -R 777 /var/www/$name
-    chown -R apache:apache /var/www/$name
+    curl $url -o {{ service_id }}.zip
+    mkdir -p /var/www/{{ service_id }}
+    unzip ./{{ service_id }}.zip-d /var/www/{{ service_id }}
+    chmod -R 777 /var/www/{{ service_id }}
+    chown -R apache:apache /var/www/{{ service_id }}
     systemctl daemon-reload
-    systemctl start $name.service
+    systemctl start {{ service_id }}.service
     echo 'Listen {{ service_port }}' >> /etc/httpd/conf/httpd.conf
   become: true
 
-- name: Copy apache server selfcontained-net5webapplication status file
+- name: Copy apache server {{ service_id }} status file
   template:
-    src: selfcontained-net5webapplication.conf
-    dest: /etc/httpd/conf.d/selfcontained-net5webapplication.conf
-  when: is_selfcontained|bool
-  become: true
-
-- name: Copy apache server frameworkdependent-net5webapplication status file
-  template:
-    src: frameworkdependent-net5webapplication.conf
-    dest: /etc/httpd/conf.d/frameworkdependent-net5webapplication.conf
-  when: is_selfcontained|bool == False
+    src: net5webapplication.conf
+    dest: /etc/httpd/conf.d/{{ service_id }}.conf
   become: true
