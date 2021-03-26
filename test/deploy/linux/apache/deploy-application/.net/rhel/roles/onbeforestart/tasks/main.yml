@@ -43,19 +43,20 @@
     dest: /etc/systemd/system/{{ service_id }}.service
   become: true
 
-- name: Install and start web app
+- name: Install web app
   shell: |
     mkdir ~/{{ service_id }}
     cd ~/{{ service_id }}
     url="{{ web_app_url }}"
     curl $url -o {{ service_id }}.zip
     mkdir -p /var/www/{{ service_id }}
-    unzip ./{{ service_id }}.zip-d /var/www/{{ service_id }}
+    unzip ./{{ service_id }}.zip -d /var/www/{{ service_id }}
     chmod -R 777 /var/www/{{ service_id }}
     chown -R apache:apache /var/www/{{ service_id }}
-    systemctl daemon-reload
-    systemctl start {{ service_id }}.service
-    echo 'Listen {{ service_port }}' >> /etc/httpd/conf/httpd.conf
+  become: true
+
+- name: Listen on port {{ service_port }} for {{ service_id }}
+  shell: echo 'Listen {{ service_port }}' >> /etc/httpd/conf/httpd.conf
   become: true
 
 - name: Copy apache server {{ service_id }} status file
