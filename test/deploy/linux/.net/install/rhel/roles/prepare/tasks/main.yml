@@ -1,15 +1,31 @@
 ---
 - debug:
-    msg: Install ASP.NET Core 5.0 Runtime
+    msg: Install .NET
 
-- name: Add Microsoft package signing key and add Microsoft package repository
-  shell: rpm -Uvh https://packages.microsoft.com/config/centos/7/packages-microsoft-prod.rpm
+- name: Set default .NET version to install
+  set_fact:
+    dotnet_version: "5.0"
+  when: dotnet_version is undefined
+
+- name: Install .NET SDK (defaults to false)
+  set_fact:
+    install_sdk: "false"
+  when: install_sdk is undefined
+
+- name: Download and prepare install script
+  shell: |
+    curl https://dotnet.microsoft.com/download/dotnet/scripts/v1/dotnet-install.sh -o ~/dotnet-install.sh
+    chmod 777 dotnet-install.sh
   become: true
 
-- name: Update packages
-  shell: yum update -y
+- name: Install ASP.NET Core {{ dotnet_version }} Runtime
+  shell: |
+    ~/dotnet-install.sh -c {{ dotnet_version }} --runtime aspnetcore
+  when: install_sdk|bool == False
   become: true
 
-- name: Install ASP.NET Core 5.0 Runtime
-  shell: yum install aspnetcore-runtime-5.0 -y
+- name: Install .NET {{ dotnet_version }} SDK
+  shell: |
+    ~/dotnet-install.sh -c {{ dotnet_version }}
+  when: install_sdk|bool
   become: true
