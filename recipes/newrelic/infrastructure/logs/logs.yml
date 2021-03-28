@@ -20,7 +20,7 @@ validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' F
 inputVars:
   - name: "LOG_FILES"
     prompt: "Which log files would you like to tail?"
-    default: "/var/log/messages,/var/log/cloud-init.log,/var/log/secure"
+    default: "/var/log/messages,/var/log/cloud-init.log,/var/log/secure,/var/log/yum.log"
 
 install:
   version: "3"
@@ -31,6 +31,7 @@ install:
         - task: assert_pre_req
         - task: setup
         - task: restart
+        - task: assert_agent_started
 
     assert_pre_req:
       cmds:
@@ -77,13 +78,13 @@ install:
             exit 1
           fi
         - |
-          # Trim whitespace from LOG_FILES input value
-          logFiles=$(echo {{.LOG_FILES}} | sed 's/ *.//')
-          discoveredLogFiles=$(echo {{.DISCOVERED_LOG_FILES}} | sed 's/ *.//')
+          # First check on empty inputs
+          logFiles=$(echo -n {{.LOG_FILES}})
+          discoveredLogFiles=$(echo -n {{.DISCOVERED_LOG_FILES}})
           logsStringLength=${#logFiles}
           discoveredLogsStringLength=${#discoveredLogFiles}
-          if [ $logsStringLength -eq 0 ] && [ $discoveredLogsStringLength -eq 0 ]; then
-            echo "No log file(s) provided or discovered. Cannot proceed. Exiting installation." >> /dev/stderr
+          if [ $logsStringLength -eq 0 ] && { [ $discoveredLogsStringLength -eq 0 ] || [ "$discoveredLogFiles" = "logs: []" ]; }; then
+            echo "ERROR No log file(s) input provided or discovered. Cannot proceed. Exiting installation." >> /dev/stderr
             exit 16
           fi
 
@@ -104,10 +105,9 @@ install:
           echo -e "verbose: 3\nlog_format: json" | sudo tee -a /etc/newrelic-infra.yml > /dev/null
           sudo sed -i '/^$/d' /etc/newrelic-infra.yml
         - |
-          # Trim whitespace from LOG_FILES input value
-          logFiles=$(echo {{.LOG_FILES}} | sed 's/ *.//')
-          discoveredLogFiles=$(echo {{.DISCOVERED_LOG_FILES}} | sed 's/ *.//')
+          logFiles=$(echo -n {{.LOG_FILES}})
           logsStringLength=${#logFiles}
+          discoveredLogFiles=$(echo -n {{.DISCOVERED_LOG_FILES}})
           discoveredLogsStringLength=${#discoveredLogFiles}
 
           # Keep a count of the valid log files the integration will use.
@@ -115,28 +115,24 @@ install:
 
           if [ $logsStringLength -gt 0 ]; then
             echo "logs:" | sudo tee /etc/newrelic-infra/logging.d/logging.yml > /dev/null
-            for i in $(echo {{.LOG_FILES}} | sed "s/,/ /g"); do
+            for i in $(echo -n {{.LOG_FILES}} | sed "s/,/ /g"); do
               if [ -f $i ]; then
                 NAME=$(basename $i)
                 echo -e "  - name: $NAME\n    file: $i" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
 
                 # Increment found log files count
                 foundLogFilesCount=$((foundLogFilesCount+1))
-              else
-                echo "log file $i not found, skipping this file"
               fi
             done
-
-            # If the user provides log files that don't exist and we haven't discovered any log files,
-            # we cannot proceed with the installation.
-            if [ $foundLogFilesCount -eq 0 ]&& [ $discoveredLogsStringLength -eq 0 ]; then
-              echo "ERROR Provided log files do not exist: $logFiles. No log file(s) found or discovered. Cannot proceed. Exiting installation." >> /dev/stderr
-              exit 16
-            fi
           fi
-        - |
-          discoveredLogFiles="{{.DISCOVERED_LOG_FILES}}"
-          discoveredLogsStringLength=${#discoveredLogFiles}
+
+          # If the user provides log files that don't exist and we haven't discovered any log files,
+          # we cannot proceed with the installation.
+          if [ $foundLogFilesCount -eq 0 ] && { [ $discoveredLogsStringLength -eq 0 ] || [ "$discoveredLogFiles" = "logs: []" ]; }; then
+            echo "ERROR Provided log files do not exist: $logFiles. No log file(s) found or discovered. Cannot proceed. Exiting installation." >> /dev/stderr
+            exit 16
+          fi
+
           if [ $discoveredLogsStringLength -gt 0 ]; then
             echo -e "{{.DISCOVERED_LOG_FILES}}" | sudo tee /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
           fi
@@ -145,6 +141,17 @@ install:
       cmds:
         - |
           sudo systemctl restart newrelic-infra.service
+
+    assert_agent_started:
+      cmds:
+        - |
+          # Ensure agent has enough time to start
+          sleep 10
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >> /dev/stderr
+            exit 31
+          fi
 
 postInstall:
   info: |2
