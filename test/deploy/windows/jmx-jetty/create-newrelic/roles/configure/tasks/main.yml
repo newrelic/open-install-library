@@ -1,0 +1,102 @@
+---
+- debug:
+    msg: Install JMX-Jetty
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: install choco
+  win_shell: Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+
+- name: Download Jetty
+  win_shell: curl https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-distribution/9.4.38.v20210224/jetty-distribution-9.4.38.v20210224.zip -O jetty.zip
+  args:
+    chdir: C:\
+  register: output
+
+- fail:
+    msg: "Jetty zip file was not downloaded on the host"
+  when: output is failed
+
+- name: Install Java8
+  win_shell: choco install jdk8 -y
+
+- name: Create env vars for JAVA_HOME
+  win_shell: $env:JAVA_HOME="C:\Program Files\Java\jdk1.8.0_211"
+
+- name: Extract Jetty
+  win_shell: Expand-Archive -Path jetty.zip -DestinationPath .
+  args:
+    chdir: C:\
+
+- name: copy start.ini file
+  template:
+    src: start.ini
+    dest: C:\jetty-distribution-9.4.38.v20210224\start.ini
+
+- name: create env var for JETTY_HOME
+  win_shell: $env:JETTY_HOME="C:\jetty-distribution-9.4.38.v20210224"
+
+- name: Create env var for JETTY_BASE
+  win_shell: $env:JETTY_BASE="C:\jetty-distribution-9.4.38.v20210224"
+
+- name: Create folder for commons daemon
+  win_shell: mkdir commons
+  args:
+    chdir: C:\
+
+- name: Download apache commons daemon
+  win_shell: curl https://downloads.apache.org/commons/daemon/binaries/windows/commons-daemon-1.2.4-bin-windows.zip -O commons-daemon.zip
+  args:
+    chdir: C:\commons
+
+- name: Unpack commons daemon
+  win_shell: Expand-Archive -Path .\commons-daemon.zip -DestinationPath .
+  args:
+    chdir: C:\commons
+
+- name: Create logs dir
+  win_shell: mkdir logs
+  args:
+    chdir: C:\
+  
+- name: Create temp dir
+  win_shell: mkdir temp
+  args:
+    chdir: C:\
+
+- name: Copy jetty-service.bat file
+  template:
+    src: jetty-service.bat
+    dest: C:\jetty-distribution-9.4.38.v20210224\jetty-service.bat
+    
+- name: Install JettyService
+  win_shell: .\jetty-service.bat
+  args:
+    chdir: C:\jetty-distribution-9.4.38.v20210224\
+
+- name: Start JettyService
+  win_shell: Start-Service JettyService
+
+- block:
+  - name: Export NR_CLI_JMX_USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_USERNAME','admin',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_PASSWORD','admin',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_HOST
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_HOST','localhost',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_PORT','9999',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_SSL_ENABLED
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_SSL_ENABLED','n',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_KEYSTORE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_KEYSTORE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_KEYSTORE_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_KEYSTORE_PASSWORD','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_TRUSTSTORE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_TRUSTSTORE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_TRUSTSTORE_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_TRUSTSTORE_PASSWORD','notUsed',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool
