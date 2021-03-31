@@ -5,7 +5,7 @@ set JETTY_BASE=C:\jetty-distribution-9.4.38.v20210224
 set STOPKEY=secret
 set STOPPORT=50001
 
-set PR_INSTALL=C:\commons\prunsrv.exe
+set PR_INSTALL=C:\commons\amd64\prunsrv.exe
 
 @REM Service Log Configuration
 set PR_LOGPREFIX=%SERVICE_NAME%
