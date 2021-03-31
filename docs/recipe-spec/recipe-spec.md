@@ -83,8 +83,8 @@ validationNrql: string, optional
 
 # Metadata to support generating a URL after installation success
 successLinkConfig: object, optional
-  type: string, required        # required link type.  valid values are (host, explorer)
-  filter: string, optional      # optional filter value for explorer links
+  type: string, required        # required link type.  valid values are (host, EXPLORER)
+  filter: string, optional      # optional filter value for EXPLORER links
 
 # Optional pre-install configuration items.
 # Useful for things like including prompt info on dependencies and what vars could be supplied to the CLI to automate this recipe.
