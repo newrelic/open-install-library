@@ -9,7 +9,7 @@ set PR_INSTALL=C:\commons\prunsrv.exe
 
 @REM Service Log Configuration
 set PR_LOGPREFIX=%SERVICE_NAME%
-set PR_LOGPATH=C:\opt\logs
+set PR_LOGPATH=C:\logs
 set PR_STDOUTPUT=auto
 set PR_STDERROR=auto
 set PR_LOGLEVEL=Debug
