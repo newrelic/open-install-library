@@ -1,0 +1,90 @@
+---
+- debug:
+    msg: Install JMX-Jboss/Wildfly
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    configure_jmx_connection: "false"
+  when: configure_jmx_connection is undefined
+
+- name: install choco
+  win_shell: Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+
+- name: install jdk8
+  win_shell: choco install jdk8 -y
+
+- name: Create env vars for JAVA_HOME
+  win_shell: $env:JAVA_HOME="C:\Program Files\Java\jdk1.8.0_211"
+
+- name: Download Wildfly zip file
+  win_shell: curl https://download.jboss.org/wildfly/23.0.0.Final/wildfly-23.0.0.Final.zip -O wildfly.zip
+  args:
+    chdir: C:\Progra~1
+  register: output
+
+- fail:
+    msg: "Wildfly zip file was not downloaded on the host"
+  when: output is failed
+
+- name: Unzip Wildfly.zip file
+  win_shell: expand-archive -path 'C:\Progra~1\wildfly.zip' -destinationpath 'C:\Progra~1\wildfly'
+
+- name: Copy scripts folder to JBOSS_HOME/bin directory
+  win_shell: Copy-Item -Path "C:\Progra~1\wildfly\wildfly-23.0.0.Final\docs\contrib\scripts\service" -Destination "C:\Progra~1\wildfly\wildfly-23.0.0.Final\bin\service" -Recurse
+
+- name: Install wildfly as a service
+  win_shell: .\service.bat install
+  args:
+    chdir: C:\Progra~1\wildfly\wildfly-23.0.0.Final\bin\service
+  register: output
+
+- name: Start wildfly as a service
+  win_shell: Start-Service Wildfly
+
+- block:
+  - name: create user
+    win_shell: .\add-user.bat newrelic Virtuoso4all! --silent
+    args:
+      chdir: C:\Progra~1\wildfly\wildfly-23.0.0.Final\bin\
+    register: output
+  - name: Install JBoss Custom Connector
+    win_shell: mkdir C:\Windows\System32\nrjmx\connectors
+  - name: Copy jboss items to connector
+    win_shell: Copy-Item -Path "C:\Progra~1\wildfly\wildfly-23.0.0.Final\bin\client\*" -Destination "C:\Windows\System32\nrjmx\connectors\" -Recurse
+  - name: Donwload example war app
+    win_shell: curl https://github.com/spagop/quickstart/raw/master/management-api-examples/mgmt-deploy-application/application/jboss-as-helloworld.war -O jboss-as-helloworld.war
+    args:
+      chdir: C:\Progra~1
+    register: output
+  - name: Deploy CometD war file
+    win_shell: Copy-Item -Path "C:\Progra~1\jboss-as-helloworld.war" -Destination "C:\Progra~1\wildfly\wildfly-23.0.0.Final\standalone\deployments\" -Recurse
+  when: configure_jmx_connection|bool
+
+- name: Restart Wildfly
+  win_shell: Restart-Service Wildfly
+
+- block:
+  - name: Export NR_CLI_JMX_USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_PASSWORD','Virtuoso4all!',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_HOST
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_HOST','localhost',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_JMX_PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_JMX_PORT','9999',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_SSL_ENABLED
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_SSL_ENABLED','n',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_KEYSTORE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_KEYSTORE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_KEYSTORE_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_KEYSTORE_PASSWORD','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_TRUSTSTORE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_TRUSTSTORE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_TRUSTSTORE_PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_TRUSTSTORE_PASSWORD','notUsed',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool
