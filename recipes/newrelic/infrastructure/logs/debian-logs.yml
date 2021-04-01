@@ -17,8 +17,7 @@ installTargets:
 keywords:
   - Logs
 
-processMatch:
-  - /logs/
+processMatch: []
 
 validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' FACET entity.guids SINCE 10 minutes ago"
 
@@ -36,6 +35,7 @@ install:
         - task: assert_pre_req
         - task: setup
         - task: restart
+        - task: assert_agent_started
 
     assert_pre_req:
       cmds:
@@ -148,6 +148,17 @@ install:
             sudo /etc/init.d/newrelic-infra restart > /dev/null;
           else
             sudo systemctl restart newrelic-infra.service
+          fi
+
+    assert_agent_started:
+      cmds:
+        - |
+          # Ensure agent has enough time to start
+          sleep 10
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >> /dev/stderr
+            exit 31
           fi
 
 postInstall:
