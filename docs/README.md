@@ -8,6 +8,7 @@ A collection of recipes designed to support the automated installation and setup
 * [Testing Framework](./test-framework/README.md)
 * [Kubernetes Testing](./kubernetes.md)
 * [Manual Testing](../test/manual/readme.MD)
+* [Install Error Codes](./error-codes.MD)
 
 ## Contributing Recipes
 
