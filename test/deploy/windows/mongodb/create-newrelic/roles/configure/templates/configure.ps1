@@ -12,11 +12,16 @@ systemLog:
     destination: file
     logAppend: true
     path: $mongoDataFolder\logs\mongod.log
+
 storage:
     dbPath: $mongoDataFolder\data
+
 net:
     port: 27017
     bindIp: localhost
+
+replication:
+    replSetName: test
 "@
 $cfg | Out-File "$mongoDataFolder\mongod.cfg"
  
