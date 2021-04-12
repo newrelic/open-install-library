@@ -1,0 +1,164 @@
+name: mongodb-open-source-integration
+displayName: MongoDB Open Source Integration
+description: New Relic install recipe for default MongoDB Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-mongodb
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Integration
+  - MongoDB
+  - Windows
+
+processMatch:
+  - mongodb
+  - mongod
+
+logMatch:
+  - name: MongoDB log
+    file: /var/log/mongodb/mongod.log
+
+validationNrql: "SELECT count(*) from MongoDatabaseSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_USERNAME"
+    prompt: "MongoDB Username"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "MongoDB Password"
+  - name: "NR_CLI_CLUSTERNAME"
+    prompt: "MongoDB Cluster Name"
+    secret: true
+  - name: "NR_CLI_AUTH"
+    prompt: "MongoDB Auth Source (default: admin)"
+    default: "admin"
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "MongoDB Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_PORT"
+    prompt: "MongoDB Port (default: 27017)"
+    default: 27017
+  - name: "NR_CLI_SSL"
+    prompt: "Use SSL to connect? (y/n)"
+  - name: "NR_CLI_CERT_AUTH_FILE"
+    prompt: "Certificate Authority file (if applicable)"
+  - name: "NR_CLI_SKIP_SSL_VERIFY"
+    prompt: "Verify certificate? (y/n)"
+  - name: "NR_CLI_CLIENT_CERT_FILE"
+    prompt: "Client Certificate file (if applicable)"
+  - name: "NR_CLI_CERT_PASSPHRASE"
+    prompt: "Passphrase to decrypt the PEM key file (if applicable)"
+
+preInstall:
+  info: |2
+      To capture data from the MongoDB integration, you'll first need to meet these prerequisites:
+      - MongoDB version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#comp-req)
+      - User with clusterMonitor and listCollections roles
+
+      In the MongoDB shell, execute the following commands to create a
+      listCollections role and a new user, then assign clusterMonitor and
+      listCollections roles to the new user.
+      Note: username, password, and similar user-specific values must be replaced.
+
+      In the MongoDB shell run the following command
+      > rs.initiate()
+
+      Switch to the admin database
+      > use admin
+
+      Use the following command to create the listCollections role:
+      > db.createRole({role: "listCollections", privileges: [{ resource: {db:"",collection:""}, actions: ["listCollections"] }], roles: []})
+
+      Use the following commands to create a new user, and assign clusterMonitor and listCollections roles to the user:
+      > db.createUser({ user: "username", pwd: "password", roles: [ "clusterMonitor", "listCollections" ]})
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent."; Exit 1; }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - |
+          powershell -command '
+          function Find-UninstallGuids {
+            param (
+              [Parameter(Mandatory)]
+              [string]$Match
+            )
+
+            $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+
+            $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+
+            $allKeys = $baseKeys + $wowKeys
+
+            $uninstallIds = New-Object System.Collections.ArrayList
+            foreach ($key in $allKeys) {
+              $keyData = Get-Item -Path HKLM:\$key
+              $name = $keyData.GetValue("DisplayName")
+              if ($name -and $name -match $Match) {
+                $keyId = Split-Path $key -Leaf
+                $uninstallIds.Add($keyId) | Out-Null
+              }
+            }
+
+            if ($uninstallIds.Count -eq 0) {
+              return @()
+            }
+
+            return $uninstallIds
+          }
+
+          $uninstallIds = Find-UninstallGuids -Match "nri-mongodb"
+          foreach ($uninstallId in $uninstallIds) {
+            $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
+            Invoke-Expression $uninstallCommand
+            # wait here to allow uninstall command to complete since it returns without waiting
+            Start-Sleep -s 15
+          }
+          '
+
+    setup:
+      label: "Installing MongoDB integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-mongodb/nri-mongodb-amd64.msi", "$env:TEMP\nri-mongodb-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-mssql-amd64.msi" | Out-Null;'
+        - powershell -command '$OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"; if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "integration_name`:` com.newrelic.mssql" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "instances`:` " -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "  - name`:` all" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "    command`:` all" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "    arguments`:` " -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      host`:` {{.NR_CLI_HOSTNAME}}" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      username`:` {{.NR_CLI_USERNAME}}" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      password`:` {{.NR_CLI_PASSWORD}}" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      port`:` {{.NR_CLI_PORT}}" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      auth_source`:` {{.NR_CLI_AUTH}}" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      cluster_name`:` {{.NR_CLI_CLUSTERNAME}}" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      ssl`:` false" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      ssl_insecure_skip_verify`:` true" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      ssl_ca_certs`:` /sample/path/to/ca_certs" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      filters`:` '{"admin":null}'" -Force | Out-Null;'
+        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      concurrent_collections`:` 50" -Force | Out-Null;'
+        - powershell -command 'Restart-Service newrelic-infra'
+
+postInstall:
+  info: |2
+      ⚙️  The MongoDB configuration file can be found in /etc/newrelic-infra/integrations.d/mongodb-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config

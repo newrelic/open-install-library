@@ -1,0 +1,79 @@
+---
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Set default setup_database_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: setup_database is undefined
+
+- name: Download MongoDB install file
+  win_shell: curl https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-4.4.5-signed.msi -O mongodb-windows-x86_64-4.4.5-signed.msi
+  args:
+    chdir: C:\
+  register: output
+
+- fail:
+    msg: "MongoDB was not downloaded on the host"
+  when: output is failed
+
+- name: copy file
+  template:
+    src: configure.ps1
+    dest: C:\
+
+- name: run script
+  win_shell: .\configure.ps1
+  args:
+    chdir: C:\
+  register: output
+
+- name: start mongodb
+  win_shell: Restart-Service MongoDB
+
+- name: copy initaite.js file
+  template:
+    src: initiate.js
+    dest: C:\Progra~1\MongoDB\Server\4.4\bin
+
+- name: copy commannds.js file
+  template:
+    src: commands.js
+    dest: C:\Progra~1\MongoDB\Server\4.4\bin
+
+- name: update Path env variable and execute files with commads 
+  win_shell: | 
+    $Env:Path += ";C:\Progra~1\MongoDB\Server\4.4\bin"
+    mongo localhost:27017/admin .\initiate.js
+    mongo localhost:27017/admin .\commands.js
+  args:
+    chdir: C:\Progra~1\MongoDB\Server\4.4\bin
+  register: output
+
+- block:
+  - name: Export USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
+  - name: Export PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PASSWORD','{{ ansible_password }}',[System.EnvironmentVariableTarget]::User)"
+  - name: Export CLUSTERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CLUSTERNAME','test',[System.EnvironmentVariableTarget]::User)"
+  - name: Export AUTH
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_AUTH','admin',[System.EnvironmentVariableTarget]::User)"
+  - name: Export HOSTNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_HOSTNAME','localhost',[System.EnvironmentVariableTarget]::User)"
+  - name: Export PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PORT','27017',[System.EnvironmentVariableTarget]::User)"
+  - name: Export SSL
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_SSL','n',[System.EnvironmentVariableTarget]::User)"
+  - name: Export CERT AUTH FILE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CERT_AUTH_FILE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export SKIP SSL
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_SKIP_SSL_VERIFY','y',[System.EnvironmentVariableTarget]::User)"
+  - name: Export CLIENT CERT FILE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CLIENT_CERT_FILE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export CLIENT CERT PASSPHRASE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CERT_PASSPHRASE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool
