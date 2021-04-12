@@ -1,0 +1,29 @@
+---
+
+- block:
+  - name: Create artifact file
+    file:
+      path: /tmp/var.json
+      state: touch
+
+  - name: Load var from file
+    include_vars:
+      file: /tmp/var.json
+      name: temp_json
+
+  - name: Creating artifact JSON key/values
+    set_fact:
+      artifact_json: "{{ temp_json | default([]) | combine({
+        'service_id': '{{ service_id }}',
+        'params': {
+            'stderr_path': '/home/{{ ansible_user }}/{{ service_id }}/stderr.log',
+            'stdout_path': '/home/{{ ansible_user }}/{{ service_id }}/stdout.log'
+        }
+        })
+      }}"
+
+  - name: write var to file
+    copy:
+      content: "{{ artifact_json | to_nice_json }}"
+      dest: "{{ output_path }}/artifact.json"
+  delegate_to: localhost

@@ -1,0 +1,53 @@
+---
+
+- fail:
+    msg: "service_id is required"
+  when: service_id is not defined
+
+- name: Get supervisorctl path
+  shell: which supervisorctl
+  register: supervisorctl_path
+  ignore_errors: yes
+
+- name: check if memmon{{ service_id }} is running
+  shell: ps aux | grep memmon{{ service_id }} | grep -v grep | wc -l
+  register: memmon_running
+
+- name: supervisord stop service memmon{{ service_id }}
+  shell: '{{ supervisorctl_path.stdout }} stop memmon{{ service_id }}'
+  when: memmon_running.stdout|int == 1
+  args:
+    chdir: /etc/supervisor/conf.d
+  become: true
+
+- name: supervisord remove service memmon{{ service_id }}
+  shell: '{{ supervisorctl_path.stdout }} remove memmon{{ service_id }}'
+  when: memmon_running.stdout|int == 1
+  args:
+    chdir: /etc/supervisor/conf.d
+  become: true
+
+- name: check if service is running
+  shell: '{{ supervisorctl_path.stdout }} status | grep "^{{ service_id }}" | wc -l'
+  register: service_running
+  when: supervisorctl_path.rc == 0
+
+- name: supervisord stop service
+  shell: '{{ supervisorctl_path.stdout }} stop {{ service_id }}'
+  args:
+    chdir: /etc/supervisor/conf.d
+  become: true
+  when:
+    - supervisorctl_path.rc == 0
+    - service_running is defined
+    - service_running.stdout|int == 1
+
+- name: supervisord remove service
+  shell: '{{ supervisorctl_path.stdout }} remove {{ service_id }}'
+  args:
+    chdir: /etc/supervisor/conf.d
+  become: true
+  when:
+    - supervisorctl_path.rc == 0
+    - service_running is defined
+    - service_running.stdout|int == 1

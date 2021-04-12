@@ -1,0 +1,28 @@
+---
+
+- name: Read optional cronjob.json file
+  shell: cat "/home/{{ ansible_user }}/{{ service_id }}/cronjob.json"
+  register: cronjob_file
+  ignore_errors: yes
+
+- name: Parsing cronjob.json file
+  set_fact:
+    cronjob_json: "{{ cronjob_file.stdout | from_json }}"
+  when: cronjob_file is defined
+  ignore_errors: yes
+
+- name: Print out cronjob.json content
+  debug:
+    msg: "Read the cronjob.json file with {{ cronjob_json }}"
+  when: cronjob_json is defined
+
+- name: Adding crontab entries
+  shell: "( crontab -l | grep -v -F '{{ item.job }}' || : ; echo '{{ item.frequency }} {{ item.job }}' ) | crontab -"
+  loop: "{{ cronjob_json }}"
+  when: cronjob_json is defined and (item.root is not defined or item.root == false)
+
+- name: Adding root crontab entries
+  shell: "( crontab -l | grep -v -F '{{ item.job }}' || : ; echo '{{ item.frequency }} {{ item.job }}' ) | crontab -"
+  become: yes
+  loop: "{{ cronjob_json }}"
+  when: cronjob_json is defined and item.root is defined and item.root == true
