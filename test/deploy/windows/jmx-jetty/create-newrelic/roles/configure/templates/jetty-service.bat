@@ -22,14 +22,14 @@ set PR_CLASSPATH=%JETTY_HOME%\start.jar;%JAVA_HOME%\lib\tools.jar
 set PR_JVMMS=128
 set PR_JVMMX=512
 set PR_JVMSS=4000
-set PR_JVMOPTIONS=-Duser.dir="%JETTY_BASE%";-Djava.io.tmpdir="C:\temp";-Djetty.home="%JETTY_HOME%";-Djetty.base="%JETTY_BASE%";-Dcom.sun.management.jmxremote;-Dcom.sun.management.jmxremote.ssl="false";-Dcom.sun.management.jmxremote.authenticate="false";-Dcom.sun.management.jmxremote.port="9999";-Dcom.sun.management.jmxremote.rmi.port="9999";-Djava.rmi.server.hostname="127.0.0.1"
+set PR_JVMOPTIONS=-Duser.dir="%JETTY_BASE%";-Djava.io.tmpdir="C:\temp";-Djetty.home="%JETTY_HOME%";-Djetty.base="%JETTY_BASE%";
 @REM Startup Configuration
 set JETTY_START_CLASS=org.eclipse.jetty.start.Main
 
 set PR_STARTUP=auto
 set PR_STARTMODE=java
 set PR_STARTCLASS=%JETTY_START_CLASS%
-set PR_STARTPARAMS=STOP.KEY="%STOPKEY%";STOP.PORT=%STOPPORT%;--module=http,jsp,jmx-remote
+set PR_STARTPARAMS=STOP.KEY="%STOPKEY%";STOP.PORT=%STOPPORT%;--module=http,deploy,jmx-remote
 
 @REM Shutdown Configuration
 set PR_STOPMODE=java
