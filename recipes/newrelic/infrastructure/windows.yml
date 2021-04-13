@@ -28,11 +28,52 @@ install:
       cmds:
         - task: remove_any_previous
         - task: install
+        - task: assert_agent_started
 
     remove_any_previous:
       ignore_error: true
       cmds:
-        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -EQ "New Relic Infrastructure Agent"}; if ($app) { $app.Uninstall() }'
+        - |
+          powershell -command '
+          function Find-UninstallGuids {
+            param (
+              [Parameter(Mandatory)]
+              [string]$Match
+            )
+
+            $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+
+            $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+
+            $allKeys = $baseKeys + $wowKeys
+
+            $uninstallIds = New-Object System.Collections.ArrayList
+            foreach ($key in $allKeys) {
+              $keyData = Get-Item -Path HKLM:\$key
+              $name = $keyData.GetValue("DisplayName")
+              if ($name -and $name -match $Match) {
+                $keyId = Split-Path $key -Leaf
+                $uninstallIds.Add($keyId) | Out-Null
+              }
+            }
+
+            if ($uninstallIds.Count -eq 0) {
+              return @()
+            }
+
+            return $uninstallIds
+          }
+
+          $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
+          foreach ($uninstallId in $uninstallIds) {
+            $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
+            Invoke-Expression $uninstallCommand
+            # wait here to allow uninstall command to complete since it returns without waiting
+            Start-Sleep -s 15
+          }
+          '
 
     install:
       cmds:
@@ -45,6 +86,12 @@ install:
         - powershell -command 'net start newrelic-infra'
         - echo "New Relic infrastructure agent for Windows installed and started"
 
+    assert_agent_started:
+      cmds:
+        - |
+          # Ensure agent has enough time to start
+          powershell -command 'Start-Sleep -s 10; $output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic."; Exit 31; }'
+
 postInstall:
   info: |2
       ⚙️  The Infrastructure Agent configuration file can be found in C:\Program Files\New Relic\newrelic-infra\newrelic-infra.yml
@@ -52,3 +99,4 @@ postInstall:
       Infrastructure Agent: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
 
       Note: Process monitoring has been enabled by default - all other config options are left to the user.
+
