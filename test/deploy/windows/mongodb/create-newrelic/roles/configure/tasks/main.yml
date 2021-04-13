@@ -15,44 +15,64 @@
     msg: "MongoDB was not downloaded on the host"
   when: output is failed
 
-- name: copy file
-  template:
-    src: configure.ps1
-    dest: C:\
-
-- name: run script
-  win_shell: .\configure.ps1
+- name: install mongo msi file
+  win_shell: msiexec.exe /q /i mongodb-windows-x86_64-4.4.5-signed.msi "ADDLOCAL=ALL" SHOULD_INSTALL_COMPASS="0"  | Out-Null
   args:
     chdir: C:\
-  register: output
 
-- name: start mongodb
+- name: create db folder
+  win_shell: md "data\db"
+  args:
+    chdir: C:\
+
+- name: copy config file
+  template:
+    src: mongod.cfg
+    dest: C:\Progra~1\MongoDB\Server\4.4\bin\mongod.cfg
+
+- name: copy install script
+  template:
+    src: install.ps1
+    dest: C:\
+
+- name: run install command
+  win_shell: .\install.ps1
+  args:
+    chdir: C:\
+
+- name: restart mongodb 
   win_shell: Restart-Service MongoDB
 
-- name: copy initaite.js file
-  template:
-    src: initiate.js
-    dest: C:\Progra~1\MongoDB\Server\4.4\bin
-
-- name: copy commannds.js file
-  template:
+- name: copy commands.js file
+  template: 
     src: commands.js
-    dest: C:\Progra~1\MongoDB\Server\4.4\bin
+    dest: C:\
 
-- name: update Path env variable and execute files with commads 
-  win_shell: | 
-    $Env:Path += ";C:\Progra~1\MongoDB\Server\4.4\bin"
-    mongo localhost:27017/admin .\initiate.js
-    mongo localhost:27017/admin .\commands.js
+- name: copy initiate.js file
+  template: 
+    src: initiate.js
+    dest: C:\
+
+- name: use initiate command file
+  win_shell: .\mongo.exe C:\initiate.js
   args:
     chdir: C:\Progra~1\MongoDB\Server\4.4\bin
   register: output
+
+- name: use commands.js file
+  win_shell: .\mongo.exe C:\commands.js
+  args:
+    chdir: C:\Progra~1\MongoDB\Server\4.4\bin
+  register: output
+
+- name: restart mongodb
+  win_shell: Restart-Service MongoDB
 
 - block:
   - name: Export USERNAME
     win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
   - name: Export PASSWORD
-    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PASSWORD','{{ ansible_password }}',[System.EnvironmentVariableTarget]::User)"
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_PASSWORD','Virtuoso4all!',[System.EnvironmentVariableTarget]::User)"
   - name: Export CLUSTERNAME
     win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CLUSTERNAME','test',[System.EnvironmentVariableTarget]::User)"
   - name: Export AUTH

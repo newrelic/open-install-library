@@ -1,2 +1,2 @@
-db.createRole({role: "listCollections", privileges: [{resource: {db:"admin",collection:""},actions: ["listCollections"]}],roles: []})
-db.createUser({user: "username", pwd: "password", roles: ["clusterMonitor","listCollections"]})
+db.getSiblingDB("admin").createRole({role: "listCollections", privileges: [{resource: {db:"admin",collection:""},actions: ["listCollections"]}],roles: []})
+db.getSiblingDB("admin").createUser({user: "newrelic", pwd: "Virtuoso4all!", roles: ["clusterMonitor","listCollections"]})
