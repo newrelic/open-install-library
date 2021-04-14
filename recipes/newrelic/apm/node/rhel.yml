@@ -1,0 +1,69 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: node-agent-installer
+displayName: Node Agent Installer
+description: New Relic install recipe for instrumenting Node applications
+repository: https://github.com/newrelic/node-newrelic
+
+installTargets:
+  - type: application
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: application
+    os: linux
+    platform: "centos"
+  - type: application
+    os: linux
+    platform: "redhat"
+
+keywords:
+  - node
+
+processMatch:
+  - pm2
+
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+  filter: '"`tags.language` = ''node''"'
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+        - task: install_agent
+
+    setup:
+      label: "Installing Node Introspector..."
+      cmds:
+        - |
+          curl -s -O https://go-java-testing-bucket.s3-us-west-2.amazonaws.com/node-lsi-main.zip
+        - |
+          unzip -o node-lsi-main.zip
+        - |
+          cd node-lsi-main; sudo -i -u $SUDO_USER npm install
+
+    install_agent:
+      label: "Finding Node processes and installing Node agent"
+      cmds:
+        - |
+          FOUND_PROCESSES=$(sudo -i -u $SUDO_USER node ./node-lsi-main/src/index.js list)
+          if [ "$FOUND_PROCESSES" == "" ] ||  [ "$FOUND_PROCESSES" == "[  ]" ]; then
+            echo "No Node processes found running on the host" >> /dev/stderr
+            exit 1
+          else
+            PROCESSES=$(echo "$FOUND_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
+            for PID in "${PROCESSES[@]}"
+            do
+              INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER node ./node-lsi-main/src/index.js introspect --pid ${PID})
+              DISPLAY_NAME="Node Process $PID"
+              LSI_OUTPUT=$(sudo -i -u $SUDO_USER node ./node-lsi-main/src/index.js instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${DISPLAY_NAME}")
+            done
+          fi
