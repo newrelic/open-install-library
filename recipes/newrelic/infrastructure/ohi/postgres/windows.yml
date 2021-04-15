@@ -1,0 +1,114 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: postgres-open-source-integration
+displayName: PostgreSQL Open Source Integration
+description: New Relic install recipe for default PostgreSQL Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-postgresql
+
+installTargets:
+  - type: host
+    os: windows
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - postgres
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - postgres*
+
+validationNrql: "SELECT count(*) from PostgresqlDatabaseSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_USERNAME"
+    prompt: "Postgres Username"
+  - name: "NR_CLI_PASSWORD"
+    prompt: "Postgres Password"
+    secret: true
+  - name: "NR_CLI_DB_HOSTNAME"
+    prompt: "Postgres Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_DATABASE"
+    prompt: "Postgres Database (default: postgres)"
+    default: "postgres"
+  - name: "NR_CLI_PORT"
+    prompt: "Postgres Port (default: 5432)"
+    default: 5432
+  - name: "NR_CLI_SSL"
+    prompt: "Use SSL to connect? (false/true)"
+    default: false
+  - name: "NR_CLI_CLIENT_CERT_FILE"
+    prompt: "Client Certificate file (if applicable)"
+  - name: "NR_CLI_CERT_KEY"
+    prompt: "PEM key file (if applicable)"
+  - name: "NR_CLI_TRUST_SERVER_CERTIFICATE"
+    prompt: "Trust certificate? (false/true)"
+    default: false
+  - name: "NR_CLI_CERT_AUTH_FILE"
+    prompt: "Certificate Authority file (if applicable)"
+
+preInstall:
+  info: |2
+      To capture data from the PostgreSQL integration, you'll first need to meet these prerequisites:
+      - PostgreSQL version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req)
+      - User with READ permissions
+      
+      To create a new user, use these commands as reference (Note: username, 
+      password, and similar user-specific values must be replaced):
+      
+      > CREATE USER new_relic WITH PASSWORD 'PASSWORD';
+      > GRANT SELECT ON pg_stat_database TO new_relic;
+      > GRANT SELECT ON pg_stat_database_conflicts TO new_relic;
+      > GRANT SELECT ON pg_stat_bgwriter TO new_relic;
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-postgresql*"}; if ($app) { $app.Uninstall() }'
+
+    install:
+      label: "Installing PostgreSQL integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-postgresql/nri-postgresql-amd64.msi", "$env:TEMP\nri-postgresql-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-postgresql-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.POSTGRESQL}}" | Out-File -FilePath C:\\Progra~1\\New` Relic\\newrelic-infra\\integrations.d\\postgresql-config.yml;'
+        - powershell -command 'Restart-Service newrelic-infra'
+      vars:
+        POSTGRESQL: |
+          integration_name: com.newrelic.postgresql
+          instances:
+            - name: postgres
+              command: all_data
+              arguments:
+                username: {{.NR_CLI_USERNAME}}
+                password: {{.NR_CLI_PASSWORD}}
+                hostname: {{.NR_CLI_DB_HOSTNAME}}
+                database: {{.NR_CLI_DATABASE}}
+                port: {{.NR_CLI_PORT}}
+                collection_list: `'ALL`'
+                collect_db_lock_metrics: false
+                enable_ssl: false
+                timeout: 10
+        
+postInstall:
+  info: |2
+      ⚙️  The PostgreSQL configuration file can be found in /etc/newrelic-infra/integrations.d/postgresql-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#config
