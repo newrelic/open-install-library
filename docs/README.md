@@ -60,6 +60,25 @@ Recipes are written in YAML and must adhere to our [recipe spec](./recipe-spec/r
 
 All OHI Linux recipes must support APT (Debian and Ubuntu), Yum (Amazon Linux, CentOS, RHEL), Zypper ( SLES). For testing, at a minimum include tests for these three package managers for Linux recipes.
 
+
+### Metadata
+
+#### installTargets
+
+This defines a collection of several attributes that can be used to specify what requirement to ensure for this recipe.
+Typical field names:
+* `type` either `host` or `application`. Currently `application` that don't have a keyword of `apm` are excluded from the guided install
+* `os` to specify the operating system required to run this recipe. This value can be either `linux` or `windows`. `darwin` could also be set and used, this value is currently not used by any recipe
+* `platform` specifies additional information about the operating system. Typical values can be `debian`, `amazon` or `centos`... This field is typically not used for `windows` OS
+* `platformVersion` specifies additional information about the version of the operating system. Typical values can be `14.04` for a ubuntu/linux OS for example.
+
+#### keywords
+
+This is a collection of string that can be anything that relates to what the recipe is about.
+Reserved values:
+* `Apm` specifies that this recipe is an Application Performance Monitoring recipe, and should be included in the guided install
+
+
 ### Validation Nrql
 
 The [recipe-spec](./recipe-spec/recipe-spec.md) contains `validationNrql` - this can be used to specify NRQL the CLI and test framework will execute to validate the recipe is successfully sending data to New Relic.
