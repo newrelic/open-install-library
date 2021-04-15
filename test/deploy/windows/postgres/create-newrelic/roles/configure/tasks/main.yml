@@ -1,0 +1,67 @@
+---
+
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: Download postgresql
+  win_shell: curl https://sbp.enterprisedb.com/getfile.jsp?fileid=1257614 -O postgresql.exe
+  args:
+    chdir: C:\
+
+- name: Install postgresql
+  win_shell: .\postgresql.exe --mode unattended --unattendedmodeui none
+
+- name: Wait for file C:\Program Files\PostgreSQL\10 to exist before continuing
+  win_wait_for:
+    path: C:\Program Files\PostgreSQL\10
+
+- name: Add PostgreSQL to PATH
+  win_shell: $ENV:PATH="$ENV:PATH;C:\Program Files\PostgreSQL\10\bin"
+
+- name: Init db
+  win_shell: .\initdb.exe -D 'C:\dbdata' -U postgres -E UTF8
+  args:
+    chdir: C:\Program Files\PostgreSQL\10\bin
+
+- name: Register postgresql service
+  win_shell: .\pg_ctl register -N PostgreSQL -D C:\dbdata
+  args:
+    chdir: C:\Program Files\PostgreSQL\10\bin
+
+- name: Start PostgreSQL service
+  win_shell: Start-Service PostgreSQL
+
+- block:
+  - name: Create newrelic login
+    win_shell: echo test
+  when: create_newrelic_user|bool
+
+- block:
+  - name: Export USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
+  - name: Export PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_PASSWORD','Virtuoso4all!',[System.EnvironmentVariableTarget]::User)"
+  - name: Export HOSTNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_HOSTNAME','127.0.0.1',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_DB_PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DB_PORT','5432',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_DATABASE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_DATABASE','postgres',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_SSL
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_SSL','false',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_CERT_AUTH_FILE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CERT_AUTH_FILE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_TRUST_SERVER_CERTIFICATE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_TRUST_SERVER_CERTIFICATE','false',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_CLIENT_CERT_FILE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CLIENT_CERT_FILE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export NR_CLI_CERT_KEY
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CERT_KEY','notUsed',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool
