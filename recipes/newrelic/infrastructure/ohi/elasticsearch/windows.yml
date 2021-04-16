@@ -1,0 +1,105 @@
+name: elasticsearch-open-source-integration
+displayName: elasticsearch Open Source Integration
+description: New Relic install recipe for default elasticsearch Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-elasticsearch
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - Integration
+  - elasticsearch
+  - Windows
+
+processMatch:
+  - elasticsearch
+  - mongod
+
+logMatch:
+  - name: elasticsearch log
+    file: C:\Program Files\Elasticsearch2\elasticsearch-7.12.0\logs\elastic*.log
+
+validationNrql: "SELECT count(*) from ElasticsearchClusterSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_API_USERNAME"
+    prompt: "ElasticSearch Username"
+  - name: "NR_CLI_API_PASSWORD"
+    prompt: "ElasticSearch Password"
+  - name: "NR_CLI_API_HOSTNAME"
+    prompt: "ElasticSearch Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_API_PORT"
+    prompt: "ElasticSearch Port (default: 9200)"
+    default: 9200
+  - name: "NR_CLI_CONFIG_PATH"
+    prompt: "ElasticSearch config file (default: /etc/elasticsearch/elasticsearch.yml)"
+    default: "C:\Program Files\Elasticsearch2\elasticsearch-7.12.0\config\elasticsearch.yml"
+  - name: "NR_CLI_API_USE_SSL"
+    prompt: "Use SSL to connect? (false/true)"
+    default: false
+  - name: "NR_CLI_API_CA_BUNDLE_DIR"
+    prompt: "SSL certificate Directory (if applicable)"
+  - name: "NR_CLI_API_CA_BUNDLE_FILE"
+    prompt: "SSL Certificate File (if applicable)"
+
+preInstall:
+  info: |2
+      To capture data from the Elasticsearch integration, you'll first need to meet these prerequisites:
+      - Elasticsearch version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/elasticsearch-monitoring-integration#req)
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: remove_any_previous
+        - task: install
+
+    assert_pre_req:
+      cmds:
+        - powershell -command '$output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent." }'
+
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - powershell -command '$app = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "*nri-elasticsearch*"}; if ($app) { $app.Uninstall() }'
+
+    install:
+      label: "Installing elasticsearch integration..."
+      cmds:
+        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-elasticsearch/nri-elasticsearch-amd64.msi", "$env:TEMP\nri-elasticsearch-amd64.msi");'
+        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-elasticsearch-amd64.msi" | Out-Null;'
+        - powershell -command 'echo "{{.ELASTICSEARCH}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\elasticsearch-config.yml"'
+        - powershell -command 'Restart-Service newrelic-infra'
+
+      vars:
+        ELASTICSEARCH: |
+          integration_name: com.newrelic.elasticsearch
+
+          instances:
+            - name: elasticsearch
+              command: all
+              arguments:
+                cluster_environment: staging
+                config_path: {{.NR_CLI_API_CONFIG_PATH}}
+                hostname: {{.NR_CLI_API_HOSTNAME}}
+                local_hostname: localhost
+                username: {{.NR_CLI_API_USERNAME}}
+                password: {{.NR_CLI_API_PASSWORD}}
+                port: {{.NR_CLI_API_PORT}}
+                timeout: 30
+                use_ssl: {{.NR_CLI_API_USE_SSL}}
+                indices_regex:
+                collect_indices: true
+                collect_primaries: true
+
+postInstall:
+  info: |2
+      ⚙️  The Elasticsearch configuration file can be found in /etc/newrelic-infra/integrations.d/elasticsearch-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/elasticsearch-monitoring-integration#config

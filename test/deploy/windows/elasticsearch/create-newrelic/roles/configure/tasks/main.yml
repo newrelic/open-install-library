@@ -1,0 +1,71 @@
+---
+
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+- name: install choco
+  win_shell: Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+
+- name: install jdk11
+  win_shell: choco install openjdk11 -y
+
+- name: Create env vars for JAVA_HOME
+  win_shell: $env:JAVA_HOME="C:\Program Files\OpenJDK\openjdk-11.0.10_9"
+
+- name: download zip file
+  win_shell: curl https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-7.12.0-windows-x86_64.zip -O elasticsearch.zip
+  args:
+    chdir: C:\
+  register: output
+
+- fail:
+    msg: "Elasticsearch zip file was not downloaded on the host"
+  when: output is failed
+
+- name: Unzip Elasticsearch.zip file
+  win_shell: expand-archive -path 'C:\elasticsearch.zip' -destinationpath 'C:\Progra~1\Elasticsearch'
+
+- name: Install Elastisearch as service
+  win_shell: .\elasticsearch-service.bat install
+  args:
+    chdir: C:\Progra~1\Elasticsearch\elasticsearch-7.12.0\bin
+
+- name: Start Elasticsearch as service
+  win_shell: .\elasticsearch-service.bat start
+  args:
+    chdir: C:\Progra~1\Elasticsearch\elasticsearch-7.12.0\bin
+
+- name: Add Elasticsearch user
+  win_shell: .\elasticsearch-users.bat useradd newrelic -p Virtuoso4all! -r superuser
+  args:
+    chdir: C:\Progra~1\Elasticsearch\elasticsearch-7.12.0\bin
+
+- name: Restart Elasticsearch service
+  win_shell: Restart-Service elasticsearch-service-x64
+
+
+- block:
+  - name: Export USERNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_USERNAME','newrelic',[System.EnvironmentVariableTarget]::User)"
+  - name: Export PASSWORD
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_PASSWORD','Virtuoso4all!',[System.EnvironmentVariableTarget]::User)"
+  - name: Export HOSTNAME
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_HOSTNAME','localhost',[System.EnvironmentVariableTarget]::User)"
+  - name: Export ES_PORT
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_PORT','9200',[System.EnvironmentVariableTarget]::User)"
+  - name: Export CLI_CONFIG
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_CONFIG_PATH','C:/Program Files/Elasticsearch2/elasticsearch-7.12.0/config/elasticsearch.yml',[System.EnvironmentVariableTarget]::User)"
+  - name: Export USE_SSL
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_USE_SSL','false',[System.EnvironmentVariableTarget]::User)"
+  - name: Export CA_BUNDLE_DIR
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_CA_BUNDLE_DIR','notUsed',[System.EnvironmentVariableTarget]::User)"
+  - name: Export CA_BUNDLE_FILE
+    win_shell: "[System.Environment]::SetEnvironmentVariable('NR_CLI_API_CA_BUNDLE_FILE','notUsed',[System.EnvironmentVariableTarget]::User)"
+  when: create_env_var|bool

@@ -1,0 +1,59 @@
+{
+    "global_tags": {
+        "owning_team": "OpenSource",
+        "Environment": "development",
+        "Department": "Product",
+        "Product": "Virtuoso"
+    },
+  
+    "resources": [{
+        "id": "host1",
+        "display_name": "AwsWindowsMongoDBServer2019Host",
+        "provider": "aws",
+        "type": "ec2",
+        "size": "t3.medium",
+        "is_windows": true,
+        "ami_name": "aws-elasticbeanstalk-amzn-2021.02.10.x86_64-WindowsServer2019Core-*",
+        "user_name": "Administrator"
+    }],
+  
+    "services": [{
+      "id": "elastic1",
+      "destinations": ["host1"],
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/windows/elasticsearch/create-newrelic/roles",
+      "port": 9999,
+      "params":{
+          "create_env_var": true
+      }
+    }],
+  
+    "instrumentations": {
+      "resources": [
+        {
+            "id": "nr_infra",
+            "resource_ids": ["host1"],
+            "provider": "newrelic",
+            "source_repository": "https://github.com/newrelic/open-install-library.git",
+            "deploy_script_path": "test/deploy/windows/newrelic-cli/install-recipe/roles",
+            "params": {
+                "recipe_content_url": [
+                    "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infrastructure/windows.yml",
+                    "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infrastructure/ohi/elasticsearch/windows.yml"
+                ]
+            }
+        },
+        {
+            "id": "nr_infra_is_having_data",
+            "resource_ids": ["host1"],
+            "provider": "newrelic",
+            "source_repository": "https://github.com/newrelic/open-install-library.git",
+            "deploy_script_path": "test/deploy/assertions/recipe-is-valid/roles",
+            "params": {
+                "recipe_validation_nrql_url": "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infrastructure/ohi/elasticsearch/windows.yml"
+            }
+        }
+      ]
+    }
+  }
+  
