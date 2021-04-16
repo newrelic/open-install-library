@@ -11,8 +11,8 @@ Recipe definition files are placed under `recipes/org/<on_host_integration_name>
 
 For example:
 
-`recipes/newrelic/infrastructure/amazonlinux2.yml`
-`recipes/newrelic/infrastructure/ohi/nginx/amazonlinux2.yml`
+`recipes/newrelic/infrastructure/amazonlinux.yml`
+`recipes/newrelic/infrastructure/ohi/nginx/amazonlinux.yml`
 
 TBD - determine naming scheme when the a given recipe can be distro/os agnostic.
 
