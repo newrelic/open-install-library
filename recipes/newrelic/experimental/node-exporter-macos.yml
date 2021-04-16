@@ -1,0 +1,221 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: macos-node-exporter-installer
+displayName: MacOS Prometheus Node Exporter Integration
+description: New Relic install recipe for the Prometheus Node Exporter integration
+repository: https://github.com/newrelic/nri-prometheus
+
+experimental: true
+
+installTargets:
+  - type: host
+    os: darwin
+    kernelArch: amd64
+
+keywords:
+  - darwin
+  - node_exporter
+  - Prometheus
+
+processMatch: []
+
+validationNrql: "SELECT count(*) from Metric where instrumentation.source = 'macos-prometheus' facet instrumentation.source  since 10 minutes ago"
+
+inputVars:
+  - name: "NR_PROMETHEUS_DATA_SOURCE"
+    prompt: "Data Source Identifier (default: macos-prometheus)"
+    default: "macos-prometheus"
+
+preInstall:
+  info: |2
+      Note: EXPERIMENTAL RECIPE
+      This installation makes use of homebrew and homebrew/services to 
+      install Prometheus and Node Exporter.
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup_node_exporter
+        - task: setup_prometheus
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_HOMEBREW_INSTALLED=$(which -s brew)
+          if [ $? -ne 0 ] ; then
+            echo "homebrew is required to run the newrelic install. Please install homebrew and re-run the installation." >> /dev/stderr
+            exit 10
+          fi
+
+          IS_HOMEBREW_SERVICES_INSTALLED=$(brew tap | grep homebrew/services)
+          if [ $? -ne 0 ] ; then
+            echo "homebrew services is required to run newrelic install. Please run `brew tap homebrew/services` and re-run the installation." >> /dev/stderr
+            exit 11
+          fi
+        - |
+          IS_TEE_INSTALLED=$(which tee | wc -l)
+          if [ $IS_TEE_INSTALLED -eq 0 ] ; then
+            echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >> /dev/stderr
+            exit 14
+          fi
+
+    setup_node_exporter:
+      - |
+        # rm -rf /tmp/newrelic/node_exporter-*.*-amd64*
+        # mkdir -p /tmp/newrelic
+        # curl -L https://github.com/prometheus/node_exporter/releases/download/v1.1.2/node_exporter-1.1.2.darwin-amd64.tar.gz > /tmp/newrelic/node_exporter-1.1.2.darwin-amd64.tar.gz
+        # cd /tmp/newrelic
+        # tar xvfz /tmp/newrelic/node_exporter-1.1.2.darwin-amd64.tar.gz
+        # cd /tmp/newrelic/node_exporter-1.1.2.darwin-amd64
+        # ./node_exporter &
+
+        # sleep 15
+
+        # # test
+        # echo "node_exporter started in background"
+        # curl http://localhost:9100/metrics > /dev/null
+
+        IS_NODE_EXPORTER_INSTALLED=$(brew list node_exporter)
+        if [ $IS_NODE_EXPORTER_INSTALLED -eq 0 ] ; then
+          echo "Installing node_exporter..."
+          brew install node_exporter
+        fi
+
+        echo "Starting node_exporter via brew services"
+        brew services restart node_exporter
+        sleep 5
+
+        # Check that node_exporter is up
+        IS_SERVICE_STARTED=$(brew services list | grep node_exporter | grep stopped)
+        if [ $? -ne 0 ] ; then
+          echo "node_exporter failed to start" >> /dev/stderr
+          exit 20
+        fi
+
+    setup_prometheus:
+      - |
+        # rm -rf /tmp/newrelic/prometheus-*.*-amd64*
+        # mkdir -p /tmp/newrelic
+        # curl -L https://github.com/prometheus/prometheus/releases/download/v2.26.0/prometheus-2.26.0.darwin-amd64.tar.gz > /tmp/newrelic/prometheus-2.26.0.darwin-amd64.tar.gz
+        # cd /tmp/newrelic
+        # tar xvf /tmp/newrelic/prometheus-2.26.0.darwin-amd64.tar.gz
+        # cd /tmp/newrelic/prometheus-2.26.0.darwin-amd64
+
+        # rm prometheus.yml
+        # sudo tee -a ./prometheus.yml > /dev/null <<"EOT"
+        # # my global config
+        # global:
+        #   scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+        #   evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+        #   # scrape_timeout is set to the global default (10s).
+        # remote_write: 
+        # - url: https://metric-api.newrelic.com/prometheus/v1/write?X-License-Key={{.NEW_RELIC_LICENSE_KEY}}&prometheus_server={{.NR_PROMETHEUS_DATA_SOURCE}}
+
+        # # Alertmanager configuration
+        # alerting:
+        #   alertmanagers:
+        #   - static_configs:
+        #     - targets:
+        #       # - alertmanager:9093
+
+        # # Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+        # rule_files:
+        #   # - "first_rules.yml"
+        #   # - "second_rules.yml"
+
+        # # A scrape configuration containing exactly one endpoint to scrape:
+        # # Here it's Prometheus itself.
+        # scrape_configs:
+        #   # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+        #   - job_name: 'prometheus'
+
+        #     # metrics_path defaults to '/metrics'
+        #     # scheme defaults to 'http'.
+
+        #     static_configs:
+        #     - targets: ['localhost:9090']
+        #   - job_name: 'node'
+        #     static_configs:
+        #     - targets: ['localhost:9100']
+        # EOT
+
+        # # Start Prometheus
+        # ./prometheus --config.file=./prometheus.yml &
+
+        # sleep 5
+        # echo "prometheus started in background"
+
+
+        IS_PROMETHEUS_INSTALLED=$(brew list prometheus)
+        if [ $IS_PROMETHEUS_INSTALLED -eq 0 ] ; then
+          echo "Installing prometheus via homebrew..."
+          brew install prometheus
+        fi
+
+        if [ -f /usr/local/etc/prometheus.yml ]; then
+          mv -f /usr/local/etc/prometheus.yml /usr/local/etc/prometheus_old.yml
+          rm -f /usr/local/etc/prometheus.yml
+        fi
+
+        tee -a /usr/local/etc/prometheus.yml > /dev/null <<"EOT"
+        # my global config
+        global:
+          scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+          evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+          # scrape_timeout is set to the global default (10s).
+        remote_write: 
+        - url: https://metric-api.newrelic.com/prometheus/v1/write?X-License-Key={{.NEW_RELIC_LICENSE_KEY}}&prometheus_server={{.NR_PROMETHEUS_DATA_SOURCE}}
+
+        # Alertmanager configuration
+        alerting:
+          alertmanagers:
+          - static_configs:
+            - targets:
+              # - alertmanager:9093
+
+        # Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+        rule_files:
+          # - "first_rules.yml"
+          # - "second_rules.yml"
+
+        # A scrape configuration containing exactly one endpoint to scrape:
+        # Here it's Prometheus itself.
+        scrape_configs:
+          # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+          - job_name: 'prometheus'
+
+            # metrics_path defaults to '/metrics'
+            # scheme defaults to 'http'.
+
+            static_configs:
+            - targets: ['localhost:9090']
+          - job_name: 'node'
+            static_configs:
+            - targets: ['localhost:9100']
+        EOT
+
+        brew services restart prometheus
+
+        # Check that prometheus is up
+        IS_PROMETHEUS_STARTED=$(brew services list | grep prometheus | grep stopped)
+        if [ $? -ne 0 ] ; then
+          echo "prometheus service failed to start" >> /dev/stderr
+          exit 30
+        fi
+
+postInstall:
+  info: |2
+      ⚙️  The Prometheus configuration file can be found in /usr/local/etc/prometheus.yml
+      
+      node_exporter and prometheus are now running as a background services and
+      will launch at login (via brew services).
+
+      To stop, run:
+      > brew services stop node_exporter
+      > brew services stop prometheus
