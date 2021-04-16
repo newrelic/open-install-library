@@ -107,7 +107,21 @@ install:
 
     restart:
       cmds:
-        - sudo systemctl restart newrelic-infra.service
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: which systemctl | wc -l
+        IS_INITCTL:
+          sh: which initctl | wc -l
 
 postInstall:
   info: |2

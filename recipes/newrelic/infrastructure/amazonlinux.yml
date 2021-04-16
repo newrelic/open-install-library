@@ -9,18 +9,16 @@ repository: https://github.com/newrelic/infrastructure-agent
 installTargets:
   - type: host
     os: linux
-    platform: "suse"
+    platform: amazon
 
 keywords:
   - Infrastructure
   - Agent
-  - Linux
-  - Suse
-  - SLES
+  - Amazon Linux
 
 processMatch: []
 
-validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
 install:
   version: "3"
@@ -85,15 +83,6 @@ install:
             echo "Sorry, our infrastructure agent cannot be installed for Microsoft Windows Subsystem for Linux, this is an unsupported operating system." >> /dev/stderr
             exit 19
           fi
-        - |
-          IS_INFRA_AVAILABLE=$(curl -Is https://download.newrelic.com/infrastructure_agent/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
-          if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-            echo "there is no newrelic infrastructure agent available for the distribution '{{.SLES_VERSION}}'." >> /dev/stderr
-            exit 21
-          fi
-      vars:
-        SLES_VERSION:
-          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
     setup_license:
       cmds:
@@ -114,16 +103,9 @@ install:
 
     install_infra:
       cmds:
-        - curl -s -L https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg > newrelic-infra.gpg
-        - sudo rpm --import newrelic-infra.gpg
-        - sudo curl -s -o /etc/zypp/repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo
-        - sudo zypper -n --quiet ref -r newrelic-infra
-        - sudo zypper -n --quiet install newrelic-infra
-        - rm newrelic-infra.gpg
-
-      vars:
-        SLES_VERSION:
-          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+        - sudo curl -s -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/6/x86_64/newrelic-infra.repo
+        - sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+        - sudo yum -y -q install newrelic-infra
       silent: true
 
     restart:
