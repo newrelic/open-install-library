@@ -37,7 +37,7 @@ inputVars:
     prompt: "ElasticSearch config file (default: C:/Program Files/Elasticsearch2/elasticsearch-7.12.0/config/elasticsearch.yml)"
     default: C:\Program Files\Elasticsearch2\elasticsearch-7.12.0\config\elasticsearch.yml
   - name: "NR_CLI_API_USE_SSL"
-    prompt: "Use SSL to connect? (false/true)"
+    prompt: "Use SSL to connect? (y/n)"
     default: false
   - name: "NR_CLI_API_CA_BUNDLE_DIR"
     prompt: "SSL certificate Directory (if applicable)"
@@ -74,8 +74,14 @@ install:
       cmds:
         - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-elasticsearch/nri-elasticsearch-amd64.msi", "$env:TEMP\nri-elasticsearch-amd64.msi");'
         - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-elasticsearch-amd64.msi" | Out-Null;'
-        - powershell -command 'echo "{{.ELASTICSEARCH}}" >> "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\elasticsearch-config.yml"'
+        - powershell -command 'if("{{.NR_CLI_API_USE_SSL}}" -like "y") {
+                                  echo "{{.ELASTICSEARCH_SSL}}" | Out-File -FilePath C:\\Progra~1\\New` Relic\\newrelic-infra\\integrations.d\\elasticsearch-config.yml; 
+                                } else { 
+                                    echo "{{.ELASTICSEARCH}}" | Out-File -FilePath C:\\Progra~1\\New` Relic\\newrelic-infra\\integrations.d\\elasticsearch-config.yml; 
+                                  }
         - powershell -command 'Restart-Service newrelic-infra'
+
+
       vars:
         ELASTICSEARCH: |
           integration_name: com.newrelic.elasticsearch
@@ -93,6 +99,28 @@ install:
                 port: {{.NR_CLI_API_PORT}}
                 timeout: 30
                 use_ssl: {{.NR_CLI_API_USE_SSL}}
+                indices_regex:
+                collect_indices: true
+                collect_primaries: true
+
+        ELASTICSEARCH_SSL: |
+          integration_name: com.newrelic.elasticsearch
+
+          instances:
+            - name: elasticsearch
+              command: all
+              arguments:
+                cluster_environment: staging
+                config_path: {{.NR_CLI_API_CONFIG_PATH}}
+                hostname: {{.NR_CLI_API_HOSTNAME}}
+                local_hostname: localhost
+                username: {{.NR_CLI_API_USERNAME}}
+                password: {{.NR_CLI_API_PASSWORD}}
+                port: {{.NR_CLI_API_PORT}}
+                timeout: 30
+                use_ssl: {{.NR_CLI_API_USE_SSL}}
+                ca_bundle_dir: {{.NR_CLI_API_CA_BUNDLE_DIR}}
+                ca_bundle_file: {{.NR_CLI_API_CA_BUNDLE_FILE}}
                 indices_regex:
                 collect_indices: true
                 collect_primaries: true
