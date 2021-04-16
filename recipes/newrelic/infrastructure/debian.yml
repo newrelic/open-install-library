@@ -88,18 +88,6 @@ install:
             exit 19
           fi
         - |
-          IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
-          if [ $IS_SYSTEMCTL_INSTALLED -eq 0 ] ; then
-            echo "systemctl is required to install the newrelic infrastructure agent. Installation cannot proceed on this linux version." >> /dev/stderr
-            exit 20
-          fi
-        - |
-          IS_SYSTEMCTL_AVAILABLE=$(sudo systemctl status | grep -i running | wc -l)
-          if [ $IS_SYSTEMCTL_AVAILABLE -eq 0 ] ; then
-            echo "systemctl is required to install the newrelic infrastructure agent. System has not been booted with systemd as init system. Installation cannot proceed on this linux version." >> /dev/stderr
-            exit 20
-          fi
-        - |
           if [ -n "{{.DEBIAN_CODENAME}}" ]; then
             IS_INFRA_AVAILABLE=$(curl -Is https://download.newrelic.com/infrastructure_agent/linux/apt/dists/{{.DEBIAN_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
             if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
@@ -165,7 +153,21 @@ install:
 
     restart:
       cmds:
-        - sudo systemctl restart newrelic-infra.service
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: which systemctl | wc -l
+        IS_INITCTL:
+          sh: which initctl | wc -l
 
     assert_agent_started:
       cmds:
