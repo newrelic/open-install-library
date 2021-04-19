@@ -1,0 +1,58 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: python-agent-installer
+displayName:  Python Agent Installer
+description: New Relic install recipe for instrumenting Python applications
+repository: https://github.com/newrelic/newrelic-python-agent
+
+installTargets:
+  - type: application
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: application
+    os: linux
+    platform: "centos"
+  - type: application
+    os: linux
+    platform: "redhat"
+
+keywords:
+  - python 
+
+processMatch:
+  - python 
+
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+  filter: '"`tags.language` = ''python''"'
+
+install:
+  version: '3'
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: install_agent
+
+    install_agent:
+      label: "Finding Python processes and installing Python agent"
+      cmds:
+        - |
+          cd nri-introspector-python-refactor
+          FOUND_PROCESSES=$(python3 src/lsi.py --list)
+          if [ "$FOUND_PROCESSES" == "" ] ||  [ "$FOUND_PROCESSES" == "[]" ]; then
+            echo "No Python processes found running on the host" >> /dev/stderr
+            exit 3
+          else
+            PROCESSES=$(echo "$FOUND_PROCESSES" | sed -e "s/\[//" | sed -e "s/\]//")
+            for PID in "${PROCESSES[@]}"
+            do
+              python3 src/lsi.py --install --pid ${PID}
+              LSI_OUTPUT=$(sudo -u $SUDO_USER python3 src/lsi.py --instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}})
+            done
+          fi
