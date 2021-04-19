@@ -118,14 +118,24 @@ install:
 
     install_infra:
       cmds:
-        - sudo curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo apt-key add -
-        - sudo rm -f /etc/apt/sources.list.d/newrelic-infra.list
-        - printf "deb [arch=amd64] https://download.newrelic.com/infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | sudo tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
-        - sudo apt-get update -yq
-        - sudo apt-get install newrelic-infra -y -qq
+        - |
+          sudo apt-get update -yq
+          sudo apt-get install gnupg2 -y
+          sudo curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo apt-key add -
+        - |
+          if [ -n "{{.DEBIAN_CODENAME}}" ]; then
+            printf "deb [arch=amd64] https://download.newrelic.com/infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | sudo tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+          else
+            printf "deb [arch=amd64] https://download.newrelic.com/infrastructure_agent/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | sudo tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+          fi
+        - |
+          sudo apt-get update -yq
+          sudo apt-get install newrelic-infra -y -qq
       vars:
         DEBIAN_CODENAME:
-          sh: awk -F= '/DISTRIB_CODENAME/ {print $2}' /etc/lsb-release
+          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
+        DEBIAN_VERSION_CODENAME:
+          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
       silent: true
 
     restart:
