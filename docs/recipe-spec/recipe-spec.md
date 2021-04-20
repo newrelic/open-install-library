@@ -34,6 +34,19 @@ description: string, required
 # Example: https://github.com/newrelic/infrastructure-agent
 repository: string, required
 
+# Indicates stability level of recipe. Useful for gradually enabling the
+# availablity of a recipe to users as it is developed and tested. Can be
+# thought of as an indicator for how stable/ready a recipe is for general 
+# consumption and can be used to quickly disable problematic recipes.
+# 
+# Usage: # newrelic install --stability=stable
+# 
+# Levels:
+#   disabled - No availability (recipe will not return from NerdGraph)
+#   experimental - Non-backward compatible changes or removal may occur in any future release. Use of the feature is not recommended in production environments.
+#   stable - General availability - ongoing support and compatability is a high priority
+stability: enum, optional # One of [ disabled, experimental, stable ]
+
 # Still TBD
 # Indicates the target host/runtime/env where user is trying to install (Note: isn't necessarily where you're running the newrelic-cli from)
 # See http://download.newrelic.com/infrastructure_agent/ for possible permutations
