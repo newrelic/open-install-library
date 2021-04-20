@@ -34,6 +34,35 @@ description: string, required
 # Example: https://github.com/newrelic/infrastructure-agent
 repository: string, required
 
+# Indicates stability level of recipe. Useful for gradually enabling the
+# availablity of a recipe to users as it is developed and tested. Can be
+# thought of as an indicator for how stable/ready a recipe is for general 
+# consumption and can be used to quickly disable problematic recipes.
+# 
+# Usage: # newrelic install --stability=stable
+# 
+# Levels:
+#   disabled - No availability (recipe will not return from NerdGraph)
+#   experimental - Non-backward compatible changes or removal may occur in any future release. Use of the feature is not recommended in production environments.
+#   stable - General availability - ongoing support and compatability is a high priority
+stability: enum, optional # One of [ disabled, experimental, stable ]
+
+# Dependency list for recipes (by name) that must be run successfully prior to attempting
+# the current recipe
+# ex: 
+# dependencies:
+#   - infrastructure-agent-installer
+dependencies: list, optional
+
+# Metadata used to recommend and install Quickstarts (dashboards, alerts, synthetics, etc.)
+# This is filtering criteria for the quickstartSearch endpoint in NerdGraph
+quickstarts: list (object), optional
+  - name: string, required
+    entities: object, optional
+      type: string, required
+      domain: string, required
+    category: string (enum), optional # One of [ newrelic, community ]. Defaults to newrelic.
+
 # Still TBD
 # Indicates the target host/runtime/env where user is trying to install (Note: isn't necessarily where you're running the newrelic-cli from)
 # See http://download.newrelic.com/infrastructure_agent/ for possible permutations
@@ -83,7 +112,7 @@ validationNrql: string, optional
 
 # Metadata to support generating a URL after installation success
 successLinkConfig: object, optional
-  type: string, required        # required link type.  valid values are (host, EXPLORER)
+  type: enum (string), required # One of [ host, EXPLORER ]
   filter: string, optional      # optional filter value for EXPLORER links
 
 # Optional pre-install configuration items.
