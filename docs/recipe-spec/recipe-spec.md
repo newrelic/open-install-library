@@ -58,7 +58,7 @@ dependencies: list, optional
 # This is filtering criteria for the quickstartSearch endpoint in NerdGraph
 quickstarts: list (object), optional
   - name: string, required
-    entities: object, optional
+    entityType: object, optional
       type: string, required
       domain: string, required
     category: string (enum), optional # One of [ newrelic, community ]. Defaults to newrelic.
