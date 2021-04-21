@@ -105,19 +105,27 @@ install:
             exit 1
           fi
         - |
-          MONGODB_EXISTS=$(mongo --eval 'db.runCommand({ connectionStatus: 1 })' | grep "ok" | awk '{print $1 $2 $3}')
-          if [ $MONGODB_EXISTS != "ok:1"]; then
-            echo "Cannot estabilish connection to mongodb, please verify that it's installed correctly."
+          MONGODB_EXISTS=$(mongo --eval 'db.runCommand({ connectionStatus: 1 })' | grep "ok" | wc -l)
+          if [ $MONGODB_EXISTS -eq 0 ]; then
+            echo "[Error]: cannot establish connection to mongodb. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >> /dev/stderr
             exit 2
+          fi
+        - |
+          if [ {{.NR_CLI_SSL}} == false ]; then
+            IS_DATABASE_VALID=$(mongo --username {{.NR_CLI_DB_USERNAME}} --password {{.NR_CLI_DB_PASSWORD}} --authenticationDatabase {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --eval "db.adminCommand( { listDatabases: 1 } )" | grep "ok" | wc -l)
+            if [ $IS_DATABASE_VALID -eq 0 ]; then
+              echo "[Error]: The provided database name is not accessible with the provided username and password. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >> /dev/stderr
+              exit 3
+            fi
           fi
         - |
           if [ {{.NR_CLI_SSL}} == true ]; then
             if [ ! -f {{.NR_CLI_CLIENT_CERT_FILE}} ]; then
-              echo "[Error]: SSL is true but no client certificate file exist at '{{.NR_CLI_CLIENT_CERT_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#comp-req for more info." >> /dev/stderr
+              echo "[Error]: SSL is true but no client certificate file exist at '{{.NR_CLI_CLIENT_CERT_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >> /dev/stderr
               exit 11
             fi
             if [ ! -f {{.NR_CLI_CERT_AUTH_FILE}} ]; then
-              echo "[Error]: Trust certificate is true but no certificate authority file exist at '{{.NR_CLI_CERT_AUTH_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#comp-req for more info." >> /dev/stderr
+              echo "[Error]: Trust certificate is true but no certificate authority file exist at '{{.NR_CLI_CERT_AUTH_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >> /dev/stderr
               exit 13
             fi
           fi
