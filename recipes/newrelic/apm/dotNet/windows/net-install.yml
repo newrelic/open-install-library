@@ -38,6 +38,7 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_admin_perms
         - task: assert_pre_req
         - task: stop
         - task: remove_any_previous
@@ -46,18 +47,29 @@ install:
         - task: start
         - task: ensure_sites_started
 
+    assert_admin_perms:
+      cmds:
+        - |
+          powershell -command '
+          $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+          if(! $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
+            Write-Host -ForegroundColor Red "The installation recipe for the .NET Agent on Windows must be run with Administrator permissions."
+            exit 7
+          }
+          '
+
     assert_pre_req:
       cmds:
         - |
           powershell -command '
           $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
           if($iisEnabled.State -ne "Enabled"){
-            Write-Error "IIS is not installed."
+            Write-Host -ForegroundColor Red "IIS is not installed."
             exit 5
           }
           $aspNet45Enabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-ASPNET45 | select State
           if($aspNet45Enabled.State -ne "Enabled"){
-            Write-Error "ASP.NET is not installed."
+            Write-Host -ForegroundColor Red "ASP.NET is not installed."
             exit 6
           }
           '
