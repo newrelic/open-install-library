@@ -34,6 +34,7 @@ install:
         - task: assert_pre_req
         - task: setup_license
         - task: update_apt
+        - task: add_gnupg2_if_required
         - task: add_gpg_key
         - task: add_nr_source
         - task: update_apt_nr_source
@@ -139,10 +140,19 @@ install:
           sudo apt-get update -yq
       silent: true
 
+    add_gnupg2_if_required:
+      cmds:
+        - |
+          if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
+            sudo apt-get install gnupg2 -y
+          fi
+      vars:
+        DEBIAN_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+
     add_gpg_key:
       cmds:
         - |
-          sudo apt-get install gnupg2 -y
           sudo curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo apt-key add -
       silent: true
 
