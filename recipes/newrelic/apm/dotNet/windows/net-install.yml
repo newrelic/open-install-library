@@ -26,6 +26,12 @@ successLinkConfig:
   type: EXPLORER
   filter: '"`tags.language` = ''dotnet''"'
 
+inputVars:
+  - name: "IIS_ROOT_URLS"
+    prompt: |
+      To validate this installation was successful, it will need to send a few requests to your application(s).
+      In a comma-separated list, please provide a valid URL for each of your applications. 
+
 preInstall:
   info: |2
       Warning, this installation supports .NET running in IIS (Internet Information Services) and will automatically restart IIS.
@@ -73,6 +79,10 @@ install:
             exit 6
           }
           '
+
+    get_urls:
+      cmds: |
+        stuff
 
     stop:
       cmds:
@@ -161,4 +171,22 @@ install:
     ensure_sites_started:
       ignore_error: true
       cmds:
-        - powershell -command 'Get-WebURL "IIS:\Sites\*" | ForEach-Object { echo $_.ResponseUri.AbsoluteUri }'
+        - |
+          powershell -command '
+          Write-Host "Sending requests to your applications..."
+          $iisurls = "{{ .IIS_ROOT_URLS }}"
+          if ($iisurls) {
+            $urls = $iisurls.split(",")
+            foreach ($url in $urls) {
+              Write-Host $url.Trim()
+              while($val -ne 10) {
+                $val++
+                Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $url.Trim() | Out-Null
+              }
+            }
+          }
+          else {
+            Get-WebURL "IIS:\Sites\*" | ForEach-Object { echo $_.ResponseUri.AbsoluteUri }
+          }
+          Write-Host "Finished sending requests."
+          '
