@@ -20,7 +20,7 @@ keywords:
 processMatch:
   - w3wp.exe
 
-validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{ .HOSTNAME }}%' facet entityGuid since 10 minutes ago"
 
 successLinkConfig:
   type: EXPLORER
@@ -59,7 +59,7 @@ install:
         - |
           powershell -command '
           $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-          if(! $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
+          if (! $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             Write-Host -ForegroundColor Red "The installation recipe for the .NET Agent on Windows must be run with Administrator permissions."
             exit 7
           }
@@ -70,20 +70,16 @@ install:
         - |
           powershell -command '
           $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
-          if($iisEnabled.State -ne "Enabled"){
+          if ($iisEnabled.State -ne "Enabled") {
             Write-Host -ForegroundColor Red "IIS is not installed."
             exit 5
           }
           $aspNet45Enabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-ASPNET45 | select State
-          if($aspNet45Enabled.State -ne "Enabled"){
+          if ($aspNet45Enabled.State -ne "Enabled") {
             Write-Host -ForegroundColor Red "ASP.NET is not installed."
             exit 6
           }
           '
-
-    get_urls:
-      cmds: |
-        stuff
 
     stop:
       cmds:
@@ -140,7 +136,7 @@ install:
           powershell -command '
           [Net.ServicePointManager]::SecurityProtocol = "tls12, tls";
           (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi");
-          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} | Out-Null;'
+          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{ .NEW_RELIC_LICENSE_KEY }} | Out-Null;'
         - echo "New Relic .NET agent installed"
 
     configure:
@@ -152,10 +148,10 @@ install:
           $xdoc = New-Object System.Xml.XmlDocument;
           $xdoc.PreserveWhitespace = $true;
           $xdoc.Load($file);
-          if ($xdoc.GetElementsByTagName("application")[0].HasChildNodes){
+          if ($xdoc.GetElementsByTagName("application")[0].HasChildNodes) {
             $xdoc.configuration.application.RemoveAll();
           }
-          if ("{{.NEW_RELIC_REGION}}" -like "STAGING"){
+          if ("{{ .NEW_RELIC_REGION }}" -like "STAGING") {
             $xdoc.configuration.service.SetAttribute("host", "staging-collector.newrelic.com")
           }
           $child = $xdoc.CreateElement("distributedTracing", "urn:newrelic-config");
