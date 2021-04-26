@@ -1,0 +1,377 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: pi-infra-installer
+displayName: Raspberry Pi Infrastructure Agent
+description: New Relic install recipe for the infrastructure agent on Raspberry Pi
+repository: https://github.com/newrelic/nri-prometheus
+
+stability: experimental
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+    kernelArch: ARMV7L
+
+keywords:
+  - raspberrypi
+  - infrastructure
+
+processMatch: []
+
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: teardown_existing_agent
+        - task: install_infra
+        - task: restart
+        - task: assert_agent_started
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_GREP_INSTALLED=$(which grep | wc -l)
+          if [ $IS_GREP_INSTALLED -eq 0 ] ; then
+            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >> /dev/stderr
+            exit 10
+          fi
+        - |
+          IS_WGET_INSTALLED=$(which wget | wc -l)
+          if [ $IS_WGET_INSTALLED -eq 0 ] ; then
+            echo "wget is required to run the newrelic install. Please install wget and re-run the installation." >> /dev/stderr
+            exit 11
+          fi
+        - |
+          IS_TAR_INSTALLED=$(which tar | wc -l)
+          if [ $IS_TAR_INSTALLED -eq 0 ] ; then
+            echo "tar is required to run the newrelic install. Please install tar and re-run the installation." >> /dev/stderr
+            exit 12
+          fi
+        - |
+          IS_CAT_INSTALLED=$(which cat | wc -l)
+          if [ $IS_CAT_INSTALLED -eq 0 ] ; then
+            echo "cat is required to run the newrelic install. Please install cat and re-run the installation." >> /dev/stderr
+            exit 13
+          fi
+        - |
+          IS_TEE_INSTALLED=$(which tee | wc -l)
+          if [ $IS_TEE_INSTALLED -eq 0 ] ; then
+            echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >> /dev/stderr
+            exit 14
+          fi
+        - |
+          IS_TOUCH_INSTALLED=$(which touch | wc -l)
+          if [ $IS_TOUCH_INSTALLED -eq 0 ] ; then
+            echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >> /dev/stderr
+            exit 15
+          fi
+        - |
+          IS_DOCKER_CONTAINER=$(sudo grep 'docker\|lxc' /proc/1/cgroup | wc -l)
+          if [ $IS_DOCKER_CONTAINER -gt 0 ] ; then
+            echo "We’ve detected that you are installing our infrastructure agent inside a docker container. This agent is not designed to be installed within a container, but rather on the host it is running on or as a separate container. For additional information visit: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/linux-installation/docker-container-infrastructure-monitoring/" >> /dev/stderr
+            exit 18
+          fi
+        - |
+          IS_WSL_CONTAINER=$(sudo grep -i 'Microsoft' /proc/version | wc -l)
+          if [ $IS_WSL_CONTAINER -gt 0 ] ; then
+            echo "Sorry, our infrastructure agent cannot be installed for Microsoft Windows Subsystem for Linux, this is an unsupported operating system." >> /dev/stderr
+            exit 19
+          fi
+
+    teardown_existing_agent:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl stop newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl stop newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra stop
+            fi
+          fi
+        - |
+          if [ -f /etc/newrelic-infra.yml ]; then
+            sudo rm /etc/newrelic-infra.yml;
+          fi
+        # - |
+        #   sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
+        #   license_key: {{.NEW_RELIC_LICENSE_KEY}}
+        #   enable_process_metrics: true
+        #   EOT
+        # - |
+        #   if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+        #     echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+        #   fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: which systemctl | wc -l
+        IS_INITCTL:
+          sh: which initctl | wc -l
+
+    install_infra:
+      cmds:
+        - |
+          mkdir -p /tmp/newrelic
+          sudo rm -rf /tmp/newrelic/*
+          cd /tmp/newrelic
+
+          # curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest \
+          # | grep "browser_download_url.*prometheus-*.*.linux-armv7.tar.gz" \
+          # | cut -d '"' -f 4 \
+          # | wget -i -
+          wget https://download.newrelic.com/infrastructure_agent/binaries/linux/arm/newrelic-infra_linux_1.16.5_arm.tar.gz
+          tar xvfz newrelic-infra_linux_1.16.5_arm.tar.gz
+          cd newrelic-infra
+          sudo NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} ./installer.sh
+          echo "enable_process_metrics: true" | sudo tee -a /etc/newrelic-infra.yml
+
+          # Set Region
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+          fi
+      silent: true
+
+    restart:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: which systemctl | wc -l
+        IS_INITCTL:
+          sh: which initctl | wc -l
+
+    assert_agent_started:
+      cmds:
+        - |
+          # Ensure agent has enough time to start
+          sleep 10
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >> /dev/stderr
+            exit 31
+          fi
+
+postInstall:
+  info: |2
+      ⚙️  The Infrastructure Agent configuration file can be found in /etc/newrelic-infra.yml
+      Edit this file to make changes or configure advanced features for the agent. See the docs for options:
+      https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
+      
+      Note: Process monitoring has been enabled by default - all other config options are left to the user.
+
+# validationNrql: "SELECT count(*) from Metric where instrumentation.source = 'macos-prometheus' facet instrumentation.source  since 10 minutes ago"
+
+# inputVars:
+#   - name: "NR_PROMETHEUS_DATA_SOURCE"
+#     prompt: "Data Source Identifier (default: macos-prometheus)"
+#     default: "macos-prometheus"
+
+# preInstall:
+#   info: |2
+#       Note: EXPERIMENTAL RECIPE
+#       This installation makes use of homebrew and homebrew/services to
+#       install Prometheus and Node Exporter.
+
+# install:
+#   version: "3"
+#   silent: true
+
+#   tasks:
+#     default:
+#       cmds:
+#         - task: assert_pre_req
+#         - task: setup_node_exporter
+#         - task: setup_prometheus
+
+#     assert_pre_req:
+#       cmds:
+#         - |
+#           IS_HOMEBREW_INSTALLED=$(which -s brew)
+#           if [ $? -ne 0 ] ; then
+#             echo "homebrew is required to run the newrelic install. Please install homebrew and re-run the installation." >> /dev/stderr
+#             exit 10
+#           fi
+
+#           IS_HOMEBREW_SERVICES_INSTALLED=$(brew tap | grep homebrew/services)
+#           if [ $? -ne 0 ] ; then
+#             echo "homebrew services is required to run newrelic install. Please run `brew tap homebrew/services` and re-run the installation." >> /dev/stderr
+#             exit 11
+#           fi
+#         - |
+#           IS_TEE_INSTALLED=$(which tee | wc -l)
+#           if [ $IS_TEE_INSTALLED -eq 0 ] ; then
+#             echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >> /dev/stderr
+#             exit 14
+#           fi
+
+#     setup_node_exporter:
+#       - |
+#         # rm -rf /tmp/newrelic/node_exporter-*.*-amd64*
+#         # mkdir -p /tmp/newrelic
+#         # curl -L https://github.com/prometheus/node_exporter/releases/download/v1.1.2/node_exporter-1.1.2.darwin-amd64.tar.gz > /tmp/newrelic/node_exporter-1.1.2.darwin-amd64.tar.gz
+#         # cd /tmp/newrelic
+#         # tar xvfz /tmp/newrelic/node_exporter-1.1.2.darwin-amd64.tar.gz
+#         # cd /tmp/newrelic/node_exporter-1.1.2.darwin-amd64
+#         # ./node_exporter &
+
+#         # sleep 15
+
+#         # # test
+#         # echo "node_exporter started in background"
+#         # curl http://localhost:9100/metrics > /dev/null
+
+#         IS_NODE_EXPORTER_INSTALLED=$(brew list node_exporter)
+#         if [ $? -ne 0 ] ; then
+#           echo "Installing node_exporter..."
+#           brew install node_exporter
+#         fi
+
+#         echo "Starting node_exporter via brew services"
+#         brew services restart node_exporter
+#         sleep 5
+
+#         # Check that node_exporter is up
+#         IS_SERVICE_STARTED=$(brew services list | grep node_exporter | grep stopped)
+#         if [ $? -ne 0 ] ; then
+#           echo "node_exporter failed to start" >> /dev/stderr
+#           exit 20
+#         fi
+
+#     setup_prometheus:
+#       - |
+#         # rm -rf /tmp/newrelic/prometheus-*.*-amd64*
+#         # mkdir -p /tmp/newrelic
+#         # curl -L https://github.com/prometheus/prometheus/releases/download/v2.26.0/prometheus-2.26.0.darwin-amd64.tar.gz > /tmp/newrelic/prometheus-2.26.0.darwin-amd64.tar.gz
+#         # cd /tmp/newrelic
+#         # tar xvf /tmp/newrelic/prometheus-2.26.0.darwin-amd64.tar.gz
+#         # cd /tmp/newrelic/prometheus-2.26.0.darwin-amd64
+
+#         # rm prometheus.yml
+#         # sudo tee -a ./prometheus.yml > /dev/null <<"EOT"
+#         # # my global config
+#         # global:
+#         #   scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+#         #   evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+#         #   # scrape_timeout is set to the global default (10s).
+#         # remote_write:
+#         # - url: https://metric-api.newrelic.com/prometheus/v1/write?X-License-Key={{.NEW_RELIC_LICENSE_KEY}}&prometheus_server={{.NR_PROMETHEUS_DATA_SOURCE}}
+
+#         # # Alertmanager configuration
+#         # alerting:
+#         #   alertmanagers:
+#         #   - static_configs:
+#         #     - targets:
+#         #       # - alertmanager:9093
+
+#         # # Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+#         # rule_files:
+#         #   # - "first_rules.yml"
+#         #   # - "second_rules.yml"
+
+#         # # A scrape configuration containing exactly one endpoint to scrape:
+#         # # Here it's Prometheus itself.
+#         # scrape_configs:
+#         #   # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+#         #   - job_name: 'prometheus'
+
+#         #     # metrics_path defaults to '/metrics'
+#         #     # scheme defaults to 'http'.
+
+#         #     static_configs:
+#         #     - targets: ['localhost:9090']
+#         #   - job_name: 'node'
+#         #     static_configs:
+#         #     - targets: ['localhost:9100']
+#         # EOT
+
+#         # # Start Prometheus
+#         # ./prometheus --config.file=./prometheus.yml &
+
+#         # sleep 5
+#         # echo "prometheus started in background"
+
+#         IS_PROMETHEUS_INSTALLED=$(brew list prometheus)
+#         if [ $? -ne 0 ] ; then
+#           echo "Installing prometheus via homebrew..."
+#           brew install prometheus
+#         fi
+
+#         if [ -f /usr/local/etc/prometheus.yml ]; then
+#           mv -f /usr/local/etc/prometheus.yml /usr/local/etc/prometheus_old.yml
+#           rm -f /usr/local/etc/prometheus.yml
+#         fi
+
+#         tee -a /usr/local/etc/prometheus.yml > /dev/null <<"EOT"
+#         # my global config
+#         global:
+#           scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+#           evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+#           # scrape_timeout is set to the global default (10s).
+#         remote_write:
+#         - url: https://metric-api.newrelic.com/prometheus/v1/write?X-License-Key={{.NEW_RELIC_LICENSE_KEY}}&prometheus_server={{.NR_PROMETHEUS_DATA_SOURCE}}
+
+#         # Alertmanager configuration
+#         alerting:
+#           alertmanagers:
+#           - static_configs:
+#             - targets:
+#               # - alertmanager:9093
+
+#         # Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+#         rule_files:
+#           # - "first_rules.yml"
+#           # - "second_rules.yml"
+
+#         # A scrape configuration containing exactly one endpoint to scrape:
+#         # Here it's Prometheus itself.
+#         scrape_configs:
+#           # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+#           - job_name: 'prometheus'
+
+#             # metrics_path defaults to '/metrics'
+#             # scheme defaults to 'http'.
+
+#             static_configs:
+#             - targets: ['localhost:9090']
+#           - job_name: 'node'
+#             static_configs:
+#             - targets: ['localhost:9100']
+#         EOT
+
+#         brew services restart prometheus
+
+#         # Check that prometheus is up
+#         IS_PROMETHEUS_STARTED=$(brew services list | grep prometheus | grep stopped)
+#         if [ $? -ne 0 ] ; then
+#           echo "prometheus service failed to start" >> /dev/stderr
+#           exit 30
+#         fi
+
+# postInstall:
+#   info: |2
+#       ⚙️  The Prometheus configuration file can be found in /usr/local/etc/prometheus.yml
+
+#       node_exporter and prometheus are now running as a background services and
+#       will launch at login (via brew services).
+
+#       To stop, run:
+#       > brew services stop node_exporter
+#       > brew services stop prometheus
