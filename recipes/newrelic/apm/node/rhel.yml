@@ -44,17 +44,17 @@ install:
       label: "Installing Node Introspector..."
       cmds:
         - |
-          curl -s -O https://go-java-testing-bucket.s3-us-west-2.amazonaws.com/node-lsi-main.zip
+          curl -s -O https://go-java-testing-bucket.s3-us-west-2.amazonaws.com/newrelic-introspector-node-main.zip
         - |
-          sudo -i -u $SUDO_USER unzip -o node-lsi-main.zip
+          sudo -i -u $SUDO_USER unzip -q -o newrelic-introspector-node-main.zip
         - |
-          sudo -i -u $SUDO_USER npm --prefix ./node-lsi-main install ./node-lsi-main
+          sudo -i -u $SUDO_USER npm --silent --prefix ./newrelic-introspector-node-main install ./newrelic-introspector-node-main 1> /dev/null 2> /dev/null || true
 
     install_agent:
       label: "Finding Node processes and installing Node agent"
       cmds:
         - |
-          FOUND_PROCESSES=$(sudo -i -u $SUDO_USER node ./node-lsi-main/src/index.js list)
+          FOUND_PROCESSES=$(sudo -i -u $SUDO_USER node ./newrelic-introspector-node-main/src/index.js list)
           if [ "$FOUND_PROCESSES" == "" ] ||  [ "$FOUND_PROCESSES" == "[  ]" ]; then
             echo "No Node processes found running on the host" >> /dev/stderr
             exit 1
@@ -62,7 +62,9 @@ install:
             PROCESSES=$(echo "$FOUND_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
             for PID in "${PROCESSES[@]}"
             do
-              INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER node ./node-lsi-main/src/index.js introspect --pid ${PID})
+              INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER node ./newrelic-introspector-node-main/src/index.js introspect --pid ${PID})
+              if [ -z "$NEW_RELIC_APP_NAME" ]; then
+               COMMAND=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=pm_exec_path":").*?(?=\")' )
                 printf "This is the path to the service being instrumented: "
                 printf " $COMMAND"
                 printf "\nEnter an app name: "
@@ -70,6 +72,6 @@ install:
               else
                 appName = "$NEW_RELIC_APP_NAME"
               fi
-              LSI_OUTPUT=$(sudo -i -u $SUDO_USER NEW_RELIC_REGION="${NEW_RELIC_REGION}" node ./node-lsi-main/src/index.js instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${appName}")
+              LSI_OUTPUT=$(sudo -i -u $SUDO_USER NEW_RELIC_REGION="${NEW_RELIC_REGION}" node ./newrelic-introspector-node-main/src/index.js instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${appName}") 1> /dev/null 2> /dev/null || true
             done
           fi
