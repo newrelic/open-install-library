@@ -1,0 +1,188 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: dotnet-agent-installer
+displayName: .NET Agent Installer
+description: New Relic install recipe for instrumenting .NET applications on Linux
+repository: https://github.com/newrelic/newrelic-dotnet-agent
+
+installTargets:
+  - type: application
+    os: linux
+    platform: "debian"
+  - type: application
+    os: linux
+    platform: "ubuntu"
+
+keywords:
+  - Apm
+  - .NET
+  - dotnet
+  - aspnet
+  - core
+
+processMatch: []
+
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
+successLinkConfig:
+   type: explorer
+   filter: '"`tags.language` = ''dotnet''"'
+
+preInstall:
+  info: |2
+      Warning, this installation supports .NET running hosted as using systemd service and will automatically restart the instrumented .NET services.
+      If you are running a .NET application hosted differently then check out our other installation options https://docs.newrelic.com/docs/agents/net-agent/installation/install-net-agent-linux/
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: introspector
+        - task: gather_services
+        - task: stop
+        - task: remove_any_previous
+        - task: install
+        - task: configure
+        - task: start
+        - task: ensure_sites_started
+        - task: cleanup_temp_files
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_JQ_INSTALLED=$(which jq | wc -l)
+          if [ $IS_JQ_INSTALLED -eq 0 ]
+          then
+            echo "jq is required to run the newrelic install. Please install jq and re-run the installation." >> /dev/stderr
+            exit 16
+          fi
+        - |
+          IS_UNZIP_INSTALLED=$(which unzip | wc -l)
+          if [ $IS_UNZIP_INSTALLED -eq 0 ]
+          then
+            echo "unzip is required to run the newrelic install. Please install unzip and re-run the installation." >> /dev/stderr
+            exit 17
+          fi
+
+    introspector:
+      cmds:
+        - rm -rf /tmp/dotnet-introspector
+        - curl -s https://virtuoso-testing.s3-us-west-2.amazonaws.com/dotnet-is-linux-x64.zip -o ~/dotnet-is-linux-x64.zip
+        - mkdir -p /tmp/dotnet-introspector
+        - unzip -o ~/dotnet-is-linux-x64.zip -d /tmp/dotnet-introspector > /dev/null
+        - chmod -R 777 /tmp/dotnet-introspector
+        - sudo /tmp/dotnet-introspector/nri-lsi-dotnet -c | jq .[] > /tmp/dotnet-introspector/dotnet_processes.txt
+        - echo "Done with instrospector"
+
+    gather_services:
+      cmds:
+        - sudo systemctl list-unit-files --type service | awk '{ print $1 }' > /tmp/dotnet-introspector/all_services.txt
+        - cat /dev/null > /tmp/dotnet-introspector/dotnet_services.txt
+        - |
+          for sn in `cat /tmp/dotnet-introspector/all_services.txt`; do
+              mainpid=$(sudo systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
+              for dnp in `cat /tmp/dotnet-introspector/dotnet_processes.txt`; do
+                  if [[ "$mainpid" -eq "$dnp" ]]
+                  then
+                    echo Found .NET service: $sn
+                    echo $sn >> /tmp/dotnet-introspector/dotnet_services.txt
+                  fi
+              done
+          done
+        - echo "Done gathering services"
+
+    stop:
+      cmds:
+        - |
+          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+            sudo systemctl stop $sn
+          done
+        - echo "Done stopping services"
+    
+    remove_any_previous:
+      ignore_error: true
+      cmds:
+        - sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent > /dev/null || true
+        - |
+          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+            if [[ -f "/etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf" ]]
+            then
+              sudo rm -f /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            fi
+
+            rmdir /etc/systemd/system/$sn.d > /dev/null || true
+          done
+        - echo "Done removing previous versions of the agent"
+
+    install:
+      cmds:
+        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
+        - wget -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+        - sudo apt-get update
+        - sudo apt-get install newrelic-netcore20-agent -y -qq > /dev/null
+        - echo "New Relic .NET agent installed"
+
+    configure:
+      cmds:
+        - |
+          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+            if [[ ! -d "/etc/systemd/system/$sn.d" ]]
+            then
+              sudo mkdir -p /etc/systemd/system/$sn.d
+            fi
+
+            echo "[Service]" > /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            echo "Environment=\"CORECLR_ENABLE_PROFILING=1\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            echo "Environment=\"CORECLR_PROFILER={36032161-FFC0-4B61-B559-F6C5D41BAE5A}\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            echo "Environment=\"CORECLR_NEWRELIC_HOME=/usr/local/newrelic-netcore20-agent\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            echo "Environment=\"CORECLR_PROFILER_PATH=/usr/local/newrelic-netcore20-agent/libNewRelicProfiler.so\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            echo "Environment=\"NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            echo "Environment=\"NEW_RELIC_APP_NAME=$sn\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+            echo "Environment=\"NEW_RELIC_DISTRIBUTED_TRACING_ENABLED=true\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+          done
+        - |
+          nr_region="{{.NEW_RELIC_REGION}}"
+          if [[ "${nr_region^^}" -eq "STAGING" ]]
+          then
+            echo Detected running in STAGING, configuring agent to report to staging
+            echo "Environment=\"NEW_RELIC_HOST=staging-collector.newrelic.com\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+          fi
+        - echo "New Relic .NET agent configured"
+
+    start:
+      cmds:
+        - sudo systemctl daemon-reload
+        - |
+          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+            echo "Restarting $sn"
+            sudo systemctl restart $sn
+          done
+        - echo "Services restarted"
+
+    ensure_sites_started:
+      ignore_error: true
+      cmds:
+        - grep server_name /etc/nginx/sites-enabled/* -RiI
+        - grep listen /etc/nginx/sites-enabled/* -RiI
+        - apachectl -D DUMP_VHOSTS | tail -n +2 | awk '{ print $1 }' | sed 's/\*:\*//' | sed 's/\*://' | sed '/^$/d' > /tmp/dotnet-introspector/ports.txt
+        - |
+          for pn in `cat /tmp/dotnet-introspector/ports.txt`; do
+            echo "Pinging http://localhost:$pn"
+            for i in {1..10}; do
+              sleep 1
+              curl --silent http://localhost:$pn > /dev/null || true
+            done
+          done
+        - echo "Done pinging sites"
+    
+    cleanup_temp_files:
+      ignore_error: true
+      cmds:
+        - rm -rf /tmp/dotnet-introspector
+        - echo "Done cleaning up"
