@@ -26,12 +26,6 @@ successLinkConfig:
   type: EXPLORER
   filter: '"`tags.language` = ''dotnet''"'
 
-inputVars:
-  - name: "NR_CLI_IIS_ROOT_URLS"
-    prompt: |
-      To validate this installation was successful, it will need to send a few requests to your application(s).
-      In a comma-separated list, please provide a valid URL for each of your applications. 
-
 preInstall:
   info: |2
       Warning, this installation supports .NET running in IIS (Internet Information Services) and will automatically restart IIS.
@@ -51,7 +45,6 @@ install:
         - task: install
         - task: configure
         - task: start
-        - task: user_traffic
         - task: ensure_sites_started
 
     assert_admin_perms:
@@ -165,7 +158,8 @@ install:
       cmds:
         - cmd /c "iisreset /start"
 
-    user_traffic:
+    ensure_sites_started:
+      ignore_error: true
       cmds:
         - |
           powershell -command '
@@ -174,32 +168,21 @@ install:
           Write-Host -ForegroundColor Yellow "     =                                                                              ="
           Write-Host -ForegroundColor Yellow "     =                                  Important                                   ="
           Write-Host -ForegroundColor Yellow "     =                                                                              ="
-          Write-Host -ForegroundColor Yellow "     =   To validate the installation, the application(s) need to be sent traffic.  ="
+          Write-Host -ForegroundColor Yellow "     =   Your application needs to be sent traffic to validate the installation.    ="
           Write-Host -ForegroundColor Yellow "     =                                                                              ="
-          Write-Host -ForegroundColor Yellow "     =              Please send a few requests to your application(s).              ="
-          Write-Host -ForegroundColor Yellow "     =                  Press ENTER key when ready to continue...                   ="
+          Write-Host -ForegroundColor Yellow "     =         Please send approximately 10 requests to your application or         ="
+          Write-Host -ForegroundColor Yellow "     =        enter the application URL and this tool will send the requests.       ="
+          Write-Host -ForegroundColor Yellow "     =                                                                              ="
+          Write-Host -ForegroundColor Yellow "     =                Press the ENTER key when ready to continue...                 ="
           Write-Host -ForegroundColor Yellow "     =                                                                              ="
           Write-Host -ForegroundColor Yellow "     ================================================================================"
           Write-Host ""
-          '
-        - powershell -command 'Read-Host "?"'
+          $iisurl = Read-Host "Type URL and press ENTER or just press ENTER to continue>"
+          Write-Host ""
 
-    ensure_sites_started:
-      ignore_error: true
-      cmds:
-        - |
-          powershell -command '
           Write-Host "Sending requests to your applications..."
-          $iisurls = "{{.NR_CLI_IIS_ROOT_URLS}}"
-          if ($iisurls) {
-            $urls = $iisurls.split(",")
-            foreach ($url in $urls) {
-              Write-Host $url.Trim()
-              while ($val -ne 10) {
-                $val++
-                Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $url.Trim() -ErrorAction SilentlyContinue | Out-Null
-              }
-            }
+          if ($iisurl) {
+            Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $iisurl -ErrorAction SilentlyContinue | Out-Null
           }
 
           Get-WebURL "IIS:\Sites\*" | ForEach-Object { echo $_.ResponseUri.AbsoluteUri }
