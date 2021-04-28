@@ -9,14 +9,6 @@ repository: https://github.com/newrelic/node-newrelic
 installTargets:
   - type: application
     os: linux
-    platform: amazon
-    platformVersion: "2"
-  - type: application
-    os: linux
-    platform: "centos"
-  - type: application
-    os: linux
-    platform: "redhat"
 
 keywords:
   - node
@@ -31,12 +23,12 @@ successLinkConfig:
   filter: '"`tags.language` = ''node''"'
 
 inputVars:
-  - name: "ACCEPT_RESTART"
+  - name: 'ACCEPT_RESTART'
     prompt: Using the command will automatically stop and attempt to restart all instrumentable applications, with all the same context, during the installation process.
-    default: "Y"
+    default: 'Y'
 
 install:
-  version: "3"
+  version: '3'
   silent: true
 
   tasks:
@@ -61,20 +53,16 @@ install:
           fi
 
     setup:
-      label: "Installing Node Introspector..."
+      label: 'Installing Node Introspector...'
       cmds:
         - |
-          curl -s -O https://go-java-testing-bucket.s3-us-west-2.amazonaws.com/newrelic-introspector-node-main.zip
-        - |
-          sudo -i -u $SUDO_USER unzip -q -o newrelic-introspector-node-main.zip
-        - |
-          sudo -i -u $SUDO_USER npm --silent --prefix ./newrelic-introspector-node-main install ./newrelic-introspector-node-main 1> /dev/null 2> /dev/null || true
+          npm i -g @newrelic/introspector-node
 
     install_agent:
-      label: "Finding Node processes and installing Node agent"
+      label: 'Finding Node processes and installing Node agent'
       cmds:
         - |
-          FOUND_PROCESSES=$(sudo -i -u $SUDO_USER node ./newrelic-introspector-node-main/src/index.js list)
+          FOUND_PROCESSES=$(sudo -i -u $SUDO_USER newrelic-introspector-node list)
           if [ "$FOUND_PROCESSES" == "" ] ||  [ "$FOUND_PROCESSES" == "[  ]" ]; then
             echo "No Node processes found running on the host" >> /dev/stderr
             exit 1
@@ -82,7 +70,7 @@ install:
             PROCESSES=$(echo "$FOUND_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
             for PID in "${PROCESSES[@]}"
             do
-              INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER node ./newrelic-introspector-node-main/src/index.js introspect --pid ${PID})
+              INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER newrelic-introspector-node introspect --pid ${PID})
               if [ -z "$NEW_RELIC_APP_NAME" ]; then
                COMMAND=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=pm_exec_path":").*?(?=\")' )
                 printf "This is the path to the service being instrumented: "
@@ -92,6 +80,6 @@ install:
               else
                 appName = "$NEW_RELIC_APP_NAME"
               fi
-              LSI_OUTPUT=$(sudo -i -u $SUDO_USER NEW_RELIC_REGION="${NEW_RELIC_REGION}" node ./newrelic-introspector-node-main/src/index.js instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${appName}") 1> /dev/null 2> /dev/null || true
+              LSI_OUTPUT=$(sudo -i -u $SUDO_USER NEW_RELIC_REGION="${NEW_RELIC_REGION}" newrelic-introspector-node instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${appName}") 1> /dev/null 2> /dev/null || true
             done
           fi
