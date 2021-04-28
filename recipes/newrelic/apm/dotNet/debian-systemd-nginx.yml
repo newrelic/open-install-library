@@ -71,22 +71,24 @@ install:
           fi
 
     introspector:
+      become: true
       cmds:
         - rm -rf /tmp/dotnet-introspector
         - curl -s https://virtuoso-testing.s3-us-west-2.amazonaws.com/dotnet-is-linux-x64.zip -o ~/dotnet-is-linux-x64.zip
         - mkdir -p /tmp/dotnet-introspector
         - unzip -o ~/dotnet-is-linux-x64.zip -d /tmp/dotnet-introspector > /dev/null
         - chmod -R 777 /tmp/dotnet-introspector
-        - sudo /tmp/dotnet-introspector/nri-lsi-dotnet -c | jq .[] > /tmp/dotnet-introspector/dotnet_processes.txt
+        - /tmp/dotnet-introspector/nri-lsi-dotnet -c | jq .[] > /tmp/dotnet-introspector/dotnet_processes.txt
         - echo "Done with instrospector"
 
     gather_services:
+      become: true
       cmds:
-        - sudo systemctl list-unit-files --type service | awk '{ print $1 }' > /tmp/dotnet-introspector/all_services.txt
+        - systemctl list-unit-files --type service | awk '{ print $1 }' > /tmp/dotnet-introspector/all_services.txt
         - cat /dev/null > /tmp/dotnet-introspector/dotnet_services.txt
         - |
           for sn in `cat /tmp/dotnet-introspector/all_services.txt`; do
-              mainpid=$(sudo systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
+              mainpid=$(systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
               for dnp in `cat /tmp/dotnet-introspector/dotnet_processes.txt`; do
                   if [[ "$mainpid" -eq "$dnp" ]]
                   then
@@ -98,22 +100,24 @@ install:
         - echo "Done gathering services"
 
     stop:
+      become: true
       cmds:
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
-            sudo systemctl stop $sn
+            systemctl stop $sn
           done
         - echo "Done stopping services"
     
     remove_any_previous:
+      become: true
       ignore_error: true
       cmds:
-        - sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent > /dev/null || true
+        - DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent > /dev/null || true
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
             if [[ -f "/etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf" ]]
             then
-              sudo rm -f /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
+              rm -f /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
             fi
 
             rmdir /etc/systemd/system/$sn.d > /dev/null || true
@@ -121,20 +125,22 @@ install:
         - echo "Done removing previous versions of the agent"
 
     install:
+      become: true
       cmds:
-        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
-        - wget -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-        - sudo apt-get update
-        - sudo apt-get install newrelic-netcore20-agent -y -qq > /dev/null
+        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | tee /etc/apt/sources.list.d/newrelic.list > /dev/null
+        - wget -O- https://download.newrelic.com/548C16BF.gpg | apt-key add -
+        - apt-get update
+        - apt-get install newrelic-netcore20-agent -y -qq > /dev/null
         - echo "New Relic .NET agent installed"
 
     configure:
+      become: true
       cmds:
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
             if [[ ! -d "/etc/systemd/system/$sn.d" ]]
             then
-              sudo mkdir -p /etc/systemd/system/$sn.d
+              mkdir -p /etc/systemd/system/$sn.d
             fi
 
             echo "[Service]" > /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
@@ -156,16 +162,18 @@ install:
         - echo "New Relic .NET agent configured"
 
     start:
+      become: true
       cmds:
-        - sudo systemctl daemon-reload
+        - systemctl daemon-reload
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
             echo "Restarting $sn"
-            sudo systemctl restart $sn
+            systemctl restart $sn
           done
         - echo "Services restarted"
 
     ensure_sites_started:
+      become: true
       ignore_error: true
       cmds:
         # Get the current PIDs of the services we have just (re)started
@@ -198,6 +206,7 @@ install:
         - echo "Done pinging sites"
     
     cleanup_temp_files:
+      become: true
       ignore_error: true
       cmds:
         - rm -rf /tmp/dotnet-introspector
