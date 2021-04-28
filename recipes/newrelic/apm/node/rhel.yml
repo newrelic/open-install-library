@@ -30,6 +30,11 @@ successLinkConfig:
   type: EXPLORER
   filter: '"`tags.language` = ''node''"'
 
+inputVars:
+  - name: "ACCEPT_RESTART"
+    prompt: Using the command will automatically stop and attempt to restart all instrumentable applications, with all the same context, during the installation process.
+    default: "Y"
+
 install:
   version: "3"
   silent: true
@@ -37,8 +42,23 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: setup
         - task: install_agent
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ {{.ACCEPT_RESTART}} != "y" ] && [ {{.ACCEPT_RESTART}} != "Y" ] ; then
+            echo -e "If you would like to manually install, please see our Node standard installation.\nhttps://docs.newrelic.com/docs/agents/nodejs-agent/installation-configuration/install-nodejs-agent/" >> /dev/stderr
+            exit 23
+          fi
+        - |
+          IS_PM2_INSTALLED=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
+          if [ $IS_PM2_INSTALLED -eq 0 ] ; then
+            echo "The PM2 process manager is required." >> /dev/stderr
+            exit 22
+          fi
 
     setup:
       label: "Installing Node Introspector..."
