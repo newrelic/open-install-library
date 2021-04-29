@@ -43,11 +43,29 @@ install:
         - |
           if [ {{.ACCEPT_RESTART}} != "y" ] && [ {{.ACCEPT_RESTART}} != "Y" ] ; then
             echo -e "If you would like to manually install, please see our Node standard installation.\nhttps://docs.newrelic.com/docs/agents/nodejs-agent/installation-configuration/install-nodejs-agent/" >> /dev/stderr
-            exit 23
+            exit 130
           fi
         - |
-          IS_PM2_INSTALLED=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
+          IS_NODE_INSTALLED=$(sudo -i -u $SUDO_USER command -v node)
+          if [ $IS_NODE_INSTALLED -eq 0 ] ; then
+            echo "A valid Node.js installation is required." >> /dev/stderr
+            exit 22
+          fi
+        - |
+          IS_NPM_INSTALLED=$(sudo -i -u $SUDO_USER command -v npm)
+          if [ $IS_NPM_INSTALLED -eq 0 ] ; then
+            echo "A valid NPM installation is required." >> /dev/stderr
+            exit 22
+          fi
+        - |
+          IS_PM2_INSTALLED=$(sudo -i -u $SUDO_USER command -v pm2)
           if [ $IS_PM2_INSTALLED -eq 0 ] ; then
+            echo "A valid PM2 installation is required." >> /dev/stderr
+            exit 22
+          fi
+        - |
+          IS_PM2_RUNNING=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
+          if [ $IS_PM2_RUNNING -eq 0 ] ; then
             echo "The PM2 process manager is required." >> /dev/stderr
             exit 22
           fi
@@ -82,4 +100,7 @@ install:
               fi
               LSI_OUTPUT=$(sudo -i -u $SUDO_USER NEW_RELIC_REGION="${NEW_RELIC_REGION}" newrelic-introspector-node instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${appName}") 1> /dev/null 2> /dev/null || true
             done
+
+            echo "IMPORTANT: Your application needs to be active to transmit transaction data.  If it is a web service, make sure that it is receiving requests.  If it is a background service, make sure that it is performing work."
+            echo "    The validation that occurs in the next step will fail if transaction data is not found within the timeout period."
           fi
