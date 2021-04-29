@@ -29,11 +29,6 @@ successLinkConfig:
    type: explorer
    filter: '"`tags.language` = ''dotnet''"'
 
-preInstall:
-  info: |2
-      Warning, this installation supports .NET running hosted as using systemd service and will automatically restart the instrumented .NET services.
-      If you are running a .NET application hosted differently then check out our other installation options https://docs.newrelic.com/docs/agents/net-agent/installation/install-net-agent-linux/
-
 install:
 
   version: "3"
@@ -42,6 +37,7 @@ install:
   tasks:
     default:
       cmds:
+        - task: verify_continue
         - task: assert_pre_req
         - task: introspector
         - task: gather_services
@@ -52,6 +48,46 @@ install:
         - task: start
         - task: ensure_sites_started
         - task: cleanup_temp_files
+
+    verify_continue:
+      cmds:
+        - |
+          YELLOW='\033[0;33m'
+          NOCOLOR='\033[0m'
+          echo -e "${YELLOW}
+          ================================================================================
+          =                                                                              =
+          =                                   Warning                                    =
+          =                                                                              =
+          =       This installation will automatically restart all systemd services      =
+          =       that run .NET applications upon completion.                            =
+          =                                                                              =
+          ================================================================================
+          ${NOCOLOR}"
+          echo "
+          If you are hosting your .NET application differently then check out our other installation options:
+          https://docs.newrelic.com/docs/agents/net-agent/installation/install-net-agent-linux/.
+          "
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while :; do
+              echo -n "Do you want to install the .NET Agent Y/N (default: Y)? "
+              read answer
+              echo ""
+              NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                NEW_RELIC_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+                echo "Exiting the installation"
+                exit 130
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
+                break
+              fi
+              echo -e "Please type Y or N only."
+            done
+          fi
 
     assert_pre_req:
       cmds:
@@ -190,6 +226,40 @@ install:
               fi
             done
           done
+        # Prompt user for custom URLs to hit
+        - |
+          YELLOW='\033[0;33m'
+          NOCOLOR='\033[0m'
+          echo -e "${YELLOW}
+          ================================================================================
+          =                                                                              =
+          =                                 Important                                    =
+          =                                                                              =
+          =   Your application needs to be sent traffic to validate the installation.    =
+          =                                                                              =
+          =       Please send approximately three requests to your application or        =
+          =       enter the application URL and this tool will send the requests.        =
+          =                                                                              =
+          ================================================================================
+          ${NOCOLOR}
+          "
+
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            echo -n "Press ENTER to skip or type URL and press ENTER to continue: "
+            read CUSTOM_APP_URL
+            echo ""
+
+            echo "Sending requests to your applications..."
+            if [[ -n "$CUSTOM_APP_URL" ]]; then
+              echo "Pinging $CUSTOM_APP_URL"
+              for i in {1..3}; do
+                sleep 1
+                curl --silent "$CUSTOM_APP_URL" > /dev/null || true
+              done
+            fi
+          fi
+
         # Get the root (/) URL for the service listening on each port found
         - |
           for pn in `cat /tmp/dotnet-introspector/ports.txt`; do
