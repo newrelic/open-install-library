@@ -1,0 +1,61 @@
+{
+    "global_tags": {
+        "owning_team": "OpenSource",
+        "Environment": "development",
+        "Department": "Product",
+        "Product": "Virtuoso"
+    },
+  
+    "resources": [{
+        "id": "iiswindows2019",
+        "display_name": "IisWindows2019Host",
+        "provider": "aws",
+        "type": "ec2",
+        "size": "t3a.small",
+        "is_windows": true,
+        "ami_name": "Windows_Server-2019-English-Full-HyperV-*",
+        "user_name": "Administrator"
+    }],
+  
+    "services": [{
+      "id": "iis",
+      "destinations": ["iiswindows2019"],
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/windows/iis/install/roles",
+      "port": 9999
+    },
+    {
+      "id": "coreapp",
+      "display_name": "Web Application 3",
+      "destinations": ["iiswindows2019"],
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/windows/iis/deploy-webapplication/roles",
+      "port": 8083,
+      "params": {
+        "is_core_app": "true"
+      }
+    }],
+  
+    "instrumentations": {
+      "resources": [
+        {
+            "id": "nr_infra",
+            "resource_ids": ["iiswindows2019"],
+            "provider": "newrelic",
+            "source_repository": "https://github.com/newrelic/open-install-library.git",
+            "deploy_script_path": "test/deploy/windows/newrelic-cli/install/roles"
+        },
+        {
+            "id": "nr_apm_is_having_data",
+            "resource_ids": ["iiswindows2019"],
+            "provider": "newrelic",
+            "source_repository": "https://github.com/newrelic/open-install-library.git",
+            "deploy_script_path": "test/deploy/assertions/recipe-is-valid/roles",
+            "params": {
+                "recipe_validation_nrql_url": "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/apm/dotNet/windows/net-install.yml"
+            }
+        }
+        ]
+    }
+  }
+  

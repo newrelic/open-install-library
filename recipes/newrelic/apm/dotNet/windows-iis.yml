@@ -26,11 +26,6 @@ successLinkConfig:
   type: EXPLORER
   filter: '"`tags.language` = ''dotnet''"'
 
-preInstall:
-  info: |2
-      Warning, this installation supports .NET running in IIS (Internet Information Services) and will automatically restart IIS.
-      If you are running a .NET application hosted differently then check out our other installation options https://docs.newrelic.com/docs/agents/net-agent/installation/install-net-agent-windows/
-
 install:
   version: "3"
   silent: true
@@ -38,6 +33,7 @@ install:
   tasks:
     default:
       cmds:
+        - task: verify_continue
         - task: assert_admin_perms
         - task: assert_pre_req
         - task: stop
@@ -47,12 +43,51 @@ install:
         - task: start
         - task: ensure_sites_started
 
+    verify_continue:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host -ForegroundColor Yellow "================================================================================"
+          Write-Host -ForegroundColor Yellow "=                                                                              ="
+          Write-Host -ForegroundColor Yellow "=                                   Warning                                    ="
+          Write-Host -ForegroundColor Yellow "=                                                                              ="
+          Write-Host -ForegroundColor Yellow "=       This installation will automatically restart IIS upon completion.      ="
+          Write-Host -ForegroundColor Yellow "=                                                                              ="
+          Write-Host -ForegroundColor Yellow "================================================================================"
+          Write-Host ""
+          Write-Host "If you are hosting your .NET application differently then check out our other installation options:"
+          Write-Host "https://docs.newrelic.com/docs/agents/net-agent/installation/install-net-agent-windows/."
+          Write-Host ""
+          # If NEW_RELIC_ASSUME_YES is set to true, will not prompt input URL
+          $NEW_RELIC_ASSUME_YES = "{{.NEW_RELIC_ASSUME_YES}}"
+          if ($NEW_RELIC_ASSUME_YES -ieq "false") {
+            WHILE ($true) {
+              Write-Host "Do you want to install the .NET Agent Y/N (default: Y)? " -NoNewLine
+              $NEW_RELIC_CONTINUE = $Host.UI.ReadLine()
+              if ([string]::IsNullOrWhiteSpace($NEW_RELIC_CONTINUE))
+              {
+                $NEW_RELIC_CONTINUE = "y"
+              }
+
+              if ($NEW_RELIC_CONTINUE -ieq "n") {
+                Write-Host "Exiting the installation..."
+                exit 130 # often used to represent Ctrl+C.
+              }
+              elseif ($NEW_RELIC_CONTINUE -ieq "y") {
+                break
+              }
+
+              Write-Host "Please type y or n only."
+            }
+          }
+          '
     assert_admin_perms:
       cmds:
         - |
           powershell -command '
           $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-          if(! $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
+          if (! $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             Write-Host -ForegroundColor Red "The installation recipe for the .NET Agent on Windows must be run with Administrator permissions."
             exit 7
           }
@@ -63,12 +98,12 @@ install:
         - |
           powershell -command '
           $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
-          if($iisEnabled.State -ne "Enabled"){
+          if ($iisEnabled.State -ne "Enabled") {
             Write-Host -ForegroundColor Red "IIS is not installed."
             exit 5
           }
           $aspNet45Enabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-ASPNET45 | select State
-          if($aspNet45Enabled.State -ne "Enabled"){
+          if ($aspNet45Enabled.State -ne "Enabled") {
             Write-Host -ForegroundColor Red "ASP.NET is not installed."
             exit 6
           }
@@ -76,7 +111,10 @@ install:
 
     stop:
       cmds:
-        - cmd /c "iisreset /stop"
+        - |
+          powershell -command '
+          iisreset /stop | Out-Null
+          '
 
     remove_any_previous:
       ignore_error: true
@@ -141,10 +179,10 @@ install:
           $xdoc = New-Object System.Xml.XmlDocument;
           $xdoc.PreserveWhitespace = $true;
           $xdoc.Load($file);
-          if ($xdoc.GetElementsByTagName("application")[0].HasChildNodes){
+          if ($xdoc.GetElementsByTagName("application")[0].HasChildNodes) {
             $xdoc.configuration.application.RemoveAll();
           }
-          if ("{{.NEW_RELIC_REGION}}" -like "STAGING"){
+          if ("{{.NEW_RELIC_REGION}}" -like "STAGING") {
             $xdoc.configuration.service.SetAttribute("host", "staging-collector.newrelic.com")
           }
           $child = $xdoc.CreateElement("distributedTracing", "urn:newrelic-config");
@@ -156,9 +194,46 @@ install:
 
     start:
       cmds:
-        - cmd /c "iisreset /start"
+        - |
+          powershell -command '
+          iisreset /start | Out-Null
+          '
 
     ensure_sites_started:
       ignore_error: true
       cmds:
-        - powershell -command 'Get-WebURL "IIS:\Sites\*" | ForEach-Object { echo $_.ResponseUri.AbsoluteUri }'
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host -ForegroundColor Yellow "================================================================================"
+          Write-Host -ForegroundColor Yellow "=                                                                              ="
+          Write-Host -ForegroundColor Yellow "=                                  Important                                   ="
+          Write-Host -ForegroundColor Yellow "=                                                                              ="
+          Write-Host -ForegroundColor Yellow "=    Your application needs to be sent traffic to validate the installation.   ="
+          Write-Host -ForegroundColor Yellow "=                                                                              ="
+          Write-Host -ForegroundColor Yellow "=         Please send approximately 3 requests to your application or          ="
+          Write-Host -ForegroundColor Yellow "=       enter the application URL and this tool will send the requests.        ="
+          Write-Host -ForegroundColor Yellow "=                                                                              ="
+          Write-Host -ForegroundColor Yellow "================================================================================"
+          Write-Host ""
+
+          # If NEW_RELIC_ASSUME_YES is set to true, will not prompt for input
+          $NEW_RELIC_ASSUME_YES = "{{.NEW_RELIC_ASSUME_YES}}"
+          if ($NEW_RELIC_ASSUME_YES -ieq "false") {
+            Write-Host "Press ENTER to skip or type URL and press ENTER to continue? " -NoNewLine
+            $NEW_RELIC_IIS_URL = $Host.UI.ReadLine()
+            Write-Host ""
+          }
+
+          Write-Host "Sending requests to your applications..."
+          if ($NEW_RELIC_IIS_URL) {
+            Write-Host $NEW_RELIC_IIS_URL
+            while($val -ne 3) {
+              $val++
+              Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 5 -Uri $NEW_RELIC_IIS_URL -ErrorAction SilentlyContinue | Out-Null
+            }
+          }
+
+          Get-WebURL "IIS:\Sites\*" | ForEach-Object { echo $_.ResponseUri.AbsoluteUri }
+          Write-Host "Finished sending requests."
+          '
