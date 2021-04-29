@@ -108,7 +108,7 @@ install:
     remove_any_previous:
       ignore_error: true
       cmds:
-        - sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent > /dev/null || true
+        - sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent >/dev/null 2>&1 || true
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
             if [[ -f "/etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf" ]]
@@ -116,15 +116,15 @@ install:
               sudo rm -f /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
             fi
 
-            sudo rmdir /etc/systemd/system/$sn.d > /dev/null || true
+            sudo rmdir /etc/systemd/system/$sn.d >/dev/null 2>&1 || true
           done
         - echo "Done removing previous versions of the agent"
 
     install:
       cmds:
         - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
-        - wget -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-        - sudo apt-get update
+        - wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+        - sudo apt-get update >/dev/null
         - sudo apt-get install newrelic-netcore20-agent -y -qq > /dev/null
         - echo "New Relic .NET agent installed"
 
@@ -132,33 +132,34 @@ install:
       cmds:
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
-            if [[ ! -d "/etc/systemd/system/$sn.d" ]]
+            if [[ ! -d "/etc/systemd/system/${sn}.d" ]]
             then
-              sudo mkdir -p /etc/systemd/system/$sn.d
+              sudo mkdir -p "/etc/systemd/system/${sn}.d"
             fi
-            sudo cat <<- EOF > /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
-            [Service]
-            Environment="CORECLR_ENABLE_PROFILING=1"
-            Environment="CORECLR_PROFILER={36032161-FFC0-4B61-B559-F6C5D41BAE5A}"
-            Environment="CORECLR_NEWRELIC_HOME=/usr/local/newrelic-netcore20-agent"
-            Environment="CORECLR_PROFILER_PATH=/usr/local/newrelic-netcore20-agent/libNewRelicProfiler.so"
-            Environment="NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}"
-            Environment="NEW_RELIC_APP_NAME=$sn"
-            Environment="NEW_RELIC_DISTRIBUTED_TRACING_ENABLED=true"
-            EOF
+            cat << EOF | sudo tee "/etc/systemd/system/${sn}.d/nr_dotnet_agent_env.conf" >/dev/null
+          [Service]
+          Environment="CORECLR_ENABLE_PROFILING=1"
+          Environment="CORECLR_PROFILER={36032161-FFC0-4B61-B559-F6C5D41BAE5A}"
+          Environment="CORECLR_NEWRELIC_HOME=/usr/local/newrelic-netcore20-agent"
+          Environment="CORECLR_PROFILER_PATH=/usr/local/newrelic-netcore20-agent/libNewRelicProfiler.so"
+          Environment="NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}"
+          Environment="NEW_RELIC_APP_NAME=${sn}"
+          Environment="NEW_RELIC_DISTRIBUTED_TRACING_ENABLED=true"
+          EOF
+
+            nr_region="{{.NEW_RELIC_REGION}}"
+            if [[ "${nr_region^^}" -eq "STAGING" ]]
+            then
+              echo Detected running in STAGING, configuring agent to report to staging
+              echo "Environment=\"NEW_RELIC_HOST=staging-collector.newrelic.com\"" |sudo tee -a "/etc/systemd/system/${sn}.d/nr_dotnet_agent_env.conf" >/dev/null
+            fi
+
           done
-        - |
-          nr_region="{{.NEW_RELIC_REGION}}"
-          if [[ "${nr_region^^}" -eq "STAGING" ]]
-          then
-            echo Detected running in STAGING, configuring agent to report to staging
-            sudo echo "Environment=\"NEW_RELIC_HOST=staging-collector.newrelic.com\"" >> /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
-          fi
         - echo "New Relic .NET agent configured"
 
     start:
       cmds:
-        - systemctl daemon-reload
+        - sudo systemctl daemon-reload
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
             echo "Restarting $sn"
@@ -169,21 +170,23 @@ install:
     ensure_sites_started:
       ignore_error: true
       cmds:
-        # Get the current PIDs of the services we have just (re)started
+        # Wait to give the services we just (re)started time to get going
+        - |
+          sleep 10
+        # Get the current PIDs of the services
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
-            echo "Getting current PID of service ${sn}"
             pid=$(systemctl show --property MainPID $sn 2>/dev/null | sed 's/MainPID=//')
             echo "${pid}" >> /tmp/dotnet-introspector/dotnet_service_pids.txt
           done
         # For each PID, get the port(s) it is listening on by inspecting /proc/${pid}/fd (open files)
         # and comparing them with open TCP ports in /proc/net/tcp
         - |
-          for pid in `cat /tmp/dotnet-introspector/dotnet_service_pids.txt; do
+          for pid in `cat /tmp/dotnet-introspector/dotnet_service_pids.txt`; do
             for socket in $(sudo ls -l /proc/${pid}/fd |grep socket |sed 's/.*\[//' |sed 's/\]//' |uniq); do
               hexport=$(sudo grep ${socket} /proc/net/tcp |awk '{print $2}' |cut -d':' -f2)
               if [[ "${hexport}" -ne "" ]]; then
-                printf "%d\n" $((16#${hexport})) >> /tmp/dotnet-introspector/ports.txt
+                echo "${hexport}" | awk --non-decimal-data '{ printf("%d\n","0x"$1) }' | tee -a /tmp/dotnet-introspector/ports.txt
               fi
             done
           done
