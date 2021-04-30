@@ -75,6 +75,7 @@ install:
                 exit 130 # often used to represent Ctrl+C.
               }
               elseif ($NEW_RELIC_CONTINUE -ieq "y") {
+                Write-Host "Starting installation of the New Relic.NET Agent..."
                 break
               }
 
@@ -102,6 +103,7 @@ install:
             Write-Host -ForegroundColor Red "IIS is not installed."
             exit 5
           }
+
           $aspNet45Enabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-ASPNET45 | select State
           if ($aspNet45Enabled.State -ne "Enabled") {
             Write-Host -ForegroundColor Red "ASP.NET is not installed."
@@ -137,12 +139,15 @@ install:
 
             $uninstallIds = New-Object System.Collections.ArrayList
             foreach ($key in $allKeys) {
-              $keyData = Get-Item -Path HKLM:\$key
-              $name = $keyData.GetValue("DisplayName")
-              if ($name -and $name -match $Match) {
-                $keyId = Split-Path $key -Leaf
-                $uninstallIds.Add($keyId) | Out-Null
+              try {
+                $keyData = Get-Item -Path HKLM:\$key -ErrorAction SilentlyContinue
+                $name = $keyData.GetValue("DisplayName")
+                if ($name -and $name -match $Match) {
+                  $keyId = Split-Path $key -Leaf
+                  $uninstallIds.Add($keyId) | Out-Null
+                }
               }
+              catch {}
             }
 
             if ($uninstallIds.Count -eq 0) {
@@ -154,10 +159,13 @@ install:
 
           $uninstallIds = Find-UninstallGuids -Match "New Relic .NET Agent"
           foreach ($uninstallId in $uninstallIds) {
-            $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-            Invoke-Expression $uninstallCommand
-            # wait here to allow uninstall command to complete since it returns without waiting
-            Start-Sleep -s 15
+            try {
+              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
+              Invoke-Expression $uninstallCommand -ErrorAction SilentlyContinue | Out-Null
+              # wait here to allow uninstall command to complete since it returns without waiting
+              Start-Sleep -s 15
+            }
+            catch {}
           }
           '
 
@@ -165,31 +173,39 @@ install:
       cmds:
         - |
           powershell -command '
-          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls";
-          (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi");
-          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} | Out-Null;'
+          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+          (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi")
+          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} | Out-Null
+          '
         - echo "New Relic .NET agent installed"
 
     configure:
       cmds:
         - |
           powershell -command '
-          $configPath = "$env:ProgramData\New Relic\.NET Agent\newrelic.config";
-          $file = Resolve-Path("$configPath");
-          $xdoc = New-Object System.Xml.XmlDocument;
-          $xdoc.PreserveWhitespace = $true;
-          $xdoc.Load($file);
+          $configPath = "$env:ProgramData\New Relic\.NET Agent\newrelic.config"
+          $file = Resolve-Path("$configPath")
+          $xdoc = New-Object System.Xml.XmlDocument
+          $xdoc.PreserveWhitespace = $true
+          $xdoc.Load($file)
           if ($xdoc.GetElementsByTagName("application")[0].HasChildNodes) {
-            $xdoc.configuration.application.RemoveAll();
+            $xdoc.configuration.application.RemoveAll()
           }
           if ("{{.NEW_RELIC_REGION}}" -like "STAGING") {
             $xdoc.configuration.service.SetAttribute("host", "staging-collector.newrelic.com")
           }
-          $child = $xdoc.CreateElement("distributedTracing", "urn:newrelic-config");
-          $child.SetAttribute("enabled", "true");
-          $child.SetAttribute("excludeNewrelicHeader", "false");
-          $xdoc.configuration.AppendChild($child);
-          $xdoc.Save($configPath)'
+          if ($xdoc.GetElementsByTagName("distributedTracing")[0]) {
+            $xdoc.configuration.distributedTracing.SetAttribute("enabled", "true")
+            $xdoc.configuration.distributedTracing.SetAttribute("excludeNewrelicHeader", "false")
+          }
+          else {
+            $child = $xdoc.CreateElement("distributedTracing", "urn:newrelic-config")
+            $child.SetAttribute("enabled", "true")
+            $child.SetAttribute("excludeNewrelicHeader", "false")
+            $xdoc.configuration.AppendChild($child) | Out-Null
+          }
+          $xdoc.Save($configPath)
+          '
         - echo "New Relic .NET agent configured"
 
     start:
@@ -226,14 +242,20 @@ install:
           }
 
           Write-Host "Sending requests to your applications..."
-          if ($NEW_RELIC_IIS_URL) {
-            Write-Host $NEW_RELIC_IIS_URL
-            while($val -ne 3) {
-              $val++
-              Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 5 -Uri $NEW_RELIC_IIS_URL -ErrorAction SilentlyContinue | Out-Null
+          try {
+            if ($NEW_RELIC_IIS_URL) {
+              Write-Host $NEW_RELIC_IIS_URL
+              while($val -ne 3) {
+                $val++
+                Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 5 -Uri $NEW_RELIC_IIS_URL -ErrorAction SilentlyContinue | Out-Null
+              }
             }
           }
-
-          Get-WebURL "IIS:\Sites\*" | ForEach-Object { echo $_.ResponseUri.AbsoluteUri }
+          catch {}
+          
+          try {
+            Get-WebURL "IIS:\Sites\*" | ForEach-Object { Write-Host $_.ResponseUri.AbsoluteUri }
+          }
+          catch {}
           Write-Host "Finished sending requests."
           '
