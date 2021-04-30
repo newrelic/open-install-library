@@ -92,13 +92,6 @@ install:
     assert_pre_req:
       cmds:
         - |
-          IS_JQ_INSTALLED=$(which jq | wc -l)
-          if [ $IS_JQ_INSTALLED -eq 0 ]
-          then
-            echo "jq is required to run the newrelic install. Please install jq and re-run the installation." >> /dev/stderr
-            exit 16
-          fi
-        - |
           IS_UNZIP_INSTALLED=$(which unzip | wc -l)
           if [ $IS_UNZIP_INSTALLED -eq 0 ]
           then
@@ -113,7 +106,19 @@ install:
         - mkdir -p /tmp/dotnet-introspector
         - unzip -o ~/dotnet-is-linux-x64.zip -d /tmp/dotnet-introspector > /dev/null
         - chmod -R 777 /tmp/dotnet-introspector
-        - /tmp/dotnet-introspector/nri-lsi-dotnet -c | jq .[] > /tmp/dotnet-introspector/dotnet_processes.txt
+        # nri-lsi-dotnet output looks like "[18044,26844,38720,31448]"
+        - /tmp/dotnet-introspector/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > /tmp/dotnet-introspector/dotnet_processes.txt
+        - |
+          processCount=$(cat /tmp/dotnet-introspector/dotnet_processes.txt | wc -w)
+          if [[ "$processCount" -eq 0 ]]; then
+            YELLOW='\033[0;33m'
+            NOCOLOR='\033[0m'
+            echo -e "${YELLOW}
+            No dotnet processes were found.  Please ensure the services you want to instrument
+            are running and try running this installer again.
+            ${NOCOLOR}\n"
+            exit 3
+          fi
         - echo "Done with instrospector"
 
     gather_services:
