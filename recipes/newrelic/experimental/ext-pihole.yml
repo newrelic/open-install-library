@@ -18,7 +18,8 @@ keywords:
   - raspberrypi
   - infrastructure
 
-processMatch: []
+processMatch: 
+  - pihole-FTL
 
 validationNrql: "FROM Metric SELECT count(*) where metricName like 'pihole_%' facet piHoleName since 10 minutes ago"
 
@@ -51,8 +52,6 @@ install:
         - task: install_pihole_exporter
         - task: install_nri_prometheus
         - task: cleanup
-        # - task: restart
-        # - task: assert_agent_started
 
     assert_pre_req:
       cmds:
@@ -129,15 +128,6 @@ install:
         - |
           mkdir -p /tmp/newrelic
           sudo rm -rf /tmp/newrelic/*
-        # - |
-        #   sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
-        #   license_key: {{.NEW_RELIC_LICENSE_KEY}}
-        #   enable_process_metrics: true
-        #   EOT
-        # - |
-        #   if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-        #     echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
-        #   fi
       vars:
         IS_SYSTEMCTL:
           sh: which systemctl | wc -l
@@ -329,6 +319,9 @@ install:
         fi
         docker stop nri-prometheus || true
 
+        ####################################################################################################################################################
+        # Write nri-prometheus config
+        ####################################################################################################################################################
         HOST_IP=$(hostname -I | awk '{print $1;}')
         sudo tee /etc/nri-prometheus/nri-prometheus-config.yml > /dev/null <<EOT
         # The name of your cluster. It's important to match other New Relic products to relate the data.
@@ -516,34 +509,6 @@ install:
         if [ -f /tmp/newrelic/nri-prometheus-config_old.yml ]; then
           mv /tmp/newrelic/nri-prometheus-config_old.yml /etc/nri-prometheus/
         fi
-
-    # restart:
-    #   cmds:
-    #     - |
-    #       if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-    #         sudo systemctl restart newrelic-infra
-    #       else
-    #         if [ {{.IS_INITCTL}} -gt 0 ]; then
-    #           sudo initctl restart newrelic-infra
-    #         else
-    #           sudo /etc/init.d/newrelic-infra restart
-    #         fi
-    #       fi
-    #   vars:
-    #     IS_SYSTEMCTL:
-    #       sh: which systemctl | wc -l
-    #     IS_INITCTL:
-    #       sh: which initctl | wc -l
-    # assert_agent_started:
-    #   cmds:
-    #     - |
-    #       # Ensure agent has enough time to start
-    #       sleep 10
-    #       IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
-    #       if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-    #         echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >> /dev/stderr
-    #         exit 31
-    #       fi
     cleanup:
       - |
         sudo rm -rf /tmp/newrelic
