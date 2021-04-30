@@ -1,0 +1,78 @@
+name: alerts-golden-signal
+displayName: Golden Signal Alerts
+description: New Relic install recipe for golden signal alerts
+repository: https://github.com/newrelic/newrelic-cli
+
+installTargets:
+  - type: host
+    os: linux
+
+keywords:
+  - Alerts
+  - Golden
+
+inputVars:
+  - name: "ALERT_POLICY_NAME"
+    prompt: "Enter the policy name to use?"
+    default: "Golden Signal"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+          fi
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+          fi
+          echo $NEW_RELIC_API_URL
+
+          NEW_RELIC_ALERT_POLICY_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policies.json')
+          echo $NEW_RELIC_ALERT_POLICY_URL
+
+          POLICY_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_POLICY_URL \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+              -H 'Content-Type: application/json'
+          )
+          echo $POLICY_RESULT
+
+          POLICY_ID=$(echo $POLICY_RESULT | grep '"id":' | awk 'match($0, /\"id\":([0-9]*)/) {print substr($0, RSTART, RLENGTH)}' | sed 's/\"id\"://g')
+          if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
+            echo 'Policy found for '{{.ALERT_POLICY_NAME}}' name POLICY_ID:'$POLICY_ID
+          else
+            echo 'No existing policy '{{.ALERT_POLICY_NAME}}' found, creating policy '{{.ALERT_POLICY_NAME}}
+            curl -X POST $NEW_RELIC_ALERT_POLICY_URL \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+                -H 'Content-Type: application/json' \
+                -L -d \
+            '{
+              "policy": {
+                "incident_preference": "PER_POLICY",
+                "name": "{{.ALERT_POLICY_NAME}}"
+              }
+            }'
+            POLICY_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_POLICY_URL \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+                -H 'Content-Type: application/json'
+            )
+            echo $POLICY_RESULT
+            POLICY_ID=$(echo $POLICY_RESULT | grep '"id":' | awk 'match($0, /\"id\":([0-9]*)/) {print substr($0, RSTART, RLENGTH)}' | sed 's/\"id\"://g')
+            if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
+              echo 'Policy found for '{{.ALERT_POLICY_NAME}}' name POLICY_ID:'$POLICY_ID
+            else
+              echo "Could not create a new policy" >> /dev/stderr
+              exit 10
+            fi
+          fi
+
+          echo $POLICY_ID
