@@ -11,11 +11,6 @@ keywords:
   - Alerts
   - Golden
 
-inputVars:
-  - name: "ALERT_POLICY_NAME"
-    prompt: "Enter the policy name to use?"
-    default: "Golden Signal"
-
 install:
   version: "3"
   silent: true
@@ -29,13 +24,17 @@ install:
       cmds:
         - |
           NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+          NEW_RELIC_INFRA_API_URL=$(echo -n 'https://infra-api.newrelic.com')
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+            NEW_RELIC_INFRA_API_URL=$(echo -n 'https://staging-infra-api.newrelic.com')
           fi
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
             NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+            NEW_RELIC_INFRA_API_URL=$(echo -n 'https://infra-api.eu.newrelic.com')
           fi
           echo $NEW_RELIC_API_URL
+          echo $NEW_RELIC_INFRA_API_URL
 
           NEW_RELIC_ALERT_POLICY_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policies.json')
           echo $NEW_RELIC_ALERT_POLICY_URL
@@ -46,7 +45,7 @@ install:
           )
           echo $POLICY_RESULT
 
-          POLICY_ID=$(echo $POLICY_RESULT | grep '"id":' | awk 'match($0, /\"id\":([0-9]*)/) {print substr($0, RSTART, RLENGTH)}' | sed 's/\"id\"://g')
+          POLICY_ID=$(echo $POLICY_RESULT | jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
             echo 'Alert policy found for '{{.ALERT_POLICY_NAME}}' name POLICY_ID:'$POLICY_ID
           else
@@ -66,13 +65,31 @@ install:
                 -H 'Content-Type: application/json'
             )
             echo $POLICY_RESULT
-            POLICY_ID=$(echo $POLICY_RESULT | grep '"id":' | awk 'match($0, /\"id\":([0-9]*)/) {print substr($0, RSTART, RLENGTH)}' | sed 's/\"id\"://g')
+            POLICY_ID=$(echo $POLICY_RESULT | jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
               echo 'Alert policy found for '{{.ALERT_POLICY_NAME}}' name POLICY_ID:'$POLICY_ID
             else
-              echo 'Could not create a new alert policy for '{{.ALERT_POLICY_NAME}} >> /dev/stderr
+              echo 'Could not create a new alert policy for '{{.ALERT_POLICY_NAME}}' got POLICY_ID:'$POLICY_ID >> /dev/stderr
               exit 10
             fi
           fi
 
-          echo $POLICY_ID
+          NEW_RELIC_ALERT_CONDITION_URL=$(echo -n $NEW_RELIC_INFRA_API_URL'/v2/alerts/conditions?policy_id='$POLICY_ID'&limit=1000')
+          echo $NEW_RELIC_ALERT_CONDITION_URL
+
+          CONDITION_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_CONDITION_URL \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+              -H 'Content-Type: application/json'
+          )
+          echo $CONDITION_RESULT
+          CONDITION_ID=$(echo $CONDITION_RESULT | jq '.data[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id')
+          if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
+            echo 'Alert condition found for '{{.ALERT_HIGH_CPU_CONDITION_NAME}}' name CONDITION_ID:'$CONDITION_ID
+          else
+            echo 'No existing alert policy '{{.ALERT_HIGH_CPU_CONDITION_NAME}}' found, creating alert condition '{{.ALERT_HIGH_CPU_CONDITION_NAME}}
+          fi
+      vars:
+        ALERT_POLICY_NAME:
+          sh: echo 'Golden Signal Policy '$(hostname)
+        ALERT_HIGH_CPU_CONDITION_NAME:
+          sh: echo 'High CPU'
