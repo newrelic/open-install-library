@@ -3,7 +3,7 @@
 
 name: pihole-installer
 displayName: Raspberry Pi PiHole Integration
-description: New Relic install recipe for pihole on Raspberry Pi
+description: New Relic install recipe for instrumenting Pi-hole (entity) on Raspberry Pi
 repository: https://github.com/newrelic/nri-prometheus
 
 stability: experimental
@@ -23,6 +23,10 @@ processMatch: []
 validationNrql: "FROM Metric SELECT count(*) where metricName like 'pihole_%' facet piHoleName since 10 minutes ago"
 
 inputVars:
+  - name: "NR_INSTALL_PROMETHEUS"
+    prompt: "Install Prometheus as a background service? (y/N)"
+  - name: "NR_INSTALL_PIHOLE_EXPORTER"
+    prompt: "Install Pihole Exporter as a background service? (y/N)"
   - name: "NR_PROMETHEUS_DATA_SOURCE"
     prompt: "Data Source Identifier"
     default: "pi-prometheus"
@@ -30,8 +34,9 @@ inputVars:
 preInstall:
   info: |2
       Note: EXPERIMENTAL RECIPE
-      This installation installs Prometheus and PiHole Exporter as background services. Additionally,
-      a container named 'nri-prometheus' will be run in the background to facilitate metrics collection.
+      This installation optionally installs Prometheus and PiHole Exporter as background services to instrument
+      your Pihole service. Then, a container named 'nri-prometheus' will be run in the background to facilitate 
+      metrics collection to New Relic.
 
 install:
   version: "3"
@@ -99,6 +104,12 @@ install:
             echo "Sorry, our infrastructure agent cannot be installed for Microsoft Windows Subsystem for Linux, this is an unsupported operating system." >> /dev/stderr
             exit 19
           fi
+        - |
+          IS_DOCKER_INSTALLED=$(docker -v)
+          if [ $? -ne 0 ]; then
+            echo "Docker is required to run the nri-prometheus container. Please install and try again." >> /dev/stderr
+            exit 20
+          fi
 
     teardown_existing:
       cmds:
@@ -117,15 +128,7 @@ install:
           fi
         - |
           mkdir -p /tmp/newrelic
-          sudo rm -rf /tmp/newrelic/* 
-
-          if [ -f /opt/prometheus/prometheus.yml ]; then
-            mv -f /opt/prometheus/prometheus.yml /tmp/newrelic/prometheus_old.yml
-            rm -f /opt/prometheus/prometheus.yml
-          fi
-
-          sudo rm -rf /opt/prometheus/*
-          sudo rm -rf /opt/pihole_exporter/*
+          sudo rm -rf /tmp/newrelic/*
         # - |
         #   sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
         #   license_key: {{.NEW_RELIC_LICENSE_KEY}}
@@ -144,40 +147,37 @@ install:
     install_prometheus:
       cmds:
         - |
-          ####################################################################################################################################################
-          # Cleanup
-          ####################################################################################################################################################
-          # mkdir -p /tmp/newrelic
+          if [ "{{.NR_INSTALL_PROMETHEUS}}" == "y" ]; then
+            ####################################################################################################################################################
+            # Cleanup
+            ####################################################################################################################################################
+            if [ -f /opt/prometheus/prometheus.yml ]; then
+              mv -f /opt/prometheus/prometheus.yml /tmp/newrelic/prometheus_old.yml
+              rm -f /opt/prometheus/prometheus.yml
+            fi
+            sudo rm -rf /opt/prometheus/*
+            cd /tmp/newrelic
+            
+            ####################################################################################################################################################
+            # Download Prometheus
+            ####################################################################################################################################################
+            curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest \
+            | grep "browser_download_url.*prometheus-*.*.linux-armv7.tar.gz" \
+            | cut -d '"' -f 4 \
+            | wget -i -
+            tar xvfz prometheus-*.*.linux-armv7.tar.gz
 
-          # if [ -f /opt/prometheus/prometheus.yml ]; then
-          #   mv -f /opt/prometheus/prometheus.yml /tmp/newrelic/prometheus_old.yml
-          #   rm -f /opt/prometheus/prometheus.yml
-          # fi
+            ####################################################################################################################################################
+            # Move to /opt
+            ####################################################################################################################################################
+            mkdir -p /opt/prometheus
+            mv prometheus-*.*.linux-armv7/* /opt/prometheus
+            rm prometheus-*.*.linux-armv7.tar.gz
 
-          # sudo rm -rf /tmp/newrelic/* /opt/prometheus/*
-          cd /tmp/newrelic
-
-
-          ####################################################################################################################################################
-          # Download Prometheus
-          ####################################################################################################################################################
-          curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest \
-          | grep "browser_download_url.*prometheus-*.*.linux-armv7.tar.gz" \
-          | cut -d '"' -f 4 \
-          | wget -i -
-          tar xvfz prometheus-*.*.linux-armv7.tar.gz
-
-          ####################################################################################################################################################
-          # Move to /opt
-          ####################################################################################################################################################
-          mkdir -p /opt/prometheus
-          mv prometheus-*.*.linux-armv7/* /opt/prometheus
-          rm prometheus-*.*.linux-armv7.tar.gz
-
-          ####################################################################################################################################################  
-          # Write prometheus config
-          ####################################################################################################################################################
-          sudo tee /opt/prometheus/prometheus.yml > /dev/null <<"EOT"
+            ####################################################################################################################################################  
+            # Write prometheus config
+            ####################################################################################################################################################
+            sudo tee /opt/prometheus/prometheus.yml > /dev/null <<"EOT"
           # my global config
           global:
             scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
@@ -214,10 +214,10 @@ install:
             #     - targets: ['localhost:9617']
           EOT
 
-          ####################################################################################################################################################
-          # Run Prometheus as a service
-          ####################################################################################################################################################
-          sudo tee /etc/systemd/system/prometheus.service > /dev/null <<"EOT" 
+            ####################################################################################################################################################
+            # Run Prometheus as a service
+            ####################################################################################################################################################
+            sudo tee /etc/systemd/system/prometheus.service > /dev/null <<"EOT" 
           [Unit]
           Description=Prometheus Server
           Documentation=https://prometheus.io/docs/introduction/overview/
@@ -235,59 +235,65 @@ install:
           WantedBy=multi-user.target
           EOT
 
-          ####################################################################################################################################################
-          # Enable and start
-          ####################################################################################################################################################
-          sudo systemctl daemon-reload
-          sudo systemctl enable prometheus
-          sudo systemctl start prometheus
+            ####################################################################################################################################################
+            # Enable and start
+            ####################################################################################################################################################
+            sudo systemctl daemon-reload
+            sudo systemctl enable prometheus
+            sudo systemctl start prometheus
 
-          ####################################################################################################################################################
-          # Cleanup
-          ####################################################################################################################################################
-          if [ -f /tmp/newrelic/prometheus_old.yml ]; then
-            mv /tmp/newrelic/prometheus_old.yml /opt/prometheus/
+            ####################################################################################################################################################
+            # Cleanup
+            ####################################################################################################################################################
+            if [ -f /tmp/newrelic/prometheus_old.yml ]; then
+              mv /tmp/newrelic/prometheus_old.yml /opt/prometheus/
+            fi
+
+            # wget https://download.newrelic.com/infrastructure_agent/binaries/linux/arm/newrelic-infra_linux_1.16.5_arm.tar.gz
+            # tar xvfz newrelic-infra_linux_1.16.5_arm.tar.gz
+            # cd newrelic-infra
+            # sudo NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} ./installer.sh
+            # echo "enable_process_metrics: true" | sudo tee -a /etc/newrelic-infra.yml
+          else
+            echo "Skipping Prometheus Installation"
           fi
 
-          # wget https://download.newrelic.com/infrastructure_agent/binaries/linux/arm/newrelic-infra_linux_1.16.5_arm.tar.gz
-          # tar xvfz newrelic-infra_linux_1.16.5_arm.tar.gz
-          # cd newrelic-infra
-          # sudo NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} ./installer.sh
-          # echo "enable_process_metrics: true" | sudo tee -a /etc/newrelic-infra.yml
       silent: true
 
     install_pihole_exporter:
       - |
-        ####################################################################################################################################################
-        # Cleanup
-        ####################################################################################################################################################
-        # mkdir -p /tmp/newrelic
-        # sudo rm -rf /tmp/newrelic/* /opt/pihole_exporter/*
-        cd /tmp/newrelic
+        if [ "{{.NR_INSTALL_PIHOLE_EXPORTER}}" == "y" ]; then
+          ####################################################################################################################################################
+          # Cleanup
+          ####################################################################################################################################################
+          # mkdir -p /tmp/newrelic
+          # sudo rm -rf /tmp/newrelic/* /opt/pihole_exporter/*
+          sudo rm -rf /opt/pihole_exporter/*
+          cd /tmp/newrelic
 
-        ####################################################################################################################################################
-        # Download the latest pihole-exporter https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-linux-arm
-        ####################################################################################################################################################
-        curl -s https://api.github.com/repos/eko/pihole-exporter/releases/latest \
-        | grep "browser_download_url.*pihole_exporter-linux-arm" \
-        | cut -d '"' -f 4 \
-        | wget -i -
+          ####################################################################################################################################################
+          # Download the latest pihole-exporter https://github.com/eko/pihole-exporter/releases/latest/download/pihole_exporter-linux-arm
+          ####################################################################################################################################################
+          curl -s https://api.github.com/repos/eko/pihole-exporter/releases/latest \
+          | grep "browser_download_url.*pihole_exporter-linux-arm" \
+          | cut -d '"' -f 4 \
+          | wget -i -
 
-        ####################################################################################################################################################
-        # Move to /opt
-        ####################################################################################################################################################
-        mkdir -p /opt/pihole_exporter
-        mv pihole_exporter-linux-arm /opt/pihole_exporter
+          ####################################################################################################################################################
+          # Move to /opt
+          ####################################################################################################################################################
+          mkdir -p /opt/pihole_exporter
+          mv pihole_exporter-linux-arm /opt/pihole_exporter
 
-        # # Set permissions
-        # chgrp root /opt/pihole_exporter
-        # chgrp root /opt/pihole_exporter/pihole_exporter-linux-arm
-        chmod +x /opt/pihole_exporter/pihole_exporter-linux-arm
+          # # Set permissions
+          # chgrp root /opt/pihole_exporter
+          # chgrp root /opt/pihole_exporter/pihole_exporter-linux-arm
+          chmod +x /opt/pihole_exporter/pihole_exporter-linux-arm
 
-        ####################################################################################################################################################
-        # Run pihole-exporter as a service
-        ####################################################################################################################################################
-        sudo tee /etc/systemd/system/pihole_exporter.service > /dev/null <<"EOT" 
+          ####################################################################################################################################################
+          # Run pihole-exporter as a service
+          ####################################################################################################################################################
+          sudo tee /etc/systemd/system/pihole_exporter.service > /dev/null <<"EOT" 
         [Unit]
         Description=pihole_exporter
         After=network-online.target
@@ -302,12 +308,15 @@ install:
         WantedBy=multi-user.target
         EOT
 
-        ####################################################################################################################################################
-        # Enable and start
-        ####################################################################################################################################################
-        sudo systemctl daemon-reload
-        sudo systemctl enable pihole_exporter
-        sudo systemctl start pihole_exporter
+          ####################################################################################################################################################
+          # Enable and start
+          ####################################################################################################################################################
+          sudo systemctl daemon-reload
+          sudo systemctl enable pihole_exporter
+          sudo systemctl start pihole_exporter
+        else
+          echo "Skipping Pihole-Exporter Installation"
+        fi
 
     install_nri_prometheus:
       - |
@@ -541,8 +550,8 @@ install:
 
 postInstall:
   info: |2
-      ⚙️  The Prometheus configuration file can be found in /opt/prometheus/prometheus.yml
-      ⚙️  The nri-prometheus configuration file can be found in /etc/nri-prometheus/nri-prometheus-config.yml
+      ⚙️  If installed, the Prometheus configuration file can be found in /opt/prometheus/prometheus.yml
+      ⚙️  If installed, the nri-prometheus configuration file can be found in /etc/nri-prometheus/nri-prometheus-config.yml
       
       prometheus and pihole_exporter are now running as a background services and
       will launch at login (via systemd).
