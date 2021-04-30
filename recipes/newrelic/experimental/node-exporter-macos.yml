@@ -20,7 +20,7 @@ keywords:
 
 processMatch: []
 
-validationNrql: "SELECT count(*) from Metric where instrumentation.source = 'macos-prometheus' facet instrumentation.source  since 10 minutes ago"
+validationNrql: "FROM Metric select count(*) where instrumentation.name = 'remote-write' since 5 minutes ago"
 
 inputVars:
   - name: "NR_PROMETHEUS_DATA_SOURCE"
@@ -100,6 +100,9 @@ install:
 
     setup_prometheus:
       - |
+        ####################################################################################################################################################
+        # Install prometheus by downloading release
+        ####################################################################################################################################################
         # rm -rf /tmp/newrelic/prometheus-*.*-amd64*
         # mkdir -p /tmp/newrelic
         # curl -L https://github.com/prometheus/prometheus/releases/download/v2.26.0/prometheus-2.26.0.darwin-amd64.tar.gz > /tmp/newrelic/prometheus-2.26.0.darwin-amd64.tar.gz
@@ -151,26 +154,43 @@ install:
         # sleep 5
         # echo "prometheus started in background"
 
-
+        ####################################################################################################################################################
+        # Ensure Prometheus is installed
+        ####################################################################################################################################################
         IS_PROMETHEUS_INSTALLED=$(brew list prometheus)
         if [ $? -ne 0 ] ; then
           echo "Installing prometheus via homebrew..."
           brew install prometheus
         fi
 
+        ####################################################################################################################################################
+        # Retain old prometheus config
+        ####################################################################################################################################################
         if [ -f /usr/local/etc/prometheus.yml ]; then
           mv -f /usr/local/etc/prometheus.yml /usr/local/etc/prometheus_old.yml
           rm -f /usr/local/etc/prometheus.yml
         fi
 
-        tee -a /usr/local/etc/prometheus.yml > /dev/null <<"EOT"
+        ####################################################################################################################################################
+        # Install new config
+        ####################################################################################################################################################
+        if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+          REMOTE_WRITE_ENDPOINT=https://staging-metric-api.newrelic.com
+        else
+          REMOTE_WRITE_ENDPOINT=https://metric-api.newrelic.com
+        fi
+
+        # NOTE: Because this uses EOT rather than "EOT", variable expansion will happen. However
+        # we need to escape \, $, and ` characters or this will be malformed.
+        # https://unix.stackexchange.com/a/379581
+        tee -a /usr/local/etc/prometheus.yml > /dev/null <<EOT
         # my global config
         global:
           scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
           evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
           # scrape_timeout is set to the global default (10s).
         remote_write: 
-        - url: https://metric-api.newrelic.com/prometheus/v1/write?X-License-Key={{.NEW_RELIC_LICENSE_KEY}}&prometheus_server={{.NR_PROMETHEUS_DATA_SOURCE}}
+        - url: $REMOTE_WRITE_ENDPOINT/prometheus/v1/write?X-License-Key={{.NEW_RELIC_LICENSE_KEY}}&prometheus_server={{.NR_PROMETHEUS_DATA_SOURCE}}
 
         # Alertmanager configuration
         alerting:
@@ -187,7 +207,7 @@ install:
         # A scrape configuration containing exactly one endpoint to scrape:
         # Here it's Prometheus itself.
         scrape_configs:
-          # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+          # The job name is added as a label \`job=<job_name>\` to any timeseries scraped from this config.
           - job_name: 'prometheus'
 
             # metrics_path defaults to '/metrics'
