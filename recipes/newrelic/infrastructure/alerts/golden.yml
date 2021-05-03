@@ -36,6 +36,7 @@ install:
           echo $NEW_RELIC_API_URL
           echo $NEW_RELIC_INFRA_API_URL
 
+
           NEW_RELIC_ALERT_POLICY_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policies.json')
           echo $NEW_RELIC_ALERT_POLICY_URL
 
@@ -74,6 +75,7 @@ install:
             fi
           fi
 
+
           NEW_RELIC_ALERT_CONDITION_URL=$(echo -n $NEW_RELIC_INFRA_API_URL'/v2/alerts/conditions?policy_id='$POLICY_ID'&limit=1000')
           echo $NEW_RELIC_ALERT_CONDITION_URL
 
@@ -83,11 +85,80 @@ install:
           )
           echo $CONDITION_RESULT
           CONDITION_ID=$(echo $CONDITION_RESULT | ./newrelic utils jq '.data[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id')
+          if [ -f infra_condition.json ]; then
+            rm -f infra_condition.json
+          fi
           if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
             echo 'Alert condition found for '{{.ALERT_HIGH_CPU_CONDITION_NAME}}' name CONDITION_ID:'$CONDITION_ID
+            CURL_METHOD=$(echo -n 'PUT')
+            CURL_URL=$(echo -n $NEW_RELIC_INFRA_API_URL'/v2/alerts/conditions/'$CONDITION_ID)
+            sudo tee -a infra_condition.json > /dev/null <<"EOT"
+          {
+              "data": {
+                  "type": "infra_metric",
+                  "name": "{{.ALERT_HIGH_CPU_CONDITION_NAME}}",
+                  "enabled": true,
+                  "filter": {
+                      "and": [
+                          {
+                              "is": {
+                                  "entityName": "HOSTNAME"
+                              }
+                          }
+                      ]
+                  },
+                  "policy_id": POLICY_ID,
+                  "id": CONDITION_ID,
+                  "event_type": "SystemSample",
+                  "select_value": "cpuPercent",
+                  "comparison": "above",
+                  "critical_threshold": {
+                      "value": 86,
+                      "duration_minutes": 6,
+                      "time_function": "all"
+                  }
+              }
+          }
+          EOT
           else
             echo 'No existing alert policy '{{.ALERT_HIGH_CPU_CONDITION_NAME}}' found, creating alert condition '{{.ALERT_HIGH_CPU_CONDITION_NAME}}
+            CURL_METHOD=$(echo -n 'POST')
+            CURL_URL=$(echo -n $NEW_RELIC_INFRA_API_URL'/v2/alerts/conditions')
+            sudo tee -a infra_condition.json > /dev/null <<"EOT"
+          {
+              "data": {
+                  "type": "infra_metric",
+                  "name": "{{.ALERT_HIGH_CPU_CONDITION_NAME}}",
+                  "enabled": true,
+                  "filter": {
+                      "and": [
+                          {
+                              "is": {
+                                  "entityName": "HOSTNAME"
+                              }
+                          }
+                      ]
+                  },
+                  "policy_id": POLICY_ID,
+                  "event_type": "SystemSample",
+                  "select_value": "cpuPercent",
+                  "comparison": "above",
+                  "critical_threshold": {
+                      "value": 87,
+                      "duration_minutes": 7,
+                      "time_function": "all"
+                  }
+              }
+          }
+          EOT
           fi
+          sed -i 's/POLICY_ID,/'$POLICY_ID',/g' infra_condition.json
+          sed -i 's/CONDITION_ID,/'$CONDITION_ID',/g' infra_condition.json
+          sed -i 's/"HOSTNAME"/"'{{.HOSTNAME}}'"/g' infra_condition.json
+          curl -X $CURL_METHOD $CURL_URL \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+              -L -H 'Content-Type: application/json' \
+              -d @infra_condition.json
       vars:
         ALERT_POLICY_NAME:
           sh: echo 'Golden Signal Policy '$(hostname)
