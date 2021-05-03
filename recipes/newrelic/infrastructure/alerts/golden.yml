@@ -33,8 +33,8 @@ install:
             NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
             NEW_RELIC_INFRA_API_URL=$(echo -n 'https://infra-api.eu.newrelic.com')
           fi
-          echo $NEW_RELIC_API_URL
-          echo $NEW_RELIC_INFRA_API_URL
+          echo 'NEW_RELIC_API_URL:'$NEW_RELIC_API_URL
+          echo 'NEW_RELIC_INFRA_API_URL:'$NEW_RELIC_INFRA_API_URL
 
 
           NEW_RELIC_ALERT_POLICY_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policies.json')
@@ -44,7 +44,7 @@ install:
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
               -H 'Content-Type: application/json'
           )
-          echo $POLICY_RESULT
+          echo 'POLICY_RESULT:'$POLICY_RESULT
 
           POLICY_ID=$(echo $POLICY_RESULT | ./newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
@@ -65,7 +65,7 @@ install:
                 -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
                 -H 'Content-Type: application/json'
             )
-            echo $POLICY_RESULT
+            echo 'POLICY_RESULT:'$POLICY_RESULT
             POLICY_ID=$(echo $POLICY_RESULT | ./newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
               echo 'Alert policy found for '{{.ALERT_POLICY_NAME}}' name POLICY_ID:'$POLICY_ID
@@ -83,7 +83,7 @@ install:
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
               -H 'Content-Type: application/json'
           )
-          echo $CONDITION_RESULT
+          echo 'CONDITION_RESULT:'$CONDITION_RESULT
           CONDITION_ID=$(echo $CONDITION_RESULT | ./newrelic utils jq '.data[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id')
           if [ -f infra_condition.json ]; then
             rm -f infra_condition.json
@@ -159,6 +159,34 @@ install:
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
               -L -H 'Content-Type: application/json' \
               -d @infra_condition.json
+
+
+          if [ -f appNames.json ]; then
+            rm -f appNames.json
+          fi
+          sudo tee -a appNames.json > /dev/null <<"EOT"
+          { 
+            "query": "{ actor { account(id: {{.NEW_RELIC_ACCOUNT_ID}}) { id nrql(query: NRQL_QUERY) { results } } } }"
+          }
+          EOT
+          sed -i "s/NRQL_QUERY/\"\"SELECT uniques(appName) as appName from Transaction where host like '{{.HOSTNAME}}%' since 1 hour ago\"\"/g" appNames.json
+          sed -i 's/""/\\"/g' appNames.json
+          APP_NAMES_LOOKUP_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @appNames.json
+          )
+          echo 'APP_NAMES_LOOKUP_RESULT:'$APP_NAMES_LOOKUP_RESULT
+          APP_NAMES=$(echo $APP_NAMES_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.nrql.results[].appName | .[]')
+          if [ -n "$APP_NAMES" ] ; then
+            echo 'Applications found with names:'$APP_NAMES
+            while IFS='" "' read ADDR; do
+              for APP_NAME in "${ADDR[@]}"; do
+                echo 'Creating APM conditions for appName:'$APP_NAME
+              done
+            done <<< "$APP_NAMES"
+          fi
+
       vars:
         ALERT_POLICY_NAME:
           sh: echo 'Golden Signal Policy '$(hostname)
