@@ -214,11 +214,48 @@ install:
                   )
                 echo 'CONDITION_ID_RESULT:'$CONDITION_ID_RESULT
                 CONDITION_ID=$(echo -n $CONDITION_ID_RESULT | ./newrelic utils jq '.conditions[] | select(.entities[] | contains("'$APPLICATION_ID'")) | .id')
+
                 if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
-                  echo 'CONDITION_ID found'
+                  echo 'Alert condition found for {{.ALERT_HIGH_ERROR_RATE_NAME}} name and '$APP_NAME' application CONDITION_ID:'$CONDITION_ID
+                  CURL_METHOD=$(echo -n 'PUT')
+                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/'$CONDITION_ID'.json')
                 else
-                  echo 'CONDITION_ID not found'
+                  echo 'No existing alert condition found for {{.ALERT_HIGH_ERROR_RATE_NAME}} name and '$APP_NAME' application, creating alert condition {{.ALERT_HIGH_ERROR_RATE_NAME}}'
+                  CURL_METHOD=$(echo -n 'POST')
+                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/policies/'$POLICY_ID'.json')
                 fi
+                if [ -f apm_condition.json ]; then
+                  rm -f apm_condition.json
+                fi
+
+                sudo tee -a apm_condition.json > /dev/null <<"EOT"
+          {
+            "condition": {
+                "type": "apm_app_metric",
+                "name": "CONDITION_NAME",
+                "enabled": true,
+                "entities": [ APPLICATION_ID ],
+                "metric": "error_percentage",
+                "condition_scope": "application",
+                "terms": [
+                {
+                    "duration": "5",
+                    "operator": "above",
+                    "threshold": "10",
+                    "priority": "critical",
+                    "time_function": "all"
+                }
+                ]
+            }
+          }
+          EOT
+                sed -i 's/APPLICATION_ID/'$APPLICATION_ID'/g' apm_condition.json
+                sed -i 's/CONDITION_NAME/{{.ALERT_HIGH_ERROR_RATE_NAME}}/g' apm_condition.json
+                curl -X $CURL_METHOD $CURL_URL \
+                    -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+                    -L -H 'Content-Type: application/json' \
+                    -d @apm_condition.json
+
               else
                 echo 'APPLICATION_ID was NOT found'
               fi
