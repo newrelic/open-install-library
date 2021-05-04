@@ -92,12 +92,6 @@ install:
     assert_pre_req:
       cmds:
         - |
-          IS_UNZIP_INSTALLED=$(which unzip | wc -l)
-          if [ "$IS_UNZIP_INSTALLED" -eq 0 ]
-          then
-            echo "unzip is required to run the newrelic install. Please install unzip and re-run the installation." >> /dev/stderr
-            exit 17
-          fi
           IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
           if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]
           then
@@ -108,9 +102,10 @@ install:
     introspector:
       cmds:
         - rm -rf /tmp/dotnet-introspector
-        - curl -s https://virtuoso-testing.s3-us-west-2.amazonaws.com/dotnet-is-linux-x64.zip -o ~/dotnet-is-linux-x64.zip
+        - curl -s https://virtuoso-testing.s3-us-west-2.amazonaws.com/dotnet-is-linux-x64.gz -o /tmp/dotnet-is-linux-x64.gz
         - mkdir -p /tmp/dotnet-introspector
-        - unzip -o ~/dotnet-is-linux-x64.zip -d /tmp/dotnet-introspector > /dev/null
+        - zcat /tmp/dotnet-is-linux-x64.gz > /tmp/dotnet-introspector/nri-lsi-dotnet
+        - rm -f /tmp/dotnet-is-linux-x64.gz
         - chmod -R 777 /tmp/dotnet-introspector
         # nri-lsi-dotnet output looks like "[18044,26844,38720,31448]"
         - /tmp/dotnet-introspector/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > /tmp/dotnet-introspector/dotnet_processes.txt
@@ -125,7 +120,7 @@ install:
             ${NOCOLOR}\n"
             exit 3
           fi
-        - echo "Done with instrospector"
+        - echo "Done with introspector"
 
     gather_services:
       cmds:
