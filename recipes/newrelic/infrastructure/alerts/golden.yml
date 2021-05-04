@@ -169,7 +169,7 @@ install:
             "query": "{ actor { account(id: {{.NEW_RELIC_ACCOUNT_ID}}) { id nrql(query: NRQL_QUERY) { results } } } }"
           }
           EOT
-          sed -i "s/NRQL_QUERY/\"\"SELECT uniques(appName) as appName from Transaction where host like '{{.HOSTNAME}}%' since 1 hour ago\"\"/g" appNames.json
+          sed -i "s/NRQL_QUERY/\"\"SELECT uniques(appName) as appName from Transaction where host like '{{.HOSTNAME}}%' since 1 hours ago\"\"/g" appNames.json
           sed -i 's/""/\\"/g' appNames.json
           APP_NAMES_LOOKUP_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
@@ -180,11 +180,50 @@ install:
           APP_NAMES=$(echo $APP_NAMES_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.nrql.results[].appName | .[]')
           if [ -n "$APP_NAMES" ] ; then
             echo 'Applications found with names:'$APP_NAMES
+            APP_NAME_ARRAY=()
             while IFS='" "' read ADDR; do
               for APP_NAME in "${ADDR[@]}"; do
-                echo 'Creating APM conditions for appName:'$APP_NAME
+                echo 'Storing appName:'$APP_NAME
+                APP_NAME_ARRAY+=($APP_NAME)
               done
             done <<< "$APP_NAMES"
+
+            for APP_NAME in "${APP_NAME_ARRAY[@]}"
+            do
+              APP_NAME=$(echo -n "$APP_NAME" | sed s/^\"//g | sed s/\"\$//g)
+              echo 'Processing APP_NAME:'$APP_NAME
+              FILTER=$(echo -n 'filter[name]='$APP_NAME)
+              APPLICATION_ID_RESULT=$(curl -sX GET $NEW_RELIC_API_URL'/v2/applications.json' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+                -d $FILTER
+                )
+              echo 'APPLICATION_ID_RESULT:'$APPLICATION_ID_RESULT
+              JQ_MATCH=$(echo -n '.applications[] | select(.name=="'$APP_NAME'") |.id')
+              EXEC=$(echo "echo -n '$APPLICATION_ID_RESULT' | ./newrelic utils jq '"$JQ_MATCH"'")
+              if [ -f execJq.sh ]; then
+                rm -f execJq.sh
+              fi
+              echo $EXEC > execJq.sh
+              APPLICATION_ID=$(bash execJq.sh)
+              if [ -n "$APPLICATION_ID" ] && [ $APPLICATION_ID -gt 0 ] ; then
+                echo 'Found APPLICATION_ID:'$APPLICATION_ID
+
+                CONDITION_ID_RESULT=$(curl -sX GET $NEW_RELIC_API_URL'/v2/alerts_conditions.json?policy_id='$POLICY_ID \
+                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
+                  -L
+                  )
+                echo 'CONDITION_ID_RESULT:'$CONDITION_ID_RESULT
+                CONDITION_ID=$(echo -n $CONDITION_ID_RESULT | ./newrelic utils jq '.conditions[]')
+                if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
+                  echo 'CONDITION_ID found'
+                else
+                  echo 'CONDITION_ID not found'
+                fi
+              else
+                echo 'APPLICATION_ID was NOT found'
+              fi
+            done
+
           fi
 
       vars:
@@ -192,3 +231,5 @@ install:
           sh: echo 'Golden Signal Policy '$(hostname)
         ALERT_HIGH_CPU_CONDITION_NAME:
           sh: echo 'High CPU'
+        ALERT_HIGH_RESPONSE_TIME_NAME:
+          sh: echo 'High Response Time'
