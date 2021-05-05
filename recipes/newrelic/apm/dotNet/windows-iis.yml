@@ -41,7 +41,6 @@ install:
         - task: install
         - task: configure
         - task: start
-        - task: ensure_sites_started
 
     verify_continue:
       cmds:
@@ -213,49 +212,4 @@ install:
         - |
           powershell -command '
           iisreset /start | Out-Null
-          '
-
-    ensure_sites_started:
-      ignore_error: true
-      cmds:
-        - |
-          powershell -command '
-          Write-Host ""
-          Write-Host -ForegroundColor Yellow "================================================================================"
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "=                                  Important                                   ="
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "=    Your application needs to be sent traffic to validate the installation.   ="
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "=         Please send approximately 3 requests to your application or          ="
-          Write-Host -ForegroundColor Yellow "=       enter the application URL and this tool will send the requests.        ="
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "================================================================================"
-          Write-Host ""
-
-          # If NEW_RELIC_ASSUME_YES is set to true, will not prompt for input
-          $NEW_RELIC_ASSUME_YES = "{{.NEW_RELIC_ASSUME_YES}}"
-          if ($NEW_RELIC_ASSUME_YES -ieq "false") {
-            Write-Host "Press ENTER to skip or type URL and press ENTER to continue? " -NoNewLine
-            $NEW_RELIC_IIS_URL = $Host.UI.ReadLine()
-            Write-Host ""
-          }
-
-          Write-Host "Sending requests to your applications..."
-          if ($NEW_RELIC_IIS_URL) {
-            Write-Host $NEW_RELIC_IIS_URL
-            while($val -ne 3) {
-              try {
-                $val++
-                Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 5 -Uri $NEW_RELIC_IIS_URL -ErrorAction SilentlyContinue | Out-Null
-              }
-              catch {}
-            }
-          }
-
-          try {
-            Get-WebURL "IIS:\Sites\*" | ForEach-Object { Write-Host $_.ResponseUri.AbsoluteUri }
-          }
-          catch {}
-          Write-Host "Finished sending requests."
           '
