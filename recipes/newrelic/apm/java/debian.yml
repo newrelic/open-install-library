@@ -49,16 +49,97 @@ install:
       label: "Finding Java processes and installing Java agent"
       cmds:
         - |
+          findServerType () {
+            local mainClass=$( echo "$1" | grep -oP '.*\K(?<=mainClass":").*?(?=\")' )
+            if [ "$mainClass" == "org.apache.catalina.startup.Bootstrap" ]; then
+              echo "tomcat"
+              # other server type checks should be added here in else if statements
+            else
+              echo "unkown"
+            fi
+          }
+
+          restart_systemd_service() {
+            local pid=$1
+            local service=`systemctl status $pid | head -n1 | grep -oP "(?<=. )\K\w+(?=\.service)"`
+            if [ -z "$service" ]; then
+              # pid not running as a service
+              return 1
+            else
+              echo "Restarting systemd service ${service}"
+              systemctl restart ${service}
+              return 0
+            fi
+          }
+
+          tomcat_restart_standalone() {
+            local pid=$1
+            local catalinaBase=$2
+            local workDir=$3
+            local catalinaHome=`cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\.\w/]+"`
+            catalinaHome=$(cd $workDir; realpath $catalinaHome)
+            local user=`ps -q $pid -h -o user`
+
+            echo "About to send SIGTERM to Tomcat. It will then be restarted with:"
+            echo "sudo -u $user CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start"
+            echo ""
+            echo "Here we'd ask for user permission."
+            echo ""
+
+            kill -15 $pid
+            echo "need to wait until process is really dead. For now it will sleep for 5 seconds"
+            sleep 5
+            sudo -u $user CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start > /dev/null
+          }
+
+          tomcat() {
+            local pid=$1
+            local initSystem=$2
+            local workDir=$(readlink /proc/$pid/cwd)
+            local catalinaBase=`cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.base=)\K[\.\w/]+"`
+            catalinaBase=$(cd $workDir; realpath $catalinaBase)
+
+            if [ -z "$NEW_RELIC_APP_NAME" ]; then
+              printf "This is the CATALINA_BASE of the service being instrumented: "
+              printf " $catalinaBase"
+              printf "\nEnter an app name: "
+              read -r appName
+            else
+              appName = "$NEW_RELIC_APP_NAME"
+            fi
+
+            if [ ! -f "$catalinaBase/conf/setenv.sh" ]; then
+              touch $catalinaBase/conf/setenv.sh
+            fi
+
+            [ "$initSystem" = "systemd" ] && restart_systemd_service $pid || tomcat_restart_standalone $pid $catalinaBase $workDir
+            echo -e "    \033[1;33mIMPORTANT: Your application needs to be active to transmit transaction data.  If it is a web service, make sure that it is receiving requests.  If it is a background service, make sure that it is performing work. The validation that occurs in the next step will fail if transaction data is not found within the timeout period."
+          }
+
+          dynamicAttach() {
+            local pid=$1
+            echo "starting dynamicAttach to process $pid"
+          }
+
+          INIT_SYSTEM=`cat /proc/1/status | grep -oP 'Name:\s+\K\w+'`
           FOUND_JAVA_PROCESSES=$(nri-lsi-java -list)
           if [ "$FOUND_JAVA_PROCESSES" == "" ] ||  [ "$FOUND_JAVA_PROCESSES" == "[  ]" ]; then
             echo "No Java processes found running on the host" >> /dev/stderr
             exit 3
-          else
-            JAVA_PROCESSES=$(echo "$FOUND_JAVA_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
-            for JAVA_PID in "${JAVA_PROCESSES[@]}"
-            do
-              INTROSPECTION_DATA=$(nri-lsi-java -introspect ${JAVA_PID})
-              DISPLAY_NAME=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=displayName":").*?(?=\")' )
-              LSI_OUTPUT=$(NEW_RELIC_SYNC_STARTUP=true nri-lsi-java -apm ${JAVA_PID} -license {{.NEW_RELIC_LICENSE_KEY}} -appName ${DISPLAY_NAME} -region {{.NEW_RELIC_REGION}})
-            done
           fi
+
+          JAVA_PROCESSES=$(echo "$FOUND_JAVA_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
+          for JAVA_PID in "${JAVA_PROCESSES[@]}"
+          do
+            INTROSPECTION_DATA=$( nri-lsi-java -introspect ${JAVA_PID} )
+            SERVER_TYPE=$( findServerType $INTROSPECTION_DATA )
+
+            case $SERVER_TYPE in
+            "tomcat")
+              tomcat $JAVA_PID $INIT_SYSTEM
+              ;;
+            *)
+              dynamicAttach $JAVA_PID
+              ;;
+            esac
+          done
