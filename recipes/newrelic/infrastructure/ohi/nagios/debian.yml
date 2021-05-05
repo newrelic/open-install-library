@@ -69,20 +69,15 @@ install:
       label: "Installing Nagios integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
         - |
-          sudo apt-get install nri-nagios -y -qq
+          sudo apt-get install nri-nagios -y -qq --no-upgrade
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/nagios-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/nagios-config.yml;
-          fi
+          if [ ! -f /etc/newrelic-infra/integrations.d/nagios-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo cp /etc/newrelic-infra/integrations.d/nagios-config.yml.sample /etc/newrelic-infra/integrations.d/nagios-config.yml
 
-          sudo cp /etc/newrelic-infra/integrations.d/nagios-config.yml.sample /etc/newrelic-infra/integrations.d/nagios-config.yml;
-
-        - |
-          sudo tee /etc/newrelic-infra/integrations.d/service_checks.yml > /dev/null <<"EOT"
+            sudo tee /etc/newrelic-infra/integrations.d/service_checks.yml > /dev/null <<"EOT"
           # This file must have permissions 0600 on linux.
           # File permissions are not checked on Windows, so
           # it is the user's responsibility to set permissions
@@ -102,6 +97,7 @@ install:
               command: ["/usr/local/nagios/libexec/check_ssh", "localhost"]
               parse_output: true
           EOT
+          fi
         - |
           sudo chmod 0600 /etc/newrelic-infra/integrations.d/service_checks.yml
 

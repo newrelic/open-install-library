@@ -79,18 +79,15 @@ install:
       label: "Installing Memcached integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-memcached -y
+          command -v nri-memcached &>/dev/null || sudo yum install nri-memcached -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/memcached-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/memcached-config.yml;
-          fi
-        - |
-          if [ -z {{.NR_CLI_USERNAME}} ] && [ -z {{.NR_CLI_PASSWORD}} ]; then
-            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/memcached-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+
+            if [ -z {{.NR_CLI_USERNAME}} ] && [ -z {{.NR_CLI_PASSWORD}} ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.memcached
 
           instances:
@@ -104,8 +101,8 @@ install:
                 # Defaults to 11211
                 port: {{.NR_CLI_PORT}}
           EOT
-          else
-            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.memcached
 
           instances:
@@ -125,6 +122,7 @@ install:
                 # authentication is enabled.
                 password: {{.NR_CLI_PASSWORD}}
           EOT
+            fi
           fi
 
     restart:

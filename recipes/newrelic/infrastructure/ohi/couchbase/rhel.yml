@@ -88,20 +88,16 @@ install:
       label: "Installing Couchbase integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-couchbase -y
+          command -v nri-couchbase &>/dev/null || sudo yum install nri-couchbase -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/couchbase-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/couchbase-config.yml;
-          fi
+          if [ ! -f /etc/newrelic-infra/integrations.d/couchbase-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo touch /etc/newrelic-infra/integrations.d/couchbase-config.yml
 
-          sudo touch /etc/newrelic-infra/integrations.d/couchbase-config.yml;
-        - |
-          if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+            if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
+              sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.couchbase
 
           instances:
@@ -115,8 +111,8 @@ install:
                 password: {{.NR_CLI_API_PASSWORD}}
                 use_ssl: {{.NR_CLI_API_USE_SSL}}
           EOT
-          else
-            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.couchbase
 
           instances:
@@ -132,6 +128,7 @@ install:
                 ca_bundle_dir: {{.NR_CLI_API_CA_BUNDLE_DIR}}
                 ca_bundle_file: {{.NR_CLI_API_CA_BUNDLE_FILE}}
           EOT
+            fi
           fi
 
         - sudo systemctl restart newrelic-infra.service

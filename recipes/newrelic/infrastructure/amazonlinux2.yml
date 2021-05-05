@@ -89,25 +89,23 @@ install:
     setup_license:
       cmds:
         - |
-          if [ -f /etc/newrelic-infra.yml ]; then
-            sudo rm /etc/newrelic-infra.yml;
-          fi
-          sudo touch /etc/newrelic-infra.yml;
-        - |
-          sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra.yml ]; then
+            sudo touch /etc/newrelic-infra.yml
+
+            sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
           license_key: {{.NEW_RELIC_LICENSE_KEY}}
           enable_process_metrics: true
           EOT
-        - |
-          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-            echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+            if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+              echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+            fi
           fi
 
     install_infra:
       cmds:
         - sudo curl -s -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
         - sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-        - sudo yum -y -q install newrelic-infra
+        - command -v newrelic-infra &>/dev/null || sudo yum -y -q install newrelic-infra
       silent: true
 
     restart:

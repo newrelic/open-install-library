@@ -106,19 +106,15 @@ install:
       label: "Installing MySQL integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo zypper -n ref -r newrelic-infra
         - |
-          sudo zypper -n install nri-mysql
+          command -v nri-mysql &>/dev/null || sudo zypper -n install nri-mysql
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
-          fi
+          if [ ! -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo touch /etc/newrelic-infra/integrations.d/mysql-config.yml
 
-          sudo touch /etc/newrelic-infra/integrations.d/mysql-config.yml;
-        - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
+            sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mysql
 
           instances:
@@ -135,6 +131,7 @@ install:
                 extended_myisam_metrics: true
                 remote_monitoring: true
           EOT
+          fi
 
     restart:
       cmds:

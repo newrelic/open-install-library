@@ -75,16 +75,13 @@ install:
       label: "Installing HAProxy integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-haproxy -y
+          command -v nri-haproxy &>/dev/null || sudo yum install nri-haproxy -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/haproxy-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/haproxy-config.yml;
-          fi
-        - |
+          if [ ! -f /etc/newrelic-infra/integrations.d/haproxy-config.yml ]; then
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+
           sudo tee -a /etc/newrelic-infra/integrations.d/haproxy-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.haproxy
           instances:
@@ -101,6 +98,7 @@ install:
                 password: {{.NR_CLI_PASSWORD}}
                 cluster_name: {{.NR_CLI_CLUSTER_NAME}}
           EOT
+          fi
         - |
           sudo systemctl restart newrelic-infra.service
 

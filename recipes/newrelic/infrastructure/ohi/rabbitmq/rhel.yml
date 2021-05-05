@@ -102,18 +102,15 @@ install:
       label: "Installing RabbitMQ integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-rabbitmq -y
+          command -v nri-rabbitmq &>/dev/null || sudo yum install nri-rabbitmq -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/rabbitmq-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/rabbitmq-config.yml;
-          fi
-        - |
-          if [ {{.NR_CLI_SSL}} == false ]; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/rabbitmq-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+
+            if [ {{.NR_CLI_SSL}} == false ]; then
+              sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.rabbitmq
 
           instances:
@@ -133,8 +130,8 @@ install:
                 vhosts: '{{.NR_CLI_VHOSTS}}'
                 vhosts_regexes: 
           EOT
-          else
-            sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.rabbitmq
 
           instances:
@@ -156,6 +153,7 @@ install:
                 vhosts: '{{.NR_CLI_VHOSTS}}'
                 vhosts_regexes:
           EOT
+            fi
           fi
 
         - sudo systemctl restart newrelic-infra.service

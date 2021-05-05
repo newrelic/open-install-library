@@ -72,18 +72,15 @@ install:
       label: "Installing HAProxy integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
         - |
-          sudo apt-get install nri-haproxy -y
+          sudo apt-get install nri-haproxy -y -qq --no-upgrade
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/haproxy-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/haproxy-config.yml;
-          fi
-          sudo touch /etc/newrelic-infra/integrations.d/haproxy-config.yml;
-        - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/haproxy-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/haproxy-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo touch /etc/newrelic-infra/integrations.d/haproxy-config.yml
+
+            sudo tee -a /etc/newrelic-infra/integrations.d/haproxy-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.haproxy
 
           instances:
@@ -100,6 +97,7 @@ install:
                 password: {{.NR_CLI_PASSWORD}}
                 cluster_name: {{.NR_CLI_CLUSTER_NAME}}
           EOT
+          fi
 
     restart:
       cmds:

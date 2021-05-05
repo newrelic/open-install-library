@@ -100,20 +100,16 @@ install:
       label: "Installing Elasticsearch integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
         - |
-          sudo apt-get install nri-elasticsearch -y
+          sudo apt-get install nri-elasticsearch -y -qq --no-upgrade
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/elasticsearch-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/elasticsearch-config.yml;
-          fi
+          if [ ! -f /etc/newrelic-infra/integrations.d/elasticsearch-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo touch /etc/newrelic-infra/integrations.d/elasticsearch-config.yml
 
-          sudo touch /etc/newrelic-infra/integrations.d/elasticsearch-config.yml;
-        - |
-          if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
+            if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
+              sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.elasticsearch
 
           instances:
@@ -132,8 +128,8 @@ install:
                 collect_indices: true
                 collect_primaries: true
           EOT
-          else
-            sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee -a /etc/newrelic-infra/integrations.d/elasticsearch-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.elasticsearch
 
           instances:
@@ -154,6 +150,7 @@ install:
                 collect_indices: true
                 collect_primaries: true
           EOT
+            fi
           fi
 
     restart:

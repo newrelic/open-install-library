@@ -82,19 +82,14 @@ install:
       label: "Installing NGINX integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-nginx -y -q
+          command -v nri-nginx &>/dev/null || sudo yum install nri-nginx -y -q
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/nginx-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/nginx-config.yml;
-          fi
-
-          sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml;
-        - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/nginx-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml
+            sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.nginx
 
           instances:
@@ -135,6 +130,7 @@ install:
                 # status_url is used to identify the monitored entity to which the inventory will be attached.
                 status_url: {{.NR_CLI_STUB_STATUS_URL}}
           EOT
+          fi
         - |
           sudo systemctl restart newrelic-infra.service
 

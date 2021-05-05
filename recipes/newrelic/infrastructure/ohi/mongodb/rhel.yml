@@ -130,18 +130,15 @@ install:
       label: "Installing MongoDB integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-mongodb -y
+          command -v nri-mongodb || sudo yum install nri-mongodb -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/mongodb-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/mongodb-config.yml;
-          fi
-        - |
-          if [ {{.NR_CLI_SSL}} == true ]; then
-            sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/mongodb-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+
+            if [ {{.NR_CLI_SSL}} == true ]; then
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mongodb
           instances:
             - name: all
@@ -168,8 +165,8 @@ install:
                 # Client Certificate to present to the server (optional)
                 pem_key_file: {{.NR_CLI_CLIENT_CERT_FILE}}
           EOT
-          else
-            sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mongodb
           instances:
             - name: all
@@ -192,6 +189,7 @@ install:
                 # Connect using SSL
                 ssl: false
           EOT
+            fi
           fi
 
     restart:

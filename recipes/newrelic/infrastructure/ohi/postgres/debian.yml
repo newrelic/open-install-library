@@ -120,19 +120,16 @@ install:
       label: "Installing PostgreSQL integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
         - |
-          sudo apt-get install nri-postgresql -y
+          sudo apt-get install nri-postgresql -y -qq --no-upgrade
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
-          fi
-          sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
-        - |
-          if [ {{.NR_CLI_SSL}} == true ]; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml
+
+            if [ {{.NR_CLI_SSL}} == true ]; then
+              sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.postgresql
           instances:
             - name: postgres
@@ -152,8 +149,8 @@ install:
                 ssl_key_location: {{.NR_CLI_CERT_KEY}}
                 timeout: 10
           EOT
-          else
-            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.postgresql
           instances:
             - name: postgres
@@ -169,6 +166,7 @@ install:
                 enable_ssl: false
                 timeout: 10
           EOT
+            fi
           fi
 
     restart:

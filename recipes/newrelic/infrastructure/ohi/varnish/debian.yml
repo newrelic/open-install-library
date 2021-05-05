@@ -70,18 +70,15 @@ install:
       label: "Installing Varnish Cache integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
         - |
-          sudo apt-get install nri-varnish -y
+          sudo apt-get install nri-varnish -y -qq --no-upgrade
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/varnish-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/varnish-config.yml;
-          fi
-        - |
-          if [ -z {{.NR_CLI_PARAMS_CONFIG_FILE}} ]; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/varnish-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/varnish-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+
+            if [ -z {{.NR_CLI_PARAMS_CONFIG_FILE}} ]; then
+              sudo tee -a /etc/newrelic-infra/integrations.d/varnish-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.varnish
           instances:
             - name: varnish
@@ -89,8 +86,8 @@ install:
               arguments:
                 instance_name: {{.NR_CLI_INSTANCE_NAME}}
           EOT
-          else
-            sudo tee -a /etc/newrelic-infra/integrations.d/varnish-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee -a /etc/newrelic-infra/integrations.d/varnish-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.varnish
           instances:
             - name: varnish
@@ -99,6 +96,7 @@ install:
                 params_config_file: {{.NR_CLI_PARAMS_CONFIG_FILE}}
                 instance_name: {{.NR_CLI_INSTANCE_NAME}} 
           EOT
+            fi
           fi
 
     restart:

@@ -91,25 +91,20 @@ install:
       label: "Installing JMX integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
         - |
-          sudo apt-get install nri-jmx -y
+          sudo apt-get install nri-jmx -y -qq --no-upgrade
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/jmx-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/jmx-config.yml;
-          fi
+          if [ ! -f /etc/newrelic-infra/integrations.d/jmx-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo cp /etc/newrelic-infra/integrations.d/jvm-metrics.yml.sample /etc/newrelic-infra/integrations.d/jvm-metrics.yml
 
-          sudo cp /etc/newrelic-infra/integrations.d/jvm-metrics.yml.sample /etc/newrelic-infra/integrations.d/jvm-metrics.yml;
-
-        - |
-          IS_TOMCAT=$(ps -aux | grep -o tomcat | wc -l)
-          IS_JBOSS=$(ps -aux | grep -o jboss | wc -l)
-          if [ "{{.NR_CLI_SSL_ENABLED}}" == "n" ]; then
-            if [ "$IS_TOMCAT" -gt 1 ]; then
-              sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
-              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+            IS_TOMCAT=$(ps -aux | grep -o tomcat | wc -l)
+            IS_JBOSS=$(ps -aux | grep -o jboss | wc -l)
+            if [ "{{.NR_CLI_SSL_ENABLED}}" == "n" ]; then
+              if [ "$IS_TOMCAT" -gt 1 ]; then
+                sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
+                sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
           instances: 
@@ -122,8 +117,8 @@ install:
                 jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml,/etc/newrelic-infra/integrations.d/tomcat-metrics.yml"
           EOT
-            elif [ "$IS_JBOSS" -gt 1 ]; then
-              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+              elif [ "$IS_JBOSS" -gt 1 ]; then
+                sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
           instances: 
@@ -135,8 +130,8 @@ install:
                 connection_url: 'service:jmx:remote+http://{{.NR_CLI_JMX_HOST}}:{{.NR_CLI_JMX_PORT}}'
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
           EOT
-            else
-              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+              else
+                sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
           instances: 
@@ -149,11 +144,11 @@ install:
                 jmx_pass: {{.NR_CLI_JMX_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
           EOT
-            fi
-          else
-            if [ "$IS_TOMCAT" -gt 1 ]; then
-              sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
-              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+              fi
+            else
+              if [ "$IS_TOMCAT" -gt 1 ]; then
+                sudo cp /etc/newrelic-infra/integrations.d/tomcat-metrics.yml.sample /etc/newrelic-infra/integrations.d/tomcat-metrics.yml;
+                sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
           instances: 
@@ -170,8 +165,8 @@ install:
                 trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml,/etc/newrelic-infra/integrations.d/tomcat-metrics.yml"
           EOT
-            elif [ "$IS_JBOSS" -gt 1 ]; then
-              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+              elif [ "$IS_JBOSS" -gt 1 ]; then
+                sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
           instances: 
@@ -187,8 +182,8 @@ install:
                 trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
           EOT
-            else
-              sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
+              else
+                sudo tee /etc/newrelic-infra/integrations.d/jmx-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.jmx
 
           instances: 
@@ -205,6 +200,7 @@ install:
                 trust_store_password: {{.NR_CLI_TRUSTSTORE_PASSWORD}}
                 collection_files: "/etc/newrelic-infra/integrations.d/jvm-metrics.yml"
           EOT
+              fi
             fi
           fi
 

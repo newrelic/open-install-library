@@ -85,20 +85,15 @@ install:
       label: "Installing Cassandra integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-cassandra -y
+          command -v nri-cassandra &>/dev/null || sudo yum install nri-cassandra -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/cassandra-config.yml;
-          fi
+          if [ ! -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
 
-          sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
-
-        - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
+            sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+            sudo tee -a /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.cassandra
 
           instances: 
@@ -117,6 +112,7 @@ install:
                 config_path: /etc/cassandra/cassandra.yaml
                 remote_monitoring: true
           EOT
+          fi
 
     restart:
       cmds:

@@ -84,19 +84,16 @@ install:
       label: "Installing Couchbase integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
         - |
-          sudo apt-get install nri-couchbase -y
+          sudo apt-get install nri-couchbase -y -qq --no-upgrade
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/couchbase-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/couchbase-config.yml;
-          fi
-          sudo touch /etc/newrelic-infra/integrations.d/couchbase-config.yml;
-        - |
-          if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/couchbase-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo touch /etc/newrelic-infra/integrations.d/couchbase-config.yml
+
+            if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
+              sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.couchbase
           instances:
             - name: couchbase
@@ -109,8 +106,8 @@ install:
                 password: {{.NR_CLI_API_PASSWORD}}
                 use_ssl: {{.NR_CLI_API_USE_SSL}}
           EOT
-          else
-            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+            else
+              sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.couchbase
           instances:
             - name: couchbase
@@ -125,6 +122,7 @@ install:
                 ca_bundle_dir: {{.NR_CLI_API_CA_BUNDLE_DIR}}
                 ca_bundle_file: {{.NR_CLI_API_CA_BUNDLE_FILE}}
           EOT
+            fi
           fi
 
     restart:

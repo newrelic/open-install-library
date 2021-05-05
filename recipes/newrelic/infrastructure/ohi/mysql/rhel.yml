@@ -109,20 +109,14 @@ install:
       label: "Installing MySQL integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
         - |
-          sudo yum install nri-mysql -y
+          command -v nri-mysql &>/dev/null || sudo yum install nri-mysql -y
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
-          fi
-
-          sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
-
-        - |
-          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
+          if [ ! -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
+            sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+            sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml
+            sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
           integration_name: com.newrelic.mysql
 
           instances:
@@ -139,6 +133,7 @@ install:
                 extended_myisam_metrics: true
                 remote_monitoring: true
           EOT
+          fi
 
     restart:
       cmds:
