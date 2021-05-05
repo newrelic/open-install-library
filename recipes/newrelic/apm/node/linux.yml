@@ -14,14 +14,92 @@ keywords:
   - node
 
 processMatch:
-  - node
+  - pm2
+
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+  filter: '"`tags.language` = ''nodejs''"'
+
+inputVars:
+  - name: 'ACCEPT_RESTART'
+    prompt: Using the command will automatically stop and attempt to restart all instrumentable applications, with all the same context, during the installation process.
+    default: 'Y'
 
 install:
-  version: "3"
+  version: '3'
   silent: true
 
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: install_agent
+
+    assert_pre_req:
+      cmds:
         - |
-          echo ""
+          if [ {{.ACCEPT_RESTART}} != "y" ] && [ {{.ACCEPT_RESTART}} != "Y" ] ; then
+            echo -e "If you would like to manually install, please see our Node standard installation.\nhttps://docs.newrelic.com/docs/agents/nodejs-agent/installation-configuration/install-nodejs-agent/" >> /dev/stderr
+            exit 130
+          fi
+        - |
+          sudo -i -u $SUDO_USER command -v node > /dev/null
+          if [ $? -ne 0 ] ; then
+            echo "A valid Node.js installation is required." >> /dev/stderr
+            exit 22
+          fi
+        - |
+          sudo -i -u $SUDO_USER command -v npm > /dev/null
+          if [ $? -ne 0 ] ; then
+            echo "A valid NPM installation is required." >> /dev/stderr
+            exit 22
+          fi
+        - |
+          sudo -i -u $SUDO_USER command -v pm2 > /dev/null
+          if [ $? -ne 0 ] ; then
+            echo "A valid PM2 installation is required." >> /dev/stderr
+            exit 22
+          fi
+        - |
+          IS_PM2_RUNNING=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
+          if [ $IS_PM2_RUNNING -eq 0 ] ; then
+            echo "The PM2 process manager is required." >> /dev/stderr
+            exit 22
+          fi
+
+    setup:
+      label: 'Installing Node Introspector...'
+      cmds:
+        - |
+          sudo -i -u $SUDO_USER npm i -g @newrelic/introspector-node 1> /dev/null 2> /dev/null || true
+
+    install_agent:
+      label: 'Finding Node processes and installing Node agent'
+      cmds:
+        - |
+          FOUND_PROCESSES=$(sudo -i -u $SUDO_USER newrelic-introspector-node list)
+          if [ "$FOUND_PROCESSES" == "" ] ||  [ "$FOUND_PROCESSES" == "[  ]" ]; then
+            echo "No Node processes found running on the host" >> /dev/stderr
+            exit 1
+          else
+            PROCESSES=$(echo "$FOUND_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
+            for PID in "${PROCESSES[@]}"
+            do
+              INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER newrelic-introspector-node introspect --pid ${PID})
+              if [ -z "$NEW_RELIC_APP_NAME" ]; then
+               COMMAND=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=pm_exec_path":").*?(?=\")' )
+                printf "This is the path to the service being instrumented: "
+                printf " $COMMAND"
+                printf "\nEnter an app name: "
+                read -r appName
+              else
+                appName = "$NEW_RELIC_APP_NAME"
+              fi
+              LSI_OUTPUT=$(sudo -i -u $SUDO_USER NEW_RELIC_REGION="${NEW_RELIC_REGION}" newrelic-introspector-node instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${appName}") 1> /dev/null 2> /dev/null || true
+            done
+
+            echo -e "    \033[1;33mIMPORTANT: Your application needs to be active to transmit transaction data.  If it is a web service, make sure that it is receiving requests.  If it is a background service, make sure that it is performing work. The validation that occurs in the next step will fail if transaction data is not found within the timeout period."
+          fi
