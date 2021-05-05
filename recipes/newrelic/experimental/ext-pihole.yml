@@ -18,7 +18,7 @@ keywords:
   - raspberrypi
   - infrastructure
 
-processMatch: 
+processMatch:
   - pihole-FTL
 
 validationNrql: "FROM Metric SELECT count(*) where metricName like 'pihole_%' facet piHoleName since 10 minutes ago"
@@ -113,15 +113,22 @@ install:
     teardown_existing:
       cmds:
         - |
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            sudo systemctl stop prometheus
-            sudo systemctl stop pihole_exporter
-          else
-            if [ {{.IS_INITCTL}} -gt 0 ]; then
-              sudo initctl stop prometheus
-              sudo initctl stop pihole_exporter              
+          if [ "{{.NR_INSTALL_PROMETHEUS}}" == "y" ]; then
+            if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+              sudo systemctl stop prometheus
+            elif [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl stop prometheus          
             else
               sudo /etc/init.d/prometheus stop
+            fi
+          fi
+
+          if [ "{{.NR_INSTALL_PIHOLE_EXPORTER}}" == "y" ]; then
+            if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+              sudo systemctl stop pihole_exporter
+            elif [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl stop pihole_exporter              
+            else
               sudo /etc/init.d/pihole_exporter stop
             fi
           fi
