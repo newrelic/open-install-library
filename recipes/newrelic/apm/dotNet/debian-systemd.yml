@@ -97,6 +97,22 @@ install:
             echo "This installation recipe for the New Relic .NET agent on Linux only supports services managed by 'systemd'." >> /dev/stderr
             exit 20
           fi
+        - |
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 cat:13 tee:14"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+            echo "tool=$tool, code=$code"
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo "This installation recipe for the New Relic .NET agent on Linux requires '${tool}' to be installed." >> /dev/stderr
+              exit ${code}
+            fi
+          done
 
     introspector:
       cmds:
