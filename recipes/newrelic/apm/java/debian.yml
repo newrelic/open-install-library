@@ -49,26 +49,63 @@ install:
       label: "Finding Java processes and installing Java agent"
       cmds:
         - |
+          assumeYes() {
+            echo "{{.NEW_RELIC_ASSUME_YES}}"
+          }
+
+          testMode() {
+            echo "{{.NEW_RELIC_TEST_MODE}}"
+          }
+
           findServerType () {
             local mainClass=$( echo "$1" | grep -oP '.*\K(?<=mainClass":").*?(?=\")' )
-            if [ "$mainClass" == "org.apache.catalina.startup.Bootstrap" ]; then
+            if [[ "$mainClass" == "org.apache.catalina.startup.Bootstrap" ]]; then
               echo "tomcat"
               # other server type checks should be added here in else if statements
             else
               echo "unkown"
             fi
+            return 0
           }
 
-          restart_systemd_service() {
+          # requires that a variable appName exists and will update it
+          promptAppName() {
+            local default=$1
+            echo -n "Enter an app name (default: $default): "
+            read -r appName
+            if [[ -z "$appName" ]]; then
+              appName=$default
+            fi
+          }
+
+          promptProceed() {
+            echo -n "Proceed (Y/n): "
+            read -r answer
+            if [[ -n "$answer" ]] && [[ "${answer::1}" != "Y" ]] && [[ "${answer::1}" != "y" ]]; then
+              return $(false)
+            fi
+            return $(true)
+          }
+
+          systemd_restart_service() {
             local pid=$1
-            local service=`systemctl status $pid | head -n1 | grep -oP "(?<=. )\K\w+(?=\.service)"`
+            local service=$(systemctl status $pid | head -n1 | grep -oP "(?<=. )\K\w+(?=\.service)")
             if [ -z "$service" ]; then
-              # pid not running as a service
-              return 1
+              echo "service not found"
+              return 1;
             else
-              echo "Restarting systemd service ${service}"
-              systemctl restart ${service}
-              return 0
+              if [[ $(assumeYes) != "true" ]]; then
+                echo "The installation needs to restart the systemd service $service to complete the process."
+                promptProceed
+                if [[ $? -gt 0 ]]; then
+                  echo "You need to restart the service to complete the installation."
+                  return 130
+                fi
+              fi
+              if [[ $(testMode) != "true" ]]; then
+                systemctl restart ${service}
+              fi
+              return 0;
             fi
           }
 
@@ -76,44 +113,49 @@ install:
             local pid=$1
             local catalinaBase=$2
             local workDir=$3
-            local catalinaHome=`cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\.\w/]+"`
+            local catalinaHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\.\w/]+")
             catalinaHome=$(cd $workDir; realpath $catalinaHome)
+            local jreHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "\K.*(?=/bin/java )")
             local user=`ps -q $pid -h -o user`
 
-            echo "About to send SIGTERM to Tomcat. It will then be restarted with:"
-            echo "sudo -u $user CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start"
-            echo ""
-            echo "Here we'd ask for user permission."
-            echo ""
+            if [[ $(assumeYes) != "true" ]]; then
+              echo "The installation needs to restart the Tomcat server."
+              echo "A SIGTERM will be sent to Tomcat and it will then be restarted with:"
+              echo "sudo -u $user JRE_HOME=$jreHome CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start"
+              promptProceed
+              if [[ $? -gt 0 ]]; then
+                echo "You need to restart the service to complete the installation."
+                return 130
+              fi
+            fi
 
-            kill -15 $pid
-            echo "need to wait until process is really dead. For now it will sleep for 5 seconds"
-            sleep 5
-            sudo -u $user CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start > /dev/null
+            if [[ $(testMode) != "true" ]]; then
+              kill -15 $pid
+              echo "need to wait until process is really dead. For now it will sleep for 5 seconds"
+              sleep 5
+              sudo -u $user JRE_HOME=$jreHome CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start > /dev/null
+            fi
           }
 
           tomcat() {
             local pid=$1
             local initSystem=$2
             local workDir=$(readlink /proc/$pid/cwd)
-            local catalinaBase=`cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.base=)\K[\.\w/]+"`
+            local catalinaBase=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.base=)\K[\.\w/]+")
             catalinaBase=$(cd $workDir; realpath $catalinaBase)
+            local appName="{{.HOSTNAME}}"
 
-            if [ -z "$NEW_RELIC_APP_NAME" ]; then
-              printf "This is the CATALINA_BASE of the service being instrumented: "
-              printf " $catalinaBase"
-              printf "\nEnter an app name: "
-              read -r appName
+            if [[ -n "$NEW_RELIC_APP_NAME" ]]; then
+              appName="$NEW_RELIC_APP_NAME"
             else
-              appName = "$NEW_RELIC_APP_NAME"
+              if [[ $(assumeYes) != "true" ]]; then
+                echo ""
+                echo "This is the CATALINA_BASE of the service being instrumented: $catalinaBase"
+                promptAppName $appName
+              fi
             fi
 
-            if [ ! -f "$catalinaBase/conf/setenv.sh" ]; then
-              touch $catalinaBase/conf/setenv.sh
-            fi
-
-            [ "$initSystem" = "systemd" ] && restart_systemd_service $pid || tomcat_restart_standalone $pid $catalinaBase $workDir
-            echo -e "    \033[1;33mIMPORTANT: Your application needs to be active to transmit transaction data.  If it is a web service, make sure that it is receiving requests.  If it is a background service, make sure that it is performing work. The validation that occurs in the next step will fail if transaction data is not found within the timeout period."
+            [[ "$initSystem" == "systemd" ]] && systemd_restart_service $pid || tomcat_restart_standalone $pid $catalinaBase $workDir
           }
 
           dynamicAttach() {
@@ -128,7 +170,7 @@ install:
             exit 3
           fi
 
-          JAVA_PROCESSES=$(echo "$FOUND_JAVA_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//")
+          JAVA_PROCESSES=$(echo "$FOUND_JAVA_PROCESSES" | sed -e "s/\[ //" | sed -e "s/ \]//" | sed "s/,/\n/g")
           for JAVA_PID in "${JAVA_PROCESSES[@]}"
           do
             INTROSPECTION_DATA=$( nri-lsi-java -introspect ${JAVA_PID} )
