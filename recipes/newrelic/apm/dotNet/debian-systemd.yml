@@ -234,11 +234,18 @@ install:
         # For each PID, get the port(s) it is listening on by inspecting /proc/${pid}/fd (open files)
         # and comparing them with open TCP ports in /proc/net/tcp
         - |
+
+          realAwk=$(readlink -f $(which awk))
+          awkArgs=''
+          if [[ "${realAwk}" == "/usr/bin/gawk" ]]; then
+            awkArgs="--non-decimal-data"
+          fi
+
           for pid in `cat /tmp/dotnet-introspector/dotnet_service_pids.txt`; do
             for socket in $(sudo ls -l /proc/${pid}/fd |grep socket |sed 's/.*\[//' |sed 's/\]//' |uniq); do
               hexport=$(sudo grep ${socket} /proc/net/tcp |awk '{print $2}' |cut -d':' -f2)
               if [[ "${hexport}" -ne "" ]]; then
-                echo "${hexport}" | awk --non-decimal-data '{ printf("%d\n","0x"$1) }' | tee -a /tmp/dotnet-introspector/ports.txt
+                echo "${hexport}" | awk $awkArgs '{ printf("%d\n","0x"$1) }' | tee -a /tmp/dotnet-introspector/ports.txt
               fi
             done
           done
