@@ -159,13 +159,7 @@ install:
 
           $uninstallIds = Find-UninstallGuids -Match "New Relic .NET Agent"
           foreach ($uninstallId in $uninstallIds) {
-            try {
-              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-              Invoke-Expression $uninstallCommand -ErrorAction SilentlyContinue | Out-Null
-              # wait here to allow uninstall command to complete since it returns without waiting
-              Start-Sleep -s 15
-            }
-            catch {}
+            Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/x $uninstallId" -Wait
           }
           '
 
@@ -173,11 +167,37 @@ install:
       cmds:
         - |
           powershell -command '
-          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
-          (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi")
-          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} | Out-Null
+          try {
+            [Net.ServicePointManager]::SecurityProtocol = "tls";
+            [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+          }
+          catch {}
+
+          try {
+            (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi")
+          }
+          catch {
+            Write-Host -ForegroundColor Red "Failed to download New Relic .NET Agent" 
+            $errorCode = 8
+
+            switch ($_.Exception.GetBaseException()) {
+              { $_ -is [Net.WebException] }            { $errorCode = 8 }
+              { $_ -is [IO.IOException] }              { $errorCode = 8 }
+              { $_ -is [UnauthorizedAccessException] } { $errorCode = 8 }
+            }
+
+            exit $errorCode
+          }
+
+          $installCode = (Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/i","$env:TEMP\NewRelicDotNetAgent_x64.msi","NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" -PassThru -Wait -RedirectStandardOutput ".\NUL").ExitCode
+          
+          # https://docs.microsoft.com/en-us/windows/win32/msi/error-codes
+          if (@(0,1641,3010) -NotContains $installCode) {
+            Write-Host -ForegroundColor Red "Failed to install New Relic .NET Agent"
+            exit 8
+          }
           '
-        - echo "New Relic .NET agent installed"
+        - echo "New Relic .NET Agent installed"
 
     configure:
       cmds:
@@ -206,7 +226,7 @@ install:
           }
           $xdoc.Save($configPath)
           '
-        - echo "New Relic .NET agent configured"
+        - echo "New Relic .NET Agent configured"
 
     start:
       cmds:
