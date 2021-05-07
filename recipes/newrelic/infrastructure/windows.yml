@@ -78,11 +78,35 @@ install:
     install:
       cmds:
         - powershell -command '(New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/infrastructure_agent/windows/newrelic-infra.msi", "$env:TEMP\newrelic-infra.msi");'
-        - powershell -command '$LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"; msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null;'
+        - |
+          powershell -command '
+          $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
+          $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
+
+          $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
+          $STAGING = "false"
+
+          if ($NEW_RELIC_REGION -ilike "staging") {
+            $STAGING = "true"
+          }
+
+          if (Test-Path $InfraConfig) {
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
+
+            (Get-Content $InfraConfig) | Foreach-Object {
+              $_ -replace "^license_key: .*", ("license_key: " + $LICENSE_KEY) `
+                 -replace "^enable_process_metrics: .*", "enable_process_metrics: true" `
+                 -replace "^staging: .*", ("staging: " + $STAGING)
+            } | Set-Content $InfraConfig
+          } else {
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
+
+            Add-Content -Path $InfraConfig -Value "enable_process_metrics: true" -Force
+            Add-Content -Path $InfraConfig -Value "staging: $STAGING" -Force
+          }
+          '
         - powershell -command '(New-Object System.Net.WebClient).DownloadFile("https://aka.ms/vs/16/release/vc_redist.x64.exe", "$env:TEMP\vc_redist.x64.exe");'
         - powershell -command 'start-process -FilePath "$env:TEMP\vc_redist.x64.exe" -ArgumentList "/install /q /norestart" -Verb RunAs -wait | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml" -Value "enable_process_metrics`:` true" -Force;'
-        - powershell -command '$NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"; if ($NEW_RELIC_REGION -ilike "staging") { Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml" -Value "staging`:` true" -Force; };'
         - powershell -command 'net start newrelic-infra'
         - echo "New Relic infrastructure agent for Windows installed and started"
 

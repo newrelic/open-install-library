@@ -89,18 +89,22 @@ install:
     setup_license:
       cmds:
         - |
+          # Check if we are in staging
+          [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ] \
+          && STAGING=true \
+          || STAGING=false
+
           if [ -f /etc/newrelic-infra.yml ]; then
-            sudo rm /etc/newrelic-infra.yml;
-          fi
-          sudo touch /etc/newrelic-infra.yml;
-        - |
-          sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
+            sed -i "s/^\(license_key: \).*/\1{{.NEW_RELIC_LICENSE_KEY}}/" /etc/newrelic-infra.yml
+            sed -i "s/^\(enable_process_metrics: \).*/\1true/" /etc/newrelic-infra.yml
+            sed -i "s/^\(staging: \).*/\1$STAGING/" /etc/newrelic-infra.yml
+          else
+            sudo touch /etc/newrelic-infra.yml
+            sudo tee /etc/newrelic-infra.yml > /dev/null <<EOT
           license_key: {{.NEW_RELIC_LICENSE_KEY}}
           enable_process_metrics: true
+          staging: $STAGING
           EOT
-        - |
-          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-            echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
           fi
 
     install_infra:
