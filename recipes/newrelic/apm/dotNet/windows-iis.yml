@@ -177,10 +177,11 @@ install:
             (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi")
           }
           catch {
-            Write-Host -ForegroundColor Red "Failed to download New Relic .NET Agent" 
+            $baseException = $_.Exception.GetBaseException()
+            Write-Host -ForegroundColor Red "Failed to download New Relic .NET Agent ($($baseException.Message))"
             $errorCode = 8
 
-            switch ($_.Exception.GetBaseException()) {
+            switch ($baseException) {
               { $_ -is [Net.WebException] }            { $errorCode = 8 }
               { $_ -is [IO.IOException] }              { $errorCode = 8 }
               { $_ -is [UnauthorizedAccessException] } { $errorCode = 8 }
@@ -193,7 +194,7 @@ install:
           
           # https://docs.microsoft.com/en-us/windows/win32/msi/error-codes
           if (@(0,1641,3010) -NotContains $installCode) {
-            Write-Host -ForegroundColor Red "Failed to install New Relic .NET Agent"
+            Write-Host -ForegroundColor Red "Failed to install New Relic .NET Agent ($installCode)"
             exit 8
           }
           '
