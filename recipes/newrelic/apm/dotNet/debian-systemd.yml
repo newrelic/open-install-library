@@ -38,6 +38,7 @@ install:
       cmds:
         - task: verify_continue
         - task: assert_pre_req
+        - task: add_gnupg2_if_required
         - task: introspector
         - task: gather_services
         - task: stop
@@ -97,6 +98,16 @@ install:
             echo "This installation recipe for the New Relic .NET agent on Linux only supports services managed by 'systemd'." >> /dev/stderr
             exit 20
           fi
+
+    add_gnupg2_if_required:
+      cmds:
+        - |
+          if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
+            sudo apt-get install gnupg2 -y
+          fi
+      vars:
+        DEBIAN_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
     introspector:
       cmds:
@@ -189,8 +200,7 @@ install:
           EOF
 
             nr_region="{{.NEW_RELIC_REGION}}"
-            if [[ "${nr_region^^}" -eq "STAGING" ]]
-            then
+            if [[ "${nr_region^^}" == "STAGING" ]]; then
               echo Detected running in STAGING, configuring agent to report to staging
               echo "Environment=\"NEW_RELIC_HOST=staging-collector.newrelic.com\"" |sudo tee -a "/etc/systemd/system/${sn}.d/nr_dotnet_agent_env.conf" >/dev/null
             fi
