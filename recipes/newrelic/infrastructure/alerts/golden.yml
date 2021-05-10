@@ -48,19 +48,11 @@ install:
           )
           echo 'POLICY_RESULT:'$POLICY_RESULT
 
-          ALERT_POLICY_NAME=$(echo '{{.ALERT_POLICY_BASE_NAME}} {{.HOSTNAME}}')
-          echo 'ALERT_POLICY_NAME:'$ALERT_POLICY_NAME
-          JQ_MATCH=$(echo -n '.policies[] | select(.name=="'$ALERT_POLICY_NAME'") | .id')
-          EXEC=$(echo "echo -n '$POLICY_RESULT' | newrelic utils jq '"$JQ_MATCH"'")
-          if [ -f execJq.sh ]; then
-            rm -f execJq.sh
-          fi
-          $(echo $EXEC > execJq.sh)
-          POLICY_ID=$(bash execJq.sh)
+          POLICY_ID=$(echo $POLICY_RESULT | ./newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-            echo 'Alert policy found for '$ALERT_POLICY_NAME' name POLICY_ID:'$POLICY_ID
+            echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
           else
-            echo 'No existing alert policy '$ALERT_POLICY_NAME' found, creating alert policy '$ALERT_POLICY_NAME
+            echo 'No existing alert policy {{.ALERT_POLICY_NAME}} found, creating alert policy {{.ALERT_POLICY_NAME}}'
             if [ -f policy.json ]; then
               rm -f policy.json
             fi
@@ -72,9 +64,7 @@ install:
             }
           }
           EOT
-            EXEC=$(echo "sed -i 's/ALERT_POLICY_NAME/"$ALERT_POLICY_NAME"/g' policy.json")
-            echo $EXEC > execJq.sh
-            $(bash execJq.sh)
+            sed -i 's/ALERT_POLICY_NAME/{{.ALERT_POLICY_NAME}}/g' policy.json
             curl -X POST $NEW_RELIC_ALERT_POLICY_URL \
                 -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
                 -H 'Content-Type: application/json' \
@@ -85,364 +75,65 @@ install:
             )
             echo 'POLICY_RESULT:'$POLICY_RESULT
 
-            ALERT_POLICY_NAME=$(echo '{{.ALERT_POLICY_BASE_NAME}} {{.HOSTNAME}}')
-            JQ_MATCH=$(echo -n '.policies[] | select(.name=="'$ALERT_POLICY_NAME'") | .id')
-            EXEC=$(echo "echo -n '$POLICY_RESULT' | newrelic utils jq '"$JQ_MATCH"'")
-            if [ -f execJq.sh ]; then
-              rm -f execJq.sh
-            fi
-            $(echo $EXEC > execJq.sh)
-            POLICY_ID=$(bash execJq.sh)
+            POLICY_ID=$(echo $POLICY_RESULT | ./newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-              echo 'Alert policy found for '$ALERT_POLICY_NAME' name POLICY_ID:'$POLICY_ID
+              echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
             else
-              echo 'Could not create a new alert policy for '$ALERT_POLICY_NAME' got POLICY_ID:'$POLICY_ID >> /dev/stderr
+              echo 'Could not create a new alert policy for {{.ALERT_POLICY_NAME}} got POLICY_ID:'$POLICY_ID >> /dev/stderr
               exit 10
             fi
           fi
 
 
-          NEW_RELIC_ALERT_CONDITION_URL=$(echo -n $NEW_RELIC_INFRA_API_URL'/v2/alerts/conditions?policy_id='$POLICY_ID'&limit=1000')
-          echo $NEW_RELIC_ALERT_CONDITION_URL
-
-          CONDITION_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_CONDITION_URL \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-              -H 'Content-Type: application/json'
-          )
-          echo 'CONDITION_RESULT:'$CONDITION_RESULT
-          CONDITION_ID=$(echo $CONDITION_RESULT | newrelic utils jq '.data[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id')
-          if [ -f infra_condition.json ]; then
-            rm -f infra_condition.json
+          if [ -f conditionsSearch.json ]; then
+            rm -f conditionsSearch.json
           fi
-          if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
-            echo 'Alert condition found for '{{.ALERT_HIGH_CPU_CONDITION_NAME}}' name CONDITION_ID:'$CONDITION_ID
-            CURL_METHOD=$(echo -n 'PUT')
-            CURL_URL=$(echo -n $NEW_RELIC_INFRA_API_URL'/v2/alerts/conditions/'$CONDITION_ID)
-            sudo tee -a infra_condition.json > /dev/null <<"EOT"
+          sudo tee -a conditionsSearch.json > /dev/null <<"EOT"
           {
-              "data": {
-                  "type": "infra_metric",
-                  "name": "{{.ALERT_HIGH_CPU_CONDITION_NAME}}",
-                  "enabled": true,
-                  "filter": {
-                      "and": [
-                          {
-                              "is": {
-                                  "entityName": "HOSTNAME"
-                              }
-                          }
-                      ]
-                  },
-                  "policy_id": POLICY_ID,
-                  "id": CONDITION_ID,
-                  "event_type": "SystemSample",
-                  "select_value": "cpuPercent",
-                  "comparison": "above",
-                  "critical_threshold": {
-                      "value": 80,
-                      "duration_minutes": 10,
-                      "time_function": "all"
-                  }
-              }
+            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {nrqlConditionsSearch {totalCount nrqlConditions { description name id enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } nrql { query } policyId runbookUrl signal { aggregationWindow fillOption evaluationOffset fillValue } terms { operator priority threshold thresholdDuration thresholdOccurrences } type violationTimeLimitSeconds ... on AlertsNrqlBaselineCondition { id name nrql { query } baselineDirection description enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } policyId runbookUrl signal { aggregationWindow evaluationOffset fillOption fillValue } terms { operator priority threshold thresholdDuration thresholdOccurrences } type violationTimeLimitSeconds } } } } } } }"
+          }
+          EOT
+          CONDITIONS_LOOKUP_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @conditionsSearch.json
+          )
+          echo 'CONDITIONS_LOOKUP_RESULT:'$CONDITIONS_LOOKUP_RESULT
+
+
+          HIGH_CPU_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id | tonumber')
+          echo 'HIGH_CPU_CONDITION_ID:'$HIGH_CPU_CONDITION_ID
+          if [ -f condition.json ]; then
+            rm -f condition.json
+          fi
+          if [ -n "$HIGH_CPU_CONDITION_ID" ] && [ $HIGH_CPU_CONDITION_ID -gt 0 ] ; then
+            sudo tee -a condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionStaticUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 85 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 valueFunction: SINGLE_VALUE }) { id name } }"
           }
           EOT
           else
-            echo 'No existing alert policy '{{.ALERT_HIGH_CPU_CONDITION_NAME}}' found, creating alert condition '{{.ALERT_HIGH_CPU_CONDITION_NAME}}
-            CURL_METHOD=$(echo -n 'POST')
-            CURL_URL=$(echo -n $NEW_RELIC_INFRA_API_URL'/v2/alerts/conditions')
-            sudo tee -a infra_condition.json > /dev/null <<"EOT"
+            sudo tee -a condition.json > /dev/null <<"EOT"
           {
-              "data": {
-                  "type": "infra_metric",
-                  "name": "{{.ALERT_HIGH_CPU_CONDITION_NAME}}",
-                  "enabled": true,
-                  "filter": {
-                      "and": [
-                          {
-                              "is": {
-                                  "entityName": "HOSTNAME"
-                              }
-                          }
-                      ]
-                  },
-                  "policy_id": POLICY_ID,
-                  "event_type": "SystemSample",
-                  "select_value": "cpuPercent",
-                  "comparison": "above",
-                  "critical_threshold": {
-                      "value": 85,
-                      "duration_minutes": 10,
-                      "time_function": "all"
-                  }
-              }
+            "query": "mutation {alertsNrqlConditionStaticCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 85 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 valueFunction: SINGLE_VALUE }) { id name } }"
           }
           EOT
           fi
-          sed -i 's/POLICY_ID,/'$POLICY_ID',/g' infra_condition.json
-          sed -i 's/CONDITION_ID,/'$CONDITION_ID',/g' infra_condition.json
-          sed -i 's/"HOSTNAME"/"'{{.HOSTNAME}}'"/g' infra_condition.json
-          curl -X $CURL_METHOD $CURL_URL \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-              -L -H 'Content-Type: application/json' \
-              -d @infra_condition.json
-
-
-          if [ -f appNames.json ]; then
-            rm -f appNames.json
-          fi
-          sudo tee -a appNames.json > /dev/null <<"EOT"
-          { 
-            "query": "{ actor { account(id: {{.NEW_RELIC_ACCOUNT_ID}}) { id nrql(query: NRQL_QUERY) { results } } } }"
-          }
-          EOT
-          sed -i "s/NRQL_QUERY/\"\"SELECT uniques(appName) as appName from Transaction where host like '{{.HOSTNAME}}%' since 1 hours ago\"\"/g" appNames.json
-          sed -i 's/""/\\"/g' appNames.json
-          APP_NAMES_LOOKUP_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+          sed -i 's/POLICY_ID/'$POLICY_ID'/g' condition.json
+          sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_CPU_CONDITION_NAME}}\"\"/g" condition.json
+          sed -i "s/CONDITION_ID/\"\"$HIGH_CPU_CONDITION_ID\"\"/g" condition.json
+          sed -i "s/NRQL_QUERY/\"\"SELECT average(\`host.cpuPercent\`) FROM Metric FACET entity.guid, host.hostname\"\"/g" condition.json
+          sed -i 's/""/\\"/g' condition.json
+          CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
               -L -H 'Content-Type: application/json' \
-              -d @appNames.json
+              -d @condition.json
           )
-          echo 'APP_NAMES_LOOKUP_RESULT:'$APP_NAMES_LOOKUP_RESULT
-          APP_NAMES=$(echo $APP_NAMES_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.nrql.results[].appName | .[]')
-          if [ -n "$APP_NAMES" ] ; then
-            echo 'Applications found with names:'$APP_NAMES
-            APP_NAME_ARRAY=()
-            while IFS='" "' read ADDR; do
-              for APP_NAME in "${ADDR[@]}"; do
-                echo 'Storing appName:'$APP_NAME
-                APP_NAME_ARRAY+=($APP_NAME)
-              done
-            done <<< "$APP_NAMES"
-
-            for APP_NAME in "${APP_NAME_ARRAY[@]}"
-            do
-              APP_NAME=$(echo -n "$APP_NAME" | sed s/^\"//g | sed s/\"\$//g)
-              echo 'Processing APP_NAME:'$APP_NAME
-
-              FILTER=$(echo -n 'filter[name]='$APP_NAME)
-              APPLICATION_ID_RESULT=$(curl -sX GET $NEW_RELIC_API_URL'/v2/applications.json' \
-                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                -d $FILTER
-                )
-              echo 'APPLICATION_ID_RESULT:'$APPLICATION_ID_RESULT
-              JQ_MATCH=$(echo -n '.applications[] | select(.name=="'$APP_NAME'") |.id')
-              EXEC=$(echo "echo -n '$APPLICATION_ID_RESULT' | newrelic utils jq '"$JQ_MATCH"'")
-              if [ -f execJq.sh ]; then
-                rm -f execJq.sh
-              fi
-              echo $EXEC > execJq.sh
-              APPLICATION_ID=$(bash execJq.sh)
-              if [ -n "$APPLICATION_ID" ] && [ $APPLICATION_ID -gt 0 ] ; then
-                echo 'Found APPLICATION_ID:'$APPLICATION_ID
-
-                ALERT_POLICY_NAME=$(echo '{{.ALERT_POLICY_BASE_NAME}} '$APP_NAME)
-                echo 'ALERT_POLICY_NAME:'$ALERT_POLICY_NAME
-                JQ_MATCH=$(echo -n '.policies[] | select(.name=="'$ALERT_POLICY_NAME'") | .id')
-                EXEC=$(echo "echo -n '$POLICY_RESULT' | newrelic utils jq '"$JQ_MATCH"'")
-                if [ -f execJq.sh ]; then
-                  rm -f execJq.sh
-                fi
-                $(echo $EXEC > execJq.sh)
-                POLICY_ID=$(bash execJq.sh)
-                if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-                  echo 'Alert policy found for '$ALERT_POLICY_NAME' name POLICY_ID:'$POLICY_ID
-                else
-                  echo 'No existing alert policy '$ALERT_POLICY_NAME' found, creating alert policy '$ALERT_POLICY_NAME
-                  if [ -f policy.json ]; then
-                    rm -f policy.json
-                  fi
-                  sudo tee -a policy.json > /dev/null <<"EOT"
-          {
-            "policy": {
-              "incident_preference": "PER_POLICY",
-              "name": "ALERT_POLICY_NAME"
-            }
-          }
-          EOT
-                  EXEC=$(echo "sed -i 's/ALERT_POLICY_NAME/"$ALERT_POLICY_NAME"/g' policy.json")
-                  echo $EXEC > execJq.sh
-                  $(bash execJq.sh)
-                  curl -X POST $NEW_RELIC_ALERT_POLICY_URL \
-                      -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                      -H 'Content-Type: application/json' \
-                      -L -d @policy.json
-                  POLICY_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_POLICY_URL \
-                      -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                      -H 'Content-Type: application/json'
-                  )
-                  echo 'POLICY_RESULT:'$POLICY_RESULT
-
-                  ALERT_POLICY_NAME=$(echo '{{.ALERT_POLICY_BASE_NAME}} '$APP_NAME)
-                  JQ_MATCH=$(echo -n '.policies[] | select(.name=="'$ALERT_POLICY_NAME'") | .id')
-                  EXEC=$(echo "echo -n '$POLICY_RESULT' | newrelic utils jq '"$JQ_MATCH"'")
-                  if [ -f execJq.sh ]; then
-                    rm -f execJq.sh
-                  fi
-                  $(echo $EXEC > execJq.sh)
-                  POLICY_ID=$(bash execJq.sh)
-                  echo 'POLICY_ID:'$POLICY_ID
-                  if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-                    echo 'Alert policy found for '$ALERT_POLICY_NAME' name POLICY_ID:'$POLICY_ID
-                  else
-                    echo 'Could not create a new alert policy for '$ALERT_POLICY_NAME' got POLICY_ID:'$POLICY_ID >> /dev/stderr
-                    exit 10
-                  fi
-                fi
-
-                CONDITION_ID_RESULT=$(curl -sX GET $NEW_RELIC_API_URL'/v2/alerts_conditions.json?policy_id='$POLICY_ID \
-                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                  -L
-                  )
-                echo 'CONDITION_ID_RESULT:'$CONDITION_ID_RESULT
-                CONDITION_ID=$(echo -n $CONDITION_ID_RESULT | newrelic utils jq '.conditions[] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | select(.entities[] | contains("'$APPLICATION_ID'")) | .id')
-
-                if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
-                  echo 'Alert condition found for {{.ALERT_HIGH_ERROR_RATE_NAME}} and '$APP_NAME' application CONDITION_ID:'$CONDITION_ID
-                  CURL_METHOD=$(echo -n 'PUT')
-                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/'$CONDITION_ID'.json')
-                else
-                  echo 'No existing alert condition found for {{.ALERT_HIGH_ERROR_RATE_NAME}} and '$APP_NAME' application, creating alert condition'
-                  CURL_METHOD=$(echo -n 'POST')
-                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/policies/'$POLICY_ID'.json')
-                fi
-
-                if [ -f apm_condition.json ]; then
-                  rm -f apm_condition.json
-                fi
-                sudo tee -a apm_condition.json > /dev/null <<"EOT"
-          {
-            "condition": {
-                "type": "apm_app_metric",
-                "name": "CONDITION_NAME",
-                "enabled": true,
-                "entities": [ APPLICATION_ID ],
-                "metric": "error_percentage",
-                "condition_scope": "application",
-                "terms": [
-                {
-                    "duration": "5",
-                    "operator": "above",
-                    "threshold": "10",
-                    "priority": "critical",
-                    "time_function": "all"
-                }
-                ]
-            }
-          }
-          EOT
-                sed -i 's/APPLICATION_ID/'$APPLICATION_ID'/g' apm_condition.json
-                sed -i 's/CONDITION_NAME/{{.ALERT_HIGH_ERROR_RATE_NAME}}/g' apm_condition.json
-                curl -X $CURL_METHOD $CURL_URL \
-                    -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                    -L -H 'Content-Type: application/json' \
-                    -d @apm_condition.json
-
-                CONDITION_ID_RESULT=$(curl -sX GET $NEW_RELIC_API_URL'/v2/alerts_conditions.json?policy_id='$POLICY_ID \
-                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                  -L
-                  )
-                echo 'CONDITION_ID_RESULT:'$CONDITION_ID_RESULT
-                CONDITION_ID=$(echo -n $CONDITION_ID_RESULT | newrelic utils jq '.conditions[] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | select(.entities[] | contains("'$APPLICATION_ID'")) | .id')
-
-                if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
-                  echo 'Alert condition found for {{.ALERT_HIGH_RESPONSE_TIME_NAME}} and '$APP_NAME' application CONDITION_ID:'$CONDITION_ID
-                  CURL_METHOD=$(echo -n 'PUT')
-                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/'$CONDITION_ID'.json')
-                else
-                  echo 'No existing alert condition found for {{.ALERT_HIGH_RESPONSE_TIME_NAME}} and '$APP_NAME' application, creating alert condition'
-                  CURL_METHOD=$(echo -n 'POST')
-                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/policies/'$POLICY_ID'.json')
-                fi
-
-                if [ -f apm_condition.json ]; then
-                  rm -f apm_condition.json
-                fi
-                sudo tee -a apm_condition.json > /dev/null <<"EOT"
-          {
-            "condition": {
-                "type": "apm_app_metric",
-                "name": "CONDITION_NAME",
-                "enabled": true,
-                "entities": [ APPLICATION_ID ],
-                "metric": "response_time_web",
-                "condition_scope": "application",
-                "terms": [
-                {
-                    "duration": "5",
-                    "operator": "above",
-                    "threshold": "5",
-                    "priority": "critical",
-                    "time_function": "all"
-                }
-                ]
-            }
-          }
-          EOT
-                sed -i 's/APPLICATION_ID/'$APPLICATION_ID'/g' apm_condition.json
-                sed -i 's/CONDITION_NAME/{{.ALERT_HIGH_RESPONSE_TIME_NAME}}/g' apm_condition.json
-                curl -X $CURL_METHOD $CURL_URL \
-                    -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                    -L -H 'Content-Type: application/json' \
-                    -d @apm_condition.json
-
-                CONDITION_ID_RESULT=$(curl -sX GET $NEW_RELIC_API_URL'/v2/alerts_conditions.json?policy_id='$POLICY_ID \
-                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                  -L
-                  )
-                echo 'CONDITION_ID_RESULT:'$CONDITION_ID_RESULT
-                CONDITION_ID=$(echo -n $CONDITION_ID_RESULT | newrelic utils jq '.conditions[] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | select(.entities[] | contains("'$APPLICATION_ID'")) | .id')
-
-                if [ -n "$CONDITION_ID" ] && [ $CONDITION_ID -gt 0 ] ; then
-                  echo 'Alert condition found for {{.ALERT_LOW_THROUGHPUT_NAME}} and '$APP_NAME' application CONDITION_ID:'$CONDITION_ID
-                  CURL_METHOD=$(echo -n 'PUT')
-                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/'$CONDITION_ID'.json')
-                else
-                  echo 'No existing alert condition found for {{.ALERT_LOW_THROUGHPUT_NAME}} and '$APP_NAME' application, creating alert condition'
-                  CURL_METHOD=$(echo -n 'POST')
-                  CURL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_conditions/policies/'$POLICY_ID'.json')
-                fi
-
-                if [ -f apm_condition.json ]; then
-                  rm -f apm_condition.json
-                fi
-                sudo tee -a apm_condition.json > /dev/null <<"EOT"
-          {
-            "condition": {
-                "type": "apm_app_metric",
-                "name": "CONDITION_NAME",
-                "enabled": true,
-                "entities": [ APPLICATION_ID ],
-                "metric": "throughput_web",
-                "condition_scope": "application",
-                "terms": [
-                {
-                    "duration": "30",
-                    "operator": "below",
-                    "threshold": "1",
-                    "priority": "critical",
-                    "time_function": "all"
-                }
-                ]
-            }
-          }
-          EOT
-                sed -i 's/APPLICATION_ID/'$APPLICATION_ID'/g' apm_condition.json
-                sed -i 's/CONDITION_NAME/{{.ALERT_LOW_THROUGHPUT_NAME}}/g' apm_condition.json
-                curl -X $CURL_METHOD $CURL_URL \
-                    -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                    -L -H 'Content-Type: application/json' \
-                    -d @apm_condition.json
-
-              else
-                echo 'APPLICATION_ID was NOT found'
-              fi
-            done
-
-          fi
+          echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
 
       vars:
-        ALERT_POLICY_BASE_NAME:
-          sh: echo 'Golden Signal Policy'
+        ALERT_POLICY_NAME:
+          sh: echo 'Golden Signals'
         ALERT_HIGH_CPU_CONDITION_NAME:
           sh: echo 'High CPU'
         ALERT_HIGH_ERROR_RATE_NAME:
