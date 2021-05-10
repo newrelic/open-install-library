@@ -194,6 +194,37 @@ install:
           echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
 
 
+          LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id | tonumber')
+          echo 'LOW_THROUGHPUT_CONDITION_ID:'$LOW_THROUGHPUT_CONDITION_ID
+          if [ -f condition.json ]; then
+            rm -f condition.json
+          fi
+          if [ -n "$LOW_THROUGHPUT_CONDITION_ID" ] && [ $LOW_THROUGHPUT_CONDITION_ID -gt 0 ] ; then
+            sudo tee -a condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: LOWER_ONLY expiration: { closeViolationsOnExpiration: true expirationDuration: 600 openViolationOnExpiration: true } }) { id name } }"
+          }
+          EOT
+          else
+            sudo tee -a condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: LOWER_ONLY expiration: { closeViolationsOnExpiration: true expirationDuration: 600 openViolationOnExpiration: true } }) { id name } }"
+          }
+          EOT
+          fi
+          sed -i 's/POLICY_ID/'$POLICY_ID'/g' condition.json
+          sed -i "s/CONDITION_NAME/\"\"{{.ALERT_LOW_THROUGHPUT_NAME}}\"\"/g" condition.json
+          sed -i "s/CONDITION_ID/\"\"$LOW_THROUGHPUT_CONDITION_ID\"\"/g" condition.json
+          sed -i "s/NRQL_QUERY/\"\"SELECT average(\`newrelic.goldenmetrics.apm.application.throughput\`) FROM Metric FACET entity.guid, appName\"\"/g" condition.json
+          sed -i 's/""/\\"/g' condition.json
+          CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @condition.json
+          )
+          echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
+
+
       vars:
         ALERT_POLICY_NAME:
           sh: echo 'Golden Signals'
