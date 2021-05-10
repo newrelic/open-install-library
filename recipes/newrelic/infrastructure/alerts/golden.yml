@@ -225,6 +225,100 @@ install:
           echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
 
 
+          USER_EMAIL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d '{ "query": "{ actor { user { email } } }" }'
+          )
+          echo 'USER_EMAIL_RESULT:'$USER_EMAIL_RESULT
+
+          USER_EMAIL=$(echo $USER_EMAIL_RESULT | ./newrelic utils jq '.data.actor.user.email')
+          USER_EMAIL=$(echo -n "$USER_EMAIL" | sed s/^\"//g | sed s/\"\$//g)
+          echo 'USER_EMAIL:'$USER_EMAIL
+
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          NEW_RELIC_EMAIL_CONTINUE="Y"
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while :; do
+              echo -n "Would you like to be notified on your registered email address "$USER_EMAIL" when this alert triggers Y/N (default: Y)? "
+              read answer
+              echo ""
+              NEW_RELIC_EMAIL_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_EMAIL_CONTINUE" ]]; then
+                NEW_RELIC_EMAIL_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "N" ]]; then
+                break
+              fi
+              if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "Y" ]]; then
+                break
+              fi
+              echo -e "Please type Y or N only."
+            done
+          fi
+          if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "Y" ]]; then
+
+            NEW_RELIC_ALERT_CHANNEL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_channels.json')
+            echo $NEW_RELIC_ALERT_CHANNEL_URL
+            NEW_RELIC_ALERT_POLICY_CHANNEL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policy_channels.json')
+            echo $NEW_RELIC_ALERT_POLICY_CHANNEL_URL
+
+            CHANNEL_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_CHANNEL_URL'?limit1000' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                -H 'Content-Type: application/json'
+            )
+            echo 'CHANNEL_RESULT:'$CHANNEL_RESULT
+
+            JQ_MATCH=$(echo -n '.channels[] | select(.name=="'$USER_EMAIL'" and .type=="email") | .id')
+            EXEC=$(echo "echo -n '$CHANNEL_RESULT' | ./newrelic utils jq '"$JQ_MATCH"'")
+            if [ -f execJq.sh ]; then
+              rm -f execJq.sh
+            fi
+            echo $EXEC > execJq.sh
+            CHANNEL_ID=$(bash execJq.sh)
+
+            if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
+              echo 'Notification channel found for email address '$USER_EMAIL' CHANNEL_ID:'$CHANNEL_ID
+            else
+              echo 'Notification channel not found for email address '$USER_EMAIL' creating...'
+
+              if [ -f channel.json ]; then
+                rm -f channel.json
+              fi
+              sudo tee -a channel.json > /dev/null <<"EOT"
+          {
+            "channel": {
+              "name": "CHANNEL_NAME",
+              "type": "email",
+              "configuration": {
+                "recipients" : "RECIPIENT_NAME",
+                "include_json_attachment" : true
+              }
+            }
+          }
+          EOT
+              sed -i 's/CHANNEL_NAME/'$USER_EMAIL'/g' channel.json
+              sed -i 's/RECIPIENT_NAME/'$USER_EMAIL'/g' channel.json
+              CHANNEL_RESULT=$(curl -sX POST $NEW_RELIC_ALERT_CHANNEL_URL \
+                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                  -H 'Content-Type: application/json' \
+                  -d @channel.json)
+              echo 'CHANNEL_RESULT:'$CHANNEL_RESULT
+              CHANNEL_ID=$(echo $CHANNEL_RESULT | ./newrelic utils jq '.channels[] | .id')
+              echo 'CHANNEL_ID:'$CHANNEL_ID
+            fi
+
+            if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
+              POLICY_CHANNEL_RESULT=$(curl -sX PUT $NEW_RELIC_ALERT_POLICY_CHANNEL_URL \
+                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                  -H 'Content-Type: application/json' \
+                  -G -d 'policy_id='$POLICY_ID'&channel_ids='$CHANNEL_ID
+                  )
+              echo 'POLICY_CHANNEL_RESULT:'$POLICY_CHANNEL_RESULT
+            fi
+
+          fi
+
       vars:
         ALERT_POLICY_NAME:
           sh: echo 'Golden Signals'
