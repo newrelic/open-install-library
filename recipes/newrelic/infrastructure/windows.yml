@@ -83,26 +83,26 @@ install:
           $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
           $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
 
-          $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
-          $STAGING = "false"
-
-          if ($NEW_RELIC_REGION -ilike "staging") {
-            $STAGING = "true"
-          }
-
           if (Test-Path $InfraConfig) {
             msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
 
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^staging"
+            } | Set-Content $InfraConfig
+
             (Get-Content $InfraConfig) | Foreach-Object {
               $_ -replace "^license_key: .*", ("license_key: " + $LICENSE_KEY) `
-                 -replace "^enable_process_metrics: .*", "enable_process_metrics: true" `
-                 -replace "^staging: .*", ("staging: " + $STAGING)
+                 -replace "^enable_process_metrics: .*", "enable_process_metrics: true"
             } | Set-Content $InfraConfig
           } else {
             msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
 
             Add-Content -Path $InfraConfig -Value "enable_process_metrics: true" -Force
-            Add-Content -Path $InfraConfig -Value "staging: $STAGING" -Force
+          }
+
+          $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
+          if ($NEW_RELIC_REGION -ilike "staging") {
+            Add-Content -Path $InfraConfig -Value "staging: true" -Force
           }
           '
         - powershell -command '(New-Object System.Net.WebClient).DownloadFile("https://aka.ms/vs/16/release/vc_redist.x64.exe", "$env:TEMP\vc_redist.x64.exe");'
