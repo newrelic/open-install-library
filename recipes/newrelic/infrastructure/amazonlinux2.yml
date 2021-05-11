@@ -90,17 +90,20 @@ install:
       cmds:
         - |
           if [ -f /etc/newrelic-infra.yml ]; then
-            sudo rm /etc/newrelic-infra.yml;
-          fi
-          sudo touch /etc/newrelic-infra.yml;
-        - |
-          sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
+            sed -i "/^staging/d" /etc/newrelic-infra.yml
+
+            sed -i "s/^\(license_key: \).*/\1{{.NEW_RELIC_LICENSE_KEY}}/" /etc/newrelic-infra.yml
+            sed -i "s/^\(enable_process_metrics: \).*/\1true/" /etc/newrelic-infra.yml
+          else
+            sudo touch /etc/newrelic-infra.yml
+            sudo cat > /etc/newrelic-infra.yml <<EOT
           license_key: {{.NEW_RELIC_LICENSE_KEY}}
           enable_process_metrics: true
           EOT
+          fi
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-            echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+            sudo echo 'staging: true' >> /etc/newrelic-infra.yml
           fi
 
     install_infra:
