@@ -51,7 +51,7 @@ install:
           )
           POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-            echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
+            echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name'
           else
             echo 'No existing alert policy {{.ALERT_POLICY_NAME}} found, creating alert policy {{.ALERT_POLICY_NAME}}...'
             if [ -f policy.json ]; then
@@ -73,7 +73,7 @@ install:
                 )
             POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policy.id')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-              echo '...done. Alert policy created for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
+              echo 'done'
             else
               echo 'Could not create a new alert policy for {{.ALERT_POLICY_NAME}} got POLICY_ID:'$POLICY_ID >> /dev/stderr
               exit 10
@@ -124,7 +124,7 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo '...done'
+          echo 'done'
 
 
           HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id | tonumber')
@@ -155,7 +155,7 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo '...done'
+          echo 'done'
 
 
           HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id | tonumber')
@@ -186,7 +186,7 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo '...done'
+          echo 'done'
 
 
           LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id | tonumber')
@@ -217,7 +217,7 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo '...done'
+          echo 'done'
 
 
           USER_EMAIL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
@@ -268,7 +268,7 @@ install:
             CHANNEL_ID=$(bash execJq.sh)
 
             if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
-              echo 'Notification channel found for email address '$USER_EMAIL' CHANNEL_ID:'$CHANNEL_ID
+              echo 'Notification channel found for email address '$USER_EMAIL
             else
               echo 'Notification channel not found for email address '$USER_EMAIL', creating notification channel...'
 
@@ -294,15 +294,17 @@ install:
                   -H 'Content-Type: application/json' \
                   -d @channel.json)
               CHANNEL_ID=$(echo $CHANNEL_RESULT | newrelic utils jq '.channels[] | .id')
-              echo '...done. Notification channel created for email address '$USER_EMAIL' CHANNEL_ID:'$CHANNEL_ID
+              echo 'done'
             fi
 
             if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
+              echo 'Subscribing alert policy to notification channel...'
               POLICY_CHANNEL_RESULT=$(curl -sX PUT $NEW_RELIC_ALERT_POLICY_CHANNEL_URL \
                   -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
                   -H 'Content-Type: application/json' \
                   -G -d 'policy_id='$POLICY_ID'&channel_ids='$CHANNEL_ID
                   )
+              echo 'done'
             fi
 
           fi
