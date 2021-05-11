@@ -13,6 +13,14 @@ keywords:
 
 processMatch: []
 
+preInstall:
+  info: |2
+      This installation will setup a Golden Signals alert policy with the below conditions:
+      - High CPU
+      - Low Application Throughput
+      - High Application Error Rate
+      - High Application Response Time
+
 install:
   version: "3"
   silent: true
@@ -35,19 +43,12 @@ install:
             NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
             NEW_RELIC_INFRA_API_URL=$(echo -n 'https://infra-api.eu.newrelic.com')
           fi
-          echo 'NEW_RELIC_API_URL:'$NEW_RELIC_API_URL
-          echo 'NEW_RELIC_INFRA_API_URL:'$NEW_RELIC_INFRA_API_URL
-
 
           NEW_RELIC_ALERT_POLICY_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policies.json')
-          echo $NEW_RELIC_ALERT_POLICY_URL
-
           POLICY_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_POLICY_URL \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
               -H 'Content-Type: application/json'
           )
-          echo 'POLICY_RESULT:'$POLICY_RESULT
-
           POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
             echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
@@ -73,8 +74,6 @@ install:
                 -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
                 -H 'Content-Type: application/json'
             )
-            echo 'POLICY_RESULT:'$POLICY_RESULT
-
             POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
               echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
@@ -98,11 +97,9 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @conditionsSearch.json
           )
-          echo 'CONDITIONS_LOOKUP_RESULT:'$CONDITIONS_LOOKUP_RESULT
 
 
           HIGH_CPU_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id | tonumber')
-          echo 'HIGH_CPU_CONDITION_ID:'$HIGH_CPU_CONDITION_ID
           if [ -f condition.json ]; then
             rm -f condition.json
           fi
@@ -129,11 +126,9 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
 
 
           HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id | tonumber')
-          echo 'HIGH_ERROR_CONDITION_ID:'$HIGH_ERROR_CONDITION_ID
           if [ -f condition.json ]; then
             rm -f condition.json
           fi
@@ -160,11 +155,9 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
 
 
           HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id | tonumber')
-          echo 'HIGH_RESPONSE_CONDITION_ID:'$HIGH_RESPONSE_CONDITION_ID
           if [ -f condition.json ]; then
             rm -f condition.json
           fi
@@ -191,11 +184,9 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
 
 
           LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id | tonumber')
-          echo 'LOW_THROUGHPUT_CONDITION_ID:'$LOW_THROUGHPUT_CONDITION_ID
           if [ -f condition.json ]; then
             rm -f condition.json
           fi
@@ -222,7 +213,6 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
-          echo 'CONDITIONS_RESULT:'$CONDITIONS_RESULT
 
 
           USER_EMAIL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
@@ -230,11 +220,9 @@ install:
               -L -H 'Content-Type: application/json' \
               -d '{ "query": "{ actor { user { email } } }" }'
           )
-          echo 'USER_EMAIL_RESULT:'$USER_EMAIL_RESULT
 
           USER_EMAIL=$(echo $USER_EMAIL_RESULT | newrelic utils jq '.data.actor.user.email')
           USER_EMAIL=$(echo -n "$USER_EMAIL" | sed s/^\"//g | sed s/\"\$//g)
-          echo 'USER_EMAIL:'$USER_EMAIL
 
           NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
           NEW_RELIC_EMAIL_CONTINUE="Y"
@@ -259,15 +247,12 @@ install:
           if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "Y" ]]; then
 
             NEW_RELIC_ALERT_CHANNEL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_channels.json')
-            echo $NEW_RELIC_ALERT_CHANNEL_URL
             NEW_RELIC_ALERT_POLICY_CHANNEL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policy_channels.json')
-            echo $NEW_RELIC_ALERT_POLICY_CHANNEL_URL
 
             CHANNEL_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_CHANNEL_URL'?limit1000' \
                 -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
                 -H 'Content-Type: application/json'
             )
-            echo 'CHANNEL_RESULT:'$CHANNEL_RESULT
 
             JQ_MATCH=$(echo -n '.channels[] | select(.name=="'$USER_EMAIL'" and .type=="email") | .id')
             EXEC=$(echo "echo -n '$CHANNEL_RESULT' | newrelic utils jq '"$JQ_MATCH"'")
@@ -280,7 +265,7 @@ install:
             if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
               echo 'Notification channel found for email address '$USER_EMAIL' CHANNEL_ID:'$CHANNEL_ID
             else
-              echo 'Notification channel not found for email address '$USER_EMAIL' creating...'
+              echo 'Notification channel not found for email address '$USER_EMAIL', creating notification channel...'
 
               if [ -f channel.json ]; then
                 rm -f channel.json
@@ -303,9 +288,8 @@ install:
                   -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
                   -H 'Content-Type: application/json' \
                   -d @channel.json)
-              echo 'CHANNEL_RESULT:'$CHANNEL_RESULT
               CHANNEL_ID=$(echo $CHANNEL_RESULT | newrelic utils jq '.channels[] | .id')
-              echo 'CHANNEL_ID:'$CHANNEL_ID
+              echo '...done. Notification channel created for email address '$USER_EMAIL' CHANNEL_ID:'$CHANNEL_ID
             fi
 
             if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
@@ -314,7 +298,6 @@ install:
                   -H 'Content-Type: application/json' \
                   -G -d 'policy_id='$POLICY_ID'&channel_ids='$CHANNEL_ID
                   )
-              echo 'POLICY_CHANNEL_RESULT:'$POLICY_CHANNEL_RESULT
             fi
 
           fi
