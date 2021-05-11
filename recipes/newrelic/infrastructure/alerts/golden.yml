@@ -53,7 +53,7 @@ install:
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
             echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
           else
-            echo 'No existing alert policy {{.ALERT_POLICY_NAME}} found, creating alert policy {{.ALERT_POLICY_NAME}}'
+            echo 'No existing alert policy {{.ALERT_POLICY_NAME}} found, creating alert policy {{.ALERT_POLICY_NAME}}...'
             if [ -f policy.json ]; then
               rm -f policy.json
             fi
@@ -66,17 +66,14 @@ install:
           }
           EOT
             sed -i 's/ALERT_POLICY_NAME/{{.ALERT_POLICY_NAME}}/g' policy.json
-            curl -X POST $NEW_RELIC_ALERT_POLICY_URL \
+            POLICY_RESULT=$(curl -X POST $NEW_RELIC_ALERT_POLICY_URL \
                 -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
                 -H 'Content-Type: application/json' \
                 -L -d @policy.json
-            POLICY_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_POLICY_URL \
-                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                -H 'Content-Type: application/json'
-            )
-            POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
+                )
+            POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policy.id')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-              echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
+              echo '...done. Alert policy created for {{.ALERT_POLICY_NAME}} name POLICY_ID:'$POLICY_ID
             else
               echo 'Could not create a new alert policy for {{.ALERT_POLICY_NAME}} got POLICY_ID:'$POLICY_ID >> /dev/stderr
               exit 10
