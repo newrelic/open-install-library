@@ -17,9 +17,9 @@ preInstall:
   info: |2
       This installation will setup a Golden Signals alert policy with the below conditions:
       - High CPU
-      - Low Application Throughput
       - High Application Error Rate
       - High Application Response Time
+      - Low Application Throughput
 
 install:
   version: "3"
@@ -118,11 +118,13 @@ install:
           sed -i "s/CONDITION_ID/\"\"$HIGH_CPU_CONDITION_ID\"\"/g" condition.json
           sed -i "s/NRQL_QUERY/\"\"SELECT average(\`host.cpuPercent\`) FROM Metric FACET entity.guid, host.hostname\"\"/g" condition.json
           sed -i 's/""/\\"/g' condition.json
+          echo 'Adding alert condition {{.ALERT_HIGH_CPU_CONDITION_NAME}}...'
           CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
+          echo '...done'
 
 
           HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id | tonumber')
@@ -147,11 +149,13 @@ install:
           sed -i "s/CONDITION_ID/\"\"$HIGH_ERROR_CONDITION_ID\"\"/g" condition.json
           sed -i "s/NRQL_QUERY/\"\"FROM Metric SELECT count(apm.service.error.count) \/ count(apm.service.transaction.duration) as 'Error Rate' WHERE appName LIKE '%' FACET entity.guid, appName\"\"/g" condition.json
           sed -i 's/""/\\"/g' condition.json
+          echo 'Adding alert condition {{.ALERT_HIGH_ERROR_RATE_NAME}}...'
           CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
+          echo '...done'
 
 
           HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id | tonumber')
@@ -176,11 +180,13 @@ install:
           sed -i "s/CONDITION_ID/\"\"$HIGH_RESPONSE_CONDITION_ID\"\"/g" condition.json
           sed -i "s/NRQL_QUERY/\"\"SELECT average(newrelic.goldenmetrics.apm.application.responseTimeMs) FROM Metric FACET entity.guid, appName\"\"/g" condition.json
           sed -i 's/""/\\"/g' condition.json
+          echo 'Adding alert condition {{.ALERT_HIGH_RESPONSE_TIME_NAME}}...'
           CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
+          echo '...done'
 
 
           LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id | tonumber')
@@ -205,11 +211,13 @@ install:
           sed -i "s/CONDITION_ID/\"\"$LOW_THROUGHPUT_CONDITION_ID\"\"/g" condition.json
           sed -i "s/NRQL_QUERY/\"\"SELECT average(\`newrelic.goldenmetrics.apm.application.throughput\`) FROM Metric FACET entity.guid, appName\"\"/g" condition.json
           sed -i 's/""/\\"/g' condition.json
+          echo 'Adding alert condition {{.ALERT_LOW_THROUGHPUT_NAME}}...'
           CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
               -L -H 'Content-Type: application/json' \
               -d @condition.json
           )
+          echo '...done'
 
 
           USER_EMAIL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
