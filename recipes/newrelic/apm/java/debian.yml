@@ -91,7 +91,10 @@ install:
       cmds:
         - mkdir -p /tmp/newrelic/java
         - echo -e "\nRetrieving Java Agent..."
-        - cd /tmp/newrelic/java; curl -s -O https://download.newrelic.com/newrelic/java-agent/newrelic-agent/current/newrelic-java.zip
+        - |
+          cd /tmp/newrelic/java
+          curl -s -O https://download.newrelic.com/newrelic/java-agent/newrelic-agent/current/newrelic.jar
+          curl -s -O https://download.newrelic.com/newrelic/java-agent/newrelic-agent/current/newrelic.yml
 
     install-agent:
       label: "Finding Java processes and installing Java agent"
@@ -155,9 +158,9 @@ install:
               mkdir -p /opt/newrelic
 
               if [[ "$configured" != "true" ]]; then
-                unzip -n /tmp/newrelic/java/newrelic-java.zip -d /opt/newrelic > /dev/null
-                mv /opt/newrelic/newrelic /opt/newrelic/$appName
                 mkdir -p /opt/newrelic/$appName/logs
+                cp /tmp/newrelic/java/newrelic.jar /opt/newrelic/$appName
+                cp /tmp/newrelic/java/newrelic.yml /opt/newrelic/$appName
                 chown -R $user /opt/newrelic/$appName
 
                 local host=""
@@ -266,7 +269,7 @@ install:
           INIT_SYSTEM=`cat /proc/1/status | grep -oP 'Name:\s+\K\w+'`
           FOUND_JAVA_PROCESSES=$(nri-lsi-java -list)
           if [ "$FOUND_JAVA_PROCESSES" == "" ] ||  [ "$FOUND_JAVA_PROCESSES" == "[  ]" ]; then
-            echo "No Java processes found running on the host" >> /dev/stderr
+            echo -e "\nNo Java processes found running on the host\n" >> /dev/stderr
             exit 3
           fi
 
