@@ -31,6 +31,10 @@ install:
   version: "3"
   silent: true
 
+  vars:
+    TMP_DIR: '/tmp/newrelic-java'
+
+
   tasks:
     default:
       cmds:
@@ -89,10 +93,10 @@ install:
     get-agent:
       label: "Retrieving Java Agent..."
       cmds:
-        - mkdir -p /tmp/newrelic/java
+        - mkdir -p {{.TMP_DIR}}
         - echo -e "\nRetrieving Java Agent..."
         - |
-          cd /tmp/newrelic/java
+          cd {{.TMP_DIR}}
           curl -s -O https://download.newrelic.com/newrelic/java-agent/newrelic-agent/current/newrelic.jar
           curl -s -O https://download.newrelic.com/newrelic/java-agent/newrelic-agent/current/newrelic.yml
 
@@ -116,6 +120,7 @@ install:
               return 0
             fi
             systemctl restart ${service}
+            echo "$service" >> {{.TMP_DIR}}/systemd_restarted_services
           }
 
           supervisord_restart_service() {
@@ -124,6 +129,7 @@ install:
               return 0
             fi
             supervisorctl restart ${service} > /dev/null
+            echo "$service" >> {{.TMP_DIR}}/supervisord_restarted_services
           }
 
           tomcat_configure() {
@@ -145,8 +151,10 @@ install:
 
             if [[ "{{.NEW_RELIC_TEST_MODE}}" != "true" ]]; then
               if [[ -f "$catalinaBase/bin/setenv.sh" ]]; then
+                echo "Modifying $catalinaBase/bin/setenv.sh"
                 cp $catalinaBase/bin/setenv.sh $catalinaBase/bin/setenv.sh.newrelic.bkp
               else
+                echo "Creating $catalinaBase/bin/setenv.sh"
                 if [[ ! -d "$catalinaBase/bin" ]]; then
                   mkdir $catalinaBase/bin
                 fi
@@ -159,8 +167,8 @@ install:
 
               if [[ "$configured" != "true" ]]; then
                 mkdir -p /opt/newrelic/$appName/logs
-                cp /tmp/newrelic/java/newrelic.jar /opt/newrelic/$appName
-                cp /tmp/newrelic/java/newrelic.yml /opt/newrelic/$appName
+                cp {{.TMP_DIR}}/newrelic.jar /opt/newrelic/$appName
+                cp {{.TMP_DIR}}/newrelic.yml /opt/newrelic/$appName
                 chown -R $user /opt/newrelic/$appName
 
                 local host=""
@@ -242,11 +250,20 @@ install:
               fi
             fi
 
+            if [[ -z $service ]]; then
+              echo -e "\nStarting configuration of Tomcat (CATALINA_BASE = $catalinaBase)."
+            else
+              echo -e "\nStarting configuration of Tomcat ($service)."
+            fi
+
             local configFailed="false"
             tomcat_configure $catalinaBase $user $service || configFailed="true"
             if [[ "$configFailed" == "true" ]]; then
               return 0
             fi
+
+            echo "Configuration finished."
+            echo "Restarting Tomcat."
 
             if [[ "$initSystem" == "systemd" && -n "$service" ]]; then
               if [[ "$isSupervisord" == "true" ]]; then
@@ -273,8 +290,8 @@ install:
             exit 3
           fi
 
-          echo "$FOUND_JAVA_PROCESSES" | tr -d '[]' | tr ',' '\n' > /tmp/newrelic/java/processes
-          for JAVA_PID in $(cat /tmp/newrelic/java/processes)
+          echo "$FOUND_JAVA_PROCESSES" | tr -d '[]' | tr ',' '\n' > {{.TMP_DIR}}/processes
+          for JAVA_PID in $(cat {{.TMP_DIR}}/processes)
           do
             INTROSPECTION_DATA=$(nri-lsi-java -introspect ${JAVA_PID})
             SERVER_TYPE=$(findServerType $INTROSPECTION_DATA)
@@ -310,5 +327,4 @@ install:
     cleanup:
       label: "Cleaning up"
       cmds:
-        - rm -rf /tmp/newrelic/java
-        - rmdir /tmp/newrelic 2> /dev/null || true
+        - rm -rf {{.TMP_DIR}}
