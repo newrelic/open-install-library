@@ -20,7 +20,7 @@ keywords:
 processMatch:
   - w3wp.exe
 
-validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+validationNrql: "SELECT * FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND host like '{{.HOSTNAME}}%' since 10 minutes ago"
 
 successLinkConfig:
   type: EXPLORER
@@ -41,6 +41,7 @@ install:
         - task: install
         - task: configure
         - task: start
+        - task: cli_validate
         - task: ensure_sites_started
 
     verify_continue:
@@ -159,7 +160,7 @@ install:
 
           $uninstallIds = Find-UninstallGuids -Match "New Relic .NET Agent"
           foreach ($uninstallId in $uninstallIds) {
-            Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/x $uninstallId" -Wait
+            Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/x $uninstallId" -Wait -NoNewWindow
           }
           '
 
@@ -190,7 +191,7 @@ install:
             exit $errorCode
           }
 
-          $installCode = (Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/i","$env:TEMP\NewRelicDotNetAgent_x64.msi","NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" -PassThru -Wait -RedirectStandardOutput ".\NUL").ExitCode
+          $installCode = (Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/i","$env:TEMP\NewRelicDotNetAgent_x64.msi","NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" -PassThru -Wait -NoNewWindow -RedirectStandardOutput ".\NUL").ExitCode
           
           # https://docs.microsoft.com/en-us/windows/win32/msi/error-codes
           if (@(0,1641,3010) -NotContains $installCode) {
@@ -234,6 +235,13 @@ install:
         - |
           powershell -command '
           iisreset /start | Out-Null
+          '
+
+    cli_validate:
+      cmds:
+        - |
+          powershell -command '
+          Start-Process -FilePath "C:\Program Files\New Relic\New Relic CLI\newrelic.exe" -ArgumentList "diagnose","validate" -Wait -NoNewWindow -RedirectStandardOutput '.\NUL'
           '
 
     ensure_sites_started:
