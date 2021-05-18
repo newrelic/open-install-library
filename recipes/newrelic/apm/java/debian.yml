@@ -20,7 +20,7 @@ keywords:
 processMatch:
   - java
 
-validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+validationNrql: "SELECT count(*) FROM ApplicationAgentContext WHERE host LIKE '{{.HOSTNAME}}%' SINCE 10 minutes AGO"
 
 successLinkConfig:
   type: EXPLORER
@@ -32,8 +32,8 @@ install:
   silent: true
 
   vars:
-    TMP_DIR: '/tmp/newrelic-java'
-
+    TMP_DIR:
+      sh: mktemp -d /tmp/newrelic.XXXXXX
 
   tasks:
     default:
@@ -42,6 +42,7 @@ install:
         - task: get-introspector
         - task: get-agent
         - task: install-agent
+        - task: verify-servers-restarted
         - task: notify-done
         - task: cleanup
 
@@ -87,8 +88,15 @@ install:
       label: "Installing Java Introspector..."
       cmds:
         - echo "Retrieving Java Introspector..."
-        - curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb
-        - sudo apt-get install -y -qq ./nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb > /dev/null || true
+        - |
+          cat /etc/os-release | grep "rhel" > /dev/null
+          if [[ $? -eq 0 ]]; then
+            curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm
+            sudo yum install -y -q nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm 2> /dev/null || true
+          else
+            curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb
+            sudo apt-get install -y -qq ./nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb 2> /dev/null || true
+          fi
 
     get-agent:
       label: "Retrieving Java Agent..."
@@ -130,6 +138,18 @@ install:
             fi
             supervisorctl restart ${service} > /dev/null
             echo "$service" >> {{.TMP_DIR}}/supervisord_restarted_services
+          }
+
+          wait_termination() {
+            local pid=$1
+            local retries=12
+            while [[ $retries -gt 0 ]]
+            do
+              ps -q $pid > /dev/null || return 0
+              sleep 5
+              retries=$(( retries - 1 ))
+            done
+            return 1
           }
 
           tomcat_configure() {
@@ -181,7 +201,7 @@ install:
                 sed -i "s/license_key: '<%= license_key %>'/license_key: '{{.NEW_RELIC_LICENSE_KEY}}'$host/" /opt/newrelic/$appName/newrelic.yml
                 sed -i "s/app_name: My Application$/app_name: $appName/" /opt/newrelic/$appName/newrelic.yml
 
-                echo "# ---- New Relic switch automatically added on $(date)" >> $catalinaBase/bin/setenv.sh
+                echo -e "\n# ---- New Relic switch automatically added on $(date)" >> $catalinaBase/bin/setenv.sh
                 echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$appName/newrelic.jar\"" >> $catalinaBase/bin/setenv.sh
               fi
             fi
@@ -220,7 +240,7 @@ install:
 
             if [[ "{{.NEW_RELIC_TEST_MODE}}" != "true" ]]; then
               kill -15 $pid
-              sleep 5
+              wait_termination $pid || kill -9 $pid
               sudo -u $user JRE_HOME=$jreHome CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start > /dev/null
             fi
           }
@@ -267,8 +287,10 @@ install:
 
             if [[ "$initSystem" == "systemd" && -n "$service" ]]; then
               if [[ "$isSupervisord" == "true" ]]; then
+                echo "$catalinaBase/bin/setenv.sh" > supervisord_$service.configFile
                 supervisord_restart_service $service
               else
+                echo "$catalinaBase/bin/setenv.sh" > systemd_$service.configFile
                 systemd_restart_service $service
               fi
             else
@@ -304,6 +326,32 @@ install:
               # dynamicAttach $JAVA_PID $INTROSPECTION_DATA
               ;;
             esac
+          done
+
+    verify-servers-restarted:
+      cmds:
+        - |
+          [[ -f {{.TMP_DIR}}/systemd_restarted_services && -f {{.TMP_DIR}}/systemd_restarted_services ]] || sleep 5
+          red='\033[0;31m'
+          noColor='\033[0m'
+
+          for systemdService in $(cat {{.TMP_DIR}}/systemd_restarted_services 2> /dev/null)
+          do
+            configFile=$(cat systemd_$systemdService.configFile 2> /dev/null)
+
+            systemctl status $systemdService > /dev/null || echo -e "
+              ${red}The systemd service \"$systemdService\" did not restart properly.
+              Revert by restoring the backup of $configFile
+              ${noColor}"
+          done
+          for supervisordService in $(cat {{.TMP_DIR}}/supervisord_restarted_services 2> /dev/null)
+          do
+            configFile=$(cat supervisord_$supervisordService.configFile 2> /dev/null)
+
+            supervisorctl status $supervisordService | grep " RUNNING " > /dev/null || echo -e "
+              ${red}The supervisor service \"$supervisordService\" did not restart properly.\n
+              Revert by restoring the backup of $configFile
+              ${noColor}"
           done
 
     notify-done:
