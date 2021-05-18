@@ -11,6 +11,8 @@ mkdir -p /wordpress
 rm -rf /wordpress/*
 cd /wordpress
 
+echo "<?php phpinfo(); ?>"| tee test.php
+
 mysql -e \
 "GRANT ALL ON *.* TO 'wp_user'@'localhost' IDENTIFIED BY 'wp_password'; \
 FLUSH PRIVILEGES;"
@@ -60,6 +62,9 @@ if [ $(which apache2) ]; then
 	fi
 	echo Enabling apache2 wordpress site.
 	a2ensite wordpress
+
+	echo Disabling apache2 default site.
+	a2dissite 000-default
 
 	echo Enabling apache2 mod rewrite.
 	a2enmod rewrite
