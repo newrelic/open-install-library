@@ -62,16 +62,6 @@ install:
         - task: input_assert
           vars:
             MAX_RETRIES: 3
-        - task: setup
-          vars:
-            NR_CLI_DB_HOSTNAME:
-              sh: sudo cat /tmp/mysql-ohai-hostname
-            NR_CLI_DB_PORT:
-              sh: sudo cat /tmp/mysql-ohai-port
-            NR_CLI_DB_USERNAME:
-              sh: sudo cat /tmp/mysql-ohai-username
-            NR_CLI_DB_PASSWORD:
-              sh: sudo cat /tmp/mysql-ohai-password
         - task: restart
 
     assert_infra:
@@ -89,25 +79,23 @@ install:
           TRIES=0
           while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
             printf "\nMySQL Hostname (default: localhost): "
-            read -r HOSTNAME
-            HOSTNAME=${HOSTNAME:-localhost}
+            read -r NR_CLI_DB_HOSTNAME
+            NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-localhost}
             printf "MySQL port (default: 3306): "
-            read -r PORT
-            PORT=${PORT:-3306}
+            read -r NR_CLI_DB_PORT
+            NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
             ((TRIES++))
-            CAN_CONNECT=$(curl $HOSTNAME:$PORT 2>&1 | awk -F'[()]' '{print $2}')
+            CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 | awk -F'[()]' '{print $2}')
             CAN_CONNECT=${CAN_CONNECT:-0}
             if [ $CAN_CONNECT == "6" ]; then
-              printf "\n[Error]: Provided host ($HOSTNAME) cannot be reached. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+              printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
               if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; fi
               echo "Please try again"
             elif [ $CAN_CONNECT == "7" ]; then
-              printf "\n[Error]: Connections to port ($PORT) are being refused. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+              printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
               if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
               echo "Please try again"
             else
-              echo $HOSTNAME > /tmp/mysql-ohai-hostname
-              echo $PORT > /tmp/mysql-ohai-port
               break
             fi
           done
@@ -117,28 +105,26 @@ install:
           EXPECTED_ALL_PRIVILEGES=$(echo 'ALL PRIVILEGES')
           while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
             printf "MySQL Username: "
-            read -r USERNAME
+            read -r NR_CLI_DB_USERNAME
             printf "MySQL Password: "
             stty -echo
-            read -r PASSWORD
+            read -r NR_CLI_DB_PASSWORD
             stty echo
             ((TRIES++))
-            if [ "$USERNAME" == "" ] || [ "$PASSWORD" == "" ]; then
+            if [ "$NR_CLI_DB_USERNAME" == "" ] || [ "$NR_CLI_DB_PASSWORD" == "" ]; then
               printf "\n[Error]: Please provide a valid Username and Password. Fields cannot be blank.\n" >> /dev/stderr
               if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
               echo "Please try again"
               continue
             fi
-            CHECK_USER=$(mysql -u$USERNAME --port $PORT -p$PASSWORD -e "SELECT USER FROM mysql.user" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep $USERNAME | awk '{print $1}')
-            if [ "$CHECK_USER" == "$USERNAME" ]; then
-              CHECK_DB=$(mysql -u$USERNAME --port $PORT -p$PASSWORD -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep "GRANT" | awk '{print $2, $3}')
+            CHECK_USER=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SELECT USER FROM mysql.user" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep $NR_CLI_DB_USERNAME | awk '{print $1}')
+            if [ "$CHECK_USER" == "$NR_CLI_DB_USERNAME" ]; then
+              CHECK_DB=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep "GRANT" | awk '{print $2, $3}')
               if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -gt 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -gt 0 ]; then
-                echo $USERNAME > /tmp/mysql-ohai-username
-                echo $PASSWORD > /tmp/mysql-ohai-password
                 break
               fi
             fi
-            if [ "$CHECK_USER" != "$USERNAME" ]; then
+            if [ "$CHECK_USER" != "$NR_CLI_DB_USERNAME" ]; then
               printf "\n[Error]: Provided credentials have no access to mysql. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
               if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
               echo "Please try again"
@@ -151,34 +137,25 @@ install:
           done
           printf "\n[OK] All checks passed. Installing MySQL Integration...\n\n"
 
-    setup:
-      label: "Installing MySQL integration..."
-      cmds:
-        - |
-          sudo rm /tmp/mysql-ohai*
-        - |
+          # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo apt-get update -yq
-        - |
           sudo apt-get install nri-mysql -y
-        - |
           if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
           fi
           sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
-        - |
-          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<"EOT"
+          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<EOT
           integration_name: com.newrelic.mysql
           instances:
             - name: mysql-status
               command: status
               arguments:
-                hostname: {{.NR_CLI_DB_HOSTNAME}}
-                port: {{.NR_CLI_DB_PORT}}
-                username: {{.NR_CLI_DB_USERNAME}}
-                password: {{.NR_CLI_DB_PASSWORD}}
-                database: {{.NR_CLI_DATABASE}}
+                hostname: $NR_CLI_DB_HOSTNAME
+                port: $NR_CLI_DB_PORT
+                username: $NR_CLI_DB_USERNAME
+                password: $NR_CLI_DB_PASSWORD
+                database:
                 extended_metrics: true
                 extended_innodb_metrics: true
                 extended_myisam_metrics: true
