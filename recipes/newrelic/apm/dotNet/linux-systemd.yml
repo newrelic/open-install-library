@@ -9,10 +9,6 @@ repository: https://github.com/newrelic/newrelic-dotnet-agent
 installTargets:
   - type: application
     os: linux
-    platform: "debian"
-  - type: application
-    os: linux
-    platform: "ubuntu"
 
 keywords:
   - .NET
@@ -22,7 +18,7 @@ keywords:
 
 processMatch: []
 
-validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
 successLinkConfig:
    type: EXPLORER
@@ -46,6 +42,7 @@ install:
         - task: install
         - task: configure
         - task: start
+        - task: cli_validate
         - task: ensure_sites_started
         - task: cleanup_temp_files
 
@@ -113,7 +110,7 @@ install:
               exit ${code}
             fi
           done
-
+          
     add_gnupg2_if_required:
       cmds:
         - |
@@ -171,11 +168,19 @@ install:
             sudo systemctl stop $sn
           done
         - echo "Done stopping services"
-    
+
     remove_any_previous:
       ignore_error: true
       cmds:
-        - sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent >/dev/null 2>&1 || true
+        - |
+          IS_YUM_INSTALLED=$(which yum 2>&1 || true)
+          if [[ -z "$IS_YUM_INSTALLED" ]]
+          then
+            sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent >/dev/null 2>&1 || true
+          else
+            sudo yum remove newrelic-netcore20-agent -y >/dev/null 2>&1 || true
+          fi
+
         - |
           for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
             if [[ -f "/etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf" ]]
@@ -189,10 +194,26 @@ install:
 
     install:
       cmds:
-        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
-        - wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-        - sudo apt-get update >/dev/null
-        - sudo apt-get install newrelic-netcore20-agent -y -qq > /dev/null
+        - |
+          IS_YUM_INSTALLED=$(which yum 2>&1 || true)
+          if [[ -z "$IS_YUM_INSTALLED" ]]
+          then
+            echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
+            wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+            sudo apt-get update >/dev/null
+            sudo apt-get install newrelic-netcore20-agent -y -qq > /dev/null
+          else
+            sudo rpm -Uvh http://yum.newrelic.com/pub/newrelic/el5/x86_64/newrelic-repo-5-3.noarch.rpm || true
+            cat << REPO | sudo tee "/etc/yum.repos.d/newrelic-netcore20-agent.repo" > /dev/null
+          [newrelic-netcore20-agent-repo]
+          name=New Relic .NET Core packages for Enterprise Linux
+          baseurl=http://yum.newrelic.com/pub/newrelic/el7/\$basearch
+          enabled=1
+          gpgcheck=1
+          gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-NewRelic
+          REPO
+            sudo yum install newrelic-netcore20-agent -q -y
+          fi
         - echo "New Relic .NET agent installed"
 
     configure:
@@ -233,6 +254,10 @@ install:
           done
         - echo "Services restarted"
 
+    cli_validate:
+      cmds:
+        - sudo /usr/local/bin/newrelic diagnose validate
+
     ensure_sites_started:
       ignore_error: true
       cmds:
@@ -248,13 +273,11 @@ install:
         # For each PID, get the port(s) it is listening on by inspecting /proc/${pid}/fd (open files)
         # and comparing them with open TCP ports in /proc/net/tcp
         - |
-
           realAwk=$(readlink -f $(which awk))
           awkArgs=''
           if [[ "${realAwk}" == "/usr/bin/gawk" ]]; then
             awkArgs="--non-decimal-data"
           fi
-
           for pid in `cat /tmp/dotnet-introspector/dotnet_service_pids.txt`; do
             for socket in $(sudo ls -l /proc/${pid}/fd |grep socket |sed 's/.*\[//' |sed 's/\]//' |uniq); do
               hexport=$(sudo grep ${socket} /proc/net/tcp |awk '{print $2}' |cut -d':' -f2)
@@ -280,13 +303,11 @@ install:
           ================================================================================
           ${NOCOLOR}
           "
-
           NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             echo -n "Press ENTER to skip or type URL and press ENTER to continue: "
             read CUSTOM_APP_URL
             echo ""
-
             echo "Sending requests to your application..."
             if [[ -n "$CUSTOM_APP_URL" ]]; then
               echo "Pinging $CUSTOM_APP_URL"
@@ -296,7 +317,6 @@ install:
               done
             fi
           fi
-
         # Get the root (/) URL for the service listening on each port found
         - |
           for pn in `cat /tmp/dotnet-introspector/ports.txt`; do
@@ -307,7 +327,7 @@ install:
             done
           done
         - echo "Done pinging sites"
-    
+
     cleanup_temp_files:
       ignore_error: true
       cmds:
