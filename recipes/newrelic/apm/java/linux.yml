@@ -69,7 +69,16 @@ install:
             echo "${red}A valid touch installation is required.${noColor}" >> /dev/stderr
             exit 15
           fi
-
+          mktempInstalled=$(which mktemp 2> /dev/null)
+          if [[ -z "$mktempInstalled" ]] ; then
+            echo "${red}A valid mktemp installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
+          cutInstalled=$(which cut 2> /dev/null)
+          if [[ -z "$cutInstalled" ]] ; then
+            echo "${red}A valid cut installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
 
     verify-continue:
       cmds:
@@ -81,8 +90,8 @@ install:
           =                                                                              =
           =                                   Warning                                    =
           =                                                                              =
-          =       This installation will automatically restart all systemd services      =
-          =       that run Tomcat services upon completion.                              =
+          =       This installation will automatically restart all Tomcat services       =
+          =       upon completion.                                                       =
           =                                                                              =
           ================================================================================
           ${NOCOLOR}"
@@ -255,7 +264,7 @@ install:
                 fi
                 local firstChar=$(echo "${answer^^}" | cut -c1-1)
                 if [[ "$firstChar" == "N" ]]; then
-                  exit 0
+                  return 0
                 fi
                 if [[ "$firstChar" == "Y" ]]; then
                   break
@@ -266,7 +275,7 @@ install:
 
             if [[ "{{.NEW_RELIC_TEST_MODE}}" != "true" ]]; then
               kill -15 $pid
-              wait_termination $pid || kill -9 $pid
+              wait_termination $pid || kill -9 $pid || true
               sudo -u $user JRE_HOME=$jreHome CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start > /dev/null
             fi
           }
@@ -320,6 +329,7 @@ install:
                 systemd_restart_service $service
               fi
             else
+              echo "$catalinaBase" >> {{.TMP_DIR}}/tomcat_standalone.catalinaBases
               tomcat_restart_standalone $pid $catalinaBase $workDir $user
             fi
           }
@@ -357,7 +367,7 @@ install:
     verify-servers-restarted:
       cmds:
         - |
-          [[ -f {{.TMP_DIR}}/systemd_restarted_services && -f {{.TMP_DIR}}/systemd_restarted_services ]] || sleep 5
+          [[ -f {{.TMP_DIR}}/systemd_restarted_services || -f {{.TMP_DIR}}/systemd_restarted_services || -f {{.TMP_DIR}}/tomcat_standalone.catalinaBases ]] || sleep 10
           red='\033[0;31m'
           noColor='\033[0m'
 
@@ -370,13 +380,22 @@ install:
               Revert by restoring the backup of $configFile
               ${noColor}"
           done
+
           for supervisordService in $(cat {{.TMP_DIR}}/supervisord_restarted_services 2> /dev/null)
           do
             configFile=$(cat {{.TMP_DIR}}/supervisord_$supervisordService.configFile 2> /dev/null)
 
             supervisorctl status $supervisordService | grep " RUNNING " > /dev/null || echo -e "
-              ${red}The supervisor service \"$supervisordService\" did not restart properly.\n
+              ${red}The supervisor service \"$supervisordService\" did not restart properly.
               Revert by restoring the backup of $configFile
+              ${noColor}"
+          done
+
+          for catalinaBase in $(cat {{.TMP_DIR}}/tomcat_standalone.catalinaBases)
+          do
+            ps -ef | grep "catalina.base=$catalinaBase" | grep -v grep > /dev/null || echo -e "
+              ${red}The Tomcat server with CATALINA_BASE = $catalinaBase did not restart properly.
+              Revert by restoring the backup of $catalinaBase/
               ${noColor}"
           done
 
