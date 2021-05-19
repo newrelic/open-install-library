@@ -34,6 +34,7 @@ install:
   tasks:
     default:
       cmds:
+        - task: verify-pre-requisites
         - task: verify-continue
         - task: get-introspector
         - task: get-agent
@@ -41,6 +42,34 @@ install:
         - task: verify-servers-restarted
         - task: notify-done
         - task: cleanup
+
+    verify-pre-requisites:
+      cmds:
+        - |
+          red='\033[0;31m'
+          noColor='\033[0m'
+
+          grepInstalled=$(which grep 2> /dev/null)
+          if [[ -z "$grepInstalled" ]] ; then
+            echo "${red}A valid grep installation is required.${noColor}" >> /dev/stderr
+            exit 10
+          fi
+          sedInstalled=$(which sed 2> /dev/null)
+          if [[ -z "$sedInstalled" ]] ; then
+            echo "${red}A valid sed installation is required.${noColor}" >> /dev/stderr
+            exit 11
+          fi
+          catInstalled=$(which cat 2> /dev/null)
+          if [[ -z "$catInstalled" ]] ; then
+            echo "${red}A valid cat installation is required.${noColor}" >> /dev/stderr
+            exit 13
+          fi
+          touchInstalled=$(which touch 2> /dev/null)
+          if [[ -z "$touchInstalled" ]] ; then
+            echo "${red}A valid touch installation is required.${noColor}" >> /dev/stderr
+            exit 15
+          fi
+
 
     verify-continue:
       cmds:
@@ -80,13 +109,14 @@ install:
               echo -e "Please type Y or N only."
             done
           fi
+
     get-introspector:
       label: "Installing Java Introspector..."
       cmds:
         - echo "Retrieving Java Introspector..."
         - |
-          cat /etc/os-release | grep "rhel" > /dev/null
-          if [[ $? -eq 0 ]]; then
+          IS_YUM_INSTALLED=$(which yum 2>&1 || true)
+          if [[ -z "$IS_YUM_INSTALLED" ]]; then
             curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm
             sudo yum install -y -q nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm 2> /dev/null || true
           else
@@ -153,16 +183,16 @@ install:
             local user=$2
             local appName=$3
 
-            if [[ -z "$appName" ]]; then
-              echo -e "\nConfiguring Tomcat with CATALINA_BASE = $catalinaBase"
-              local defaultName="{{.HOSTNAME}}"
-              echo -n "Enter an app name (default: $defaultName): "
-              read -r answer
-              if [[ -z $answer ]]; then
-                appName=$defaultName
-              else
-                appName=$answer
-              fi
+            local defaultName="{{.HOSTNAME}}"
+            if [[ -n "$appName" ]]; then
+              defaultName="$appName"
+            fi
+            echo -n "Enter an app name (default: $defaultName): "
+            read -r answer
+            if [[ -z $answer ]]; then
+              appName=$defaultName
+            else
+              appName=$answer
             fi
 
             if [[ "{{.NEW_RELIC_TEST_MODE}}" != "true" ]]; then
@@ -283,10 +313,10 @@ install:
 
             if [[ "$initSystem" == "systemd" && -n "$service" ]]; then
               if [[ "$isSupervisord" == "true" ]]; then
-                echo "$catalinaBase/bin/setenv.sh" > supervisord_$service.configFile
+                echo "$catalinaBase/bin/setenv.sh" > {{.TMP_DIR}}/supervisord_$service.configFile
                 supervisord_restart_service $service
               else
-                echo "$catalinaBase/bin/setenv.sh" > systemd_$service.configFile
+                echo "$catalinaBase/bin/setenv.sh" > {{.TMP_DIR}}/systemd_$service.configFile
                 systemd_restart_service $service
               fi
             else
@@ -333,7 +363,7 @@ install:
 
           for systemdService in $(cat {{.TMP_DIR}}/systemd_restarted_services 2> /dev/null)
           do
-            configFile=$(cat systemd_$systemdService.configFile 2> /dev/null)
+            configFile=$(cat {{.TMP_DIR}}/systemd_$systemdService.configFile 2> /dev/null)
 
             systemctl status $systemdService > /dev/null || echo -e "
               ${red}The systemd service \"$systemdService\" did not restart properly.
@@ -342,7 +372,7 @@ install:
           done
           for supervisordService in $(cat {{.TMP_DIR}}/supervisord_restarted_services 2> /dev/null)
           do
-            configFile=$(cat supervisord_$supervisordService.configFile 2> /dev/null)
+            configFile=$(cat {{.TMP_DIR}}/supervisord_$supervisordService.configFile 2> /dev/null)
 
             supervisorctl status $supervisordService | grep " RUNNING " > /dev/null || echo -e "
               ${red}The supervisor service \"$supervisordService\" did not restart properly.\n
