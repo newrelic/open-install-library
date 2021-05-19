@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Install wp-cli
 curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
@@ -56,12 +56,20 @@ if [ $(which nginx) ]; then
 fi
 
 if [ $(which apache2) ]; then
-	if [ ! -f /etc/apache2/sites-available/wordpress-site ]; then
+	SITE="wordpress"
+	if [[ $(dpkg -l php-fpm) ]]; then
+		echo "Using PHP FPM variant of apache2 site config."
+		SITE="wordpress-fpm"
+
+		echo Enabling proxy_fcgi.
+		a2enmod proxy_fcgi
+	fi
+	if [ ! -f /etc/apache2/sites-available/$SITE.conf ]; then
 		echo Creating apache2 wordpress site config.
-		cp ~/templates/wordpress.conf /etc/apache2/sites-available
+		cp ~/templates/$SITE.conf /etc/apache2/sites-available
 	fi
 	echo Enabling apache2 wordpress site.
-	a2ensite wordpress
+	a2ensite $SITE
 
 	echo Disabling apache2 default site.
 	a2dissite 000-default
