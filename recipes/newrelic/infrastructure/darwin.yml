@@ -1,0 +1,110 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: infrastructure-agent-installer
+displayName: Infrastructure Agent
+description: New Relic install recipe for the Infrastructure agent
+repository: https://github.com/newrelic/infrastructure-agent
+
+installTargets:
+  - type: host
+    os: darwin
+
+keywords:
+  - Infrastructure
+  - Agent
+  - Darwin
+  - Mac
+  - MacOS
+
+processMatch: []
+
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        # - task: setup_license
+        # - task: install_infra
+        # - task: restart
+        # - task: assert_agent_started
+
+    assert_pre_req:
+      cmds:
+        - |
+          OSTYPE=$(uname)
+          if [[ "$OSTYPE" == "Darwin" ]]; then
+            echo "On Darwin"
+          else
+            echo "Darwin not detected"
+            exit 21
+          fi
+ 
+    setup_license:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra.yml ]; then
+            sed -i "/^staging/d" /etc/newrelic-infra.yml
+
+            sed -i "s/^\(license_key: \).*/\1{{.NEW_RELIC_LICENSE_KEY}}/" /etc/newrelic-infra.yml
+            sed -i "s/^\(enable_process_metrics: \).*/\1true/" /etc/newrelic-infra.yml
+          else
+            echo "Here"
+            sudo touch /etc/newrelic-infra.yml
+            sudo cat > /etc/newrelic-infra.yml <<EOT
+          license_key: {{.NEW_RELIC_LICENSE_KEY}}
+          enable_process_metrics: true
+          EOT
+          fi
+        - |
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            sudo echo 'staging: true' >> /etc/newrelic-infra.yml
+          fi
+
+    install_infra:
+      cmds:
+        - |
+          brew install ...
+      silent: false
+
+    restart:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
+
+    assert_agent_started:
+      cmds:
+        - |
+          # Ensure agent has enough time to start
+          sleep 10
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >> /dev/stderr
+            exit 31
+          fi
+
+postInstall:
+  info: |2
+      ⚙️  The Infrastructure Agent configuration file can be found in /etc/newrelic-infra.yml
+      Edit this file to make changes or configure advanced features for the agent. See the docs for options:
+      https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
+      
+      Note: Process monitoring has been enabled by default - all other config options are left to the user.
