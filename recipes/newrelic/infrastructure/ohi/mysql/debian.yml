@@ -78,64 +78,76 @@ install:
       cmds:
         - |
           TRIES=0
-          while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-            printf "\nMySQL Hostname (default: localhost): "
-            read -r NR_CLI_DB_HOSTNAME
-            NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-localhost}
-            printf "MySQL port (default: 3306): "
-            read -r NR_CLI_DB_PORT
-            NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
-            ((TRIES++))
-            CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 | awk -F'[()]' '{print $2}')
-            CAN_CONNECT=${CAN_CONNECT:-0}
-            if [ $CAN_CONNECT == "6" ]; then
-              printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
-              if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; fi
-              echo "Please try again"
-            elif [ $CAN_CONNECT == "7" ]; then
-              printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
-              if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
-              echo "Please try again"
-            else
-              break
-            fi
-          done
+
+          # Check Env Vars
+          NR_CLI_DB_HOSTNAME="{{.NR_CLI_DB_HOSTNAME}}"
+          NR_CLI_DB_PORT="{{.NR_CLI_DB_PORT}}"
+          NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
+          NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
+
+          if [[ "$NR_CLI_DB_HOSTNAME" != "" ]] || [[ "$NR_CLI_DB_PORT" != "" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              printf "\nMySQL Hostname (default: localhost): "
+              read -r NR_CLI_DB_HOSTNAME
+              NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-localhost}
+              printf "MySQL port (default: 3306): "
+              read -r NR_CLI_DB_PORT
+              NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
+              ((TRIES++))
+              CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 | awk -F'[()]' '{print $2}')
+              CAN_CONNECT=${CAN_CONNECT:-0}
+              if [ $CAN_CONNECT == "6" ]; then
+                printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; fi
+                echo "Please try again"
+              elif [ $CAN_CONNECT == "7" ]; then
+                printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
+                echo "Please try again"
+              else
+                break
+              fi
+            done
+          fi
 
           TRIES=0
           EXPECTED_SELECT_REPLICATION=$(echo 'SELECT, REPLICATION')
           EXPECTED_ALL_PRIVILEGES=$(echo 'ALL PRIVILEGES')
-          while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-            printf "MySQL Username: "
-            read -r NR_CLI_DB_USERNAME
-            printf "MySQL Password: "
-            stty -echo
-            read -r NR_CLI_DB_PASSWORD
-            stty echo
-            ((TRIES++))
-            if [ "$NR_CLI_DB_USERNAME" == "" ] || [ "$NR_CLI_DB_PASSWORD" == "" ]; then
-              printf "\n[Error]: Please provide a valid Username and Password. Fields cannot be blank.\n" >> /dev/stderr
-              if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
-              echo "Please try again"
-              continue
-            fi
-            CHECK_USER=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SELECT USER FROM mysql.user" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep $NR_CLI_DB_USERNAME | awk '{print $1}')
-            if [ "$CHECK_USER" == "$NR_CLI_DB_USERNAME" ]; then
-              CHECK_DB=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep "GRANT" | awk '{print $2, $3}')
-              if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -gt 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -gt 0 ]; then
-                break
+
+          if [[ "$NR_CLI_DB_USERNAME" != "" ]] || [[ "$NR_CLI_DB_PASSWORD" != "" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              printf "MySQL Username: "
+              read -r NR_CLI_DB_USERNAME
+              printf "MySQL Password: "
+              stty -echo
+              read -r NR_CLI_DB_PASSWORD
+              stty echo
+              ((TRIES++))
+              if [ "$NR_CLI_DB_USERNAME" == "" ] || [ "$NR_CLI_DB_PASSWORD" == "" ]; then
+                printf "\n[Error]: Please provide a valid Username and Password. Fields cannot be blank.\n" >> /dev/stderr
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
+                echo "Please try again"
+                continue
               fi
-            fi
-            if [ "$CHECK_USER" != "$NR_CLI_DB_USERNAME" ]; then
-              printf "\n[Error]: Provided credentials have no access to mysql. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
-              if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
-              echo "Please try again"
-            fi
-            if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -eq 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -eq 0 ]; then
-              printf "\n[Error]: Provided user does not have the minimum permissions. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
-              if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; fi
-              echo "Please try again"
-            fi
+              CHECK_USER=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SELECT USER FROM mysql.user" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep $NR_CLI_DB_USERNAME | awk '{print $1}')
+              if [ "$CHECK_USER" == "$NR_CLI_DB_USERNAME" ]; then
+                CHECK_DB=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep "GRANT" | awk '{print $2, $3}')
+                if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -gt 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -gt 0 ]; then
+                  break
+                fi
+              fi
+              if [ "$CHECK_USER" != "$NR_CLI_DB_USERNAME" ]; then
+                printf "\n[Error]: Provided credentials have no access to mysql. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
+                echo "Please try again"
+              fi
+              if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -eq 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -eq 0 ]; then
+                printf "\n[Error]: Provided user does not have the minimum permissions. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; fi
+                echo "Please try again"
+              fi
           done
+          fi
           printf "\n[OK] All checks passed. Installing MySQL Integration...\n\n"
 
           # Install the integration
