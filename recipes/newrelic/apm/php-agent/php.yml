@@ -16,6 +16,8 @@ keywords:
 processMatch:
   - /php-fpm/
 
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
 inputVars:
   - name: "NR_PHP_APPLICATION"
     prompt: "What is the name of your PHP application?"
@@ -37,6 +39,7 @@ install:
         - task: config_newrelic_ini
         - task: finalize_agent_config
         - task: restart_services
+        - task: send_transaction
 
     install_packages:
       cmds:
@@ -48,7 +51,6 @@ install:
           fi
           DEBIAN_FRONTEND=noninteractive sudo apt update
           DEBIAN_FRONTEND=noninteractive apt -y install newrelic-php5
-
     config_newrelic_ini:
       cmds:
         - echo "TODO: configure newrelic.ini"
@@ -67,3 +69,45 @@ install:
           else
             echo "You will need to restart your PHP application in order for instrumentation to be enabled."
           fi
+    send_transaction:
+      cmds:
+        - echo "Send queryable transactions."
+        - |
+          TMP_INSTALL_DIR="/tmp/php-agent-install"
+          cd $TMP_INSTALL_DIR
+          #
+          # Expand the log files from the most recent installation attempt,
+          # and get the name of the most recent log file.
+          #
+          tar -xvf $(ls -t nrinstall*.tar | head -1)
+          NR_INSTALL_LOG=$(ls -t nrinstall*.log | head -1)
+          #
+          # Get the web server PHP INI directories that the most recent installation attempt used.
+          #
+          WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
+          WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
+          if [ -z "${WEB_PHP_INI_DIR}" ]; then
+              WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
+          fi
+          #
+          # The first transaction initializes the app.
+          # The second transaction is for luck.
+          # The third time’s the charm.
+          #
+          if [ -n "${WEB_PHP_INI_DIR}" ]; then
+          #
+          # Web server was detected. Send transaction associated with the webserver php.ini
+          # and the newrelic.ini file associated with that web server.
+          #
+             php -c "${WEB_PHP_INI_DIR}/php.ini" -c "${WEB_NR_INI_DIR}/newrelic.ini" -n --ini &>/dev/null
+             php -c "${WEB_PHP_INI_DIR}/php.ini" -c "${WEB_NR_INI_DIR}/newrelic.ini" -n --ini &>/dev/null
+             php -c "${WEB_PHP_INI_DIR}/php.ini" -c "${WEB_NR_INI_DIR}/newrelic.ini" -n --ini &>/dev/null
+          else
+          #
+          # No web server detected, pure PHP CLI.
+          #
+             php —-ini
+             php —-ini
+             php —-ini
+          fi
+        - echo "Done sending transactions."
