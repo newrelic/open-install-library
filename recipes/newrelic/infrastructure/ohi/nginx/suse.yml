@@ -32,7 +32,7 @@ logMatch:
     attributes:
       logtype: nginx-error
 
-validationNrql: "SELECT count(*) from NginxSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from NginxSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
 successLinkConfig:
   type: EXPLORER
@@ -51,93 +51,72 @@ install:
   tasks:
     default:
       cmds:
-        - task: input
+        - task: assert_infra
+        - task: input_assert
           vars:
             MAX_RETRIES: 3
-        - task: assert_pre_req
-          vars:
-            NR_CLI_STUB_STATUS_URL:
-              sh: sudo cat /tmp/nginx-ohai-input
-        - task: setup
-          vars:
-            NR_CLI_STUB_STATUS_URL:
-              sh: sudo cat /tmp/nginx-ohai-input
-            NR_CLI_STATUS_MODULE:
-              sh: sudo cat /tmp/nginx-ohai-status-module
         - task: restart
 
-    input:
+    assert_infra:
+      cmds:
+        - |
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            sudo rm /tmp/nginx-ohai-input
+            exit 1
+          fi
+
+    input_assert:
       cmds:
         - |
           tries=0
-          while [ $tries -lt {{.MAX_RETRIES}} ]; do
-            printf "\nNGINX status URL (default: http://127.0.0.1/status): "
-            read -r input
-            input=${input:-http://127.0.0.1/status}
-            code=$(curl -I $input -w %{response_code} -so '/dev/null')
-            if [ $code == "200" ]; then
-              echo $input > /tmp/nginx-ohai-input
-              chmod 600 /tmp/nginx-ohai-input && sudo chown root:root /tmp/nginx-ohai-input
-              break
-            fi
-            ((tries++))
-            echo "The status url provided $input couldn't be reached. Try again"
-            if [ ! $tries -lt {{.MAX_RETRIES}} ]; then
-              echo "NGINX HTTP status must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
-              exit 2
-            fi
-            echo "Try again"
-          done
 
-      assert_pre_req:
-        cmds:
-          - |
-            IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
-            if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-              echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
-              sudo rm /tmp/nginx-ohai-input
-              exit 1
-            fi
-          - |
-            STATUS_RESPONSE=$(curl {{.NR_CLI_STUB_STATUS_URL}} -s)
-            if [ ! $(echo $STATUS_RESPONSE | grep "Active connections:" | wc -l) -eq 0 ] ; then
-              echo "ngx_http_stub_status_module" > /tmp/nginx-ohai-status-module
-              chmod 600 /tmp/nginx-ohai-input && sudo chown root:root /tmp/nginx-ohai-status-module
-              exit 0
-            fi
-            if [ ! $(echo $STATUS_RESPONSE | grep '"nginx_version"' | wc -l) -eq 0 ] ; then
-              echo "ngx_http_status_module" > /tmp/nginx-ohai-status-module
-              chmod 600 /tmp/nginx-ohai-input && sudo chown root:root /tmp/nginx-ohai-status-module
-              exit 0
-            fi
-            if [ ! $(echo $STATUS_RESPONSE | grep '"nginx"' | wc -l) -eq 0 ] ; then
-              echo "ngx_http_api_module" > /tmp/nginx-ohai-status-module
-              chmod 600 /tmp/nginx-ohai-input && sudo chown root:root /tmp/nginx-ohai-status-module
-              exit 0
-            fi
+          # Check Env Vars
+          NR_CLI_STUB_STATUS_URL="{{.NR_CLI_STUB_STATUS_URL}}"
+          if [[ "$NR_CLI_STUB_STATUS_URL" == "" ]]; then
+            while [ $tries -lt {{.MAX_RETRIES}} ]; do
+              printf "\nNGINX status URL (default: http://127.0.0.1/status): "
+              read -r NR_CLI_STUB_STATUS_URL
+              NR_CLI_STUB_STATUS_URL=${NR_CLI_STUB_STATUS_URL:-http://127.0.0.1/status}
+              code=$(curl -I $NR_CLI_STUB_STATUS_URL -w %{response_code} -so '/dev/null')
+              if [ $code == "200" ]; then
+                break
+              fi
+              ((tries++))
+              echo "The status url provided $input couldn't be reached. Try again"
+              if [ ! $tries -lt {{.MAX_RETRIES}} ]; then
+                echo "NGINX HTTP status must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
+                exit 2
+              fi
+              echo "Try again"
+            done
+          fi
+
+          STATUS_RESPONSE=$(curl $NR_CLI_STUB_STATUS_URL -s)
+          if [ ! $(echo $STATUS_RESPONSE | grep "Active connections:" | wc -l) -eq 0 ] ; then
+            NR_CLI_STATUS_MODULE="ngx_http_stub_status_module"
+          elif [ ! $(echo $STATUS_RESPONSE | grep '"nginx_version"' | wc -l) -eq 0 ] ; then
+            NR_CLI_STATUS_MODULE="ngx_http_status_module"
+          elif [ ! $(echo $STATUS_RESPONSE | grep '"nginx"' | wc -l) -eq 0 ] ; then
+            NR_CLI_STATUS_MODULE="ngx_http_api_module"
+          else
             echo "NGINX status must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
             sudo rm /tmp/nginx-ohai-input
             exit 2
+          fi
+          printf "\n[OK] All checks passed. Installing Nginx Integration...\n\n"
 
-    setup:
-      label: "Installing NGINX integration..."
-      cmds:
-        - |
+          # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-          sudo rm /tmp/nginx-ohai-input
-          sudo rm /tmp/nginx-ohai-status-module
-        - |
           sudo zypper -n ref -r newrelic-infra
-        - |
           sudo zypper -n install nri-nginx
-        - |
+
           if [ -f /etc/newrelic-infra/integrations.d/nginx-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/nginx-config.yml;
           fi
-
           sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml;
-        - |
-          sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<"EOT"
+          sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<EOT
           integration_name: com.newrelic.nginx
 
           instances:
@@ -145,15 +124,15 @@ install:
               command: metrics
               arguments:
                 # If you're using ngx_http_api_module be certain to use the full path up to and including the version number
-                status_url: {{.NR_CLI_STUB_STATUS_URL}}
+                status_url: $NR_CLI_STUB_STATUS_URL
 
                 # Name of Nginx status module OHI is to query against. discover | ngx_http_stub_status_module | ngx_http_status_module | ngx_http_api_module
-                status_module: {{.NR_CLI_STATUS_MODULE}}
+                status_module: $NR_CLI_STATUS_MODULE
 
-                # New users should leave this property as `true`, to identify the
-                # monitored entities as `remote`. Setting this property to `false` (the
+                # New users should leave this property as 'true', to identify the
+                # monitored entities as 'remote'. Setting this property to 'false' (the
                 # default value) is deprecated and will be removed soon, disallowing
-                # entities that are identified as `local`.
+                # entities that are identified as 'local';.
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
@@ -166,20 +145,36 @@ install:
               arguments:
                 config_path: /etc/nginx/nginx.conf
 
-                # New users should leave this property as `true`, to identify the
-                # monitored entities as `remote`. Setting this property to `false` (the
+                # New users should leave this property as 'true', to identify the
+                # monitored entities as 'remote'. Setting this property to 'false' (the
                 # default value) is deprecated and will be removed soon, disallowing
-                # entities that are identified as `local`.
+                # entities that are identified as 'local'.
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
                 remote_monitoring: true #new users should leave remote_monitoring = true
 
                 # status_url is used to identify the monitored entity to which the inventory will be attached.
-                status_url: {{.NR_CLI_STUB_STATUS_URL}}
+                status_url: $NR_CLI_STUB_STATUS_URL
           EOT
+
+    restart:
+      cmds:
         - |
-          sudo systemctl restart newrelic-infra.service
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
 
 postInstall:
   info: |2
