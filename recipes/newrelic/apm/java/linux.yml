@@ -79,6 +79,16 @@ install:
             echo "${red}A valid cut installation is required.${noColor}" >> /dev/stderr
             exit 22
           fi
+          readlinkInstalled=$(which readlink 2> /dev/null)
+          if [[ -z "$readlinkInstalled" ]] ; then
+            echo "${red}A valid readlink installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
+          realpathInstalled=$(which realpath 2> /dev/null)
+          if [[ -z "$realpathInstalled" ]] ; then
+            echo "${red}A valid realpath installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
 
     verify-continue:
       cmds:
@@ -250,7 +260,7 @@ install:
             local user=$4
             local catalinaHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\-\.\w/]+")
             catalinaHome=$(cd $workDir; realpath $catalinaHome)
-            local jreHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "\K.*(?=/bin/java )")
+            local jreHome=$(readlink /proc/$pid/exe | grep -oP "\K.*(?=/bin/java)")
 
             if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
               echo -e "\nThe Tomcat server needs to be restarted. Enter Y to allow the installer to do this."
@@ -300,7 +310,7 @@ install:
             local isSupervisord="false"
             if [[ "$initSystem" == "systemd" ]]; then
               service=$(systemctl status $pid | head -n1 | grep -oP "(?<=. )\K\w+(?=\.service)")
-              if [[ "$service" == "supervisor" ]]; then
+              if [[ "$service" == "supervisor" || "$service" == "supervisord" ]]; then
                 isSupervisord="true"
                 service=$(supervisorctl status | grep "pid $pid" | cut -d' ' -f1)
               fi
@@ -392,7 +402,7 @@ install:
               ${noColor}"
           done
 
-          for catalinaBase in $(cat {{.TMP_DIR}}/tomcat_standalone.catalinaBases)
+          for catalinaBase in $(cat {{.TMP_DIR}}/tomcat_standalone.catalinaBases 2> /dev/null)
           do
             ps -ef | grep "catalina.base=$catalinaBase" | grep -v grep > /dev/null || echo -e "
               ${red}The Tomcat server with CATALINA_BASE = $catalinaBase did not restart properly.
