@@ -77,8 +77,20 @@ install:
           do
             priv_user=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $1}')
             full_process_name=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $11}')
-            process_name=$(echo $full_process_name | sed -n 's/.*\/\(.*\)$/\1/p')
-
+            fpm_nginx_process_name=$(echo "${full_process_name}" | sed -n 's/\(.*\):$/\1/p')
+            if [ -n "${fpm_nginx_process_name}" ]; then
+              fpm_process_loc=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $14}')
+              fpm_ver=$(echo "${fpm_process_loc}" | sed -n 's/.*\/php\/\([578].[0-9]\)\/.*/\1/p')
+              if [ -n "${fpm_ver}" ]; then
+                # It's fpm.
+                process_name="php${fpm_ver}-fpm"
+              else
+                # It's nginx.
+                process_name=$fpmnginx_process_name
+              fi
+            else
+              process_name=$(echo $full_process_name | sed -n 's/.*\/\(.*\)$/\1/p')
+            fi
             nonpriv_user=
 
             if [ -n "${priv_user}" ]; then
@@ -187,7 +199,7 @@ install:
             # Exit with Agent install failure code exit(16)
             exit 16
           fi
-
+   
           #
           # Get the non-privileged user that was previously stored.
           #
