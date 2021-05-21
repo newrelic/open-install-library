@@ -14,7 +14,7 @@ keywords:
   - java
 
 processMatch:
-  - java.*tomcat
+  - java.*catalina
 
 validationNrql: "SELECT count(*) FROM ApplicationAgentContext WHERE host LIKE '{{.HOSTNAME}}%' SINCE 10 minutes AGO"
 
@@ -162,9 +162,8 @@ install:
             local mainClass=$( echo "$1" | grep -oP '.*\K(?<=mainClass":").*?(?=\")' )
             if [[ "$mainClass" == "org.apache.catalina.startup.Bootstrap" ]]; then
               echo "tomcat"
-              # other server type checks should be added here in else if statements
             else
-              echo "unknown"
+              echo "other"
             fi
           }
 
@@ -343,21 +342,12 @@ install:
               echo "$catalinaBase" >> {{.TMP_DIR}}/tomcat_standalone.catalinaBases
               tomcat_restart_standalone $pid $catalinaBase $workDir $user
             fi
-          }
 
-          dynamicAttach() {
-            local pid=$1
-            local introspectionData=$2
-            local appName=$( echo "${introspectionData}" | grep -oP '.*\K(?<=displayName":").*?(?=\")' )
-            LSI_OUTPUT=$(NEW_RELIC_SYNC_STARTUP=true nri-lsi-java -apm ${pid} -license {{.NEW_RELIC_LICENSE_KEY}} -appName ${appName} -region {{.NEW_RELIC_REGION}})
+            echo "Restart completed."
           }
 
           INIT_SYSTEM=`cat /proc/1/status | grep -oP 'Name:\s+\K\w+'`
           FOUND_JAVA_PROCESSES=$(nri-lsi-java -list)
-          if [ "$FOUND_JAVA_PROCESSES" == "" ] ||  [ "$FOUND_JAVA_PROCESSES" == "[  ]" ]; then
-            echo -e "\nNo Java processes found running on the host\n" >> /dev/stderr
-            exit 3
-          fi
 
           echo "$FOUND_JAVA_PROCESSES" | tr -d '[]' | tr ',' '\n' > {{.TMP_DIR}}/processes
           for JAVA_PID in $(cat {{.TMP_DIR}}/processes)
@@ -365,15 +355,16 @@ install:
             INTROSPECTION_DATA=$(nri-lsi-java -introspect ${JAVA_PID})
             SERVER_TYPE=$(findServerType $INTROSPECTION_DATA)
 
-            case $SERVER_TYPE in
-            "tomcat")
+            if [[ "$SERVER_TYPE" == "tomcat" ]]; then
+              touch {{.TMP_DIR}}/tomcat_found
               tomcat $JAVA_PID $INIT_SYSTEM
-              ;;
-            *)
-              # dynamicAttach $JAVA_PID $INTROSPECTION_DATA
-              ;;
-            esac
+            fi
           done
+
+          if [[ ! -f {{.TMP_DIR}}/tomcat_found ]]; then
+            echo -e "\nNo Tomcat processes found running on the host.\n" >> /dev/stderr
+            exit 3
+          fi
 
     verify-servers-restarted:
       cmds:
@@ -418,11 +409,11 @@ install:
           echo -e "${YELLOW}
           ================================================================================
           =                                                                              =
-          =                                 Important                                    =
+          =                                  Important                                   =
           =                                                                              =
-          =   Your application needs to be sent traffic to validate the installation.    =
+          =              Your application is sending JVM data to New Relic.              =
           =                                                                              =
-          =       Please send approximately three requests to your application.          =
+          =      To view transaction data, send a few requests to your application.      =
           =                                                                              =
           ================================================================================
           ${NOCOLOR}
