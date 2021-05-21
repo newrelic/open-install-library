@@ -131,17 +131,27 @@ install:
     restart_services:
       cmds:
         - echo "Restarting the services as needed to pick up newrelic.ini information."
+          #
+          # Case: php-fpm/apache or php-fpm/nginx, only php-fpm needs to be restarted.
+          # Case: apache only or nginx only, they respective service needs to be restarted.
+          # This means only restart the first process in processes_to_restart.txt.
+          #
         - |
           if [ "{{.NR_PHP_RESTART}}" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
             cd {{.TMP_INSTALL_DIR}}
-            while read -r process user_name; do
-              echo "Restarting $process as privileged user $user_name"
-              sudo -u $user_name service $process restart
-              echo "Sleeping for 10 seconds to give process time to recover."
-              sleep 10
-            done < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+            read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+            echo "Restarting $process as privileged user $user_name"
+            sudo -u $user_name service $process restart
+            echo "Sleeping for 10 seconds to give process time to recover."
+            sleep 10
           else
-            echo "You will need to restart your PHP application in order for instrumentation to be enabled."
+            if [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+              cd {{.TMP_INSTALL_DIR}}
+              read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+              echo "Please restart  $process as privileged user $user_name for instrumentation to be enabled."
+            else
+              echo "You will need to restart your PHP web server in order for web instrumentation to be enabled."
+            fi
           fi
 
     send_transaction:
