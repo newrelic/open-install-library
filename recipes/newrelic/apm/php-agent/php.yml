@@ -41,9 +41,9 @@ install:
       cmds:
         - task: create_shared
         - task: detect_services
-        - task: install_packages
-        - task: config_newrelic_ini
-        - task: finalize_agent_config
+          #- task: install_packages
+          #- task: config_newrelic_ini
+          #- task: finalize_agent_config
         - task: restart_services
         - task: send_transaction
         - task: delete_shared
@@ -75,10 +75,16 @@ install:
 
           for PROCESS in ${guided_support[@]}
           do
-            nonpriv_user=$(ps -ef | egrep $PROCESS | grep -v grep | grep -v root | head -n1 | awk '{print $1}')
-            priv_user=$(ps -ef | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $1}')
-            full_process_name=$(ps -ef | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $8}')
+            priv_user=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $1}')
+            full_process_name=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $11}')
             process_name=$(echo $full_process_name | sed -n 's/.*\/\(.*\)$/\1/p')
+
+            nonpriv_user=
+
+            if [ -n "${priv_user}" ]; then
+              nonpriv_user=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v $priv_user | head -n1 | awk '{print $1}')
+            fi
+
             if [ -n "${process_name}" ]; then
               if [ -z "${nonpriv_user}" ]; then
                 nonpriv_user=$current_user
@@ -130,7 +136,7 @@ install:
             cd {{.TMP_INSTALL_DIR}}
             while read -r process user_name; do
               echo "Restarting $process as privileged user $user_name"
-              sudo -u $user_name $process restart
+              sudo -u $user_name service $process restart
               echo "Sleeping for 10 seconds to give process time to recover."
               sleep 10
             done < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
@@ -148,8 +154,9 @@ install:
           # and get the name of the most recent log file.
           #
 
-          tar_file=$(ls -t nrinstall*.tar | head -1)
-          if [ -f $tar_file ]; then
+          tar_file=$(ls -t nrinstall*.tar 2>/dev/null | head -1)
+
+          if [ -f "${tar_file}" ]; then
             tar xvf $tar_file
             log_file=$(ls -t nrinstall*.log | head -1)
             if  [ -f $log_file ]; then
