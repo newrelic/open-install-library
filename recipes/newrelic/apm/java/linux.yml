@@ -199,8 +199,16 @@ install:
 
           tomcat_configure() {
             local catalinaBase=$1
-            local user=$2
-            local appName=$3
+            local catalinaHome=$2
+            local user=$3
+            local appName=$4
+
+            if [[ ! -f $catalinaHome/bin/catalina.sh ]]; then
+              local red='\033[0;31m'
+              local noColor='\033[0m'
+              echo -e "${red}Unable to find catalina.sh. This instance of Tomcat is not supported.${noColor}"
+              return 1
+            fi
 
             local defaultName="{{.HOSTNAME}}"
             if [[ -n "$appName" ]]; then
@@ -249,16 +257,16 @@ install:
                 echo -e "\n# ---- New Relic switch automatically added on $(date)" >> $catalinaBase/bin/setenv.sh
                 echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$appName/newrelic.jar\"" >> $catalinaBase/bin/setenv.sh
               fi
+              touch {{.TMP_DIR}}/tomcat_configured
             fi
           }
 
           tomcat_restart_standalone() {
             local pid=$1
             local catalinaBase=$2
-            local workDir=$3
-            local user=$4
-            local catalinaHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\-\.\w/]+")
-            catalinaHome=$(cd $workDir; realpath $catalinaHome)
+            local catalinaHome=$3
+            local workDir=$4
+            local user=$5
             local jreHome=$(readlink /proc/$pid/exe | grep -oP "\K.*(?=/bin/java)")
 
             if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
@@ -296,6 +304,8 @@ install:
             local workDir=$(readlink /proc/$pid/cwd)
             local catalinaBase=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.base=)\K[\-\.\w/]+")
             catalinaBase=$(cd $workDir; realpath $catalinaBase)
+            local catalinaHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\-\.\w/]+")
+            catalinaHome=$(cd $workDir; realpath $catalinaHome)
             local user=`ps -q $pid -h -o user`
 
             if [[ -f "$catalinaBase/bin/setenv.sh" ]]; then
@@ -322,7 +332,7 @@ install:
             fi
 
             local configFailed="false"
-            tomcat_configure $catalinaBase $user $service || configFailed="true"
+            tomcat_configure $catalinaBase $catalinaHome $user $service || configFailed="true"
             if [[ "$configFailed" == "true" ]]; then
               return 0
             fi
@@ -340,7 +350,7 @@ install:
               fi
             else
               echo "$catalinaBase" >> {{.TMP_DIR}}/tomcat_standalone.catalinaBases
-              tomcat_restart_standalone $pid $catalinaBase $workDir $user
+              tomcat_restart_standalone $pid $catalinaBase $catalinaHome $workDir $user
             fi
 
             echo "Restart completed."
@@ -364,6 +374,11 @@ install:
           if [[ ! -f {{.TMP_DIR}}/tomcat_found ]]; then
             echo -e "\nNo Tomcat processes found running on the host.\n" >> /dev/stderr
             exit 3
+          fi
+
+          if [[ ! -f {{.TMP_DIR}}/tomcat_configured ]]; then
+            echo -e "\nUnable to configure any Tomcats running on the host.\n" >> /dev/stderr
+            exit 2
           fi
 
     verify-servers-restarted:
