@@ -121,6 +121,32 @@ successLinkConfig: object, optional
 preInstall: object, optional
   info: string, optional    # Message/Docs notice to display to the user before running recipe.
 
+# Optional go-task yaml definition
+# This spec - https://github.com/go-task/task
+# All customDiscoveryCheck blocks defined in the known universe of recipes will be
+# run during the guided install during the discovery phase to determine whether
+# or not the recipe should be executed.
+customDiscoveryCheck: string, optional
+
+  version: '3'
+
+  tasks:
+    check:  # must have a check task, as the newrelic-cli uses this for an entry point
+      cmds:
+        - task: install_lsi
+        - task: check_processes
+
+    install_prereq:
+      cmds:
+        - echo "Installing prerequisite"
+        - yum install some-prerequisite
+
+    check_applications:
+      cmds:
+        - echo "Checking for observable applications"
+        - some-cli --check
+      silent: true
+
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
 install: string, required
