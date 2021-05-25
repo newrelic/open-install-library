@@ -80,12 +80,19 @@ install:
           TRIES=0
 
           # Check Env Vars
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
           NR_CLI_DB_HOSTNAME="{{.NR_CLI_DB_HOSTNAME}}"
           NR_CLI_DB_PORT="{{.NR_CLI_DB_PORT}}"
           NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
           NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
 
-          if [[ "$NR_CLI_DB_HOSTNAME" == "" ]] || [[ "$NR_CLI_DB_PORT" == "" ]]; then
+          # Set Defaults
+          NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-localhost}
+          NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
+          NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-''}
+          NR_CLI_DB_PASSWORD=${NR_CLI_DB_PASSWORD:-''}
+
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
               printf "\nMySQL Hostname (default: localhost): "
               read -r NR_CLI_DB_HOSTNAME
@@ -114,7 +121,7 @@ install:
           EXPECTED_SELECT_REPLICATION=$(echo 'SELECT, REPLICATION')
           EXPECTED_ALL_PRIVILEGES=$(echo 'ALL PRIVILEGES')
 
-          if [[ "$NR_CLI_DB_USERNAME" == "" ]] || [[ "$NR_CLI_DB_PASSWORD" == "" ]]; then
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
               printf "MySQL Username: "
               read -r NR_CLI_DB_USERNAME
@@ -143,7 +150,7 @@ install:
               fi
               if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -eq 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -eq 0 ]; then
                 printf "\n[Error]: Provided user does not have the minimum permissions. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; fi
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; fi
                 echo "Please try again"
               fi
           done
