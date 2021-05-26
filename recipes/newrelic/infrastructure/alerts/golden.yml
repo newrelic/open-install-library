@@ -34,47 +34,50 @@ install:
       cmds:
         - |
           NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
-          NEW_RELIC_INFRA_API_URL=$(echo -n 'https://infra-api.newrelic.com')
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
-            NEW_RELIC_INFRA_API_URL=$(echo -n 'https://staging-infra-api.newrelic.com')
           fi
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
             NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
-            NEW_RELIC_INFRA_API_URL=$(echo -n 'https://infra-api.eu.newrelic.com')
           fi
 
-          NEW_RELIC_ALERT_POLICY_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policies.json')
-          POLICY_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_POLICY_URL \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-              -H 'Content-Type: application/json'
+
+          if [ -f /tmp/policy.json ]; then
+            sudo rm -f /tmp/policy.json
+          fi
+          sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
+          {
+            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {policiesSearch {totalCount policies { name id } } } } } }"
+          }
+          EOT
+          POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/policy.json
           )
-          POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id')
+          if [ -f /tmp/policy.json ]; then
+            sudo rm -f /tmp/policy.json
+          fi
+          POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.data.actor.account.alerts.policiesSearch.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id | tonumber')
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
             echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name'
           else
             echo 'No existing alert policy {{.ALERT_POLICY_NAME}} found, creating alert policy {{.ALERT_POLICY_NAME}}...'
-            if [ -f /tmp/policy.json ]; then
-              sudo rm -f /tmp/policy.json
-            fi
             sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
           {
-            "policy": {
-              "incident_preference": "PER_CONDITION_AND_TARGET",
-              "name": "ALERT_POLICY_NAME"
-            }
+            "query": "mutation {alertsPolicyCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: { name: POLICY_NAME incidentPreference: PER_CONDITION_AND_TARGET }) { id name } }"
           }
           EOT
-            sudo sed -i 's/ALERT_POLICY_NAME/{{.ALERT_POLICY_NAME}}/g' /tmp/policy.json
-            POLICY_RESULT=$(curl -sX POST $NEW_RELIC_ALERT_POLICY_URL \
-                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -H 'Auth-Type:User-Api-Key' \
-                -H 'Content-Type: application/json' \
-                -L -d @/tmp/policy.json
-                )
+            sudo sed -i "s/POLICY_NAME/\"\"{{.ALERT_POLICY_NAME}}\"\"/g" /tmp/policy.json
+            POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                -L -H 'Content-Type: application/json' \
+                -d @/tmp/policy.json
+            )
             if [ -f /tmp/policy.json ]; then
-              sudo rm -f /tmp/policy.json
+              rm -f /tmp/policy.json
             fi
-            POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.policy.id')
+            POLICY_ID=$(echo $POLICY_RESULT | newrelic utils jq '.data.alertsPolicyCreate.id | tonumber')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
               echo 'done'
             else
