@@ -9,18 +9,15 @@ repository: https://github.com/newrelic/newrelic-java-agent
 installTargets:
   - type: application
     os: linux
-    platform: "debian"
-  - type: application
-    os: linux
-    platform: "ubuntu"
 
 keywords:
+  - Apm
   - java
 
 processMatch:
-  - java
+  - java.*catalina
 
-validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+validationNrql: "SELECT count(*) FROM ApplicationAgentContext WHERE host LIKE '{{.HOSTNAME}}%' SINCE 10 minutes AGO"
 
 successLinkConfig:
   type: EXPLORER
@@ -32,18 +29,67 @@ install:
   silent: true
 
   vars:
-    TMP_DIR: '/tmp/newrelic-java'
-
+    TMP_DIR:
+      sh: mktemp -d /tmp/newrelic.XXXXXX
 
   tasks:
     default:
       cmds:
+        - task: verify-pre-requisites
         - task: verify-continue
         - task: get-introspector
         - task: get-agent
         - task: install-agent
+        - task: verify-servers-restarted
         - task: notify-done
         - task: cleanup
+
+    verify-pre-requisites:
+      cmds:
+        - |
+          red='\033[0;31m'
+          noColor='\033[0m'
+
+          grepInstalled=$(which grep 2> /dev/null)
+          if [[ -z "$grepInstalled" ]] ; then
+            echo "${red}A valid grep installation is required.${noColor}" >> /dev/stderr
+            exit 10
+          fi
+          sedInstalled=$(which sed 2> /dev/null)
+          if [[ -z "$sedInstalled" ]] ; then
+            echo "${red}A valid sed installation is required.${noColor}" >> /dev/stderr
+            exit 11
+          fi
+          catInstalled=$(which cat 2> /dev/null)
+          if [[ -z "$catInstalled" ]] ; then
+            echo "${red}A valid cat installation is required.${noColor}" >> /dev/stderr
+            exit 13
+          fi
+          touchInstalled=$(which touch 2> /dev/null)
+          if [[ -z "$touchInstalled" ]] ; then
+            echo "${red}A valid touch installation is required.${noColor}" >> /dev/stderr
+            exit 15
+          fi
+          mktempInstalled=$(which mktemp 2> /dev/null)
+          if [[ -z "$mktempInstalled" ]] ; then
+            echo "${red}A valid mktemp installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
+          cutInstalled=$(which cut 2> /dev/null)
+          if [[ -z "$cutInstalled" ]] ; then
+            echo "${red}A valid cut installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
+          readlinkInstalled=$(which readlink 2> /dev/null)
+          if [[ -z "$readlinkInstalled" ]] ; then
+            echo "${red}A valid readlink installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
+          realpathInstalled=$(which realpath 2> /dev/null)
+          if [[ -z "$realpathInstalled" ]] ; then
+            echo "${red}A valid realpath installation is required.${noColor}" >> /dev/stderr
+            exit 22
+          fi
 
     verify-continue:
       cmds:
@@ -55,8 +101,8 @@ install:
           =                                                                              =
           =                                   Warning                                    =
           =                                                                              =
-          =       This installation will automatically restart all systemd services      =
-          =       that run Tomcat services upon completion.                              =
+          =       This installation will automatically restart all Tomcat services       =
+          =       upon completion.                                                       =
           =                                                                              =
           ================================================================================
           ${NOCOLOR}"
@@ -83,12 +129,21 @@ install:
               echo -e "Please type Y or N only."
             done
           fi
+
     get-introspector:
       label: "Installing Java Introspector..."
       cmds:
         - echo "Retrieving Java Introspector..."
-        - curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb
-        - sudo apt-get install -y -qq ./nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb > /dev/null || true
+        - |
+          cd {{.TMP_DIR}}
+          IS_YUM_INSTALLED=$(which yum 2>&1 || true)
+          if [[ -n "$IS_YUM_INSTALLED" ]]; then
+            curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm
+            sudo yum install -y -q nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm 2> /dev/null || true
+          else
+            curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb
+            sudo apt-get install -y -qq ./nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb 2> /dev/null || true
+          fi
 
     get-agent:
       label: "Retrieving Java Agent..."
@@ -108,9 +163,8 @@ install:
             local mainClass=$( echo "$1" | grep -oP '.*\K(?<=mainClass":").*?(?=\")' )
             if [[ "$mainClass" == "org.apache.catalina.startup.Bootstrap" ]]; then
               echo "tomcat"
-              # other server type checks should be added here in else if statements
             else
-              echo "unknown"
+              echo "other"
             fi
           }
 
@@ -132,21 +186,41 @@ install:
             echo "$service" >> {{.TMP_DIR}}/supervisord_restarted_services
           }
 
+          wait_termination() {
+            local pid=$1
+            local retries=12
+            while [[ $retries -gt 0 ]]
+            do
+              ps -q $pid > /dev/null || return 0
+              sleep 5
+              retries=$(( retries - 1 ))
+            done
+            return 1
+          }
+
           tomcat_configure() {
             local catalinaBase=$1
-            local user=$2
-            local appName=$3
+            local catalinaHome=$2
+            local user=$3
+            local appName=$4
 
-            if [[ -z "$appName" ]]; then
-              echo -e "\nConfiguring Tomcat with CATALINA_BASE = $catalinaBase"
-              local defaultName="{{.HOSTNAME}}"
-              echo -n "Enter an app name (default: $defaultName): "
-              read -r answer
-              if [[ -z $answer ]]; then
-                appName=$defaultName
-              else
-                appName=$answer
-              fi
+            if [[ ! -f $catalinaHome/bin/catalina.sh ]]; then
+              local red='\033[0;31m'
+              local noColor='\033[0m'
+              echo -e "${red}Unable to find catalina.sh. This instance of Tomcat is not supported.${noColor}"
+              return 1
+            fi
+
+            local defaultName="{{.HOSTNAME}}"
+            if [[ -n "$appName" ]]; then
+              defaultName="$appName"
+            fi
+            echo -n "Enter an app name (default: $defaultName): "
+            read -r answer
+            if [[ -z $answer ]]; then
+              appName=$defaultName
+            else
+              appName=$answer
             fi
 
             if [[ "{{.NEW_RELIC_TEST_MODE}}" != "true" ]]; then
@@ -181,20 +255,20 @@ install:
                 sed -i "s/license_key: '<%= license_key %>'/license_key: '{{.NEW_RELIC_LICENSE_KEY}}'$host/" /opt/newrelic/$appName/newrelic.yml
                 sed -i "s/app_name: My Application$/app_name: $appName/" /opt/newrelic/$appName/newrelic.yml
 
-                echo "# ---- New Relic switch automatically added on $(date)" >> $catalinaBase/bin/setenv.sh
+                echo -e "\n# ---- New Relic switch automatically added on $(date)" >> $catalinaBase/bin/setenv.sh
                 echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$appName/newrelic.jar\"" >> $catalinaBase/bin/setenv.sh
               fi
+              touch {{.TMP_DIR}}/tomcat_configured
             fi
           }
 
           tomcat_restart_standalone() {
             local pid=$1
             local catalinaBase=$2
-            local workDir=$3
-            local user=$4
-            local catalinaHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\-\.\w/]+")
-            catalinaHome=$(cd $workDir; realpath $catalinaHome)
-            local jreHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "\K.*(?=/bin/java )")
+            local catalinaHome=$3
+            local workDir=$4
+            local user=$5
+            local jreHome=$(readlink /proc/$pid/exe | grep -oP "\K.*(?=/bin/java)")
 
             if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
               echo -e "\nThe Tomcat server needs to be restarted. Enter Y to allow the installer to do this."
@@ -209,7 +283,7 @@ install:
                 fi
                 local firstChar=$(echo "${answer^^}" | cut -c1-1)
                 if [[ "$firstChar" == "N" ]]; then
-                  exit 0
+                  return 0
                 fi
                 if [[ "$firstChar" == "Y" ]]; then
                   break
@@ -220,7 +294,7 @@ install:
 
             if [[ "{{.NEW_RELIC_TEST_MODE}}" != "true" ]]; then
               kill -15 $pid
-              sleep 5
+              wait_termination $pid || kill -9 $pid || true
               sudo -u $user JRE_HOME=$jreHome CATALINA_BASE=$catalinaBase $catalinaHome/bin/catalina.sh start > /dev/null
             fi
           }
@@ -231,6 +305,8 @@ install:
             local workDir=$(readlink /proc/$pid/cwd)
             local catalinaBase=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.base=)\K[\-\.\w/]+")
             catalinaBase=$(cd $workDir; realpath $catalinaBase)
+            local catalinaHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\-\.\w/]+")
+            catalinaHome=$(cd $workDir; realpath $catalinaHome)
             local user=`ps -q $pid -h -o user`
 
             if [[ -f "$catalinaBase/bin/setenv.sh" ]]; then
@@ -244,7 +320,7 @@ install:
             local isSupervisord="false"
             if [[ "$initSystem" == "systemd" ]]; then
               service=$(systemctl status $pid | head -n1 | grep -oP "(?<=. )\K\w+(?=\.service)")
-              if [[ "$service" == "supervisor" ]]; then
+              if [[ "$service" == "supervisor" || "$service" == "supervisord" ]]; then
                 isSupervisord="true"
                 service=$(supervisorctl status | grep "pid $pid" | cut -d' ' -f1)
               fi
@@ -257,7 +333,7 @@ install:
             fi
 
             local configFailed="false"
-            tomcat_configure $catalinaBase $user $service || configFailed="true"
+            tomcat_configure $catalinaBase $catalinaHome $user $service || configFailed="true"
             if [[ "$configFailed" == "true" ]]; then
               return 0
             fi
@@ -267,28 +343,22 @@ install:
 
             if [[ "$initSystem" == "systemd" && -n "$service" ]]; then
               if [[ "$isSupervisord" == "true" ]]; then
+                echo "$catalinaBase/bin/setenv.sh" > {{.TMP_DIR}}/supervisord_$service.configFile
                 supervisord_restart_service $service
               else
+                echo "$catalinaBase/bin/setenv.sh" > {{.TMP_DIR}}/systemd_$service.configFile
                 systemd_restart_service $service
               fi
             else
-              tomcat_restart_standalone $pid $catalinaBase $workDir $user
+              echo "$catalinaBase" >> {{.TMP_DIR}}/tomcat_standalone.catalinaBases
+              tomcat_restart_standalone $pid $catalinaBase $catalinaHome $workDir $user
             fi
-          }
 
-          dynamicAttach() {
-            local pid=$1
-            local introspectionData=$2
-            local appName=$( echo "${introspectionData}" | grep -oP '.*\K(?<=displayName":").*?(?=\")' )
-            LSI_OUTPUT=$(NEW_RELIC_SYNC_STARTUP=true nri-lsi-java -apm ${pid} -license {{.NEW_RELIC_LICENSE_KEY}} -appName ${appName} -region {{.NEW_RELIC_REGION}})
+            echo "Restart completed."
           }
 
           INIT_SYSTEM=`cat /proc/1/status | grep -oP 'Name:\s+\K\w+'`
           FOUND_JAVA_PROCESSES=$(nri-lsi-java -list)
-          if [ "$FOUND_JAVA_PROCESSES" == "" ] ||  [ "$FOUND_JAVA_PROCESSES" == "[  ]" ]; then
-            echo -e "\nNo Java processes found running on the host\n" >> /dev/stderr
-            exit 3
-          fi
 
           echo "$FOUND_JAVA_PROCESSES" | tr -d '[]' | tr ',' '\n' > {{.TMP_DIR}}/processes
           for JAVA_PID in $(cat {{.TMP_DIR}}/processes)
@@ -296,14 +366,55 @@ install:
             INTROSPECTION_DATA=$(nri-lsi-java -introspect ${JAVA_PID})
             SERVER_TYPE=$(findServerType $INTROSPECTION_DATA)
 
-            case $SERVER_TYPE in
-            "tomcat")
+            if [[ "$SERVER_TYPE" == "tomcat" ]]; then
+              touch {{.TMP_DIR}}/tomcat_found
               tomcat $JAVA_PID $INIT_SYSTEM
-              ;;
-            *)
-              # dynamicAttach $JAVA_PID $INTROSPECTION_DATA
-              ;;
-            esac
+            fi
+          done
+
+          if [[ ! -f {{.TMP_DIR}}/tomcat_found ]]; then
+            echo -e "\nNo Tomcat processes found running on the host.\n" >> /dev/stderr
+            exit 3
+          fi
+
+          if [[ ! -f {{.TMP_DIR}}/tomcat_configured ]]; then
+            echo -e "\nUnable to configure any Tomcats running on the host.\n" >> /dev/stderr
+            exit 2
+          fi
+
+    verify-servers-restarted:
+      cmds:
+        - |
+          [[ -f {{.TMP_DIR}}/systemd_restarted_services || -f {{.TMP_DIR}}/systemd_restarted_services || -f {{.TMP_DIR}}/tomcat_standalone.catalinaBases ]] || sleep 10
+          red='\033[0;31m'
+          noColor='\033[0m'
+
+          for systemdService in $(cat {{.TMP_DIR}}/systemd_restarted_services 2> /dev/null)
+          do
+            configFile=$(cat {{.TMP_DIR}}/systemd_$systemdService.configFile 2> /dev/null)
+
+            systemctl status $systemdService > /dev/null || echo -e "
+              ${red}The systemd service \"$systemdService\" did not restart properly.
+              Revert by restoring the backup of $configFile
+              ${noColor}"
+          done
+
+          for supervisordService in $(cat {{.TMP_DIR}}/supervisord_restarted_services 2> /dev/null)
+          do
+            configFile=$(cat {{.TMP_DIR}}/supervisord_$supervisordService.configFile 2> /dev/null)
+
+            supervisorctl status $supervisordService | grep " RUNNING " > /dev/null || echo -e "
+              ${red}The supervisor service \"$supervisordService\" did not restart properly.
+              Revert by restoring the backup of $configFile
+              ${noColor}"
+          done
+
+          for catalinaBase in $(cat {{.TMP_DIR}}/tomcat_standalone.catalinaBases 2> /dev/null)
+          do
+            ps -ef | grep "catalina.base=$catalinaBase" | grep -v grep > /dev/null || echo -e "
+              ${red}The Tomcat server with CATALINA_BASE = $catalinaBase did not restart properly.
+              Revert by restoring the backup of $catalinaBase/
+              ${noColor}"
           done
 
     notify-done:
@@ -314,11 +425,11 @@ install:
           echo -e "${YELLOW}
           ================================================================================
           =                                                                              =
-          =                                 Important                                    =
+          =                                  Important                                   =
           =                                                                              =
-          =   Your application needs to be sent traffic to validate the installation.    =
+          =              Your application is sending JVM data to New Relic.              =
           =                                                                              =
-          =       Please send approximately three requests to your application.          =
+          =      To view transaction data, send a few requests to your application.      =
           =                                                                              =
           ================================================================================
           ${NOCOLOR}
