@@ -24,7 +24,7 @@ keywords:
 
 processMatch: []
 
-validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 5 minutes ago"
 
 install:
   version: "3"
@@ -36,6 +36,7 @@ install:
         - task: assert_pre_req
         - task: setup_license
         - task: update_apt
+        - task: install_gnupg
         - task: add_gpg_key
         - task: add_nr_source
         - task: update_apt_nr_source
@@ -130,6 +131,16 @@ install:
       silent: true
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
+
+    install_gnupg:
+      cmds:
+        - |
+          if [ {{.HAS_GPG}} -eq 0 ] ; then
+            sudo apt-get install gnupg2 -y
+          fi
+      vars:
+        HAS_GPG:
+          sh: command -v gpg | wc -l
 
     add_gpg_key:
       cmds:
