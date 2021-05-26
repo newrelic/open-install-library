@@ -122,15 +122,17 @@ install:
             for PID in "${PROCESSES[@]}"
             do
               INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER newrelic-introspector-node introspect --pid ${PID})
-              if [ -z "$NEW_RELIC_APP_NAME" ]; then
-               COMMAND=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=pm_exec_path":").*?(?=\")' )
+              COMMAND=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=pm_exec_path":").*?(?=\")' )
+
+              if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
                 printf "This is the path to the service being instrumented: "
                 printf " $COMMAND"
                 printf "\nEnter an app name: "
                 read -r appName
               else
-                appName = "$NEW_RELIC_APP_NAME"
+                appName="$COMMAND"
               fi
+
               LSI_OUTPUT=$(sudo -i -u $SUDO_USER NEW_RELIC_REGION="${NEW_RELIC_REGION}" newrelic-introspector-node instrument --pid ${PID} --licenseKey {{.NEW_RELIC_LICENSE_KEY}} --appName "${appName}") 1> /dev/null 2> /dev/null || true
             done
 
