@@ -104,14 +104,15 @@ install:
               read -r NR_CLI_DB_PORT
               NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
               ((TRIES++))
-              CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 | awk -F'[()]' '{print $2}')
+              CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
               CAN_CONNECT=${CAN_CONNECT:-0}
+
               if [ $CAN_CONNECT == "6" ]; then
-                printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+                printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; fi
                 echo "Please try again"
               elif [ $CAN_CONNECT == "7" ]; then
-                printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
+                printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >> /dev/stderr
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
                 echo "Please try again"
               else
