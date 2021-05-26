@@ -104,14 +104,14 @@ install:
               read -r NR_CLI_DB_PORT
               NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-5432}
               ((TRIES++))
-              CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 | awk -F'[()]' '{print $2}')
+              CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
               CAN_CONNECT=${CAN_CONNECT:-0}
               if [ $CAN_CONNECT == "6" ]; then
-                printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached. https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
+                printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; fi
                 echo "Please try again"
               elif [ $CAN_CONNECT == "7" ]; then
-                printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused. https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
+                printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
                 echo "Please try again"
               else
@@ -142,7 +142,7 @@ install:
 
               IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
               if [ $IS_DATABASE_VALID -eq 0 ] ; then
-                printf "\n[Error]: The provided database name is not accessible with the provided username and password and port. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
+                printf "\n[Error]: The provided database name is not accessible with the provided username and password and port.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
                 echo "Please try again"
               fi
@@ -173,17 +173,17 @@ install:
                 fi
 
                 if [ ! -f $NR_CLI_CLIENT_CERT_FILE ]; then
-                  printf "\n[Error]: SSL is true but no client certificate file exist at '$NR_CLI_CLIENT_CERT_FILE'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
+                  printf "\n[Error]: SSL is true but no client certificate file exist at '$NR_CLI_CLIENT_CERT_FILE'.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
                   if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 11; else continue; fi
                   echo "Please try again"
                 fi
                 if [ ! -f $NR_CLI_CERT_KEY ]; then
-                  printf "\n[Error]: SSL is true but no PEM key file exist at '$NR_CLI_CERT_KEY'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
+                  printf "\n[Error]: SSL is true but no PEM key file exist at '$NR_CLI_CERT_KEY'.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
                   if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 12; else continue; fi
                   echo "Please try again"
                 fi
                 if [ "$NR_CLI_TRUST_SERVER_CERTIFICATE" == "true" ] && [ ! -f $NR_CLI_CERT_AUTH_FILE ]; then
-                  printf "\n[Error]: Trust certificate is true but no certificate authority file exist at '$NR_CLI_CERT_AUTH_FILE'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
+                  printf "\n[Error]: Trust certificate is true but no certificate authority file exist at '$NR_CLI_CERT_AUTH_FILE'.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >> /dev/stderr
                   if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 13; else continue; fi
                   echo "Please try again"
                 fi
