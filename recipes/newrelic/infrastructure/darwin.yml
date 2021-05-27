@@ -36,26 +36,19 @@ install:
         - task: assert_pre_req
         - task: setup_license
         - task: install_infra
-        # - task: start
-        # - task: assert_agent_started
+        - task: start
+        - task: assert_agent_started
 
     assert_pre_req:
       cmds:
         - |
           # FIXME check we're *not* running as root
-          IS_HOMEBREW_INSTALLED=$(which -s brew)
-          if [ $? -ne 0 ] ; then
+          IS_HOMEBREW_INSTALLED=$(which brew | wc -l)
+          if [ $IS_HOMEBREW_INSTALLED -eq 0 ] ; then
             echo "homebrew is required to run the newrelic install. Please install homebrew and re-run the installation." >> /dev/stderr
             exit 10
           fi
           brew update
-          # OSTYPE=$(uname)
-          # if [[ "$OSTYPE" == "Darwin" ]]; then
-          #   sudo -i -u $SUDO_USER command brew update
-          # else
-          #   echo "Attemept to run Darwin recipe on $OSTYPE - aborting"
-          #   exit 21
-          # fi
  
     setup_license:
       cmds:
@@ -80,8 +73,8 @@ install:
     install_infra:
       cmds:
         - |
-          IS_INFRA_AGENT_INSTALLED=$(brew list newrelic-infra-agent)
-          if [ $? -eq 0 ] ; then
+          IS_INFRA_AGENT_INSTALLED=$(brew list newrelic-infra-agent 2>/dev/null | wc -l)
+          if [ $IS_INFRA_AGENT_INSTALLED -gt 0 ] ; then
             echo "newrelic-infra-agent already installed"
           else
             echo "Installing newrelic-infra-agent..."
@@ -92,27 +85,28 @@ install:
     start:
       cmds:
         - |
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            sudo systemctl restart newrelic-infra
-          else 
-            if [ {{.IS_INITCTL}} -gt 0 ]; then
-              sudo initctl restart newrelic-infra
-            else
-              sudo /etc/init.d/newrelic-infra restart
-            fi
-          fi
-      vars:
-        IS_SYSTEMCTL:
-          sh: command -v systemctl | wc -l
-        IS_INITCTL:
-          sh: command -v initctl | wc -l
+          sudo newrelic-infra-agent &
+          # if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+          #   sudo systemctl restart newrelic-infra
+          # else 
+          #   if [ {{.IS_INITCTL}} -gt 0 ]; then
+          #     sudo initctl restart newrelic-infra
+          #   else
+          #     sudo /etc/init.d/newrelic-infra restart
+          #   fi
+          # fi
+      # vars:
+      #   IS_SYSTEMCTL:
+      #     sh: command -v systemctl | wc -l
+      #   IS_INITCTL:
+      #     sh: command -v initctl | wc -l
 
     assert_agent_started:
       cmds:
         - |
           # Ensure agent has enough time to start
           sleep 10
-          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          IS_INFRA_INSTALLED=$(sudo ps -ef | grep [n]ewrelic-infra-agent | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
             echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >> /dev/stderr
             exit 31
