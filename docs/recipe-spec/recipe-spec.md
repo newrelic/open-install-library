@@ -7,6 +7,7 @@ Recipe files are written in YAML and adhere to the specifications outlined below
 Recipe definition files are placed under `recipes/org/<on_host_integration_name>` and should have the following format:
 
 > Note: TBD on final format
+
 `<installTargetOS>.yml`
 
 For example:
@@ -36,11 +37,11 @@ repository: string, required
 
 # Indicates stability level of recipe. Useful for gradually enabling the
 # availablity of a recipe to users as it is developed and tested. Can be
-# thought of as an indicator for how stable/ready a recipe is for general 
+# thought of as an indicator for how stable/ready a recipe is for general
 # consumption and can be used to quickly disable problematic recipes.
-# 
+#
 # Usage: # newrelic install --stability=stable
-# 
+#
 # Levels:
 #   disabled - No availability (recipe will not return from NerdGraph)
 #   experimental - Non-backward compatible changes or removal may occur in any future release. Use of the feature is not recommended in production environments.
@@ -49,7 +50,7 @@ stability: enum, optional # One of [ disabled, experimental, stable ]
 
 # Dependency list for recipes (by name) that must be run successfully prior to attempting
 # the current recipe
-# ex: 
+# ex:
 # dependencies:
 #   - infrastructure-agent-installer
 dependencies: list, optional
@@ -90,7 +91,7 @@ processMatch: list, required
 
 # Matches partial list of the Log forwarding parameters
 # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
-logMatch: list (object), optional  
+logMatch: list (object), optional
   - name: string, required
     file: string, optional        # Path to the log file or files. Your file can point to a specific log file or multiple ones by using wildcards applied to names and extensions; for example, /logs/*.log
     attributes: object, optional  # Custom attributes to enrich data
@@ -134,7 +135,7 @@ install: string, required
   # Silent mode disables echoing of commands before Task runs it.
   # https://taskfile.dev/#/usage?id=silent-mode
   silent: true
-  
+
   # DO NOT USE: License Key is automatically injected by the newrelic-cli
   # env:
   #   NEW_RELIC_LICENSE_KEY: '{{.NEW_RELIC_LICENSE_KEY}}'
