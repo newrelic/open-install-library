@@ -42,7 +42,7 @@ preInstall:
       To capture data from the NGINX integration, you'll first need to enable
       and configure the applicable extension module:
       - For NGINX Open Source: HTTP stub status module 
-      - For NGINX Plus: HTTP status module and HTTP API module
+      - For NGINX Plus: HTTP status module or HTTP API module
       - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.
 
 install:
@@ -90,10 +90,13 @@ install:
               ((tries++))
               echo "The status url provided $input couldn't be reached. Try again"
               if [ ! $tries -lt {{.MAX_RETRIES}} ]; then
-                echo "NGINX HTTP status must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
+                if [ $(sudo nginx -V 2>&1 | grep -o "with-http_stub_status_module" | wc -l) -eq 0 ] ; then
+                  echo "with-http_stub_status_module should be enabled in order to monitor NGINX \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
+                  exit 4
+                fi
+                echo "NGINX HTTP status page should be set up with a locally accessible URL in the conf server block. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
                 exit 2
               fi
-              echo "Try again"
             done
           fi
 
@@ -105,8 +108,8 @@ install:
           elif [ ! $(echo $STATUS_RESPONSE | grep '"nginx"' | wc -l) -eq 0 ] ; then
             NR_CLI_STATUS_MODULE="ngx_http_api_module"
           else
-            echo "NGINX status must be configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
-            exit 2
+            echo "The endpoint provided is not an NGINX status endpoint. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info." >> /dev/stderr
+            exit 3
           fi
           printf "\n[OK] All checks passed. Installing Nginx Integration...\n\n"
 
