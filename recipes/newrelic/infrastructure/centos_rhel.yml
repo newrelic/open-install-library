@@ -38,6 +38,7 @@ install:
         - task: install_infra
         - task: restart
         - task: assert_agent_started
+        - task: assert_agent_status_ok
 
     assert_pre_req:
       cmds:
@@ -105,14 +106,17 @@ install:
         - |
           if [ -f /etc/newrelic-infra.yml ]; then
             sudo sed -i "/^staging/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
 
             sudo sed -i "s/^\(license_key: \).*/\1{{.NEW_RELIC_LICENSE_KEY}}/" /etc/newrelic-infra.yml
             sudo sed -i "s/^\(enable_process_metrics: \).*/\1true/" /etc/newrelic-infra.yml
+            sudo sed -i "s/^\(status_server_enabled: \).*/\1true/" /etc/newrelic-infra.yml
           else
             sudo touch /etc/newrelic-infra.yml
             sudo cat > /etc/newrelic-infra.yml <<EOT
           license_key: {{.NEW_RELIC_LICENSE_KEY}}
           enable_process_metrics: true
+          status_server_enabled: true
           EOT
           fi
         - |
@@ -167,6 +171,23 @@ install:
             echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 31
           fi
+
+    assert_agent_status_ok:
+      cmds:
+        - |
+          # wait for status endpoint to be ready
+          sleep 5
+          echo "Running agent status check..."
+          statusCheckOutput=$(curl http://localhost:8003/v1/status/errors -s)
+          if [ "$statusCheckOutput" == "" ]; then
+            echo "infra-agent status endpoint not available, version: $currentVer" >&2
+            exit 32
+          fi
+          if [ "$statusCheckOutput" != "{}" ]; then
+            echo "infra-agent status check not healthy: $statusCheckOutput" >&2
+            exit 33
+          fi
+          echo "Agent status check ok."
 
 postInstall:
   info: |2
