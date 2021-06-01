@@ -66,6 +66,7 @@ install:
         - task: input_assert
           vars:
             MAX_RETRIES: 3
+            EXIT130: ""
         - task: restart
 
     assert_infra:
@@ -159,7 +160,20 @@ install:
               fi
           done
           fi
-          printf "\n[OK] All checks passed. Installing MySQL Integration...\n\n"
+
+          if [ "$NR_CLI_DB_USERNAME" == "" ]; then
+            EXIT130=" - NR_CLI_DB_USERNAME=<mysql_username>\n"
+          fi
+          if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
+            EXIT130="$EXIT130 - NR_CLI_DB_PASSWORD=<mysql_password>\n"
+          fi
+
+          if [ "$EXIT130" != "" ]; then
+            printf "You did not provide all the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
+            exit 130
+          else
+            printf "\n[OK] All checks passed. Installing MySQL Integration...\n\n"
+          fi
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
