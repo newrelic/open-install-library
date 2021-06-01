@@ -79,42 +79,27 @@ install:
           else
             echo "Installing newrelic-infra-agent..."
             brew install newrelic-infra-agent
-            # Install the PList for launchd - must use sudo
+            # Install the PList for launchd - again, must use sudo bash
             sudo bash -c "echo '<?xml version=\"1.0\" encoding=\"UTF-8\"?>' > /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
             sudo bash -c "echo '<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
             sudo bash -c "echo '<plist version=\"1.0\">' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
             sudo bash -c "echo '  <dict>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
+            sudo bash -c "echo '    <key>Label</key>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
+            sudo bash -c "echo '    <string>com.newrelic.InfraAgent</string>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
+            sudo bash -c "echo '    <key>Program</key>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
+            sudo bash -c "echo '    <string>/usr/local/bin/newrelic-infra-agent</string>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
+            sudo bash -c "echo '    <key>RunAtLoad</key>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
+            sudo bash -c "echo '    <true/>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
             sudo bash -c "echo '  </dict>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
             sudo bash -c "echo '</plist>' >> /Library/LaunchDaemons/com.newrelic.InfraAgent.plist"
-            # <dict>
-            # 	<key>Label</key>
-            # 	<string>com.example.app</string>
-            # 	<key>Program</key>
-            # 	<string>/Users/Me/Scripts/cleanup.sh</string>
-            # 	<key>RunAtLoad</key>
-            # 	<true/>
-            # </dict>
           fi
       silent: false
 
     start:
       cmds:
         - |
-          sudo newrelic-infra-agent &
-          # if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-          #   sudo systemctl restart newrelic-infra
-          # else 
-          #   if [ {{.IS_INITCTL}} -gt 0 ]; then
-          #     sudo initctl restart newrelic-infra
-          #   else
-          #     sudo /etc/init.d/newrelic-infra restart
-          #   fi
-          # fi
+          sudo launchctl load /Library/LaunchDaemons/com.newrelic.InfraAgent.plist
       # vars:
-      #   IS_SYSTEMCTL:
-      #     sh: command -v systemctl | wc -l
-      #   IS_INITCTL:
-      #     sh: command -v initctl | wc -l
 
     assert_agent_started:
       cmds:
