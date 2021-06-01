@@ -18,6 +18,26 @@ keywords:
 
 processMatch: []
 
+preInstall:
+  requireAtDiscovery:
+    - |
+      rm -rf /tmp/dotnet-introspector
+      curl -s https://virtuoso-testing.s3-us-west-2.amazonaws.com/dotnet-is-linux-x64.gz -o /tmp/dotnet-is-linux-x64.gz
+      mkdir -p /tmp/dotnet-introspector
+      zcat /tmp/dotnet-is-linux-x64.gz > /tmp/dotnet-introspector/nri-lsi-dotnet
+      rm -f /tmp/dotnet-is-linux-x64.gz
+      chmod -R 777 /tmp/dotnet-introspector
+      processCount=$(/tmp/dotnet-introspector/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' | wc -w)
+      if [[ "$processCount" -ne 0 ]]; then
+        # Found .NET processes
+        rm -rf /tmp/dotnet-introspector
+        exit 0
+      fi
+
+      # No .NET processes
+      rm -rf /tmp/dotnet-introspector
+      exit 2
+
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
 successLinkConfig:
