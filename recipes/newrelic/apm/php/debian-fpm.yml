@@ -21,25 +21,40 @@ keywords:
 processMatch:
   - php-fpm
 
-validationNrql: ""
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
 
+inputVars:
+  - name: "NR_PHP_APPLICATION"
+    prompt: "What is the name of your PHP application?"
+    default: "PHP Application"
+  - name: "NR_PHP_RESTART"
+    prompt: "Restart the PHP application after installation? (y/n)"
+    default: "y"
 
 install:
-
   version: "3"
   silent: true
+
+  vars:
+    TMP_INSTALL_DIR:
+      sh: mktemp -d /tmp/newrelic-php-agent.XXXXXX
 
   tasks:
     default:
       cmds:
         - task: verify_continue
         - task: assert_pre_req
+        - task: create_shared
+        - task: detect_services
         - task: add_gnupg2_curl_if_required
         - task: install_tarball
         - task: configure
         - task: start
         - task: install_deb
+        - task: restart_services
+        - task: send_transaction
         - task: cleanup_temp_files
+        - task: delete_shared
 
     verify_continue:
       cmds:
@@ -96,6 +111,73 @@ install:
             then
               echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >> /dev/stderr
               exit ${code}
+            fi
+          done
+
+    create_shared:
+      cmds:
+        - rm -rf {{.TMP_INSTALL_DIR}}
+        - mkdir -p {{.TMP_INSTALL_DIR}}
+        - echo "Created temporary directory {{.TMP_INSTALL_DIR}} for installation."
+
+    detect_services:
+      cmds:
+        - echo "Detect services."
+        - |
+          cd {{.TMP_INSTALL_DIR}}
+          rm -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt
+          rm -f {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
+          #
+          # For guided installs, we currently support `php-fpm`, `apache`, and `nginx`.
+          # There is a reason for the order.  According our install script:
+          # If both Apache and FPM are installed, we want FPM to win:
+          # while there are many ways to end up with libapache2-mod-php5 installed,
+          # it's unlikely php5-fpm will be installed unless FPM is actually in use.
+          #
+          declare -a guided_support=("(fpm)" "(httpd|apache2|apache)" "(nginx)")
+          current_user=$SUDO_USER
+          for PROCESS in ${guided_support[@]}
+          do
+            priv_user=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $1}')
+            full_process_name=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $11}')
+            fpm_nginx_process_name=$(echo "${full_process_name}" | sed -n 's/\(.*\):$/\1/p')
+            if [ -n "${fpm_nginx_process_name}" ]; then
+              fpm_process_loc=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $14}')
+              fpm_ver=$(echo "${fpm_process_loc}" | sed -n 's/.*\/php\/\([578].[0-9]\)\/.*/\1/p')
+              if [ -n "${fpm_ver}" ]; then
+                # It's fpm.
+                process_name="php${fpm_ver}-fpm"
+              else
+                # It's nginx.
+                process_name=$fpmnginx_process_name
+              fi
+            else
+              process_name=$(echo $full_process_name | sed -n 's/.*\/\(.*\)$/\1/p')
+            fi
+            nonpriv_user=
+            if [ -n "${priv_user}" ]; then
+              nonpriv_user=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v $priv_user | head -n1 | awk '{print $1}')
+            fi
+            if [ -n "${process_name}" ]; then
+              if [ -z "${nonpriv_user}" ]; then
+                nonpriv_user=$current_user
+              fi
+              #
+              # Output all processes to be restarted to a file with the following format:
+              # process_name privileged_user
+              # When the process is restarted, it will be used with the associated
+              # privileged user.
+              #
+              echo "$process_name $priv_user" >> {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
+              #
+              # Save all non-privileged users associated with detected processes.
+              # When initiating the transaction, it will ONLY be used with
+              # the first associated non-privileged user because due the reasoning above
+              # that the installation logic adheres to, between FPM and Apache,
+              # FPM will be the one to use and `newrelic-install.sh` only
+              # installs the `newrelic.ini` in one web location.
+              #
+              echo "$nonpriv_user" >> {{.TMP_INSTALL_DIR}}/nonpriv_users.txt
             fi
           done
 
@@ -182,7 +264,98 @@ install:
         - sudo systemctl restart nginx
         - echo "Services restarted"
 
-    
+    restart_services:
+      cmds:
+        - echo "Restarting the services as needed to pick up newrelic.ini information."
+          #
+          # Case: php-fpm/apache or php-fpm/nginx, only php-fpm needs to be restarted.
+          # Case: apache only or nginx only, they respective service needs to be restarted.
+          # This means only restart the first process in processes_to_restart.txt.
+          #
+        - |
+          if [ "{{.NR_PHP_RESTART}}" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+            cd {{.TMP_INSTALL_DIR}}
+            read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+            echo "Restarting $process as privileged user $user_name"
+            sudo -u $user_name service $process restart
+            echo "Sleeping for 10 seconds to give process time to recover."
+            sleep 10
+          else
+            if [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+              cd {{.TMP_INSTALL_DIR}}
+              read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+              echo "Please restart  $process as privileged user $user_name for instrumentation to be enabled."
+            else
+              echo "You will need to restart your PHP web server in order for web instrumentation to be enabled."
+            fi
+          fi
+
+    send_transaction:
+      cmds:
+        - echo "Send queryable transactions."
+        - |
+          cd {{.TMP_INSTALL_DIR}}
+          #
+          # Expand the log files from the most recent installation attempt,
+          # and get the name of the most recent log file.
+          #
+          tar_file=$(ls -t nrinstall*.tar 2>/dev/null | head -1)
+          if [ -f "${tar_file}" ]; then
+            tar xvf $tar_file
+            log_file=$(ls -t nrinstall*.log | head -1)
+            if  [ -f $log_file ]; then
+              NR_INSTALL_LOG=$(ls -t nrinstall*.log | head -1)
+              #
+              # Get the web server PHP INI directories that the most recent installation attempt used.
+              #
+              WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
+              WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
+              if [ -z "${WEB_PHP_INI_DIR}" ]; then
+                WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
+              fi
+            fi
+          else
+            #
+            # If tar file doesn't exist, something went wrong with installation.
+            # Exit with Agent install failure code exit(16)
+            exit 16
+          fi
+
+          #
+          # Get the non-privileged user that was previously stored.
+          #
+          if [ -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt ]; then
+          nonpriv_user=$(head -1 {{.TMP_INSTALL_DIR}}/nonpriv_users.txt)
+          else
+            nonpriv_user=$SUDO_USER
+          fi
+
+          #
+          # The first transaction initializes the app.
+          # The second transaction is for luck.
+          # The third time’s the charm.
+          #
+          if [ -n "${WEB_PHP_INI_DIR}" ]; then
+          #
+          # Web server was detected. Send transaction associated with the webserver php.ini
+          # and the newrelic.ini file associated with that web server.
+          #
+          for i in {1..10}; do
+            sleep 1
+            sudo -u $nonpriv_user php -c "${WEB_PHP_INI_DIR}/php.ini" -c "${WEB_NR_INI_DIR}/newrelic.ini" -n --ini &>/dev/null
+          done
+          else
+          #
+          # No web server detected, pure PHP CLI.
+          #
+            echo "Running PHP-CLI with user $SUDO_USER"
+            for i in {1..10}; do
+              sleep 1
+              sudo -u $SUDO_USER php —-ini
+            done
+          fi
+        - echo "Done sending transactions."
+
     cleanup_temp_files:
       ignore_error: true
       cmds:
@@ -190,3 +363,10 @@ install:
         - rm -rf newrelic-php5-*-linux
         - rm -rf newrelic-php5-*-linux.tar.gz
         - echo "Done cleaning up"
+
+    delete_shared:
+      ignore_error: true
+      label: "Cleaning up"
+      cmds:
+        - rm -rf {{.TMP_INSTALL_DIR}}
+        - echo "Removed temporary directory used for installation."
