@@ -59,6 +59,7 @@ install:
         - task: input_assert
           vars:
             MAX_RETRIES: 3
+            EXIT130: ""
         - task: restart
 
     assert_infra:
@@ -148,9 +149,8 @@ install:
               fi
               break
             done
+            printf "\nConnectivity and User Credentials are valid!\n\n"
           fi
-
-          printf "\nConnectivity and User Credentials are valid!\n\n"
 
           TRIES=0
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
@@ -192,11 +192,24 @@ install:
             done
           fi
 
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+          if [ "$NR_CLI_DB_USERNAME" == "" ]; then
+            EXIT130=" - NR_CLI_DB_USERNAME=<postgres_username>\n"
+          fi
+          if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
+            EXIT130="$EXIT130 - NR_CLI_DB_PASSWORD=<postgres_password>\n"
+          fi
 
+          if [ "$EXIT130" != "" ]; then
+            printf "You did not provide all the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
+            exit 130
+          else
+            printf "\n[OK] All checks passed. Installing Postgres Integration...\n\n"
+          fi
+
+          # Install the integration
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
           sudo apt-get update -yq
           sudo apt-get install nri-postgresql -y
-
           if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
           fi
@@ -209,11 +222,11 @@ install:
             - name: postgres
               command: all_data
               arguments:
+                hostname: $NR_CLI_DB_HOSTNAME
+                port: $NR_CLI_DB_PORT
                 username: $NR_CLI_DB_USERNAME
                 password: $NR_CLI_DB_PASSWORD
-                hostname: $NR_CLI_DB_HOSTNAME
                 database: $NR_CLI_DATABASE
-                port: $NR_CLI_DB_PORT
                 collection_list: 'ALL'
                 collect_db_lock_metrics: false
                 enable_ssl: true
@@ -230,11 +243,11 @@ install:
             - name: postgres
               command: all_data
               arguments:
+                hostname: $NR_CLI_DB_HOSTNAME
+                port: $NR_CLI_DB_PORT
                 username: $NR_CLI_DB_USERNAME
                 password: $NR_CLI_DB_PASSWORD
-                hostname: $NR_CLI_DB_HOSTNAME
                 database: $NR_CLI_DATABASE
-                port: $NR_CLI_DB_PORT
                 collection_list: 'ALL'
                 collect_db_lock_metrics: false
                 enable_ssl: false
