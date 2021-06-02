@@ -1,0 +1,192 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: php-agent-debian-fpm-installer
+displayName: PHP Agent Installer for Debian + FPM
+description: New Relic install recipe for instrumenting PHP applications on Debian systems with FPM
+repository: https://github.com/newrelic/newrelic-php-agent
+
+installTargets:
+  - type: application
+    os: linux
+    platform: "debian"
+  - type: application
+    os: linux
+    platform: "ubuntu"
+
+keywords:
+  - php
+  - fpm
+
+processMatch:
+  - php-fpm
+
+validationNrql: ""
+
+
+install:
+
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: verify_continue
+        - task: assert_pre_req
+        - task: add_gnupg2_curl_if_required
+        - task: install_tarball
+        - task: configure
+        - task: start
+        - task: install_deb
+        - task: cleanup_temp_files
+
+    verify_continue:
+      cmds:
+        - |
+          YELLOW='\033[0;33m'
+          NOCOLOR='\033[0m'
+          echo -e "${YELLOW}
+          ================================================================================
+          =                                                                              =
+          =                                   Warning                                    =
+          =                                                                              =
+          =               This installation will automatically reload your               =
+          =                          nginx and/or FPM services                           =
+          =                                                                              =
+          ================================================================================
+          ${NOCOLOR}"
+          echo "
+          If you are hosting your PHP application differently then check out our other installation options:
+          https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/
+          "
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while :; do
+              echo -n "Do you want to install the PHP Agent Y/N (default: Y)? "
+              read answer
+              echo ""
+              NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                NEW_RELIC_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+                echo "Exiting the installation"
+                exit 130
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
+                break
+              fi
+              echo -e "Please type Y or N only."
+            done
+          fi
+
+    assert_pre_req:
+      cmds:
+        - |
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:10 sed:11"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >> /dev/stderr
+              exit ${code}
+            fi
+          done
+
+    add_gnupg2_curl_if_required:
+      cmds:
+        - |
+          if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
+            # If possible it would be great to note if these were already
+            # installed, and if not, to remove them in a later cleanup step
+            sudo apt-get install gnupg2 curl -y
+          fi
+      vars:
+        DEBIAN_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+
+
+    install_tarball:
+      cmds:
+        - echo "Downloading newest PHP Agent Release"
+        - |
+          AGENT="newrelic-php5-{{.AGENT_VERSION}}-linux"
+          AGENT_TARBALL="$AGENT.tar.gz"
+          curl -s https://download.newrelic.com/php_agent/release/$AGENT_TARBALL -o $AGENT_TARBALL
+          gzip -dc $AGENT_TARBALL | tar xf -
+          pushd $AGENT > /dev/null
+          echo "Installing PHP Agent"
+          NR_INSTALL_SILENT=true NR_INSTALL_KEY="$NEW_RELIC_LICENSE_KEY" ./newrelic-install install
+          popd > /dev/null
+          # Extract install logs for helpful information in following steps
+          pushd /tmp > /dev/null
+          INSTALL_LOG_TARBALL=$(ls nrinstall*.tar -t | head -n1)
+          tar -xf "$INSTALL_LOG_TARBALL"
+          popd > /dev/null
+        - echo "New Relic PHP Agent installed"
+      vars:
+        AGENT_VERSION: "9.17.1.301"
+
+    install_deb:
+      cmds:
+        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
+        - wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+        - sudo apt-get update >/dev/null
+        - DEBIAN_FRONTEND=noninteractive sudo apt-get install newrelic-php5 -y -qq > /dev/null
+        - echo "New Relic PHP Agent registered in apt"
+
+    configure:
+      cmds:
+        - |
+          # Get path of most recent agent install log
+          INSTALL_LOG="$(ls -t /tmp/nrinstall*.log | head -n1)"
+          WEB_CONFD=$(grep 'final pi_inidir_dso' "$INSTALL_LOG" | cut -d'=' -f2)
+          CLI_CONFD=$(grep 'final pi_inidir_cli' "$INSTALL_LOG" | cut -d'=' -f2)
+          WEB_INI="$WEB_CONFD/newrelic.ini"
+          CLI_INI="$CLI_CONFD/newrelic.ini"
+
+          NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while :; do
+              echo -n "Please enter a name for your application: "
+              read answer
+              echo ""
+              APPNAME=$(echo "${answer}")
+              if [[ -n "$APPNAME" ]]; then
+                break
+              fi
+              echo -e "Please enter a name for your application: "
+            done
+          fi
+
+          for ini in $WEB_INI $CLI_INI; do
+            sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"$APPNAME\"/" $ini
+            if [ "$NEW_RELIC_REGION" = "STAGING" ]; then
+              sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini
+            fi
+          done;
+          
+        - echo "New Relic PHP Agent configured"
+
+    start:
+      cmds:
+        # This should include phpX.Y-fpm.service if a generic approach is desired
+        - sudo systemctl restart nginx
+        - echo "Services restarted"
+
+    
+    cleanup_temp_files:
+      ignore_error: true
+      cmds:
+        - rm -rf /tmp/nrinstall*
+        - rm -rf newrelic-php5-*-linux
+        - rm -rf newrelic-php5-*-linux.tar.gz
+        - echo "Done cleaning up"
