@@ -148,10 +148,22 @@ install:
           sudo curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo apt-key add -
       silent: true
 
+
     add_nr_source:
       cmds:
         - |
-          printf "deb [arch=amd64] https://download.newrelic.com/infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | sudo tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+          ARCH=$(uname -m)
+          if [ $ARCH == "x86_64" ]; then
+            ARCH="x86_64"
+          else 
+            if [ $ARCH == "aarch64" ]; then
+              ARCH="arm64"
+            else
+              echo "newrelic infrastructure agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+              exit 131
+            fi
+          fi
+          printf "deb [arch="$ARCH"] https://download.newrelic.com/infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | sudo tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
       vars:
         DEBIAN_CODENAME:
           sh: awk -F= '/DISTRIB_CODENAME/ {print $2}' /etc/lsb-release
