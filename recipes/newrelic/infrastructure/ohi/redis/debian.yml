@@ -56,6 +56,7 @@ install:
         - task: input_assert
           vars:
             MAX_RETRIES: 3
+            EXIT130: ""
         - task: restart
 
     assert_infra:
@@ -82,8 +83,6 @@ install:
           # Set Defaults
           NR_CLI_HOSTNAME=${NR_CLI_HOSTNAME:-'localhost'}
           NR_CLI_PORT=${NR_CLI_PORT:-'6379'}
-          NR_CLI_PASSWORD=${NR_CLI_PASSWORD:-''}
-          NR_CLI_KEYS=${NR_CLI_KEYS:-''}
 
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
@@ -104,7 +103,7 @@ install:
               if [ $(echo $CLI_RESPONSE | grep "Authentication required" | wc -l) -gt 0 ] ; then
                 TRIES=0
                 while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-                  printf "Redis Password (if your Redis server is password protected): "
+                  printf "Redis Password: "
                   stty -echo
                   read -r NR_CLI_PASSWORD
                   stty echo
@@ -126,7 +125,20 @@ install:
             done
           fi
 
-          printf "\n[OK] All checks passed. Installing Redis Integration...\n\n"
+          # Check if authentication is required in -y mode
+          if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
+            CLI_RESPONSE=$(redis-cli -h "$NR_CLI_HOSTNAME" -p "$NR_CLI_PORT" -a "$NR_CLI_PASSWORD" PING 2>&1)
+            if [ $(echo $CLI_RESPONSE | grep "Authentication required" | wc -l) -gt 0 ] && [ "$NR_CLI_PASSWORD" == "" ]; then
+              EXIT130=" - NR_CLI_PASSWORD=<redis_password>\n"
+            fi
+          fi
+
+          if [ "$EXIT130" != "" ]; then
+            printf "You did not provide all the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
+            exit 130
+          else
+            printf "\n[OK] All checks passed. Installing Redis Integration...\n\n"
+          fi
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
