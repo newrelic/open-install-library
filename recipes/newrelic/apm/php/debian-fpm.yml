@@ -49,7 +49,6 @@ install:
         - task: add_gnupg2_curl_if_required
         - task: install_tarball
         - task: configure
-        - task: start
         - task: install_deb
         - task: restart_services
         - task: send_transaction
@@ -198,6 +197,9 @@ install:
       cmds:
         - echo "Downloading newest PHP Agent Release"
         - |
+          cd {{.TMP_INSTALL_DIR}}
+          # Remove old log file to ensure we don't accidentally use it later
+          rm -f /tmp/nrinstall*.log
           AGENT="newrelic-php5-{{.AGENT_VERSION}}-linux"
           AGENT_TARBALL="$AGENT.tar.gz"
           curl -s https://download.newrelic.com/php_agent/release/$AGENT_TARBALL -o $AGENT_TARBALL
@@ -206,30 +208,50 @@ install:
           echo "Installing PHP Agent"
           NR_INSTALL_SILENT=true NR_INSTALL_KEY="$NEW_RELIC_LICENSE_KEY" ./newrelic-install install
           popd > /dev/null
-          # Extract install logs for helpful information in following steps
-          pushd /tmp > /dev/null
-          INSTALL_LOG_TARBALL=$(ls nrinstall*.tar -t | head -n1)
-          tar -xf "$INSTALL_LOG_TARBALL"
-          popd > /dev/null
         - echo "New Relic PHP Agent installed"
       vars:
         AGENT_VERSION: "9.17.1.301"
 
     install_deb:
       cmds:
-        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
+        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
         - wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-        - sudo apt-get update >/dev/null
-        - DEBIAN_FRONTEND=noninteractive sudo apt-get install newrelic-php5 -y -qq > /dev/null
+        - sudo apt-get update
+        - DEBIAN_FRONTEND=noninteractive sudo apt-get install newrelic-php5 -y -qq
         - echo "New Relic PHP Agent registered in apt"
 
     configure:
       cmds:
         - |
+          cd {{.TMP_INSTALL_DIR}}
+          NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
           # Get path of most recent agent install log
-          INSTALL_LOG="$(ls -t /tmp/nrinstall*.log | head -n1)"
-          WEB_CONFD=$(grep 'final pi_inidir_dso' "$INSTALL_LOG" | cut -d'=' -f2)
-          CLI_CONFD=$(grep 'final pi_inidir_cli' "$INSTALL_LOG" | cut -d'=' -f2)
+          tar_file=$(ls -t /tmp/nrinstall*.tar 2>/dev/null | head -1)
+          #
+          # Expand the log files from the most recent installation attempt,
+          # and get the name of the most recent log file.
+          #
+          if [ -f "${tar_file}" ]; then
+            tar xvf $tar_file
+            log_file=$(ls -t nrinstall*.log | head -1)
+            if  [ -f $log_file ]; then
+              ln -s $log_file $NR_INSTALL_LOG
+            else
+              #
+              # We really shouldn't get here if we found the tar file.
+              # Exit with Agent install failure code exit(16)
+              echo "Unable to find agent install log."
+              exit 16
+            fi
+          else
+            #
+            # If tar file doesn't exist, something went wrong with installation.
+            # Exit with Agent install failure code exit(16)
+            echo "Unable to find agent install log tarfile."
+            exit 16
+          fi
+          WEB_CONFD=$(grep 'final pi_inidir_dso' "$NR_INSTALL_LOG" | cut -d'=' -f2)
+          CLI_CONFD=$(grep 'final pi_inidir_cli' "$NR_INSTALL_LOG" | cut -d'=' -f2)
           WEB_INI="$WEB_CONFD/newrelic.ini"
           CLI_INI="$CLI_CONFD/newrelic.ini"
 
@@ -257,12 +279,6 @@ install:
           done;
           
         - echo "New Relic PHP Agent configured"
-
-    start:
-      cmds:
-        # This should include phpX.Y-fpm.service if a generic approach is desired
-        - sudo systemctl restart nginx
-        - echo "Services restarted"
 
     restart_services:
       cmds:
@@ -295,30 +311,11 @@ install:
         - echo "Send queryable transactions."
         - |
           cd {{.TMP_INSTALL_DIR}}
-          #
-          # Expand the log files from the most recent installation attempt,
-          # and get the name of the most recent log file.
-          #
-          tar_file=$(ls -t nrinstall*.tar 2>/dev/null | head -1)
-          if [ -f "${tar_file}" ]; then
-            tar xvf $tar_file
-            log_file=$(ls -t nrinstall*.log | head -1)
-            if  [ -f $log_file ]; then
-              NR_INSTALL_LOG=$(ls -t nrinstall*.log | head -1)
-              #
-              # Get the web server PHP INI directories that the most recent installation attempt used.
-              #
-              WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
-              WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
-              if [ -z "${WEB_PHP_INI_DIR}" ]; then
-                WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
-              fi
-            fi
-          else
-            #
-            # If tar file doesn't exist, something went wrong with installation.
-            # Exit with Agent install failure code exit(16)
-            exit 16
+          NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
+          WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
+          WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
+          if [ -z "${WEB_PHP_INI_DIR}" ]; then
+            WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
           fi
 
           #
