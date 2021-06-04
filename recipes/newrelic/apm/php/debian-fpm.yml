@@ -21,25 +21,39 @@ keywords:
 processMatch:
   - php-fpm
 
-validationNrql: ""
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
 
+inputVars:
+  - name: "NR_PHP_APPLICATION"
+    prompt: "What is the name of your PHP application?"
+    default: "PHP Application"
+  - name: "NR_PHP_RESTART"
+    prompt: "Restart the PHP application after installation? (y/n)"
+    default: "y"
 
 install:
-
   version: "3"
   silent: true
+
+  vars:
+    TMP_INSTALL_DIR:
+      sh: mktemp -d /tmp/newrelic-php-agent.XXXXXX
 
   tasks:
     default:
       cmds:
         - task: verify_continue
         - task: assert_pre_req
+        - task: create_shared
+        - task: detect_services
         - task: add_gnupg2_curl_if_required
         - task: install_tarball
         - task: configure
-        - task: start
         - task: install_deb
+        - task: restart_services
+        - task: send_transaction
         - task: cleanup_temp_files
+        - task: delete_shared
 
     verify_continue:
       cmds:
@@ -99,6 +113,80 @@ install:
             fi
           done
 
+    create_shared:
+      cmds:
+        - |
+          WHITE='\033[0;97m'
+          GRAY='\033[38;5;240m'
+          NOCOLOR='\033[0m'
+          rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
+          mkdir -p {{.TMP_INSTALL_DIR}}
+          echo -e "${WHITE}Created temporary directory {{.TMP_INSTALL_DIR}} for installation.${NOCOLOR}"
+
+    detect_services:
+      cmds:
+        - |
+          WHITE='\033[0;97m'
+          GRAY='\033[38;5;240m'
+          NOCOLOR='\033[0m'
+          echo -e "${WHITE}Detect services.${NOCOLOR}"
+          cd {{.TMP_INSTALL_DIR}}
+          rm -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt 2>/dev/null
+          rm -f {{.TMP_INSTALL_DIR}}/processes_to_restart.txt 2>/dev/null
+          #
+          # For guided installs, we currently support `php-fpm`, `apache`, and `nginx`.
+          # There is a reason for the order.  According our install script:
+          # If both Apache and FPM are installed, we want FPM to win:
+          # while there are many ways to end up with libapache2-mod-php5 installed,
+          # it's unlikely php5-fpm will be installed unless FPM is actually in use.
+          #
+          declare -a guided_support=("(fpm)" "(httpd|apache2|apache)" "(nginx)")
+          current_user=$SUDO_USER
+          for PROCESS in ${guided_support[@]}
+          do
+            priv_user=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $1}')
+            full_process_name=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $11}')
+            fpm_nginx_process_name=$(echo "${full_process_name}" | sed -n 's/\(.*\):$/\1/p')
+            if [ -n "${fpm_nginx_process_name}" ]; then
+              fpm_process_loc=$(ps auxf | egrep $PROCESS | grep -v grep | head -n1 | awk '{print $14}')
+              fpm_ver=$(echo "${fpm_process_loc}" | sed -n 's/.*\/php\/\([578].[0-9]\)\/.*/\1/p')
+              if [ -n "${fpm_ver}" ]; then
+                # It's fpm.
+                process_name="php${fpm_ver}-fpm"
+              else
+                # It's nginx.
+                process_name=$fpm_nginx_process_name
+              fi
+            else
+              process_name=$(echo $full_process_name | sed -n 's/.*\/\(.*\)$/\1/p')
+            fi
+            nonpriv_user=
+            if [ -n "${priv_user}" ]; then
+              nonpriv_user=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v $priv_user | head -n1 | awk '{print $1}')
+            fi
+            if [ -n "${process_name}" ]; then
+              if [ -z "${nonpriv_user}" ]; then
+                nonpriv_user=$current_user
+              fi
+              #
+              # Output all processes to be restarted to a file with the following format:
+              # process_name privileged_user
+              # When the process is restarted, it will be used with the associated
+              # privileged user.
+              #
+              echo "$process_name $priv_user" >> {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
+              #
+              # Save all non-privileged users associated with detected processes.
+              # When initiating the transaction, it will ONLY be used with
+              # the first associated non-privileged user because due the reasoning above
+              # that the installation logic adheres to, between FPM and Apache,
+              # FPM will be the one to use and `newrelic-install.sh` only
+              # installs the `newrelic.ini` in one web location.
+              #
+              echo "$nonpriv_user" >> {{.TMP_INSTALL_DIR}}/nonpriv_users.txt
+            fi
+          done
+
     add_gnupg2_curl_if_required:
       cmds:
         - |
@@ -114,79 +202,190 @@ install:
 
     install_tarball:
       cmds:
-        - echo "Downloading newest PHP Agent Release"
         - |
+          WHITE='\033[0;97m'
+          GRAY='\033[38;5;240m'
+          echo -e "${WHITE}Downloading newest PHP Agent Release${GRAY}"
+          cd {{.TMP_INSTALL_DIR}}
+          # Remove old log tarballs to ensure we don't accidentally use it later
+          rm -f /tmp/nrinstall* 2>/dev/null
           AGENT="newrelic-php5-{{.AGENT_VERSION}}-linux"
           AGENT_TARBALL="$AGENT.tar.gz"
           curl -s https://download.newrelic.com/php_agent/release/$AGENT_TARBALL -o $AGENT_TARBALL
           gzip -dc $AGENT_TARBALL | tar xf -
           pushd $AGENT > /dev/null
-          echo "Installing PHP Agent"
+          echo -e "${WHITE}Installing PHP Agent${GRAY}"
           NR_INSTALL_SILENT=true NR_INSTALL_KEY="$NEW_RELIC_LICENSE_KEY" ./newrelic-install install
           popd > /dev/null
-          # Extract install logs for helpful information in following steps
-          pushd /tmp > /dev/null
-          INSTALL_LOG_TARBALL=$(ls nrinstall*.tar -t | head -n1)
-          tar -xf "$INSTALL_LOG_TARBALL"
-          popd > /dev/null
-        - echo "New Relic PHP Agent installed"
+        - echo -e "${WHITE}New Relic PHP Agent installed${GRAY}"
       vars:
         AGENT_VERSION: "9.17.1.301"
 
     install_deb:
       cmds:
-        - echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
-        - wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-        - sudo apt-get update >/dev/null
-        - DEBIAN_FRONTEND=noninteractive sudo apt-get install newrelic-php5 -y -qq > /dev/null
-        - echo "New Relic PHP Agent registered in apt"
+        - |
+          WHITE='\033[0;97m'
+          GRAY='\033[38;5;240m'
+          echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
+          wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install newrelic-php5 -y -qq
+          echo -e "${WHITE}New Relic PHP Agent registered in apt${GRAY}"
 
     configure:
       cmds:
         - |
+          WHITE='\033[0;97m'
+          GRAY='\033[38;5;240m'
+          RED='\033[0;31m'
+          NOCOLOR='\033[0m'
+          cd {{.TMP_INSTALL_DIR}}
+          NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
           # Get path of most recent agent install log
-          INSTALL_LOG="$(ls -t /tmp/nrinstall*.log | head -n1)"
-          WEB_CONFD=$(grep 'final pi_inidir_dso' "$INSTALL_LOG" | cut -d'=' -f2)
-          CLI_CONFD=$(grep 'final pi_inidir_cli' "$INSTALL_LOG" | cut -d'=' -f2)
+          tar_file=$(ls -t /tmp/nrinstall*.tar 2>/dev/null | head -1)
+          #
+          # Expand the log files from the most recent installation attempt,
+          # and get the name of the most recent log file.
+          #
+          if [ -f "${tar_file}" ]; then
+            tar xvf $tar_file
+            log_file=$(ls -t nrinstall*.log | head -1)
+            if  [ -f $log_file ]; then
+              ln -s $log_file $NR_INSTALL_LOG
+            else
+              #
+              # We really shouldn't get here if we found the tar file.
+              # Exit with Agent install failure code exit(16)
+              echo -e "${RED}Unable to find agent install log.${NOCOLOR}"
+              exit 16
+            fi
+          else
+            #
+            # If tar file doesn't exist, something went wrong with installation.
+            # Exit with Agent install failure code exit(16)
+            echo -e "${RED}Unable to find agent install log tarfile.${NOCOLOR}"
+            exit 16
+          fi
+          WEB_CONFD=$(grep 'final pi_inidir_dso' "$NR_INSTALL_LOG" | cut -d'=' -f2)
+          CLI_CONFD=$(grep 'final pi_inidir_cli' "$NR_INSTALL_LOG" | cut -d'=' -f2)
           WEB_INI="$WEB_CONFD/newrelic.ini"
           CLI_INI="$CLI_CONFD/newrelic.ini"
 
           NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"
           NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
-          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            while :; do
-              echo -n "Please enter a name for your application: "
-              read answer
-              echo ""
-              APPNAME=$(echo "${answer}")
-              if [[ -n "$APPNAME" ]]; then
-                break
-              fi
-              echo -e "Please enter a name for your application: "
-            done
-          fi
 
           for ini in $WEB_INI $CLI_INI; do
-            sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"$APPNAME\"/" $ini
+            sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini
             if [ "$NEW_RELIC_REGION" = "STAGING" ]; then
               sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini
             fi
           done;
           
-        - echo "New Relic PHP Agent configured"
+          echo -e "${WHITE}New Relic PHP Agent configured${GRAY}"
 
-    start:
+    restart_services:
       cmds:
-        # This should include phpX.Y-fpm.service if a generic approach is desired
-        - sudo systemctl restart nginx
-        - echo "Services restarted"
+        - |
+          WHITE='\033[0;97m'
+          RED='\033[0;31m'
+          GRAY='\033[38;5;240m'
+          NOCOLOR='\033[0m'
+          YELLOW='\033[0;33m'
+          echo -e "${YELLOW}Restarting the services as needed to pick up newrelic.ini information.${GRAY}"
+          #
+          # Case: php-fpm/apache or php-fpm/nginx, only php-fpm needs to be restarted.
+          # Case: apache only or nginx only, they respective service needs to be restarted.
+          # This means only restart the first process in processes_to_restart.txt.
+          #
+          if [ "{{.NR_PHP_RESTART}}" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+            cd {{.TMP_INSTALL_DIR}}
+            read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+            echo -e "${YELLOW}Restarting $process as privileged user $user_name${GRAY}"
+            sudo -u $user_name service $process restart
+            echo -e "${WHITE}Sleeping for 10 seconds to give process time to recover.${GRAY}"
+            sleep 10
+          else
+            if [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+              cd {{.TMP_INSTALL_DIR}}
+              read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+              echo -e "${RED}Please restart $process as privileged user $user_name for instrumentation to be enabled.${NOCOLOR}"
+            else
+              echo -e "${RED}You will need to restart your PHP web server in order for web instrumentation to be enabled.${NOCOLOR}"
+              if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+                echo -n "Press enter to continue once this has been done."
+                read answer
+              fi
+            fi
+          fi
 
-    
+    send_transaction:
+      cmds:
+        - |
+          WHITE='\033[0;97m'
+          RED='\033[0;31m'
+          GRAY='\033[38;5;240m'
+          NOCOLOR='\033[0m'
+          YELLOW='\033[0;33m'
+          echo -e "${WHITE}Send queryable transactions.${GRAY}"
+          cd {{.TMP_INSTALL_DIR}}
+          NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
+          WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
+          WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
+          if [ -z "${WEB_PHP_INI_DIR}" ]; then
+            WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
+          fi
+
+          #
+          # Get the non-privileged user that was previously stored.
+          #
+          if [ -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt ]; then
+          nonpriv_user=$(head -1 {{.TMP_INSTALL_DIR}}/nonpriv_users.txt)
+          else
+            nonpriv_user=$SUDO_USER
+          fi
+
+          #
+          # The first transaction initializes the app.
+          # The second transaction is for luck.
+          # The third time’s the charm.
+          #
+          if [ -n "${WEB_PHP_INI_DIR}" ]; then
+          #
+          # Web server was detected. Send transaction associated with the webserver php.ini
+          # and the newrelic.ini file associated with that web server.
+          #
+          for i in {1..10}; do
+            sleep 1
+            sudo -u $nonpriv_user php -c "${WEB_PHP_INI_DIR}/php.ini" -c "${WEB_NR_INI_DIR}/newrelic.ini" -n --ini &>/dev/null
+          done
+          else
+          #
+          # No web server detected, pure PHP CLI.
+          #
+            echo "${WHITE}Running PHP-CLI with user ${SUDO_USER}${GRAY}"
+            for i in {1..10}; do
+              sleep 1
+              sudo -u $SUDO_USER php —-ini
+            done
+          fi
+          echo -e "${WHITE}Done sending transactions.${GRAY}"
+
     cleanup_temp_files:
+      label: "Cleaning up"
       ignore_error: true
       cmds:
-        - rm -rf /tmp/nrinstall*
-        - rm -rf newrelic-php5-*-linux
-        - rm -rf newrelic-php5-*-linux.tar.gz
-        - echo "Done cleaning up"
+        - rm -rf /tmp/nrinstall* 2>/dev/null
+        - rm -rf newrelic-php5-*-linux 2>/dev/null
+        - rm -rf newrelic-php5-*-linux.tar.gz 2>/dev/null
+
+    delete_shared:
+      ignore_error: true
+      cmds:
+        - |
+          WHITE='\033[0;97m'
+          GRAY='\033[38;5;240m'
+          NOCOLOR='\033[0m'
+          echo -e "${GRAY}"
+          rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
+          echo -e "${WHITE}Removed temporary directory used for installation.${NOCOLOR}"
