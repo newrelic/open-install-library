@@ -38,6 +38,12 @@ install:
   vars:
     TMP_INSTALL_DIR:
       sh: mktemp -d /tmp/newrelic-php-agent.XXXXXX
+    WHITE: '\033[0;97m'
+    RED: '\033[0;31m'
+    GRAY: '\033[38;5;240m'
+    NOCOLOR: '\033[0m'
+    YELLOW: '\033[0;33m'
+    ARROW: '\033[0;36m===> \033[0;97m'
 
   tasks:
     default:
@@ -57,9 +63,7 @@ install:
     verify_continue:
       cmds:
         - |
-          YELLOW='\033[0;33m'
-          NOCOLOR='\033[0m'
-          echo -e "${YELLOW}
+          echo -e "{{.YELLOW}}
           ================================================================================
           =                                                                              =
           =                                   Warning                                    =
@@ -68,14 +72,14 @@ install:
           =                          nginx and/or FPM services                           =
           =                                                                              =
           ================================================================================
-          ${NOCOLOR}"
+          {{.NOCOLOR}}"
           echo "
           If you are hosting your PHP application differently then check out our other installation options:
           https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/
           "
           if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
             while :; do
-              echo -n "Do you want to install the PHP Agent Y/N (default: Y)? "
+              echo -n -e "{{.WHITE}}Do you want to install the PHP Agent Y/N (default: Y)? {{.NOCOLOR}}"
               read answer
               echo ""
               NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
@@ -83,13 +87,13 @@ install:
                 NEW_RELIC_CONTINUE="Y"
               fi
               if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
-                echo "Exiting the installation"
+                echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
                 exit 130
               fi
               if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
                 break
               fi
-              echo -e "Please type Y or N only."
+              echo -e "{{.WHITE}}Please type Y or N only.{{.NOCOLOR}}"
             done
           fi
 
@@ -114,20 +118,14 @@ install:
     create_shared:
       cmds:
         - |
-          WHITE='\033[0;97m'
-          GRAY='\033[38;5;240m'
-          NOCOLOR='\033[0m'
           rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
           mkdir -p {{.TMP_INSTALL_DIR}}
-          echo -e "${WHITE}Created temporary directory {{.TMP_INSTALL_DIR}} for installation.${NOCOLOR}"
+          echo -e "{{.WHITE}}Temporary directory {{.TMP_INSTALL_DIR}} created{{.NOCOLOR}}"
 
     detect_services:
       cmds:
         - |
-          WHITE='\033[0;97m'
-          GRAY='\033[38;5;240m'
-          NOCOLOR='\033[0m'
-          echo -e "${WHITE}Detect services.${NOCOLOR}"
+          echo -e "{{.ARROW}}Detecting services{{.NOCOLOR}}"
           cd {{.TMP_INSTALL_DIR}}
           rm -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt 2>/dev/null
           rm -f {{.TMP_INSTALL_DIR}}/processes_to_restart.txt 2>/dev/null
@@ -201,9 +199,8 @@ install:
     install_tarball:
       cmds:
         - |
-          WHITE='\033[0;97m'
-          GRAY='\033[38;5;240m'
-          echo -e "${WHITE}Downloading newest PHP Agent Release${GRAY}"
+          echo -e "{{.ARROW}}Installing New Relic PHP Agent{{.GRAY}}"
+          echo -e "{{.WHITE}}Downloading newest PHP Agent Release{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
           # Remove old log tarballs to ensure we don't accidentally use it later
           rm -f /tmp/nrinstall* 2>/dev/null
@@ -212,31 +209,25 @@ install:
           curl -s https://download.newrelic.com/php_agent/release/$AGENT_TARBALL -o $AGENT_TARBALL
           gzip -dc $AGENT_TARBALL | tar xf -
           pushd $AGENT > /dev/null
-          echo -e "${WHITE}Installing PHP Agent${GRAY}"
+          echo -e "{{.WHITE}}Running PHP Agent installer{{.GRAY}}"
           NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
           popd > /dev/null
-        - echo -e "${WHITE}New Relic PHP Agent installed${GRAY}"
       vars:
         AGENT_VERSION: "9.17.1.301"
 
     install_deb:
       cmds:
         - |
-          WHITE='\033[0;97m'
-          GRAY='\033[38;5;240m'
+          echo -e "{{.ARROW}}Installing New Relic PHP Agent package{{.GRAY}}"
           echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
           wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
-          echo -e "${WHITE}New Relic PHP Agent registered in apt${GRAY}"
 
     configure:
       cmds:
         - |
-          WHITE='\033[0;97m'
-          GRAY='\033[38;5;240m'
-          RED='\033[0;31m'
-          NOCOLOR='\033[0m'
+          echo -e "{{.ARROW}}Configuring New Relic PHP Agent{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
           NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
           # Get path of most recent agent install log
@@ -254,14 +245,14 @@ install:
               #
               # We really shouldn't get here if we found the tar file.
               # Exit with Agent install failure code exit(16)
-              echo -e "${RED}Unable to find agent install log.${NOCOLOR}"
+              echo -e "{{.RED}}Unable to find agent install log.{{.NOCOLOR}}"
               exit 16
             fi
           else
             #
             # If tar file doesn't exist, something went wrong with installation.
             # Exit with Agent install failure code exit(16)
-            echo -e "${RED}Unable to find agent install log tarfile.${NOCOLOR}"
+            echo -e "{{.RED}}Unable to find agent install log tarfile.{{.NOCOLOR}}"
             exit 16
           fi
           WEB_CONFD=$(grep 'final pi_inidir_dso' "$NR_INSTALL_LOG" | cut -d'=' -f2)
@@ -275,18 +266,12 @@ install:
               sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini
             fi
           done;
-          
-          echo -e "${WHITE}New Relic PHP Agent configured${GRAY}"
 
     restart_services:
       cmds:
         - |
-          WHITE='\033[0;97m'
-          RED='\033[0;31m'
-          GRAY='\033[38;5;240m'
-          NOCOLOR='\033[0m'
-          YELLOW='\033[0;33m'
-          echo -e "${YELLOW}Restarting the services as needed to pick up newrelic.ini information.${GRAY}"
+          echo -e "{{.ARROW}}Restarting the services, as needed{{.GRAY}}"
+          echo -e "{{.WHITE}}This step causes the changes to newrelic.ini to be picked up."
           #
           # Case: php-fpm/apache or php-fpm/nginx, only php-fpm needs to be restarted.
           # Case: apache only or nginx only, they respective service needs to be restarted.
@@ -295,17 +280,17 @@ install:
           if [ "{{.NR_PHP_RESTART}}" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
             cd {{.TMP_INSTALL_DIR}}
             read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
-            echo -e "${YELLOW}Restarting $process as privileged user $user_name${GRAY}"
+            echo -e "{{.YELLOW}}Restarting $process as privileged user $user_name{{.GRAY}}"
             sudo -u $user_name service $process restart
-            echo -e "${WHITE}Sleeping for 10 seconds to give process time to recover.${GRAY}"
+            echo -e "{{.WHITE}}Sleeping for 10 seconds to give process time to recover.{{.GRAY}}"
             sleep 10
           else
             if [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
               cd {{.TMP_INSTALL_DIR}}
               read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
-              echo -e "${RED}Please restart $process as privileged user $user_name for instrumentation to be enabled.${NOCOLOR}"
+              echo -e "{{.RED}}Please restart $process as privileged user $user_name for instrumentation to be enabled.{{.NOCOLOR}}"
             else
-              echo -e "${RED}You will need to restart your PHP web server in order for web instrumentation to be enabled.${NOCOLOR}"
+              echo -e "{{.RED}}You will need to restart your PHP web server in order for web instrumentation to be enabled.{{.NOCOLOR}}"
               if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
                 echo -n "Press enter to continue once this has been done."
                 read answer
@@ -316,12 +301,7 @@ install:
     send_transaction:
       cmds:
         - |
-          WHITE='\033[0;97m'
-          RED='\033[0;31m'
-          GRAY='\033[38;5;240m'
-          NOCOLOR='\033[0m'
-          YELLOW='\033[0;33m'
-          echo -e "${WHITE}Send queryable transactions.${GRAY}"
+          echo -e "{{.ARROW}}Send queryable transactions{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
           NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
           WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
@@ -357,23 +337,19 @@ install:
           #
           # No web server detected, pure PHP CLI.
           #
-            echo "${WHITE}Running PHP-CLI with user ${SUDO_USER}${GRAY}"
+            echo "{{.WHITE}}Running PHP-CLI with user ${SUDO_USER}{{.GRAY}}"
             for i in {1..10}; do
               sleep 1
               sudo -u $SUDO_USER php —-ini
             done
           fi
-          echo -e "${WHITE}Done sending transactions.${GRAY}"
+          echo -e "{{.WHITE}}Transactions sent{{.GRAY}}"
 
     cleanup_temp_files:
-      label: "Cleaning up"
       ignore_error: true
       cmds:
         - |
-          WHITE='\033[0;97m'
-          GRAY='\033[38;5;240m'
-          NOCOLOR='\033[0m'
-          echo -e "${GRAY}"
+          echo -e "{{.ARROW}}Cleaning up{{.GRAY}}"
           rm -rf /tmp/nrinstall* 2>/dev/null
           rm -rf /tmp/newrelic-php-agent.* 2>/dev/null
-          echo -e "${WHITE}Removed temporary directory used for installation.${NOCOLOR}"
+          echo -e "{{.WHITE}}Removed temporary directory used for installation{{.NOCOLOR}}"
