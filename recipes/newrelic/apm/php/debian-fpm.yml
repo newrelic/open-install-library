@@ -53,7 +53,6 @@ install:
         - task: restart_services
         - task: send_transaction
         - task: cleanup_temp_files
-        - task: delete_shared
 
     verify_continue:
       cmds:
@@ -74,8 +73,7 @@ install:
           If you are hosting your PHP application differently then check out our other installation options:
           https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/
           "
-          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
-          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
             while :; do
               echo -n "Do you want to install the PHP Agent Y/N (default: Y)? "
               read answer
@@ -215,7 +213,7 @@ install:
           gzip -dc $AGENT_TARBALL | tar xf -
           pushd $AGENT > /dev/null
           echo -e "${WHITE}Installing PHP Agent${GRAY}"
-          NR_INSTALL_SILENT=true NR_INSTALL_KEY="$NEW_RELIC_LICENSE_KEY" ./newrelic-install install
+          NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
           popd > /dev/null
         - echo -e "${WHITE}New Relic PHP Agent installed${GRAY}"
       vars:
@@ -229,7 +227,7 @@ install:
           echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
           wget -q -O- https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
           sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install newrelic-php5 -y -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
           echo -e "${WHITE}New Relic PHP Agent registered in apt${GRAY}"
 
     configure:
@@ -271,13 +269,9 @@ install:
           WEB_INI="$WEB_CONFD/newrelic.ini"
           CLI_INI="$CLI_CONFD/newrelic.ini"
 
-          NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
-          NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"
-          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
-
           for ini in $WEB_INI $CLI_INI; do
             sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini
-            if [ "$NEW_RELIC_REGION" = "STAGING" ]; then
+            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
               sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini
             fi
           done;
@@ -312,7 +306,7 @@ install:
               echo -e "${RED}Please restart $process as privileged user $user_name for instrumentation to be enabled.${NOCOLOR}"
             else
               echo -e "${RED}You will need to restart your PHP web server in order for web instrumentation to be enabled.${NOCOLOR}"
-              if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+              if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
                 echo -n "Press enter to continue once this has been done."
                 read answer
               fi
@@ -375,17 +369,11 @@ install:
       label: "Cleaning up"
       ignore_error: true
       cmds:
-        - rm -rf /tmp/nrinstall* 2>/dev/null
-        - rm -rf newrelic-php5-*-linux 2>/dev/null
-        - rm -rf newrelic-php5-*-linux.tar.gz 2>/dev/null
-
-    delete_shared:
-      ignore_error: true
-      cmds:
         - |
           WHITE='\033[0;97m'
           GRAY='\033[38;5;240m'
           NOCOLOR='\033[0m'
           echo -e "${GRAY}"
-          rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
+          rm -rf /tmp/nrinstall* 2>/dev/null
+          rm -rf /tmp/newrelic-php-agent.* 2>/dev/null
           echo -e "${WHITE}Removed temporary directory used for installation.${NOCOLOR}"
