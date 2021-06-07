@@ -42,22 +42,18 @@ jobs:
           files: recipes/ manifest.json
           dest: recipes.zip
 
-      - name: Allow exec on upload url
-        id: allow-upload-url
-        shell: bash
-        run: chmod 777 ${{ github.workspace }}/scripts/get_latest_release_upload_url.sh
-
-      - name: Get latest release upload URL
-        id: get-latest-release-upload-url
-        shell: bash
-        run: curl -Ls https://api.github.com/repos/newrelic/open-install-library/releases/latest | jq -r '.upload_url'
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.2.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Upload recipes zip file
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.get-latest-release-upload-url.outputs.upload_url }}
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
           asset_path: ${{ github.workspace }}/recipes.zip
           asset_name: recipes.zip
           asset_content_type: application/octet-stream
