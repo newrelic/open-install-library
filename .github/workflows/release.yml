@@ -35,17 +35,26 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
+
       - name: Zip recipes
         uses: papeloto/action-zip@v1
         with:
           files: recipes/ manifest.json
           dest: recipes.zip
+
+      - name: Get latest release upload URL
+        id: get-latest-release-upload-url
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "::set-output name=upload_url::$(./scripts/get_latest_release_upload_url.sh)"
+
       - name: Upload recipes zip file
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ./recipes.zip
+          upload_url: ${{ steps.get-latest-release-upload-url.outputs.upload_url }}
           asset_path: ${{ github.workspace }}/recipes.zip
           asset_name: recipes.zip
           asset_content_type: application/octet-stream
