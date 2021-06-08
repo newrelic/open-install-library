@@ -88,6 +88,7 @@ install:
               fi
               if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
                 echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
+                rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
                 exit 130
               fi
               if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
@@ -100,8 +101,22 @@ install:
     assert_pre_req:
       cmds:
         - |
+          if [ -z "$SUDO_USER" ]; then
+            echo "This installation recipe for the New Relic PHP agent must be run under sudo." >> /dev/stderr
+            rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
+            exit 7
+          fi
+        - |
+          IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
+          if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]
+          then
+            echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'." >> /dev/stderr
+            rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
+            exit 20
+          fi
+        - |
           # Map of tool names to the associated error code
-          required_tools_and_error_codes="grep:10 sed:11"
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22"
 
           for tuple in $required_tools_and_error_codes; do
             tool=$(echo ${tuple} |cut -d':' -f1)
@@ -111,6 +126,7 @@ install:
             if [ "$IS_TOOL_INSTALLED" -eq 0 ]
             then
               echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >> /dev/stderr
+              rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
               exit ${code}
             fi
           done
@@ -246,6 +262,7 @@ install:
               # We really shouldn't get here if we found the tar file.
               # Exit with Agent install failure code exit(16)
               echo -e "{{.RED}}Unable to find agent install log.{{.NOCOLOR}}"
+              rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
               exit 16
             fi
           else
@@ -253,6 +270,7 @@ install:
             # If tar file doesn't exist, something went wrong with installation.
             # Exit with Agent install failure code exit(16)
             echo -e "{{.RED}}Unable to find agent install log tarfile.{{.NOCOLOR}}"
+            rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
             exit 16
           fi
           WEB_CONFD=$(grep 'final pi_inidir_dso' "$NR_INSTALL_LOG" | cut -d'=' -f2)
