@@ -47,6 +47,23 @@
     env_vars: "{{ env_vars }} {{item.key}}={{item.value}}"
   loop: "{{ q('dict', cli_env_dict|default({})) }}"
 
+- name: Prepare newrelic-cli option
+  set_fact:
+    newrelic_cli_option: "-y --trace"
+
+- name: Adding optional local recipes
+  set_fact:
+    newrelic_cli_option: "{{ newrelic_cli_option }} --localRecipes /home/{{ansible_user}}/open-install-library-recipes/"
+  when: local_recipes is defined and (local_recipes | bool == True)
+
+- name: Copy all recipes
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../../../../../recipes"
+    dest: "/home/{{ansible_user}}/open-install-library-recipes"
+    mode: '0777'
+  become: true
+  when: local_recipes is defined and (local_recipes | bool == True)
+
 - name: Copy newrelic-cli if local exists
   ansible.builtin.copy:
     src: "{{ newrelic_cli_path }}"
@@ -64,7 +81,7 @@
   become: true
 
 - name: Run recipes
-  shell: "sudo {{ env_vars }} /usr/local/bin/newrelic install -y -c {{ item }} --trace"
+  shell: "sudo {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}} -c {{ item }}"
   loop: "{{ recipe_content_url }}"
   register: output
   become: true
