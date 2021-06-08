@@ -18,6 +18,24 @@ keywords:
 
 processMatch: []
 
+preInstall:
+  requireAtDiscovery:
+    - |
+      TMP_DIR=$(mktemp -dq /tmp/newrelic.XXXXXX)
+      curl -s https://virtuoso-testing.s3-us-west-2.amazonaws.com/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
+      zcat ${TMP_DIR}/dotnet-is-linux-x64.gz > ${TMP_DIR}/nri-lsi-dotnet
+      chmod u+x $TMP_DIR/nri-lsi-dotnet >/dev/null
+      processCount=$(${TMP_DIR}/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' | wc -w)
+      if [[ "$processCount" -ne 0 ]]; then
+        # Found .NET processes - return 0
+        rm -rf $TMP_DIR >/dev/null
+        exit 0
+      fi
+
+      # No .NET processes - return 3 (No processes found to monitor)
+      rm -rf $TMP_DIR >/dev/null
+      exit 3
+
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
 successLinkConfig:
