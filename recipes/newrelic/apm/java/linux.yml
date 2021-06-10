@@ -50,46 +50,29 @@ install:
           red='\033[0;31m'
           noColor='\033[0m'
 
-          grepInstalled=$(which grep 2> /dev/null)
-          if [[ -z "$grepInstalled" ]] ; then
-            echo "${red}A valid grep installation is required.${noColor}" >&2
-            exit 10
+          user=$(whoami)
+          if [[ "$user" != "root" ]]; then
+            echo -e "${red}This script must be run as root.${noColor}" >&2
+            exit 7
           fi
-          sedInstalled=$(which sed 2> /dev/null)
-          if [[ -z "$sedInstalled" ]] ; then
-            echo "${red}A valid sed installation is required.${noColor}" >&2
-            exit 11
-          fi
-          catInstalled=$(which cat 2> /dev/null)
-          if [[ -z "$catInstalled" ]] ; then
-            echo "${red}A valid cat installation is required.${noColor}" >&2
-            exit 13
-          fi
-          touchInstalled=$(which touch 2> /dev/null)
-          if [[ -z "$touchInstalled" ]] ; then
-            echo "${red}A valid touch installation is required.${noColor}" >&2
-            exit 15
-          fi
-          mktempInstalled=$(which mktemp 2> /dev/null)
-          if [[ -z "$mktempInstalled" ]] ; then
-            echo "${red}A valid mktemp installation is required.${noColor}" >&2
-            exit 22
-          fi
+
           cutInstalled=$(which cut 2> /dev/null)
-          if [[ -z "$cutInstalled" ]] ; then
-            echo "${red}A valid cut installation is required.${noColor}" >&2
+          if [[ -z "$cutInstalled" ]]; then
+            echo -e "${red}This installation recipe for the New Relic Java Agent on Linux requires 'cut' to be installed.${noColor}" >&2
             exit 22
           fi
-          readlinkInstalled=$(which readlink 2> /dev/null)
-          if [[ -z "$readlinkInstalled" ]] ; then
-            echo "${red}A valid readlink installation is required.${noColor}" >&2
-            exit 22
-          fi
-          realpathInstalled=$(which realpath 2> /dev/null)
-          if [[ -z "$realpathInstalled" ]] ; then
-            echo "${red}A valid realpath installation is required.${noColor}" >&2
-            exit 22
-          fi
+
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 cat:13 tee:14 touch:15 mktemp:22 readlink:22 realpath:22"
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+            toolInstalled=$(which ${tool} | wc -l)
+            if [[ "$toolInstalled" -eq 0 ]]; then
+              echo -e "${red}This installation recipe for the New Relic Java Agent on Linux requires '${tool}' to be installed.${noColor}" >&2
+              exit ${code}
+            fi
+          done
 
     verify-continue:
       cmds:
