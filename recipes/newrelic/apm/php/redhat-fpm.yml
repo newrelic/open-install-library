@@ -2,17 +2,14 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 name: php-agent-debian-fpm-installer
-displayName: PHP Agent Installer for Debian + FPM
-description: New Relic install recipe for instrumenting PHP applications on Debian systems with FPM
+displayName: PHP Agent Installer for RedHat + FPM
+description: New Relic install recipe for instrumenting PHP applications on Redhat systems with FPM
 repository: https://github.com/newrelic/newrelic-php-agent
 
 installTargets:
   - type: application
     os: linux
-    platform: "debian"
-  - type: application
-    os: linux
-    platform: "ubuntu"
+    platformFamily: "rhel"
 
 keywords:
   - php
@@ -55,7 +52,7 @@ install:
         - task: add_gnupg2_curl_if_required
         - task: install_tarball
         - task: configure
-        - task: install_deb
+        - task: install_rpm
         - task: restart_services
         - task: send_transaction
         - task: cleanup_temp_files
@@ -227,14 +224,16 @@ install:
       vars:
         AGENT_VERSION: "9.17.1.301"
 
-    install_deb:
+    install_rpm:
       cmds:
         - |
-          echo -e "{{.ARROW}}Installing New Relic PHP Agent package{{.GRAY}}"
-          echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
-          curl -s https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
+          # The repo install command returns a non-zero return code if it is already installed
+          # Only attempt an install if it is needed
+          sudo rpm -q newrelic-repo-5-3.noarch > /dev/null
+          if [ $? -ne 0 ]; then
+            sudo rpm -Uvh http://yum.newrelic.com/pub/newrelic/el5/x86_64/newrelic-repo-5-3.noarch.rpm
+          fi
+          sudo yum install -y newrelic-php5
 
     configure:
       cmds:
