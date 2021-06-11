@@ -28,6 +28,23 @@
     env_vars: "{{ env_vars }}; $env:NEW_RELIC_REGION=\"{{ newrelic_region }}\""
   when: newrelic_region is defined
 
+- name: Prepare newrelic-cli option
+  set_fact:
+    newrelic_cli_option: "-y --trace"
+
+- name: Adding optional local recipes
+  set_fact:
+    newrelic_cli_option: "{{ newrelic_cli_option }} --localRecipes C:\\Temp\\open-install-library-recipes\\"
+  when: local_recipes is defined and (local_recipes | bool == True)
+
+- name: Copy all recipes
+  ansible.windows.win_copy:
+    src: "{{ role_path }}/../../../../../../../recipes"
+    dest: "C:\\Temp\\open-install-library-recipes"
+    mode: '0777'
+  become: true
+  when: local_recipes is defined and (local_recipes | bool == True)
+
 - name: Copy newrelic-cli if local exists
   ansible.windows.win_copy:
     src: "{{ newrelic_cli_path }}"
@@ -44,7 +61,7 @@
 
 - name: Run recipes
   win_shell: |
-    {{ env_vars }}; newrelic install -y -c {{ item }} --trace | Out-Null;
+    {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ item }} | Out-Null;
   loop: "{{ recipe_content_url }}"
   register: output
 
