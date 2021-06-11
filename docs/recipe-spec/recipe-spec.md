@@ -55,6 +55,7 @@ stability: enum, optional # One of [ disabled, experimental, stable ]
 #   - infrastructure-agent-installer
 dependencies: list, optional
 
+# DEPRECATED: use observabilityPacks instead
 # Metadata used to recommend and install Quickstarts (dashboards, alerts, synthetics, etc.)
 # This is filtering criteria for the quickstartSearch endpoint in NerdGraph
 quickstarts: list (object), optional
@@ -63,6 +64,12 @@ quickstarts: list (object), optional
       type: string, required
       domain: string, required
     category: string (enum), optional # One of [ newrelic, community ]. Defaults to newrelic.
+
+# Metadata used to recommend and install Observability Packs (dashboards, alerts, synthetics, etc.)
+# This is filtering criteria for the observabilityPackSearch endpoint in NerdGraph
+observabilityPacks: list (object), optional
+  - name: string, required
+    level: string (enum), optional # One of [ newrelic, verified, community ]. Defaults to newrelic.
 
 # Still TBD
 # Indicates the target host/runtime/env where user is trying to install (Note: isn't necessarily where you're running the newrelic-cli from)
@@ -83,11 +90,15 @@ installTargets: list, required
   # - Microsoft Azure Web Apps
 keywords: list, required
 
-# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes.
-# Non-empty list of process definitions.
+# CLI runs process detection; this is a regex used to filter recipes that are appropriate for matched processes.
+# An empty list signifies the recipe will always be run during guided install.
+#
+# Example Usage:
+#  processMatch: 
+#    - apache       # matches any processes containing apache in the full process command
+#
+#  processMatch: [] # this recipe will always run in Guided Install
 processMatch: list, required
-  - /infra/
-  - /usr/bin/local/node/
 
 # Matches partial list of the Log forwarding parameters
 # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
