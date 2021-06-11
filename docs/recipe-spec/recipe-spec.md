@@ -55,6 +55,7 @@ stability: enum, optional # One of [ disabled, experimental, stable ]
 #   - infrastructure-agent-installer
 dependencies: list, optional
 
+# DEPRECATED: use observabilityPacks instead
 # Metadata used to recommend and install Quickstarts (dashboards, alerts, synthetics, etc.)
 # This is filtering criteria for the quickstartSearch endpoint in NerdGraph
 quickstarts: list (object), optional
@@ -63,6 +64,12 @@ quickstarts: list (object), optional
       type: string, required
       domain: string, required
     category: string (enum), optional # One of [ newrelic, community ]. Defaults to newrelic.
+
+# Metadata used to recommend and install Observability Packs (dashboards, alerts, synthetics, etc.)
+# This is filtering criteria for the observabilityPackSearch endpoint in NerdGraph
+observabilityPacks: list (object), optional
+  - name: string, required
+    level: string (enum), optional # One of [ newrelic, verified, community ]. Defaults to newrelic.
 
 # Still TBD
 # Indicates the target host/runtime/env where user is trying to install (Note: isn't necessarily where you're running the newrelic-cli from)
