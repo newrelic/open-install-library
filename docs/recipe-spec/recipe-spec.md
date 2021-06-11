@@ -83,11 +83,15 @@ installTargets: list, required
   # - Microsoft Azure Web Apps
 keywords: list, required
 
-# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes.
-# Non-empty list of process definitions.
+# CLI runs process detection; this is a regex used to filter recipes that are appropriate for matched processes.
+# An empty list signifies the recipe will always be run during guided install.
+#
+# Example Usage:
+#  processMatch: 
+#    - apache       # matches any processes containing apache in the full process command
+#
+#  processMatch: [] # this recipe will always run in Guided Install
 processMatch: list, required
-  - /infra/
-  - /usr/bin/local/node/
 
 # Matches partial list of the Log forwarding parameters
 # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
