@@ -110,23 +110,25 @@ install:
         - |
           if [ -f /etc/newrelic-infra.yml ]; then
             sudo sed -i "/^staging/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
             sudo sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
 
             sudo sed -i "s/^\(license_key: \).*/\1{{.NEW_RELIC_LICENSE_KEY}}/" /etc/newrelic-infra.yml
-            sudo sed -i "s/^\(enable_process_metrics: \).*/\1true/" /etc/newrelic-infra.yml
-            sudo sed -i "s/^\(status_server_enabled: \).*/\1true/" /etc/newrelic-infra.yml
           else
             sudo touch /etc/newrelic-infra.yml
             sudo cat > /etc/newrelic-infra.yml <<EOT
           license_key: {{.NEW_RELIC_LICENSE_KEY}}
-          enable_process_metrics: true
-          status_server_enabled: true
           EOT
           fi
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             sudo echo 'staging: true' >> /etc/newrelic-infra.yml
           fi
+          sudo echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
+          sudo echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
+          # the default port is 8003, but it may be too common. Pick a 5-digit port in order to reduce the chances of collision
+          sudo echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
 
     update_apt:
       cmds:
@@ -215,7 +217,7 @@ install:
           # wait for status endpoint to be ready
           sleep 5
           echo "Running agent status check..."
-          statusCheckOutput=$(curl http://localhost:8003/v1/status/errors -s)
+          statusCheckOutput=$(curl http://localhost:18003/v1/status/errors -s)
           if [ "$statusCheckOutput" == "" ]; then
             echo "infra-agent status endpoint not available, version: $currentVer" >&2
             exit 32
