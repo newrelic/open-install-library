@@ -40,7 +40,8 @@ install:
       sh: mktemp -d /tmp/newrelic-php-agent.XXXXXX
     WHITE: '\033[0;97m'
     RED: '\033[0;31m'
-    GRAY: '\033[38;5;240m'
+    GRAY: '\033[38;5;248m'
+    CYAN: '\033[0;36m'
     NOCOLOR: '\033[0m'
     YELLOW: '\033[0;33m'
     ARROW: '\033[0;36m===> \033[0;97m'
@@ -63,19 +64,16 @@ install:
     verify_continue:
       cmds:
         - |
-          echo -e "{{.YELLOW}}
-          ================================================================================
-          =                                                                              =
-          =                                   Warning                                    =
-          =                                                                              =
-          =               This installation will automatically reload your               =
-          =                          nginx and/or FPM services                           =
-          =                                                                              =
-          ================================================================================
-          {{.NOCOLOR}}"
-          echo "
-          If you are hosting your PHP application differently then check out our other installation options:
-          https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/
+          if [ "{{.NR_PHP_RESTART}}" = "y" ]; then
+            echo -e "{{.YELLOW}}Confirmation:
+            This installation will restart php-fpm or nginx depending on the application
+            architecture detected. If you would prefer to run this step manually, enter 'n'
+            at the following prompt to exit the installer, and enter 'n' at the previous restart prompt.{{.NOCOLOR}}"
+          fi
+
+          echo -e "{{.GRAY}}
+          Note: If you are hosting your PHP application differently, check out our other installation options:
+          https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/{{.NOCOLOR}}
           "
           if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
             while :; do
@@ -207,7 +205,6 @@ install:
         DEBIAN_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
-
     install_tarball:
       cmds:
         - |
@@ -216,16 +213,32 @@ install:
           cd {{.TMP_INSTALL_DIR}}
           # Remove old log tarballs to ensure we don't accidentally use it later
           rm -f /tmp/nrinstall* 2>/dev/null
-          AGENT="newrelic-php5-{{.AGENT_VERSION}}-linux"
+
+          # Versions of the form MAJ.MIN.PATCH.BUILD
+          VERSION_REGEX='[1-9][0-9]\?\(\.[0-9]\+\)\{3\}'
+          # PHP Agent current release tarball listing. '/' is crucial
+          # for treating directory as an HTML directory listing
+          RELEASE_URL='https://download.newrelic.com/php_agent/release/'
+          AGENT_VERSION="$(curl -s "$RELEASE_URL" | grep --only-match "$VERSION_REGEX" | head -n1)"
+          echo -e "{{.RED}}AGENT VERSION: $AGENT_VERSION{{.NOCOLOR}}"
+          if [ -z "${AGENT_VERSION}" ]; then
+            echo -e "{{.RED}}Unable to determine current PHP Agent version from New Relic's downloads site.{{.NOCOLOR}}"
+            # Exit with Agent install failure code exit(16)
+            exit 16
+          else
+            echo -e "{{.WHITE}}Found agent version: {{.CYAN}}$AGENT_VERSION{{.GRAY}}"
+          fi
+
+          AGENT="newrelic-php5-$AGENT_VERSION-linux"
           AGENT_TARBALL="$AGENT.tar.gz"
-          curl -s https://download.newrelic.com/php_agent/release/$AGENT_TARBALL -o $AGENT_TARBALL
-          gzip -dc $AGENT_TARBALL | tar xf -
-          pushd $AGENT > /dev/null
+          # Lack of '/' is important. See above comment where $RELEASE_URL is
+          # defined. An extraneous '/' here treats the URL as an HTML doc.
+          curl -s "$RELEASE_URL$AGENT_TARBALL" -o "$AGENT_TARBALL"
+          gzip -dc "$AGENT_TARBALL" | tar xf -
+          pushd "$AGENT" > /dev/null
           echo -e "{{.WHITE}}Running PHP Agent installer{{.GRAY}}"
           NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
           popd > /dev/null
-      vars:
-        AGENT_VERSION: "9.17.1.301"
 
     install_deb:
       cmds:
