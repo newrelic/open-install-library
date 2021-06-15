@@ -150,11 +150,17 @@ install:
           current_user=$SUDO_USER
           for PROCESS in ${guided_support[@]}
           do
-            priv_user=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
-            full_process_name=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $11}')
+            #
+            # First look for the full process name with a minimal set of other values so
+            # that there is no chance of filtering off of those (for instance, when the
+            # username is `apache` or something similar to the filters.  Then use the name
+            # for other searches.
+            #
+            full_process_name=$(ps xf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $5}')
+            priv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
             fpm_nginx_process_name=$(echo "${full_process_name}" | sed -n 's/\(.*\):$/\1/p')
             if [ -n "${fpm_nginx_process_name}" ]; then
-              fpm_process_loc=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $14}')
+              fpm_process_loc=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $14}')
               fpm_ver=$(echo "${fpm_process_loc}" | sed -n 's/.*\/php\/\([578].[0-9]\)\/.*/\1/p')
               if [ -n "${fpm_ver}" ]; then
                 # It's fpm.
@@ -168,7 +174,7 @@ install:
             fi
             nonpriv_user=
             if [ -n "${priv_user}" ]; then
-              nonpriv_user=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
+              nonpriv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
             fi
             if [ -n "${process_name}" ]; then
               if [ -z "${nonpriv_user}" ]; then
@@ -318,11 +324,27 @@ install:
               read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
               echo -e "{{.RED}}Please restart $process as privileged user $user_name for instrumentation to be enabled.{{.NOCOLOR}}"
             else
-              echo -e "{{.RED}}You will need to restart your PHP web server in order for web instrumentation to be enabled.{{.NOCOLOR}}"
-              if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-                echo -n "Press enter to continue once this has been done."
+              echo -e "{{.RED}}You will need to restart your PHP web server in order for web instrumentation to be enabled.{{.NOCOLORi}}"
+            fi
+            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+              while :; do
+                echo -n -e "{{.WHITE}}Press Y if you successfully restarted your web server.  Press N if you are unable to restart your web server at this time and you wish to exit the installation. (default: Y)? {{.NOCOLOR}}"
                 read answer
-              fi
+                echo ""
+                NEW_RELIC_RESTARTED=$(echo "${answer^^}" | cut -c1-1)
+                if [[ -z "$NEW_RELIC_RESTARTED" ]]; then
+                  NEW_RELIC_RESTARTED="Y"
+                fi
+                if [[ "$NEW_RELIC_RESTARTED" == "N" ] || [ "$NEW_RELIC_RESTARTED" == "n" ]]; then
+                  echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
+		  #exit 23: User declined to accept recipe terms
+                  exit 23
+                fi
+                if [[ "$NEW_RELIC_RESTARTED" == "Y" ] || [ "$NEW_RELIC_RESTARTED" == "y" ]]; then
+                  break
+                fi
+                echo -e "{{.WHITE}}Please type Y or N only.{{.NOCOLOR}}"
+              done
             fi
           fi
 
