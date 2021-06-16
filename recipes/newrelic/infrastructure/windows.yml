@@ -31,6 +31,7 @@ install:
         - task: install_infra
         - task: start_infra
         - task: assert_agent_started
+        - task: assert_agent_status_ok
 
     remove_any_previous:
       ignore_error: true
@@ -95,20 +96,32 @@ install:
               $_ -notmatch "^staging"
             } | Set-Content $InfraConfig
 
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^enable_process_metrics"
+            } | Set-Content $InfraConfig
+
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^status_server_enabled"
+            } | Set-Content $InfraConfig
+
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^status_server_port"
+            } | Set-Content $InfraConfig
+
             (Get-Content $InfraConfig) | Foreach-Object {
               $_ -replace "^license_key: .*", ("license_key: " + $LICENSE_KEY) `
-                 -replace "^enable_process_metrics: .*", "enable_process_metrics: true"
             } | Set-Content $InfraConfig
           } else {
             msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
-
-            Add-Content -Path $InfraConfig -Value "enable_process_metrics: true" -Force
           }
 
           $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
           if ($NEW_RELIC_REGION -ilike "staging") {
             Add-Content -Path $InfraConfig -Value "staging: true" -Force
           }
+          Add-Content -Path $InfraConfig -Value "enable_process_metrics: true" -Force
+          Add-Content -Path $InfraConfig -Value "status_server_enabled: true" -Force
+          Add-Content -Path $InfraConfig -Value "status_server_port: 18003" -Force
           '
 
     start_infra:
@@ -121,6 +134,22 @@ install:
         - |
           # Ensure agent has enough time to start
           powershell -command 'Start-Sleep -s 10; $output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic."; Exit 31; }'
+
+    assert_agent_status_ok:
+      cmds:
+        - |
+          powershell -command '
+            try {
+              $statusCheckOutput=Invoke-WebRequest -UseBasicParsing -Method Get -Uri http://localhost:18003/v1/status/errors | Select-Object -ExpandProperty Content;
+              if ($statusCheckOutput -ne "{}") {
+                Write-Host -ForegroundColor Red "infra-agent status check not healthy: $statusCheckOutput";
+                exit 33;
+              }
+            } catch {
+                Write-Host -ForegroundColor Red "infra-agent status endpoint not available";
+                exit 32;
+            }
+          '
 
 postInstall:
   info: |2
