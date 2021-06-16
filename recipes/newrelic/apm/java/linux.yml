@@ -17,6 +17,33 @@ keywords:
 processMatch:
   - java.*org.apache.catalina.startup.Bootstrap
 
+preInstall:
+  requireAtDiscovery: |
+      tmpDir=$(mktemp -d /tmp/newrelic.XXXXXX)
+      cd $tmpDir
+      isYumInstalled=$(which yum 2>&1 || true)
+      if [[ -n "$isYumInstalled" ]]; then
+        curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm
+        sudo yum install -y -q nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm 2> /dev/null || true
+      else
+        curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb
+        sudo apt-get install -y -qq ./nri-introspector-java_0.1.0~SNAPSHOT-1_amd64.deb 2> /dev/null || true
+      fi
+
+      nri-lsi-java -list | tr -d '[]' | tr ',' '\n' > $tmpDir/processes
+      for JAVA_PID in $(cat $tmpDir/processes)
+      do
+        introspectionData=$(nri-lsi-java -introspect ${JAVA_PID})
+        mainClass=$( echo "$introspectionData" | grep -oP '.*\K(?<=mainClass":").*?(?=\")' )
+        if [[ "$mainClass" == "org.apache.catalina.startup.Bootstrap" ]]; then
+          rm -rf $tmpDir
+          exit 0
+        fi
+      done
+
+      rm -rf $tmpDir
+      exit 3
+
 validationNrql: "SELECT count(*) FROM ApplicationAgentContext WHERE host LIKE '{{.HOSTNAME}}%' SINCE 10 minutes AGO"
 
 successLinkConfig:
@@ -114,13 +141,17 @@ install:
           fi
 
     get-introspector:
-      label: "Installing Java Introspector..."
+      label: "Retrieving Java Introspector..."
       cmds:
         - echo "Retrieving Java Introspector..."
         - |
+          introspector=$(which nri-lsi-java)
+          if [[ -n "$introspector" ]]
+            exit 0
+          fi
           cd {{.TMP_DIR}}
-          IS_YUM_INSTALLED=$(which yum 2>&1 || true)
-          if [[ -n "$IS_YUM_INSTALLED" ]]; then
+          isYumInstalled=$(which yum 2>&1 || true)
+          if [[ -n "$isYumInstalled" ]]; then
             curl -s -O https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/java/nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm
             sudo yum install -y -q nri-introspector-java-0.1.0~SNAPSHOT-1.x86_64.rpm 2> /dev/null || true
           else
