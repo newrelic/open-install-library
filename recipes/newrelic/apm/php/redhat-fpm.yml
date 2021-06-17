@@ -1,7 +1,7 @@
 # Visit our schema definition for additional information on this file format
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
-name: php-agent-debian-fpm-installer
+name: php-agent-redhat-fpm-installer
 displayName: PHP Agent Installer for RedHat + FPM
 description: New Relic install recipe for instrumenting PHP applications on Redhat systems with FPM
 repository: https://github.com/newrelic/newrelic-php-agent
@@ -25,7 +25,7 @@ inputVars:
     prompt: "What is the name of your PHP application?"
     default: "PHP Application"
   - name: "NR_PHP_RESTART"
-    prompt: "Restart the PHP application after installation? (y/n)"
+    prompt: "Restart the PHP web service after PHP agent installation? Selecting 'y' will automatically restart php-fpm, nginx, or apache depending on the service that is detected. Selecting 'n' will require you to manually restart the process when prompted. (y/n)"
     default: "y"
 
 install:
@@ -37,7 +37,8 @@ install:
       sh: mktemp -d /tmp/newrelic-php-agent.XXXXXX
     WHITE: '\033[0;97m'
     RED: '\033[0;31m'
-    GRAY: '\033[38;5;240m'
+    GRAY: '\033[38;5;248m'
+    CYAN: '\033[0;36m'
     NOCOLOR: '\033[0m'
     YELLOW: '\033[0;33m'
     ARROW: '\033[0;36m===> \033[0;97m'
@@ -60,19 +61,16 @@ install:
     verify_continue:
       cmds:
         - |
-          echo -e "{{.YELLOW}}
-          ================================================================================
-          =                                                                              =
-          =                                   Warning                                    =
-          =                                                                              =
-          =               This installation will automatically reload your               =
-          =                          nginx and/or FPM services                           =
-          =                                                                              =
-          ================================================================================
-          {{.NOCOLOR}}"
-          echo "
-          If you are hosting your PHP application differently then check out our other installation options:
-          https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/
+          echo -e "{{.WHITE}}Confirmation:  The following options were selected.  If you wish to change an option, please select 'n' at the prompt and restart the installation."
+          echo -e "* The following application name was selected: {{.NR_PHP_APPLICATION}}"
+          if [ "{{.NR_PHP_RESTART}}" = "y" ]; then
+            echo -e "{{.YELLOW}}* Automatic process restart was selected.  This installation WILL restart the php-fpm or nginx process depending on the application architecture detected.{{.NOCOLOR}}"
+          else
+            echo -e "{{.YELLOW}}* Manual process restart was selected.  This installation WILL NOT automatically restart the php-fpm, apache, or nginx process depending on the application architecture detected.  You will be prompted to restart manually in order to complete a successful installation of the PHP agent.{{.NOCOLOR}}"
+          fi
+          echo -e "{{.GRAY}}
+          Note: If you are hosting your PHP application on something other than apache, nginx, or php-fpm, please select 'n' and check out our other installation options:
+          https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/{{.NOCOLOR}}
           "
           if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
             while :; do
@@ -83,11 +81,11 @@ install:
               if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
                 NEW_RELIC_CONTINUE="Y"
               fi
-              if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+              if [[ "$NEW_RELIC_CONTINUE" == "n" ]] || [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
                 echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
                 exit 130
               fi
-              if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
+              if [[ "$NEW_RELIC_CONTINUE" == "y" ]] || [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
                 break
               fi
               echo -e "{{.WHITE}}Please type Y or N only.{{.NOCOLOR}}"
@@ -149,11 +147,17 @@ install:
           current_user=$SUDO_USER
           for PROCESS in ${guided_support[@]}
           do
-            priv_user=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
-            full_process_name=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $11}')
+            #
+            # First look for the full process name with a minimal set of other values so
+            # that there is no chance of filtering off of those (for instance, when the
+            # username is `apache` or something similar to the filters.  Then use the name
+            # for other searches.
+            #
+            full_process_name=$(ps xf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $5}')
+            priv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
             fpm_nginx_process_name=$(echo "${full_process_name}" | sed -n 's/\(.*\):$/\1/p')
             if [ -n "${fpm_nginx_process_name}" ]; then
-              fpm_process_loc=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $14}')
+              fpm_process_loc=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $14}')
               fpm_ver=$(echo "${fpm_process_loc}" | sed -n 's/.*\/php\/\([578].[0-9]\)\/.*/\1/p')
               if [ -n "${fpm_ver}" ]; then
                 # It's fpm.
@@ -167,7 +171,7 @@ install:
             fi
             nonpriv_user=
             if [ -n "${priv_user}" ]; then
-              nonpriv_user=$(ps auxf | egrep $PROCESS | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
+              nonpriv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
             fi
             if [ -n "${process_name}" ]; then
               if [ -z "${nonpriv_user}" ]; then
@@ -227,10 +231,13 @@ install:
     install_rpm:
       cmds:
         - |
+          echo -e "{{.ARROW}}Adding the New Relic PHP Agent repository{{.GRAY}}"
           # The repo install command returns a non-zero return code if it is already installed
           # Only attempt an install if it is needed
-          sudo rpm -q newrelic-repo-5-3.noarch > /dev/null
-          if [ $? -ne 0 ]; then
+          if rpm -q newrelic-repo-5-3.noarch > /dev/null; then
+            echo -e "The New Relic repository is already installed."
+          else
+            echo -e "Adding the New Relic PHP Agent repository."
             sudo rpm -Uvh http://yum.newrelic.com/pub/newrelic/el5/x86_64/newrelic-repo-5-3.noarch.rpm
           fi
           sudo yum install -y newrelic-php5
@@ -305,10 +312,26 @@ install:
               echo -e "{{.RED}}Please restart $process as privileged user $user_name for instrumentation to be enabled.{{.NOCOLOR}}"
             else
               echo -e "{{.RED}}You will need to restart your PHP web server in order for web instrumentation to be enabled.{{.NOCOLOR}}"
-              if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-                echo -n "Press enter to continue once this has been done."
+            fi
+            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+              while :; do
+                echo -n -e "{{.YELLOW}}Press Y if you successfully restarted your web server.  Press N if you are unable to restart your web server at this time, and you wish to exit the installation. (default: Y)? {{.NOCOLOR}}"
                 read answer
-              fi
+                echo ""
+                NEW_RELIC_RESTARTED=$(echo "${answer^^}" | cut -c1-1)
+                if [[ -z "$NEW_RELIC_RESTARTED" ]]; then
+                  NEW_RELIC_RESTARTED="Y"
+                fi
+                if [[ "$NEW_RELIC_RESTARTED" == "N" ]] || [[ "$NEW_RELIC_RESTARTED" == "n" ]]; then
+                  echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
+                  #exit 130: Installation was cancelled either using Ctrl+C or by selecting not to continue the installation
+                  exit 130
+                fi
+                if [[ "$NEW_RELIC_RESTARTED" == "Y" ]] || [[ "$NEW_RELIC_RESTARTED" == "y" ]]; then
+                  break
+                fi
+                echo -e "{{.WHITE}}Please type Y or N only.{{.NOCOLOR}}"
+              done
             fi
           fi
 
@@ -318,14 +341,14 @@ install:
           echo -e "{{.ARROW}}Send queryable transactions{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
           NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
-          WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
+          WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/php.d/\1/p' $NR_INSTALL_LOG)
           WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
           if [ -z "${WEB_PHP_INI_DIR}" ]; then
             WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
           fi
           # Fallback to cli ini dir if there is no web specific ini dir
           if [ -z "${WEB_PHP_INI_DIR}" ]; then
-            WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_cli=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
+            WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_cli=\(.*\)\/php.d/\1/p' $NR_INSTALL_LOG)
             WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_cli=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
             if [ -z "${WEB_PHP_INI_DIR}" ]; then
               WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
