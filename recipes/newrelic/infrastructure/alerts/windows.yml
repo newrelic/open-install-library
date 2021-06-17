@@ -1,0 +1,79 @@
+name: alerts-golden-signal
+displayName: Golden Signal Alerts
+description: New Relic install recipe for golden signal alerts
+repository: https://github.com/newrelic/newrelic-cli
+
+installTargets:
+  - type: application
+    os: windows
+
+keywords:
+  - Alerts
+  - Golden
+
+processMatch: []
+
+preInstall:
+  info: |2
+      This installation will setup alerts for any existing, and future, hosts and applications reporting to newrelic with the Golden Signal conditions:
+      - High CPU
+      - High Application Error Rate
+      - High Application Response Time
+      - Low Application Throughput
+      This policy can be modified under Alerts & AI\Policies.
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup_golden_signal
+
+    setup_golden_signal:
+      cmds:
+        - |
+          powershell -command '
+          $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
+          $NEW_RELIC_API_URL = $(echo -n 'https://api.newrelic.com')
+          if ($NEW_RELIC_REGION -ilike "staging") {
+            $NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+          }
+          if ($NEW_RELIC_REGION -ilike "eu") {
+            $NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+          }
+          $NEW_RELIC_GRAPHQL_URL = $NEW_RELIC_API_URL +"/graphql"
+          $Headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+          $Headers.Add("Content-Type","Application/Json")
+          $Headers.Add("Api-Key", "{{.NEW_RELIC_API_KEY}}")
+
+          $policyId = ""
+          $content = "{`"query`": `"{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {policiesSearch {totalCount policies { name id } } } } } }`" }"
+          $result=Invoke-WebRequest -UseBasicParsing -Method POST -Body $content -Uri $NEW_RELIC_GRAPHQL_URL -Headers $Headers | Select-Object -ExpandProperty Content;
+          $json = ConvertFrom-Json -InputObject $result
+          foreach ($policy in $json.data.actor.account.alerts.policiesSearch.policies) {
+            if ($policy.name -eq "{{.ALERT_POLICY_NAME}}") {
+              $policyId = $policy.id
+            }
+          }
+          if ($policyId -ne "") {
+            echo "Found policyId:"$PolicyId
+          }
+          else {
+            echo "No existing policy found"
+          }
+          '
+
+      vars:
+        ALERT_POLICY_NAME:
+          sh: echo 'Golden Signals'
+        ALERT_HIGH_CPU_CONDITION_NAME:
+          sh: echo 'High CPU'
+        ALERT_HIGH_ERROR_RATE_NAME:
+          sh: echo 'High Application Error percentage'
+        ALERT_HIGH_RESPONSE_TIME_NAME:
+          sh: echo 'High Application Response Time'
+        ALERT_LOW_THROUGHPUT_NAME:
+          sh: echo 'Low Application Throughput'
+
