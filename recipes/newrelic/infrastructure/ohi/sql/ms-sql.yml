@@ -23,21 +23,6 @@ processMatch:
 
 validationNrql: "SELECT count(*) from MssqlInstanceSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
 
-# Prompts for input from the user. These variables then become
-# available to go-task in the form of {{.VAR_NAME}}
-inputVars:
-  - name: "NR_CLI_DB_USERNAME"
-    prompt: "MSSQL Username"
-  - name: "NR_CLI_DB_PASSWORD"
-    prompt: "MSSQL Password"
-    secret: true
-  - name: "NR_CLI_DB_HOSTNAME"
-    prompt: "SQL Server Hostname or IP (default: 127.0.0.1)"
-    default: "127.0.0.1"
-  - name: "NR_CLI_DB_PORT"
-    prompt: "SQL Server Port (default: 1433)"
-    default: 1433
-
 preInstall:
   info: |2
       To capture data from the Microsoft SQL Server integration, you'll first need to meet these prerequisites:
@@ -51,11 +36,11 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
-        - task: remove_any_previous
-        - task: install
+        - task: assert_infra
+        - task: input_install
 
-    assert_pre_req:
+
+    assert_infra:
       cmds:
         - |
           powershell -command '
@@ -64,19 +49,85 @@ install:
             Write-Host -ForegroundColor Red "The newrelic-infra agent service is not installed on the host, but is required to install this integration. Please install the newrelic infrastructure agent."
             Exit 1
           }
-
-          $output = sqlcmd -S "{{.NR_CLI_DB_HOSTNAME}},{{.NR_CLI_DB_PORT}}" -U {{.NR_CLI_DB_USERNAME}} -P "{{.NR_CLI_DB_PASSWORD}}" -Q "SELECT GETDATE()"
-          if ( -not ($output -like "*1*") ) { 
-            Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance {{.NR_CLI_DB_HOSTNAME}} with the provided username {{.NR_CLI_DB_USERNAME}} and password."
-            Exit 2
-          }
           '
 
-    remove_any_previous:
-      ignore_error: true
+    input_install:
       cmds:
         - |
           powershell -command '
+          $TRIES=0
+          $MAX_RETRIES=3
+
+          # Check Env Vars
+          $NEW_RELIC_ASSUME_YES= "{{.NEW_RELIC_ASSUME_YES}}"
+          $NR_CLI_DB_HOSTNAME=   "{{.NR_CLI_DB_HOSTNAME}}"
+          $NR_CLI_DB_PORT=       "{{.NR_CLI_DB_PORT}}"
+          $NR_CLI_DB_USERNAME=   "{{.NR_CLI_DB_USERNAME}}"
+          $NR_CLI_DB_PASSWORD=   "{{.NR_CLI_DB_PASSWORD}}"
+
+          # Set Defaults
+          if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_HOSTNAME)) {$NR_CLI_DB_HOSTNAME = "127.0.0.1"}
+          if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_PORT)) {$NR_CLI_DB_PORT = "1433"}
+
+          if ($NEW_RELIC_ASSUME_YES -ieq "false") {
+            DO
+            {
+              $NR_CLI_DB_HOSTNAME = Read-Host -Prompt "SQL Server Hostname or IP (default: 127.0.0.1)"
+              if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_HOSTNAME)) {$NR_CLI_DB_HOSTNAME = "127.0.0.1"}
+              $NR_CLI_DB_PORT     = Read-Host -Prompt "SQL Server Port (default: 1433)"
+              if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_PORT)) {$NR_CLI_DB_PORT = "1433"}
+
+
+              $NR_CLI_DB_USERNAME = Read-Host -Prompt "MSSQL Username"
+              $NR_CLI_DB_PASSWORD = Read-Host -Prompt "MSSQL Password" -AsSecureString
+              $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($NR_CLI_DB_PASSWORD)
+              $NR_CLI_DB_PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+              $TRIES++
+
+              if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_USERNAME) -Or [string]::IsNullOrWhiteSpace($NR_CLI_DB_PASSWORD)) {
+                Write-Host -ForegroundColor Red "Please provide a valid Username and Password. Fields cannot be blank."
+                if ( $TRIES -ge $MAX_RETRIES ) { exit 4 } else {
+                  Write-Host "Please try again"
+                  continue
+                }
+              }
+
+              $output = sqlcmd -S "$NR_CLI_DB_HOSTNAME,$NR_CLI_DB_PORT" -U $NR_CLI_DB_USERNAME -P "$NR_CLI_DB_PASSWORD" -Q "SELECT GETDATE()" 2>&1
+              if ($output -like "*Connection string is not valid*") {
+                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME. Please check the if the port is a valid number."
+                if ( $TRIES -ge $MAX_RETRIES ) { exit 8 } else {
+                  Write-Host "Please try again"
+                  continue
+                }
+              }
+              if ($output -like "*No such host is known*") {
+                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME. Please check the provided hostname."
+                if ( $TRIES -ge $MAX_RETRIES ) { exit 6 } else {
+                  Write-Host "Please try again"
+                  continue
+                }
+              }
+              if ($output -like "*The wait operation timed out*") {
+                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME. Server is not responding. Please review your hostname and/or port."
+                if ( $TRIES -ge $MAX_RETRIES ) { exit 7 } else {
+                  Write-Host "Please try again"
+                  continue
+                }
+              }
+              if ($output -like "*Login failed for user*") {
+                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME with the provided username $NR_CLI_DB_USERNAME and password."
+                if ( $TRIES -ge $MAX_RETRIES ) { exit 3 } else {
+                  Write-Host "Please try again"
+                  continue
+                }
+              }
+              Write-Host "Installing MSSql Integration..."
+              break
+            } While ($TRIES -le 3)
+
+          }
+
+          #Remove previous versions
           function Find-UninstallGuids {
             param (
               [Parameter(Mandatory)]
@@ -115,24 +166,27 @@ install:
             # wait here to allow uninstall command to complete since it returns without waiting
             Start-Sleep -s 15
           }
-          '
 
-    install:
-      label: "Installing Microsoft SQL Server integration..."
-      cmds:
-        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-mssql/nri-mssql-amd64.msi", "$env:TEMP\nri-mssql-amd64.msi");'
-        - powershell -command 'msiexec.exe /qn /i "$env:TEMP\nri-mssql-amd64.msi" | Out-Null;'
-        - powershell -command '$OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"; if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "integration_name`:` com.newrelic.mssql" -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "instances`:` " -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "  - name`:` mssql-server" -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "    command`:` all_data" -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "    arguments`:` " -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      hostname`:` {{.NR_CLI_DB_HOSTNAME}}" -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      username`:` {{.NR_CLI_DB_USERNAME}}" -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      password`:` {{.NR_CLI_DB_PASSWORD}}" -Force | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value "      port`:` {{.NR_CLI_DB_PORT}}" -Force | Out-Null;'
-        - powershell -command 'Restart-Service newrelic-infra'
+
+          # Installing MSSql Integration
+          (New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-mssql/nri-mssql-amd64.msi", "$env:TEMP\nri-mssql-amd64.msi");
+          msiexec.exe /qn /i "$env:TEMP\nri-mssql-amd64.msi" | Out-Null;
+          $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"; if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
+          Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value @"
+          integration_name`:` com.newrelic.mssql
+
+          instances`:`
+            - name`:` mssql-server
+              command`:` all_data
+              arguments`:`
+                hostname`:` $($NR_CLI_DB_HOSTNAME)
+                username`:` $($NR_CLI_DB_USERNAME)
+                password`:` $($NR_CLI_DB_PASSWORD)
+                port`:` $($NR_CLI_DB_PORT)
+          "@ -Force | Out-Null;
+
+          Restart-Service newrelic-infra
+          '
 
 postInstall:
   info: |2
