@@ -1,9 +1,9 @@
 # Visit our schema definition for additional information on this file format
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
-name: php-agent-redhat-fpm-installer
-displayName: PHP Agent Installer for RedHat + FPM
-description: New Relic install recipe for instrumenting PHP applications on Redhat systems with FPM
+name: php-agent-redhat-installer
+displayName: PHP Agent Installer for RedHat
+description: New Relic install recipe for instrumenting PHP applications on Redhat systems with php-fpm, nginx, or apache.
 repository: https://github.com/newrelic/newrelic-php-agent
 
 installTargets:
@@ -66,7 +66,7 @@ install:
           if [ "{{.NR_PHP_RESTART}}" = "y" ]; then
             echo -e "{{.YELLOW}}* Automatic process restart was selected.  This installation WILL restart the php-fpm or nginx process depending on the application architecture detected.{{.NOCOLOR}}"
           else
-            echo -e "{{.YELLOW}}* Manual process restart was selected.  This installation WILL NOT automatically restart the php-fpm, apache, or nginx process depending on the application architecture detected.  You will be prompted to restart manually in order to complete a successful installation of the PHP agent.{{.NOCOLOR}}"
+            echo -e "{{.YELLOW}}* Manual process restart was selected.  This installation WILL NOT automatically restart the php-fpm or nginx process depending on the application architecture detected.  You will be prompted to restart manually in order to complete a successful installation of the PHP agent.{{.NOCOLOR}}"
           fi
           echo -e "{{.GRAY}}
           Note: If you are hosting your PHP application on something other than apache, nginx, or php-fpm, please select 'n' and check out our other installation options:
@@ -273,18 +273,24 @@ install:
             echo -e "{{.RED}}Unable to find agent install log tarfile.{{.NOCOLOR}}"
             exit 16
           fi
-          WEB_CONFD=$(grep 'final pi_inidir_dso' "$NR_INSTALL_LOG" | cut -d'=' -f2)
-          CLI_CONFD=$(grep 'final pi_inidir_cli' "$NR_INSTALL_LOG" | cut -d'=' -f2)
-          WEB_INI="$WEB_CONFD/newrelic.ini"
-          CLI_INI="$CLI_CONFD/newrelic.ini"
 
-          for ini in $WEB_INI $CLI_INI; do
-            if [ ! -f $ini ]; then
+          WEB_INI_DIR=($(sed -n 's/.*final pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG))
+          CLI_INI_DIR=($(sed -n 's/.*final pi_inidir_cli=\(.*\/\)/\1/p' $NR_INSTALL_LOG))
+
+          echo
+
+          #
+          # Loop through all the directories where the installation placed `newrelic.ini`
+          # files.
+          #
+          for ini in $WEB_INI_DIR $CLI_INI_DIR; do
+            ini_full_name="${ini}/newrelic.ini"
+            if [ ! -f "$ini_full_name" ]; then
               continue
             fi
-            sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini
+            sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini_full_name
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini
+              sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
             fi
           done;
 
@@ -341,15 +347,15 @@ install:
           echo -e "{{.ARROW}}Send queryable transactions{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
           NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
-          WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\)\/php.d/\1/p' $NR_INSTALL_LOG)
-          WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
+          WEB_PHP_INI_DIR=($(sed -n 's/.*final pi_inidir_dso=\(.*\)\/php.d/\1/p' $NR_INSTALL_LOG))
+          WEB_NR_INI_DIR=($(sed -n 's/.*final pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG))
           if [ -z "${WEB_PHP_INI_DIR}" ]; then
             WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
           fi
           # Fallback to cli ini dir if there is no web specific ini dir
           if [ -z "${WEB_PHP_INI_DIR}" ]; then
-            WEB_PHP_INI_DIR=$(sed -n 's/.*pi_inidir_cli=\(.*\)\/php.d/\1/p' $NR_INSTALL_LOG)
-            WEB_NR_INI_DIR=$(sed -n 's/.*pi_inidir_cli=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
+            WEB_PHP_INI_DIR=($(sed -n 's/.*final pi_inidir_cli=\(.*\)\/php.d/\1/p' $NR_INSTALL_LOG))
+            WEB_NR_INI_DIR=($(sed -n 's/.*final pi_inidir_cli=\(.*\/\)/\1/p' $NR_INSTALL_LOG))
             if [ -z "${WEB_PHP_INI_DIR}" ]; then
               WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
             fi
@@ -376,7 +382,13 @@ install:
             #
             for i in {1..10}; do
               sleep 1
-              sudo -u $nonpriv_user php -c "${WEB_PHP_INI_DIR}/php.ini" -c "${WEB_NR_INI_DIR}/newrelic.ini" -n --ini &>/dev/null
+              #
+              #    Loop through all the detected PHP directories where newrelic.ini files
+              #    were placed.
+              #
+              for ((i=0; i<${#WEB_PHP_INI_DIR[@]}; i++)); do
+                sudo -u $nonpriv_user php -c "${WEB_PHP_INI_DIR[$i]}/php.ini" -c "${WEB_NR_INI_DIR[$i]}/newrelic.ini" -n --ini &>/dev/null
+              done
             done
           else
             #
