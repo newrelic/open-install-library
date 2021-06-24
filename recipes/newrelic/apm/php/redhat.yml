@@ -387,7 +387,24 @@ install:
               #    were placed.
               #
               for ((i=0; i<${#WEB_PHP_INI_DIR[@]}; i++)); do
-                sudo -u $nonpriv_user php -c "${WEB_PHP_INI_DIR[$i]}/php.ini" -c "${WEB_NR_INI_DIR[$i]}/newrelic.ini" -n --ini &>/dev/null
+                #
+                # Get the PHP binary associated with a specific PHP/newrelic ini file.
+                #
+                #
+                # When there are multiple PHPs detected, the log file creates blocks
+                # of information witha specific format.
+                #
+                web_ini=$(echo "${WEB_NR_INI_DIR[$i]}"  | sed 's/\//\\\//g')
+                WEB_PHP_BIN=$(sed '1,/final pi_inidir_.*='"${web_ini}"'/d;/php -i output follows/,$d' $NR_INSTALL_LOG | sed -n 's/.*pi_bin=\(.*\/\)/\1/p')
+                if [ -z "${WEB_PHP_BIN}" ]; then
+                #
+                # When there is only one PHP detected, the info format is different,
+                # we could detect from the log file, but since there is only one,
+                # just use `php`.
+                #
+                  WEB_PHP_BIN="php"
+                fi
+                sudo -u $nonpriv_user $WEB_PHP_BIN -c "${WEB_PHP_INI_DIR[$i]}/php.ini" -c "${WEB_NR_INI_DIR[$i]}/newrelic.ini" -n --ini &>/dev/null
               done
             done
           else
