@@ -80,7 +80,29 @@ install:
 
     download_infra:
       cmds:
-        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/infrastructure_agent/windows/newrelic-infra.msi", "$env:TEMP\newrelic-infra.msi");'
+        - |
+          powershell -command '
+          try {
+            [Net.ServicePointManager]::SecurityProtocol = "tls";
+            [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+          }
+          catch {}
+
+          try {
+            (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/infrastructure_agent/windows/newrelic-infra.msi", "$env:TEMP\newrelic-infra.msi")
+          }
+          catch {
+            $baseException = $_.Exception.GetBaseException()
+            Write-Host -ForegroundColor Red "Failed to download New Relic Infrastructure Agent ($($baseException.Message))"
+            $errorCode = 24 # unknown download error
+
+            switch ($baseException) {
+              { $_ -is [Net.WebException] }            { $errorCode = 25 } # web download error
+              { $_ -is [IO.IOException] }              { $errorCode = 26 } # file io error
+              { $_ -is [UnauthorizedAccessException] } { $errorCode = 26 } # file io error
+            }
+            exit $errorCode
+          }
 
     install_infra:
       cmds:
