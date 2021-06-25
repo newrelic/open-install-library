@@ -17,9 +17,21 @@ keywords:
   - aspnet
   - core
 
-processMatch:
-  - w3wp.exe
+processMatch: []
 
+preInstall:
+  requireAtDiscovery: |
+    powershell -command '
+    $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
+    if ($iisEnabled.State -ne "Enabled") {
+      # IIS is not installed
+      exit 3
+    }
+
+    # IIS is installed
+    exit 0
+    '
+    
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
 successLinkConfig:
@@ -35,7 +47,6 @@ install:
       cmds:
         - task: verify_continue
         - task: assert_admin_perms
-        - task: assert_pre_req
         - task: stop
         - task: remove_any_previous
         - task: install
@@ -95,28 +106,24 @@ install:
           }
           '
 
-    assert_pre_req:
-      cmds:
-        - |
-          powershell -command '
-          $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
-          if ($iisEnabled.State -ne "Enabled") {
-            Write-Host -ForegroundColor Red "IIS is not installed."
-            exit 5
-          }
-
-          $aspNet45Enabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-ASPNET45 | select State
-          if ($aspNet45Enabled.State -ne "Enabled") {
-            Write-Host -ForegroundColor Red "ASP.NET is not installed."
-            exit 6
-          }
-          '
-
     stop:
       cmds:
         - |
           powershell -command '
-          iisreset /stop | Out-Null
+          function Stop-IIS {
+            try {
+              iisreset /stop | Out-Null
+              return $true
+            }
+            catch { return $false }
+          }
+          
+          $DidIisStop = (Stop-IIS)       
+          if (-not $DidIisStop) {
+              # Try to stop IIS a second time.
+              # Based on past experience, the second attempt almost always works.
+              Stop-IIS | Out-Null
+          }
           '
 
     remove_any_previous:
