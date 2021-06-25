@@ -116,7 +116,20 @@ install:
       cmds:
         - |
           powershell -command '
-          iisreset /stop | Out-Null
+          function Stop-IIS {
+            try {
+              iisreset /stop | Out-Null
+              return $true
+            }
+            catch { return $false }
+          }
+          
+          $DidIisStop = (Stop-IIS)       
+          if (-not $DidIisStop) {
+              # Try to stop IIS a second time.
+              # Based on past experience, the second attempt almost always works.
+              Stop-IIS | Out-Null
+          }
           '
 
     remove_any_previous:
