@@ -30,10 +30,13 @@ install:
     default:
       cmds:
         - task: assert_pre_req
+        - task: cleanup
         - task: setup_license
+        - task: setup_proxy
         - task: install_infra
         - task: restart
         - task: assert_agent_started
+        - task: assert_agent_status_ok
 
     assert_pre_req:
       cmds:
@@ -89,30 +92,50 @@ install:
           IS_INFRA_AVAILABLE=$(curl -Is https://download.newrelic.com/infrastructure_agent/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
           if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
             echo "there is no newrelic infrastructure agent available for the distribution '{{.SLES_VERSION}}'." >&2
-            exit 21
+            exit 131
           fi
       vars:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+
+    cleanup:
+      cmds:
+        - |
+          sudo rm -rf /var/db/newrelic-infra/data
 
     setup_license:
       cmds:
         - |
           if [ -f /etc/newrelic-infra.yml ]; then
             sudo sed -i "/^staging/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
 
             sudo sed -i "s/^\(license_key: \).*/\1{{.NEW_RELIC_LICENSE_KEY}}/" /etc/newrelic-infra.yml
-            sudo sed -i "s/^\(enable_process_metrics: \).*/\1true/" /etc/newrelic-infra.yml
           else
             sudo touch /etc/newrelic-infra.yml
             sudo cat > /etc/newrelic-infra.yml <<EOT
           license_key: {{.NEW_RELIC_LICENSE_KEY}}
-          enable_process_metrics: true
           EOT
           fi
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             sudo echo 'staging: true' >> /etc/newrelic-infra.yml
+          fi
+          sudo echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
+          sudo echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
+          sudo echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
+
+    setup_proxy:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra.yml ]; then
+            sudo sed -i "/^proxy/d" /etc/newrelic-infra.yml
+          fi
+
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            sudo echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
 
     install_infra:
@@ -157,6 +180,36 @@ install:
             echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 31
           fi
+
+    assert_agent_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Running agent status check attempt..."
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            statusCheckOutput=$(curl http://localhost:18003/v1/status/errors -s)
+            if [ "$statusCheckOutput" == "{}" ]; then
+              echo "Agent status check ok."
+              break
+            else
+              if [ "$statusCheckOutput" == "" ]; then
+                if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  echo "infra-agent status endpoint not available" >&2
+                  exit 32
+                fi
+              else
+                if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  echo "infra-agent status check not healthy: $statusCheckOutput" >&2
+                  exit 33
+                fi
+              fi
+            fi
+
+            sleep 2
+          done
 
 postInstall:
   info: |2

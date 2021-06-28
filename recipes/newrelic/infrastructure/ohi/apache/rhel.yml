@@ -94,7 +94,24 @@ install:
 
               code=$(curl -I $NR_CLI_STATUS_URL -w %{response_code} -so '/dev/null')
               if [ $code != "200" ]; then
-                printf "\nApache status page is returning http error code $code. Apache must be correctly configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                if [ $code == "401" ] || [ $code == "403" ]; then
+                  echo "The status url provided $NR_CLI_STATUS_URL has forbidden access. Modify the access for this host on the Apache configuration and restart the server\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
+                elif [ $code == "000" ]; then
+                  CURL_ERROR=$(curl $NR_CLI_STATUS_URL 2>&1 1>/dev/null -s -S)
+                  ERROR_CODE=$(echo $CURL_ERROR | awk -F'[()]' '{print $2}')
+                  if [ $ERROR_CODE == "6" ]; then
+                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
+                    printf "${ERROR_MSG}\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 5; else continue; fi
+                  elif [ $ERROR_CODE == "7" ]; then
+                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
+                    printf "${ERROR_MSG}\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; else continue; fi
+                  fi
+                else
+                  printf "\nApache status page is returning http error code $code. Apache must be correctly configured for New Relic to collect data. \nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                fi
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; else continue; fi
                 echo "Please try again"
                 continue
