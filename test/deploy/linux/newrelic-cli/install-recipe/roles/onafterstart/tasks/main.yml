@@ -5,6 +5,13 @@
 # newrelic_account_id: (optional) The newrelic account id
 # newrelic_region: (optional) The newrelic region. Typically "US".
 # newrelic_cli_path: (optional) The newrelic-cli to use instead of using latest published
+# command_should_fail: (optional)
+# validate_output: (optional) An array of Strings that must appear in stdout for this test to pass.
+
+- name: Prepare command_should_fail option
+  when: command_should_fail is not defined
+  set_fact:
+    command_should_fail: False
 
 - fail:
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
@@ -80,13 +87,30 @@
   shell: "/usr/local/bin/newrelic version"
   become: true
 
-- name: Run recipes
-  shell: "sudo {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}} -c {{ item }}"
-  loop: "{{ recipe_content_url }}"
-  register: output
-  become: true
+- block:
+  - name: Run recipe, expect failure
+    shell: "sudo {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }}"
+    register: output
+    become: true
+    ignore_errors: true
+  - fail:
+      msg: "The recipe installed when it was expected to fail:{{ output.stderr }}"
+    when: output is not failed
+  - fail:
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stderr }}"
+    when: validate_output is defined and output.stderr is not search(validate_output)
+  when: command_should_fail == True
 
-- fail:
-    msg: "The recipe install:{{ item }}"
-  when: item is failed
-  loop: "{{ output.results }}"
+- block:
+  - name: Run recipe, expect success
+    shell: "sudo {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }}"
+    register: output
+    become: true
+    ignore_errors: true
+  - fail:
+      msg: "The recipe failed to install when it was expected to succeed:{{ output.stdout }}"
+    when: output is failed
+  - fail:
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stdout }}"
+    when: validate_output is defined and output.stdout is not search(validate_output)
+  when: command_should_fail == False
