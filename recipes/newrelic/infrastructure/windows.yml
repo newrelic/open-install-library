@@ -169,15 +169,30 @@ install:
       cmds:
         - |
           powershell -command '
-            try {
-              $statusCheckOutput=Invoke-WebRequest -UseBasicParsing -Method Get -Uri http://localhost:18003/v1/status/errors | Select-Object -ExpandProperty Content;
-              if ($statusCheckOutput -ne "{}") {
-                Write-Host -ForegroundColor Red "infra-agent status check not healthy: $statusCheckOutput";
-                exit 33;
+            $maxRetries = 30
+            $tries = 0
+            while ($tries -lt $maxRetries) {
+              $tries += 1
+              $statusCheckOutput = ""
+              try {
+                $statusCheckOutput=Invoke-WebRequest -UseBasicParsing -Method Get -Uri http://localhost:18003/v1/status/errors | Select-Object -ExpandProperty Content;
+              } catch { }
+              if ($statusCheckOutput -ieq "{}") {
+                Write-Host "Agent status check ok."
+                break
               }
-            } catch {
-                Write-Host -ForegroundColor Red "infra-agent status endpoint not available";
-                exit 32;
+              if ($statusCheckOutput -ieq "") {
+                if ($tries -eq $maxRetries) {
+                  Write-Host -ForegroundColor Red "infra-agent status endpoint not available";
+                  exit 32;
+                }
+              } else {
+                if ($tries -eq $maxRetries) {
+                  Write-Host -ForegroundColor Red "infra-agent status check not healthy: $statusCheckOutput";
+                  exit 33;
+                }
+              }
+              Start-Sleep -s 2
             }
           '
 
