@@ -4,6 +4,13 @@
 # newrelic_account_id: (optional) The newrelic account id
 # newrelic_region: (optional) The newrelic region. Typically "US".
 # newrelic_cli_path: (optional) The newrelic-cli to use instead of using latest published
+# command_should_fail: (optional) Should the newrelic install command fail? False by default.
+# validate_output: (optional) An array of Strings that must appear in stdout for this test to pass.
+
+- name: Prepare command_should_fail option
+  when: command_should_fail is not defined
+  set_fact:
+    command_should_fail: False
 
 - fail:
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
@@ -53,10 +60,30 @@
     msiexec.exe /qn /i "$env:TEMP\NewRelicCLIInstaller.msi" | Out-Null;
   when: newrelic_cli_path is not defined
 
-- name: Install with all default assumed
-  win_shell: |
-    {{ env_vars }}; newrelic install {{newrelic_cli_option}};
-  register: output
+- block:
+  - name: Run install, expect failure
+    win_shell: |
+      {{ env_vars }}; newrelic install {{newrelic_cli_option}};
+    register: output
+    ignore_errors: true
+  - fail:
+      msg: "The CLI installed when it was expected to fail:{{ output.stderr }}"
+    when: output is not failed
+  - fail:
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stderr }}"
+    when: validate_output is defined and output.stderr is not search(validate_output)
+  when: command_should_fail == True
 
-- debug:
-    msg: "output:{{ output.stdout }}"
+- block:
+  - name: Run install, expect success
+    win_shell: |
+      {{ env_vars }}; newrelic install {{newrelic_cli_option}};
+    register: output
+    ignore_errors: true
+  - fail:
+      msg: "The CLI failed to install when it was expected to succeed:{{ output.stdout }}"
+    when: output is failed
+  - fail:
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stdout }}"
+    when: validate_output is defined and output.stdout is not search(validate_output)
+  when: command_should_fail == False
