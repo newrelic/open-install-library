@@ -26,12 +26,28 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_required_permissions
         - task: remove_any_previous
         - task: download_infra
         - task: install_infra
         - task: start_infra
         - task: assert_agent_started
         # - task: assert_agent_status_ok
+
+    assert_required_permissions:
+      ignore_error: true
+      cmds:
+        - |
+          powershell -command '
+          $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+          $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+          if(-not ($isAdmin))
+          {
+            Write-Host -ForegroundColor Red "Cannot continue with the installation, Administrator rights are required."
+            exit 1;
+          }
+          '
 
     remove_any_previous:
       ignore_error: true
