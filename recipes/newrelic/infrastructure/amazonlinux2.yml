@@ -81,7 +81,7 @@ install:
           IS_DOCKER_CONTAINER=$(sudo grep 'docker\|lxc' /proc/1/cgroup | wc -l)
           if [ $IS_DOCKER_CONTAINER -gt 0 ] ; then
             echo "We’ve detected that you are installing our infrastructure agent inside a docker container. This agent is not designed to be installed within a container, but rather on the host it is running on or as a separate container. For additional information visit: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/linux-installation/docker-container-infrastructure-monitoring/" >&2
-            exit 18
+            exit 131
           fi
         - |
           IS_WSL_CONTAINER=$(sudo grep -i 'Microsoft' /proc/version | wc -l)
@@ -103,13 +103,10 @@ install:
             sudo sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
             sudo sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
             sudo sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^license_key/d" /etc/newrelic-infra.yml
 
-            sudo sed -i "s/^\(license_key: \).*/\1{{.NEW_RELIC_LICENSE_KEY}}/" /etc/newrelic-infra.yml
           else
             sudo touch /etc/newrelic-infra.yml
-            sudo cat > /etc/newrelic-infra.yml <<EOT
-          license_key: {{.NEW_RELIC_LICENSE_KEY}}
-          EOT
           fi
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
@@ -118,6 +115,7 @@ install:
           sudo echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
           sudo echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
           sudo echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
+          sudo echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
 
     setup_proxy:
       cmds:
