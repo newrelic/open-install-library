@@ -40,7 +40,7 @@ install:
       sh: mktemp -d /tmp/newrelic-php-agent.XXXXXX
     WHITE: '\033[0;97m'
     RED: '\033[0;31m'
-    GRAY: '\033[38;5;248m'
+    GRAY: '\033[38;5;240m'
     CYAN: '\033[0;36m'
     NOCOLOR: '\033[0m'
     YELLOW: '\033[0;33m'
@@ -135,7 +135,7 @@ install:
     detect_services:
       cmds:
         - |
-          echo -e "{{.ARROW}}Detecting services{{.NOCOLOR}}"
+          echo -e "{{.ARROW}}Detecting services{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
           rm -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt 2>/dev/null
           rm -f {{.TMP_INSTALL_DIR}}/processes_to_restart.txt 2>/dev/null
@@ -226,7 +226,7 @@ install:
           # for treating directory as an HTML directory listing
           RELEASE_URL='https://download.newrelic.com/php_agent/release/'
           AGENT_VERSION="$(curl -s "$RELEASE_URL" | grep --only-match "$VERSION_REGEX" | head -n1)"
-          echo -e "{{.RED}}AGENT VERSION: $AGENT_VERSION{{.NOCOLOR}}"
+          echo -e "{{.GRAY}}AGENT VERSION: $AGENT_VERSION{{.NOCOLOR}}"
           if [ -z "${AGENT_VERSION}" ]; then
             echo -e "{{.RED}}Unable to determine current PHP Agent version from New Relic's downloads site.{{.NOCOLOR}}"
             # Exit with Agent install failure code exit(16)
@@ -305,6 +305,19 @@ install:
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
               sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
             fi
+            target_ini_dir="/etc/php5/conf.d/"
+            if [ -x /usr/sbin/phpquery ]; then
+              target_ini_dir="${ini}/../../mods-available/"
+            elif [ -x /usr/sbin/php5endmod ]; then
+              target_ini_dir="/etc/php5/mods-available/"
+            fi
+            if [ ! -d $target_ini_dir ]; then
+              echo -e "{{.RED}}Warning: Unable to move ${ini_full_name} to ${target_ini_dir}{{.GRAY}}"
+              continue
+            fi
+            # Move newrelic.ini created by tarball to the name that the installer will use.
+            mv ${ini_full_name} ${target_ini_dir}
+            # We rely on the package installer to enable the newrelic module.
           done;
 
     restart_services:
