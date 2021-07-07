@@ -54,9 +54,10 @@ install:
         - task: create_shared
         - task: detect_services
         - task: add_gnupg2_curl_if_required
+        - task: install_deb
         - task: install_tarball
         - task: configure
-        - task: install_deb
+        #- task: install_deb
         - task: restart_services
         - task: send_transaction
         - task: cleanup_temp_files
@@ -253,7 +254,10 @@ install:
           echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
           curl -s https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 newrelic-php5-common newrelic-daemon -y -qq
+          #sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
+          sudo killall newrelic-daemon
+          rm -rf /var/log/newrelic
 
     configure:
       cmds:
@@ -304,6 +308,9 @@ install:
             sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini_full_name
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
               sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
+              sed -i 's/;newrelic.loglevel = "info"/newrelic.loglevel = "verbosedebug"/' $ini_full_name
+              sed -i 's/;newrelic.daemon.loglevel = "info"/newrelic.daemon.loglevel = "debug"/' $ini_full_name
+                            #sed -i 's/;newrelic.daemon.loglevel = "info"/newrelic.daemon.loglevel = "verbosedebug"/' $ini_full_name
             fi
             target_ini_dir="/etc/php5/conf.d/"
             if [ -x /usr/sbin/phpquery ]; then
