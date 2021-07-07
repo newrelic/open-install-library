@@ -52,12 +52,12 @@ install:
         - task: verify_continue
         - task: assert_pre_req
         - task: create_shared
+        - task: clean_slate
         - task: detect_services
         - task: add_gnupg2_curl_if_required
         - task: install_deb
         - task: install_tarball
         - task: configure
-        #- task: install_deb
         - task: restart_services
         - task: send_transaction
         - task: cleanup_temp_files
@@ -83,7 +83,7 @@ install:
               echo ""
               NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
               if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
-                NEW_RELIC_CONTINUE="Y"
+                   NEW_RELIC_CONTINUE="Y"
               fi
               if [[ "$NEW_RELIC_CONTINUE" == "n" ]] || [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
                 echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
@@ -124,6 +124,7 @@ install:
               echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >> /dev/stderr
               exit ${code}
             fi
+
           done
 
     create_shared:
@@ -132,6 +133,16 @@ install:
           rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
           mkdir -p {{.TMP_INSTALL_DIR}}
           echo -e "{{.WHITE}}Temporary directory {{.TMP_INSTALL_DIR}} created{{.NOCOLOR}}"
+
+    clean_slate:
+      cmds:
+        - |
+          #
+          # The `|| true` is required else if there isn't a daemon running,
+          # the killall command will always exit 1 and terminate the recipe.
+          #
+          killall -q newrelic-daemon || true
+          rm -rf /var/log/newrelic 2>/dev/null
 
     detect_services:
       cmds:
@@ -244,7 +255,7 @@ install:
           gzip -dc "$AGENT_TARBALL" | tar xf -
           pushd "$AGENT" > /dev/null
           echo -e "{{.WHITE}}Running PHP Agent installer{{.GRAY}}"
-          NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
+          NR_INSTALL_USE_CP_NOT_LN=1 NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
           popd > /dev/null
 
     install_deb:
@@ -254,16 +265,15 @@ install:
           echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
           curl -s https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 newrelic-php5-common newrelic-daemon -y -qq
-          #sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
-          sudo killall newrelic-daemon
-          rm -rf /var/log/newrelic
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
 
     configure:
       cmds:
         - |
           echo -e "{{.ARROW}}Configuring New Relic PHP Agent{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
+          rm -f {{.TMP_INSTALL_DIR}}/web_info.txt 2>/dev/null
+          rm -f {{.TMP_INSTALL_DIR}}/cli_info.txt 2>/dev/null
           NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
           # Get path of most recent agent install log
           tar_file=$(ls -t /tmp/nrinstall*.tar 2>/dev/null | head -1)
@@ -300,33 +310,85 @@ install:
           # Loop through all the directories where the installation placed `newrelic.ini`
           # files.
           #
-          for ini in $WEB_INI_DIR $CLI_INI_DIR; do
-            ini_full_name="${ini}/newrelic.ini"
-            if [ ! -f "$ini_full_name" ]; then
-              continue
-            fi
-            sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini_full_name
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
-              sed -i 's/;newrelic.loglevel = "info"/newrelic.loglevel = "verbosedebug"/' $ini_full_name
-              sed -i 's/;newrelic.daemon.loglevel = "info"/newrelic.daemon.loglevel = "debug"/' $ini_full_name
-                            #sed -i 's/;newrelic.daemon.loglevel = "info"/newrelic.daemon.loglevel = "verbosedebug"/' $ini_full_name
-            fi
-            target_ini_dir="/etc/php5/conf.d/"
-            if [ -x /usr/sbin/phpquery ]; then
-              target_ini_dir="${ini}/../../mods-available/"
-            elif [ -x /usr/sbin/php5endmod ]; then
-              target_ini_dir="/etc/php5/mods-available/"
-            fi
-            if [ ! -d $target_ini_dir ]; then
-              echo -e "{{.RED}}Warning: Unable to move ${ini_full_name} to ${target_ini_dir}{{.GRAY}}"
-              continue
-            fi
-            # Move newrelic.ini created by tarball to the name that the installer will use.
-            mv ${ini_full_name} ${target_ini_dir}
-            # We rely on the package installer to enable the newrelic module.
-          done;
 
+          INI_DIRS=($WEB_INI_DIR $CLI_INI_DIR)
+          for dirs in $INI_DIRS; do
+            for ini in $dirs; do
+              #
+              # Get the PHP INI Directory associated with this specific NR INI file
+              #
+              php_ini_dir=$(echo $ini | sed -n 's/\(.*\)\/conf.d/\1/p')
+              if [ -z "${php_ini_dir}" ]; then
+                php_ini_dir=$ini
+              fi
+
+              #
+              # Get the PHP Binary directory associated with this particular NR INI file.
+              sed_slash_ini=$(echo "${ini}"  | sed 's/\//\\\//g')
+              php_bin=$(sed '1,/final pi_inidir_.*='"${sed_slash_ini}"'/d;/php -i output follows/,$d' $NR_INSTALL_LOG | sed -n 's/.*pi_bin=\(.*\/\)/\1/p')
+              if [ -z "${php_bin}" ]; then
+              #
+              # When there is only one PHP detected, the info format is different,
+              # we could detect from the log file, but since there is only one,
+              # just use `php`.
+              #
+                php_bin="php"
+              fi
+
+              #
+              # Modify the fresh copy of a brand new New Relic INI file.
+              #
+              ini_full_name="${ini}/newrelic.ini"
+              if [ ! -f "$ini_full_name" ]; then
+                continue
+              fi
+              sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini_full_name
+              if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+                sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
+                sed -i 's/;newrelic.loglevel = "info"/newrelic.loglevel = "verbosedebug"/' $ini_full_name
+                sed -i 's/;newrelic.daemon.loglevel = "info"/newrelic.daemon.loglevel = "debug"/' $ini_full_name
+              fi
+
+              #
+              # Determine the target directory that the symlink is pointing to.
+              #
+              target_ini_dir="/etc/php5/conf.d/"
+              if [ -x /usr/sbin/phpquery ]; then
+                target_ini_dir="${ini}/../../mods-available/"
+              elif [ -x /usr/sbin/php5endmod ]; then
+                target_ini_dir="/etc/php5/mods-available/"
+              fi
+              if [ ! -d $target_ini_dir ]; then
+                echo -e "{{.RED}}Warning: Unable to move ${ini_full_name} to ${target_ini_dir}{{.GRAY}}"
+                continue
+              fi
+              #
+              # Move newrelic.ini created by tarball to the name that the installer will use.
+              # This ensures we always get the most up to date newrelic.ini file on the
+              # system.
+              #
+              mv ${ini_full_name} ${target_ini_dir}
+
+              #
+              # We rely on the package installer to enable the newrelic module.
+              #
+
+              #
+              # Three important pieces of information: the php binary location, the php ini
+              # file location, the actual (not symlink) New Relic ini file location.
+              # If we have web directories, copy the three key bits of info to the web file;
+              # otherwise copy to the cli file.  We will save the php directory, the target
+              # directory where the ini file is, and the php bin directory.
+              #
+              if [ -z "${CLI_DIRS}" ]; then
+                echo "$php_bin $php_ini_dir $target_ini_dir" >> {{.TMP_INSTALL_DIR}}/web_info.txt
+              else
+                echo "$php_bin $php_ini_dir $target_ini_dir" >> {{.TMP_INSTALL_DIR}}/cli_info.txt
+              fi
+
+            done;
+            CLI_DIRS=true
+          done
     restart_services:
       cmds:
         - |
@@ -379,21 +441,8 @@ install:
         - |
           echo -e "{{.ARROW}}Send queryable transactions{{.GRAY}}"
           cd {{.TMP_INSTALL_DIR}}
-          NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
-          WEB_PHP_INI_DIR=$(sed -n 's/.*final pi_inidir_dso=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG)
-          WEB_NR_INI_DIR=$(sed -n 's/.*final pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG)
-          if [ -z "${WEB_PHP_INI_DIR}" ]; then
-            WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
-          fi
-          # Fallback to cli ini dir if there is no web specific ini dir
-          if [ -z "${WEB_PHP_INI_DIR}" ]; then
-            WEB_PHP_INI_DIR=($(sed -n 's/.*final pi_inidir_cli=\(.*\)\/conf.d/\1/p' $NR_INSTALL_LOG))
-            WEB_NR_INI_DIR=($(sed -n 's/.*final pi_inidir_cli=\(.*\/\)/\1/p' $NR_INSTALL_LOG))
-            if [ -z "${WEB_PHP_INI_DIR}" ]; then
-              WEB_PHP_INI_DIR=$WEB_NR_INI_DIR
-            fi
-          fi
 
+          sudo -u $SUDO_USER sudo chmod 666 /var/log/newrelic/*
           #
           # Get the non-privileged user that was previously stored.
           #
@@ -402,6 +451,7 @@ install:
           else
             nonpriv_user=$SUDO_USER
           fi
+
 
           #
           # The first transaction initializes the app.
@@ -419,26 +469,18 @@ install:
               #    Loop through all the detected PHP directories where newrelic.ini files
               #    were placed.
               #
-              for ((i=0; i<${#WEB_PHP_INI_DIR[@]}; i++)); do
+
+              if [ -f "{{.TMP_INSTALL_DIR}}/web_info.txt" ]; then
+                info_text="{{.TMP_INSTALL_DIR}}/web_info.txt"
+              else
                 #
-                # Get the PHP binary associated with a specific PHP/newrelic ini file.
+                # Fallback to CLI if no web info was detected.
                 #
-                #
-                # When there are multiple PHPs detected, the log file creates blocks
-                # of information with a specific format.
-                #
-                web_ini=$(echo "${WEB_NR_INI_DIR[$i]}"  | sed 's/\//\\\//g')
-                WEB_PHP_BIN=$(sed '1,/final pi_inidir_.*='"${web_ini}"'/d;/php -i output follows/,$d' $NR_INSTALL_LOG | sed -n 's/.*pi_bin=\(.*\/\)/\1/p')
-                if [ -z "${WEB_PHP_BIN}" ]; then
-                #
-                # When there is only one PHP detected, the info format is different,
-                # we could detect from the log file, but since there is only one,
-                # just use `php`.
-                #
-                  WEB_PHP_BIN="php"
-                fi
-                sudo -u $nonpriv_user $WEB_PHP_BIN -c "${WEB_PHP_INI_DIR[$i]}/php.ini" -c "${WEB_NR_INI_DIR[$i]}/newrelic.ini" -n --ini &>/dev/null
-              done
+                info_text="{{.TMP_INSTALL_DIR}}/cli_info.txt"
+              fi
+              while read -r bin_loc php_ini_dir nr_ini_dir; do
+                sudo -u $nonpriv_user $bin_loc -c "${php_ini_dir}/php.ini" -c "${nr_ini_dir}/newrelic.ini" -n --ini &>/dev/null
+              done < "${info_text}"
             done
           else
             #
