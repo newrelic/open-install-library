@@ -1,10 +1,14 @@
 name: hashicorp-consul-open-source-integration
-displayName: HashiCorp Consul Open Source Integration
+displayName: Consul Open Source Integration
 description: New Relic install recipe for default HashiCorp Consul Open Source on-host integration (via Infra-Agent)
 repository: https://github.com/newrelic/nri-consul
 
 dependencies:
   - infrastructure-agent-installer
+
+observabilityPacks:
+  - name: Consul
+    level: NEWRELIC
 
 installTargets:
   - type: host
@@ -74,7 +78,7 @@ install:
         - |
           IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >&2
             exit 1
           fi
 
@@ -84,7 +88,8 @@ install:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
-          sudo apt-get update -yq
+          # Get latest definitions and skip any failure because of deprecation
+          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
         - |
           sudo apt-get install nri-consul -y
         - |

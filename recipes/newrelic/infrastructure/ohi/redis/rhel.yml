@@ -9,6 +9,10 @@ repository: https://github.com/newrelic/nri-redis
 dependencies:
   - infrastructure-agent-installer
 
+observabilityPacks:
+  - name: Redis
+    level: NEWRELIC
+
 installTargets:
   - type: host
     os: linux
@@ -41,20 +45,8 @@ logMatch:
 # installed is successfully sending data to New Relic
 validationNrql: "SELECT count(*) from RedisSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
-# Prompts for input from the user. These variables then become
-# available to go-task in the form of {{.VAR_NAME}}
-inputVars:
-  - name: "NR_CLI_HOSTNAME"
-    prompt: "Redis Hostname (default: localhost)"
-    default: "localhost"
-  - name: "NR_CLI_DB_PASSWORD"
-    prompt: "Redis Password (if your Redis server is password protected)"
-    secret: true
-  - name: "NR_CLI_PORT"
-    prompt: "Redis Port (default: 6379)"
-    default: 6379
-  - name: "NR_CLI_KEYS"
-    prompt: "Keyspace Metrics (expected: single-line JSON format)"
+successLinkConfig:
+  type: EXPLORER
 
 preInstall:
   info: |2
@@ -68,74 +60,146 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
-        - task: setup
+        - task: assert_infra
+        - task: input_assert
+          vars:
+            MAX_RETRIES: 3
+            EXIT130: ""
         - task: restart
 
-    assert_pre_req:
+    assert_infra:
       cmds:
         - |
           IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >&2
             exit 1
           fi
 
-    setup:
-      label: "Installing Redis integration..."
+    input_assert:
       cmds:
         - |
+          TRIES=0
+
+          # Check Env Vars
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          NR_CLI_HOSTNAME="{{.NR_CLI_HOSTNAME}}"
+          NR_CLI_PORT="{{.NR_CLI_PORT}}"
+          NR_CLI_PASSWORD="{{.NR_CLI_PASSWORD}}"
+          NR_CLI_KEYS="{{.NR_CLI_KEYS}}"
+
+          # Set Defaults
+          NR_CLI_HOSTNAME=${NR_CLI_HOSTNAME:-'localhost'}
+          NR_CLI_PORT=${NR_CLI_PORT:-'6379'}
+
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              printf "\nRedis Hostname (default: localhost): "
+              read -r NR_CLI_HOSTNAME
+              NR_CLI_HOSTNAME=${NR_CLI_HOSTNAME:-localhost}
+              printf "Redis Port (default: 6379): "
+              read -r NR_CLI_PORT
+              NR_CLI_PORT=${NR_CLI_PORT:-6379}
+              ((TRIES++))
+
+              CLI_RESPONSE=$(redis-cli -h "$NR_CLI_HOSTNAME" -p "$NR_CLI_PORT" -a "$NR_CLI_PASSWORD" PING 2>&1)
+              if [ $(echo $CLI_RESPONSE | grep "Could not connect" | wc -l) -gt 0 ] ; then
+                printf "\n[Error]: Could not connect to Redis server. Check hostname and port.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration/#config for more info.\n" >&2
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
+                echo "Please try again"
+              fi
+              if [ $(echo $CLI_RESPONSE | grep "Authentication required" | wc -l) -gt 0 ] ; then
+                TRIES=0
+                while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+                  printf "Redis Password: "
+                  stty -echo
+                  read -r NR_CLI_PASSWORD
+                  stty echo
+                  printf "\n"
+                  ((TRIES++))
+
+                  CLI_RESPONSE=$(redis-cli -h "$NR_CLI_HOSTNAME" -p "$NR_CLI_PORT" -a "$NR_CLI_PASSWORD" PING 2>&1)
+                  if [ "$CLI_RESPONSE" != "PONG" ] ; then
+                    printf "\n[Error]: Could not authenticate on Redis server. Check password.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration/#config for more info.\n" >&2
+                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; else continue; fi
+                    echo "Please try again"
+                  fi
+                  break
+                done
+              fi
+              printf "\nKeyspace Metrics (expected: single-line JSON format): "
+              read -r NR_CLI_KEYS
+              break
+            done
+          fi
+
+          # Check if authentication is required in -y mode
+          if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
+            CLI_RESPONSE=$(redis-cli -h "$NR_CLI_HOSTNAME" -p "$NR_CLI_PORT" -a "$NR_CLI_PASSWORD" PING 2>&1)
+            if [ $(echo $CLI_RESPONSE | grep "Authentication required" | wc -l) -gt 0 ] && [ "$NR_CLI_PASSWORD" == "" ]; then
+              EXIT130=" - NR_CLI_PASSWORD=<redis_password>\n"
+            fi
+          fi
+
+          if [ "$EXIT130" != "" ]; then
+            printf "You did not provide all the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
+            exit 130
+          else
+            printf "\n[OK] All checks passed. Installing Redis Integration...\n\n"
+          fi
+
+          # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-        - |
           sudo yum install nri-redis -y
-        - |
+
           if [ -f /etc/newrelic-infra/integrations.d/redis-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/redis-config.yml;
           fi
-
-        - |
-          sudo tee /etc/newrelic-infra/integrations.d/redis-config.yml > /dev/null <<"EOT"
+          sudo tee /etc/newrelic-infra/integrations.d/redis-config.yml > /dev/null <<EOT
           integration_name: com.newrelic.redis
 
           instances:
             - name: redis-metrics
               command: metrics
               arguments:
-                hostname: {{.NR_CLI_HOSTNAME}}
-                port: {{.NR_CLI_PORT}}
-                keys: {{.NR_CLI_KEYS}}
+                hostname: $NR_CLI_HOSTNAME
+                port: $NR_CLI_PORT
+                keys: $NR_CLI_KEYS
+                password: $NR_CLI_PASSWORD
                 config_inventory: true
-                password: {{.NR_CLI_DB_PASSWORD}}
                 keys_limit: 30
-                # New users should leave this property as `true`, to identify the
-                # monitored entities as `remote`. Setting this property to `false` (the
+
+                # New users should leave this property as 'true', to identify the
+                # monitored entities as 'remote'. Setting this property to 'false' (the
                 # default value) is deprecated and will be removed soon, disallowing
-                # entities that are identified as `local`.
+                # entities that are identified as 'local'.
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
                 remote_monitoring: true
-                # New users should leave this property as `true`, to uniquely identify the monitored entities when using
+
+                # New users should leave this property as 'true', to uniquely identify the monitored entities when using
                 # Unix sockets.
                 use_unix_socket: true
 
             - name: redis-inventory
               command: inventory
               arguments:
-                hostname: {{.NR_CLI_HOSTNAME}}
-                port: {{.NR_CLI_PORT}}
-                password: ${{.NR_CLI_DB_PASSWORD}}
-                # New users should leave this property as `true`, to identify the
-                # monitored entities as `remote`. Setting this property to `false` (the
+                hostname: $NR_CLI_HOSTNAME
+                port: $NR_CLI_PORT
+                password: $NR_CLI_PASSWORD
+
+                # New users should leave this property as 'true', to identify the
+                # monitored entities as 'remote'. Setting this property to 'false' (the
                 # default value) is deprecated and will be removed soon, disallowing
-                # entities that are identified as `local`.
+                # entities that are identified as 'local'.
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
                 remote_monitoring: true
-                # New users should leave this property as `true`, to uniquely identify the monitored entities when using
+
+                # New users should leave this property as 'true', to uniquely identify the monitored entities when using
                 # Unix sockets.
                 use_unix_socket: true
           EOT

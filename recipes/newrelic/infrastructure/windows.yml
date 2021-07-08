@@ -17,7 +17,7 @@ keywords:
 
 processMatch: []
 
-validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 5 minutes ago"
 
 install:
   version: "3"
@@ -26,63 +26,173 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_required_permissions
+        - task: assert_required_powershell
         - task: remove_any_previous
-        - task: install
+        - task: download_infra
+        - task: install_infra
+        - task: start_infra
         - task: assert_agent_started
+        - task: assert_agent_status_ok
+
+    assert_required_permissions:
+      cmds:
+        - |
+          powershell -command '
+          $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+          $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+          if(-not ($isAdmin))
+          {
+            Write-Host -ForegroundColor Red "Powershell needs to be started in Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
+            exit 131;
+          }
+          '
+
+    assert_required_powershell:
+      cmds:
+        - |
+          powershell -command '
+          $powershellEnabled = ""
+          try {
+            $powershellEnabled = Get-Command -All powershell.exe | select Name
+          }
+          catch { }
+          if ($powershellEnabled.Name -ne "powershell.exe") {
+            Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
+            exit 131;
+          }
+          '
 
     remove_any_previous:
       ignore_error: true
       cmds:
         - |
           powershell -command '
-          function Find-UninstallGuids {
-            param (
-              [Parameter(Mandatory)]
-              [string]$Match
-            )
+          try{
+            if ( Get-Service "newrelic-infra" -ErrorAction SilentlyContinue) {
+              Stop-Service -Name "newrelic-infra" -Force -PassThru | Out-Null
+            }
+            function Find-UninstallGuids {
+              param (
+                [Parameter(Mandatory)]
+                [string]$Match
+              )
 
-            $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
-            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+              $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
+              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
 
-            $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
-            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+              $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
+              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
 
-            $allKeys = $baseKeys + $wowKeys
+              $allKeys = $baseKeys + $wowKeys
 
-            $uninstallIds = New-Object System.Collections.ArrayList
-            foreach ($key in $allKeys) {
-              $keyData = Get-Item -Path HKLM:\$key
-              $name = $keyData.GetValue("DisplayName")
-              if ($name -and $name -match $Match) {
-                $keyId = Split-Path $key -Leaf
-                $uninstallIds.Add($keyId) | Out-Null
+              $uninstallIds = New-Object System.Collections.ArrayList
+              foreach ($key in $allKeys) {
+                $keyData = Get-Item -Path HKLM:\$key
+                $name = $keyData.GetValue("DisplayName")
+                if ($name -and $name -match $Match) {
+                  $keyId = Split-Path $key -Leaf
+                  $uninstallIds.Add($keyId) | Out-Null
+                }
               }
+
+              if ($uninstallIds.Count -eq 0) {
+                return @()
+              }
+
+              return $uninstallIds
             }
 
-            if ($uninstallIds.Count -eq 0) {
-              return @()
+            $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
+            foreach ($uninstallId in $uninstallIds) {
+              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
+              Invoke-Expression $uninstallCommand
+              # wait here to allow uninstall command to complete since it returns without waiting
+              Start-Sleep -s 15
             }
-
-            return $uninstallIds
           }
+          catch { }
+          '
 
-          $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
-          foreach ($uninstallId in $uninstallIds) {
-            $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-            Invoke-Expression $uninstallCommand
-            # wait here to allow uninstall command to complete since it returns without waiting
-            Start-Sleep -s 15
+    download_infra:
+      cmds:
+        - |
+          powershell -command '
+          try {
+            [Net.ServicePointManager]::SecurityProtocol = "tls";
+            [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+          }
+          catch {}
+
+          try {
+            (New-Object System.Net.WebClient).DownloadFile("{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/windows/newrelic-infra.msi", "$env:TEMP\newrelic-infra.msi")
+          }
+          catch {
+            $baseException = $_.Exception.GetBaseException()
+            Write-Host -ForegroundColor Red "Failed to download New Relic Infrastructure Agent ($($baseException.Message))"
+            $errorCode = 24 # unknown download error
+
+            switch ($baseException) {
+              { $_ -is [Net.WebException] }            { $errorCode = 25 } # web download error
+              { $_ -is [IO.IOException] }              { $errorCode = 26 } # file io error
+              { $_ -is [UnauthorizedAccessException] } { $errorCode = 26 } # file io error
+            }
+            exit $errorCode
           }
           '
 
-    install:
+    install_infra:
       cmds:
-        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/infrastructure_agent/windows/newrelic-infra.msi", "$env:TEMP\newrelic-infra.msi");'
-        - powershell -command '$LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"; msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null;'
-        - powershell -command '(New-Object System.Net.WebClient).DownloadFile("https://aka.ms/vs/16/release/vc_redist.x64.exe", "$env:TEMP\vc_redist.x64.exe");'
-        - powershell -command 'start-process -FilePath "$env:TEMP\vc_redist.x64.exe" -ArgumentList "/install /q /norestart" -Verb RunAs -wait | Out-Null;'
-        - powershell -command 'Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml" -Value "enable_process_metrics`:` true" -Force;'
-        - powershell -command '$NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"; if ($NEW_RELIC_REGION -ilike "staging") { Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml" -Value "staging`:` true" -Force; };'
+        - |
+          powershell -command '
+          $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
+          $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
+
+          if (Test-Path $InfraConfig) {
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
+
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^staging"
+            } | Set-Content $InfraConfig
+
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^enable_process_metrics"
+            } | Set-Content $InfraConfig
+
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^status_server_enabled"
+            } | Set-Content $InfraConfig
+
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^status_server_port"
+            } | Set-Content $InfraConfig
+
+            (Get-Content $InfraConfig) | Where-Object {
+              $_ -notmatch "^proxy"
+            } | Set-Content $InfraConfig
+
+            (Get-Content $InfraConfig) | Foreach-Object {
+              $_ -replace "^license_key: .*", ("license_key: " + $LICENSE_KEY) `
+            } | Set-Content $InfraConfig
+          } else {
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
+          }
+
+          $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
+          if ($NEW_RELIC_REGION -ilike "staging") {
+            Add-Content -Path $InfraConfig -Value "staging: true" -Force
+          }
+          Add-Content -Path $InfraConfig -Value "enable_process_metrics: true" -Force
+          Add-Content -Path $InfraConfig -Value "status_server_enabled: true" -Force
+          Add-Content -Path $InfraConfig -Value "status_server_port: 18003" -Force
+          if (Test-Path env:HTTPS_PROXY) {
+            Add-Content -Path $InfraConfig -Value "proxy: $env:HTTPS_PROXY" -Force
+          }
+          '
+
+    start_infra:
+      cmds:
         - powershell -command 'net start newrelic-infra'
         - echo "New Relic infrastructure agent for Windows installed and started"
 
@@ -92,6 +202,37 @@ install:
           # Ensure agent has enough time to start
           powershell -command 'Start-Sleep -s 10; $output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic."; Exit 31; }'
 
+    assert_agent_status_ok:
+      cmds:
+        - |
+          powershell -command '
+            $maxRetries = 30
+            $tries = 0
+            while ($tries -lt $maxRetries) {
+              $tries += 1
+              $statusCheckOutput = ""
+              try {
+                $statusCheckOutput=Invoke-WebRequest -UseBasicParsing -Method Get -Uri http://localhost:18003/v1/status/errors | Select-Object -ExpandProperty Content;
+              } catch { }
+              if ($statusCheckOutput -ieq "{}") {
+                Write-Host "Agent status check ok."
+                break
+              }
+              if ($statusCheckOutput -ieq "") {
+                if ($tries -eq $maxRetries) {
+                  Write-Host -ForegroundColor Red "infra-agent status endpoint not available";
+                  exit 32;
+                }
+              } else {
+                if ($tries -eq $maxRetries) {
+                  Write-Host -ForegroundColor Red "infra-agent status check not healthy: $statusCheckOutput";
+                  exit 33;
+                }
+              }
+              Start-Sleep -s 2
+            }
+          '
+
 postInstall:
   info: |2
       ⚙️  The Infrastructure Agent configuration file can be found in C:\Program Files\New Relic\newrelic-infra\newrelic-infra.yml
@@ -99,4 +240,3 @@ postInstall:
       Infrastructure Agent: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
 
       Note: Process monitoring has been enabled by default - all other config options are left to the user.
-

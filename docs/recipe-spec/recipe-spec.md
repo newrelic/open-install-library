@@ -7,6 +7,7 @@ Recipe files are written in YAML and adhere to the specifications outlined below
 Recipe definition files are placed under `recipes/org/<on_host_integration_name>` and should have the following format:
 
 > Note: TBD on final format
+
 `<installTargetOS>.yml`
 
 For example:
@@ -36,11 +37,11 @@ repository: string, required
 
 # Indicates stability level of recipe. Useful for gradually enabling the
 # availablity of a recipe to users as it is developed and tested. Can be
-# thought of as an indicator for how stable/ready a recipe is for general 
+# thought of as an indicator for how stable/ready a recipe is for general
 # consumption and can be used to quickly disable problematic recipes.
-# 
+#
 # Usage: # newrelic install --stability=stable
-# 
+#
 # Levels:
 #   disabled - No availability (recipe will not return from NerdGraph)
 #   experimental - Non-backward compatible changes or removal may occur in any future release. Use of the feature is not recommended in production environments.
@@ -49,11 +50,12 @@ stability: enum, optional # One of [ disabled, experimental, stable ]
 
 # Dependency list for recipes (by name) that must be run successfully prior to attempting
 # the current recipe
-# ex: 
+# ex:
 # dependencies:
 #   - infrastructure-agent-installer
 dependencies: list, optional
 
+# DEPRECATED: use observabilityPacks instead
 # Metadata used to recommend and install Quickstarts (dashboards, alerts, synthetics, etc.)
 # This is filtering criteria for the quickstartSearch endpoint in NerdGraph
 quickstarts: list (object), optional
@@ -62,6 +64,12 @@ quickstarts: list (object), optional
       type: string, required
       domain: string, required
     category: string (enum), optional # One of [ newrelic, community ]. Defaults to newrelic.
+
+# Metadata used to recommend and install Observability Packs (dashboards, alerts, synthetics, etc.)
+# This is filtering criteria for the observabilityPackSearch endpoint in NerdGraph
+observabilityPacks: list (object), optional
+  - name: string, required
+    level: string (enum), optional # One of [ newrelic, verified, community ]. Defaults to newrelic.
 
 # Still TBD
 # Indicates the target host/runtime/env where user is trying to install (Note: isn't necessarily where you're running the newrelic-cli from)
@@ -82,15 +90,19 @@ installTargets: list, required
   # - Microsoft Azure Web Apps
 keywords: list, required
 
-# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes.
-# Non-empty list of process definitions.
+# CLI runs process detection; this is a regex used to filter recipes that are appropriate for matched processes.
+# An empty list signifies the recipe will always be run during guided install.
+#
+# Example Usage:
+#  processMatch: 
+#    - apache       # matches any processes containing apache in the full process command
+#
+#  processMatch: [] # this recipe will always run in Guided Install
 processMatch: list, required
-  - /infra/
-  - /usr/bin/local/node/
 
 # Matches partial list of the Log forwarding parameters
 # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
-logMatch: list (object), optional  
+logMatch: list (object), optional
   - name: string, required
     file: string, optional        # Path to the log file or files. Your file can point to a specific log file or multiple ones by using wildcards applied to names and extensions; for example, /logs/*.log
     attributes: object, optional  # Custom attributes to enrich data
@@ -121,6 +133,10 @@ successLinkConfig: object, optional
 preInstall: object, optional
   info: string, optional    # Message/Docs notice to display to the user before running recipe.
 
+  # requireAtDiscovery contains a script to be run during the install to determine
+  # whether or not the recipe should be executed.
+  requireAtDiscovery: string, optional
+
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
 install: string, required
@@ -130,7 +146,7 @@ install: string, required
   # Silent mode disables echoing of commands before Task runs it.
   # https://taskfile.dev/#/usage?id=silent-mode
   silent: true
-  
+
   # DO NOT USE: License Key is automatically injected by the newrelic-cli
   # env:
   #   NEW_RELIC_LICENSE_KEY: '{{.NEW_RELIC_LICENSE_KEY}}'
