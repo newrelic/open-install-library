@@ -54,7 +54,7 @@ install:
         - task: create_shared
         - task: clean_slate
         - task: detect_services
-        - task: add_gnupg2_curl_if_required
+        - task: add_gnupg2_if_required
         - task: install_deb
         - task: install_tarball
         - task: configure
@@ -210,15 +210,21 @@ install:
             fi
           done
 
-    add_gnupg2_curl_if_required:
+    add_gnupg2_if_required:
       cmds:
         - |
           if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
-            # If possible it would be great to note if these were already
-            # installed, and if not, to remove them in a later cleanup step
-            sudo apt-get install gnupg2 curl -y
+            #
+            # Check if gnupg is already installed, and if not, install it.
+            #
+            if [ {{.HAS_GPG}} -eq 0 ] ; then
+              sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+              sudo apt-get install gnupg2 -y
+            fi
           fi
       vars:
+        HAS_GPG:
+          sh: command -v gpg | wc -l
         DEBIAN_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
@@ -263,7 +269,7 @@ install:
           echo -e "{{.ARROW}}Installing New Relic PHP Agent package{{.GRAY}}"
           echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
           curl -s https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-          sudo apt-get update
+          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
 
     configure:
