@@ -27,6 +27,7 @@ install:
     default:
       cmds:
         - task: assert_required_permissions
+        - task: assert_required_powershell
         - task: remove_any_previous
         - task: download_infra
         - task: install_infra
@@ -35,7 +36,6 @@ install:
         - task: assert_agent_status_ok
 
     assert_required_permissions:
-      ignore_error: true
       cmds:
         - |
           powershell -command '
@@ -49,49 +49,70 @@ install:
           }
           '
 
+    assert_required_powershell:
+      cmds:
+        - |
+          powershell -command '
+          $powershellEnabled = ""
+          try {
+            $powershellEnabled = Get-Command -All powershell.exe | select Name
+          }
+          catch { }
+          if ($powershellEnabled.Name -ne "powershell.exe") {
+            Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
+            exit 131;
+          }
+          '
+
     remove_any_previous:
       ignore_error: true
       cmds:
         - |
           powershell -command '
-          function Find-UninstallGuids {
-            param (
-              [Parameter(Mandatory)]
-              [string]$Match
-            )
+          try{
+            if ( Get-Service "newrelic-infra" -ErrorAction SilentlyContinue) {
+              Stop-Service -Name "newrelic-infra" -Force -PassThru | Out-Null
+            }
+            function Find-UninstallGuids {
+              param (
+                [Parameter(Mandatory)]
+                [string]$Match
+              )
 
-            $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
-            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+              $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
+              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
 
-            $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
-            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+              $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
+              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
 
-            $allKeys = $baseKeys + $wowKeys
+              $allKeys = $baseKeys + $wowKeys
 
-            $uninstallIds = New-Object System.Collections.ArrayList
-            foreach ($key in $allKeys) {
-              $keyData = Get-Item -Path HKLM:\$key
-              $name = $keyData.GetValue("DisplayName")
-              if ($name -and $name -match $Match) {
-                $keyId = Split-Path $key -Leaf
-                $uninstallIds.Add($keyId) | Out-Null
+              $uninstallIds = New-Object System.Collections.ArrayList
+              foreach ($key in $allKeys) {
+                $keyData = Get-Item -Path HKLM:\$key
+                $name = $keyData.GetValue("DisplayName")
+                if ($name -and $name -match $Match) {
+                  $keyId = Split-Path $key -Leaf
+                  $uninstallIds.Add($keyId) | Out-Null
+                }
               }
+
+              if ($uninstallIds.Count -eq 0) {
+                return @()
+              }
+
+              return $uninstallIds
             }
 
-            if ($uninstallIds.Count -eq 0) {
-              return @()
+            $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
+            foreach ($uninstallId in $uninstallIds) {
+              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
+              Invoke-Expression $uninstallCommand
+              # wait here to allow uninstall command to complete since it returns without waiting
+              Start-Sleep -s 15
             }
-
-            return $uninstallIds
           }
-
-          $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
-          foreach ($uninstallId in $uninstallIds) {
-            $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-            Invoke-Expression $uninstallCommand
-            # wait here to allow uninstall command to complete since it returns without waiting
-            Start-Sleep -s 15
-          }
+          catch { }
           '
 
     download_infra:
