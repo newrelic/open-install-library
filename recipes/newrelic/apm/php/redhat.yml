@@ -49,6 +49,7 @@ install:
         - task: verify_continue
         - task: assert_pre_req
         - task: create_shared
+        - task: clean_slate
         - task: detect_services
         - task: add_gnupg2_curl_if_required
         - task: install_tarball
@@ -128,6 +129,16 @@ install:
           rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
           mkdir -p {{.TMP_INSTALL_DIR}}
           echo -e "{{.WHITE}}Temporary directory {{.TMP_INSTALL_DIR}} created{{.NOCOLOR}}"
+
+    clean_slate:
+      cmds:
+        - |
+          #
+          # The `|| true` is required else if there isn't a daemon running,
+          # the killall command will always exit 1 and terminate the recipe.
+          #
+          killall -q newrelic-daemon || true
+          rm -rf /var/log/newrelic 2>/dev/null
 
     detect_services:
       cmds:
@@ -241,7 +252,7 @@ install:
           gzip -dc "$AGENT_TARBALL" | tar xf -
           pushd "$AGENT" > /dev/null
           echo -e "{{.WHITE}}Running PHP Agent installer{{.GRAY}}"
-          NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
+          NR_INSTALL_USE_CP_NOT_LN=1 NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
           popd > /dev/null
 
       vars:
