@@ -6,6 +6,10 @@ repository: https://github.com/newrelic/nri-postgresql
 dependencies:
   - infrastructure-agent-installer
 
+observabilityPacks:
+  - name: PostgreSQL
+    level: NEWRELIC
+
 installTargets:
   - type: host
     os: linux
@@ -35,137 +39,223 @@ logMatch:
 
 validationNrql: "SELECT count(*) from PostgresqlDatabaseSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
-inputVars:
-  - name: "NR_CLI_DB_USERNAME"
-    prompt: "Postgres Username"
-  - name: "NR_CLI_DB_PASSWORD"
-    prompt: "Postgres Password"
-    secret: true
-  - name: "NR_CLI_DB_HOSTNAME"
-    prompt: "Postgres Hostname (default: localhost)"
-    default: "localhost"
-  - name: "NR_CLI_DATABASE"
-    prompt: "Postgres Database (default: postgres)"
-    default: "postgres"
-  - name: "NR_CLI_PORT"
-    prompt: "Postgres Port (default: 5432)"
-    default: 5432
-  - name: "NR_CLI_SSL"
-    prompt: "Use SSL to connect? (false/true)"
-    default: false
-  - name: "NR_CLI_CLIENT_CERT_FILE"
-    prompt: "Client Certificate file (if applicable)"
-  - name: "NR_CLI_CERT_KEY"
-    prompt: "PEM key file (if applicable)"
-  - name: "NR_CLI_TRUST_SERVER_CERTIFICATE"
-    prompt: "Trust certificate? (false/true)"
-    default: false
-  - name: "NR_CLI_CERT_AUTH_FILE"
-    prompt: "Certificate Authority file (if applicable)"
+successLinkConfig:
+  type: EXPLORER
 
 preInstall:
   info: |2
       To capture data from the PostgreSQL integration, you'll first need to meet these prerequisites:
       - PostgreSQL version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req)
       - User with READ permissions
-      
-      To create a new user, use these commands as reference (Note: username, 
+
+      To create a new user, use these commands as reference (Note: username,
       password, and similar user-specific values must be replaced):
-      
-      > CREATE USER new_relic WITH PASSWORD 'PASSWORD';
-      > GRANT SELECT ON pg_stat_database TO new_relic;
-      > GRANT SELECT ON pg_stat_database_conflicts TO new_relic;
-      > GRANT SELECT ON pg_stat_bgwriter TO new_relic;
+
+      > CREATE USER newrelic WITH PASSWORD 'PASSWORD';
+      > GRANT SELECT ON pg_stat_database TO newrelic;
+      > GRANT SELECT ON pg_stat_database_conflicts TO newrelic;
+      > GRANT SELECT ON pg_stat_bgwriter TO newrelic;
 
 install:
   version: "3"
   silent: true
+
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
-        - task: setup
+        - task: assert_infra
+        - task: input_assert
+          vars:
+            MAX_RETRIES: 3
+            EXIT130: ""
+        - task: restart
 
-    assert_pre_req:
+    assert_infra:
       cmds:
         - |
           IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >&2
             exit 1
           fi
-        - |
-          IS_DATABASE_VALID=$(PGPASSWORD={{.NR_CLI_DB_PASSWORD}} psql -U {{.NR_CLI_DB_USERNAME}} -w {{.NR_CLI_DATABASE}} -h {{.NR_CLI_DB_HOSTNAME}} -p {{.NR_CLI_PORT}} -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
-          if [ $IS_DATABASE_VALID -eq 0 ] ; then
-            echo "[Error]: The provided database name is not accessible with the provided username and password and port. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info." >> /dev/stderr
-            exit 2
-          fi
-        - |
-          if [ {{.NR_CLI_SSL}} == true ]; then
-            if [ ! -f {{.NR_CLI_CLIENT_CERT_FILE}} ]; then
-              echo "[Error]: SSL is true but no client certificate file exist at '{{.NR_CLI_CLIENT_CERT_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info." >> /dev/stderr
-              exit 11
-            fi
-            if [ ! -f {{.NR_CLI_CERT_KEY}} ]; then
-              echo "[Error]: SSL is true but no PEM key file exist at '{{.NR_CLI_CERT_KEY}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info." >> /dev/stderr
-              exit 12
-            fi
-          fi
-          if [ {{.NR_CLI_TRUST_SERVER_CERTIFICATE}} == true ]; then
-            if [ ! -f {{.NR_CLI_CERT_AUTH_FILE}} ]; then
-              echo "[Error]: Trust certificate is true but no certificate authority file exist at '{{.NR_CLI_CERT_AUTH_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info." >> /dev/stderr
-              exit 13
-            fi
-          fi
 
-    setup:
-      label: "Installing PostgreSQL integration..."
+    input_assert:
       cmds:
         - |
+          TRIES=0
+
+          # Check Env Vars
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          NR_CLI_DB_HOSTNAME="{{.NR_CLI_DB_HOSTNAME}}"
+          NR_CLI_DB_PORT="{{.NR_CLI_DB_PORT}}"
+          NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
+          NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
+          NR_CLI_DATABASE="{{.NR_CLI_DATABASE}}"
+          NR_CLI_SSL="{{.NR_CLI_SSL}}"
+          NR_CLI_CLIENT_CERT_FILE="{{.NR_CLI_CLIENT_CERT_FILE}}"
+          NR_CLI_CERT_KEY="{{.NR_CLI_CERT_KEY}}"
+          NR_CLI_TRUST_SERVER_CERTIFICATE="{{.NR_CLI_TRUST_SERVER_CERTIFICATE}}"
+          NR_CLI_CERT_AUTH_FILE="{{.NR_CLI_CERT_AUTH_FILE}}"
+
+          # Set Defaults
+          NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-'localhost'}
+          NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-'5432'}
+          NR_CLI_DATABASE=${NR_CLI_DATABASE:-'postgres'}
+          NR_CLI_SSL=${NR_CLI_SSL:='false'}
+          NR_CLI_TRUST_SERVER_CERTIFICATE=${NR_CLI_TRUST_SERVER_CERTIFICATE:-'false'}
+
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              printf "\nPostgres Hostname (default: localhost): "
+              read -r NR_CLI_DB_HOSTNAME
+              NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-localhost}
+              printf "Postgres Port (default: 5432): "
+              read -r NR_CLI_DB_PORT
+              NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-5432}
+              ((TRIES++))
+              CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+              CAN_CONNECT=${CAN_CONNECT:-0}
+              if [ $CAN_CONNECT == "6" ]; then
+                printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; fi
+                echo "Please try again"
+              elif [ $CAN_CONNECT == "7" ]; then
+                printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
+                echo "Please try again"
+              else
+                break
+              fi
+            done
+          fi
+
+          TRIES=0
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              printf "Postgres Username: "
+              read -r NR_CLI_DB_USERNAME
+              printf "Postgres Password: "
+              stty -echo
+              read -r NR_CLI_DB_PASSWORD
+              stty echo
+              printf "\nPostgres Database (default: postgres): "
+              read -r NR_CLI_DATABASE
+              NR_CLI_DATABASE=${NR_CLI_DATABASE:-postgres}
+              ((TRIES++))
+              if [ "$NR_CLI_DB_USERNAME" == "" ] || [ "$NR_CLI_DB_PASSWORD" == "" ]; then
+                printf "\n[Error]: Please provide a valid Username and Password. Fields cannot be blank.\n" >&2
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
+                echo "Please try again"
+                continue
+              fi
+
+              IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
+              if [ $IS_DATABASE_VALID -eq 0 ] ; then
+                printf "\n[Error]: The provided database name is not accessible with the provided username and password and port.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
+                echo "Please try again"
+              fi
+              break
+            done
+            printf "\nConnectivity and User Credentials are valid!\n\n"
+          fi
+
+          TRIES=0
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              printf "Use SSL to connect? (false/true) (default: false): "
+              read -r NR_CLI_SSL
+              NR_CLI_SSL=${NR_CLI_SSL:-false}
+              ((TRIES++))
+              if [[ "$NR_CLI_SSL" == "true" ]]; then
+                printf "Client Certificate file (if applicable): "
+                read -r NR_CLI_CLIENT_CERT_FILE
+                printf "PEM key file (if applicable): "
+                read -r NR_CLI_CERT_KEY
+                printf "Trust certificate? (false/true) (default: false): "
+                read -r NR_CLI_TRUST_SERVER_CERTIFICATE
+                NR_CLI_TRUST_SERVER_CERTIFICATE=${NR_CLI_TRUST_SERVER_CERTIFICATE:-false}
+                if [[ "$NR_CLI_TRUST_SERVER_CERTIFICATE" == "true" ]]; then
+                  printf "Certificate Authority file (if applicable): "
+                  read -r NR_CLI_CERT_AUTH_FILE
+                fi
+
+                if [ ! -f $NR_CLI_CLIENT_CERT_FILE ]; then
+                  printf "\n[Error]: SSL is true but no client certificate file exist at '$NR_CLI_CLIENT_CERT_FILE'.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
+                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 11; else continue; fi
+                  echo "Please try again"
+                fi
+                if [ ! -f $NR_CLI_CERT_KEY ]; then
+                  printf "\n[Error]: SSL is true but no PEM key file exist at '$NR_CLI_CERT_KEY'.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
+                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 12; else continue; fi
+                  echo "Please try again"
+                fi
+                if [ "$NR_CLI_TRUST_SERVER_CERTIFICATE" == "true" ] && [ ! -f $NR_CLI_CERT_AUTH_FILE ]; then
+                  printf "\n[Error]: Trust certificate is true but no certificate authority file exist at '$NR_CLI_CERT_AUTH_FILE'.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
+                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 13; else continue; fi
+                  echo "Please try again"
+                fi
+              fi
+              break
+            done
+          fi
+
+          if [ "$NR_CLI_DB_USERNAME" == "" ]; then
+            EXIT130=" - NR_CLI_DB_USERNAME=<postgres_username>\n"
+          fi
+          if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
+            EXIT130="$EXIT130 - NR_CLI_DB_PASSWORD=<postgres_password>\n"
+          fi
+
+          if [ "$EXIT130" != "" ]; then
+            printf "You did not provide all the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
+            exit 130
+          else
+            printf "\n[OK] All checks passed. Installing Postgres Integration...\n\n"
+          fi
+
+          # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-        - |
           sudo yum install nri-postgresql -y
-        - |
           if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
           fi
           sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
-        - |
-          if [ {{.NR_CLI_SSL}} == true ]; then
-            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+
+          if [ "$NR_CLI_SSL" == "true" ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<EOT
           integration_name: com.newrelic.postgresql
           instances:
             - name: postgres
               command: all_data
               arguments:
-                username: {{.NR_CLI_DB_USERNAME}}
-                password: {{.NR_CLI_DB_PASSWORD}}
-                hostname: {{.NR_CLI_DB_HOSTNAME}}
-                database: {{.NR_CLI_DATABASE}}
-                port: {{.NR_CLI_PORT}}
+                hostname: $NR_CLI_DB_HOSTNAME
+                port: $NR_CLI_DB_PORT
+                username: $NR_CLI_DB_USERNAME
+                password: $NR_CLI_DB_PASSWORD
+                database: $NR_CLI_DATABASE
                 collection_list: 'ALL'
                 collect_db_lock_metrics: false
                 enable_ssl: true
-                trust_server_certificate: {{.NR_CLI_TRUST_SERVER_CERTIFICATE}}
-                ssl_root_cert_location: {{.NR_CLI_CERT_AUTH_FILE}}
-                ssl_cert_location: {{.NR_CLI_CLIENT_CERT_FILE}}
-                ssl_key_location: {{.NR_CLI_CERT_KEY}}
+                trust_server_certificate: $NR_CLI_TRUST_SERVER_CERTIFICATE
+                ssl_root_cert_location: $NR_CLI_CERT_AUTH_FILE
+                ssl_cert_location: $NR_CLI_CLIENT_CERT_FILE
+                ssl_key_location: $NR_CLI_CERT_KEY
                 timeout: 10
           EOT
           else
-            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<"EOT"
+            sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<EOT
           integration_name: com.newrelic.postgresql
           instances:
             - name: postgres
               command: all_data
               arguments:
-                username: {{.NR_CLI_DB_USERNAME}}
-                password: {{.NR_CLI_DB_PASSWORD}}
-                hostname: {{.NR_CLI_DB_HOSTNAME}}
-                database: {{.NR_CLI_DATABASE}}
-                port: {{.NR_CLI_PORT}}
+                hostname: $NR_CLI_DB_HOSTNAME
+                port: $NR_CLI_DB_PORT
+                username: $NR_CLI_DB_USERNAME
+                password: $NR_CLI_DB_PASSWORD
+                database: $NR_CLI_DATABASE
                 collection_list: 'ALL'
                 collect_db_lock_metrics: false
                 enable_ssl: false
@@ -173,7 +263,23 @@ install:
           EOT
           fi
 
-        - sudo systemctl restart newrelic-infra.service
+    restart:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
 
 postInstall:
   info: |2

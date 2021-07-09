@@ -12,6 +12,7 @@ installTargets:
     platform: amazon
     platformVersion: "2"
 
+
 keywords:
   - Infrastructure
   - Agent
@@ -20,7 +21,7 @@ keywords:
 
 processMatch: []
 
-validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 5 minutes ago"
 
 install:
   version: "3"
@@ -30,84 +31,116 @@ install:
     default:
       cmds:
         - task: assert_pre_req
+        - task: cleanup
         - task: setup_license
+        - task: setup_proxy
         - task: install_infra
         - task: restart
         - task: assert_agent_started
+        - task: assert_agent_status_ok
 
     assert_pre_req:
       cmds:
         - |
           IS_GREP_INSTALLED=$(which grep | wc -l)
           if [ $IS_GREP_INSTALLED -eq 0 ] ; then
-            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >> /dev/stderr
+            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
             exit 10
           fi
         - |
           IS_SED_INSTALLED=$(which sed | wc -l)
           if [ $IS_SED_INSTALLED -eq 0 ] ; then
-            echo "sed is required to run the newrelic install. Please install sed and re-run the installation." >> /dev/stderr
+            echo "sed is required to run the newrelic install. Please install sed and re-run the installation." >&2
             exit 11
           fi
         - |
           IS_AWK_INSTALLED=$(which awk | wc -l)
           if [ $IS_AWK_INSTALLED -eq 0 ] ; then
-            echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >> /dev/stderr
+            echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >&2
             exit 12
           fi
         - |
           IS_CAT_INSTALLED=$(which cat | wc -l)
           if [ $IS_CAT_INSTALLED -eq 0 ] ; then
-            echo "cat is required to run the newrelic install. Please install cat and re-run the installation." >> /dev/stderr
+            echo "cat is required to run the newrelic install. Please install cat and re-run the installation." >&2
             exit 13
           fi
         - |
           IS_TEE_INSTALLED=$(which tee | wc -l)
           if [ $IS_TEE_INSTALLED -eq 0 ] ; then
-            echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >> /dev/stderr
+            echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >&2
             exit 14
           fi
         - |
           IS_TOUCH_INSTALLED=$(which touch | wc -l)
           if [ $IS_TOUCH_INSTALLED -eq 0 ] ; then
-            echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >> /dev/stderr
+            echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >&2
             exit 15
           fi
         - |
           IS_DOCKER_CONTAINER=$(sudo grep 'docker\|lxc' /proc/1/cgroup | wc -l)
           if [ $IS_DOCKER_CONTAINER -gt 0 ] ; then
-            echo "We’ve detected that you are installing our infrastructure agent inside a docker container. This agent is not designed to be installed within a container, but rather on the host it is running on or as a separate container. For additional information visit: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/linux-installation/docker-container-infrastructure-monitoring/" >> /dev/stderr
-            exit 18
+            echo "We’ve detected that you are installing our infrastructure agent inside a docker container. This agent is not designed to be installed within a container, but rather on the host it is running on or as a separate container. For additional information visit: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/linux-installation/docker-container-infrastructure-monitoring/" >&2
+            exit 131
           fi
         - |
           IS_WSL_CONTAINER=$(sudo grep -i 'Microsoft' /proc/version | wc -l)
           if [ $IS_WSL_CONTAINER -gt 0 ] ; then
-            echo "Sorry, our infrastructure agent cannot be installed for Microsoft Windows Subsystem for Linux, this is an unsupported operating system." >> /dev/stderr
+            echo "Sorry, our infrastructure agent cannot be installed for Microsoft Windows Subsystem for Linux, this is an unsupported operating system." >&2
             exit 19
           fi
+
+    cleanup:
+      cmds:
+        - |
+          sudo rm -rf /var/db/newrelic-infra/data
 
     setup_license:
       cmds:
         - |
           if [ -f /etc/newrelic-infra.yml ]; then
-            sudo rm /etc/newrelic-infra.yml;
+            sudo sed -i "/^staging/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
+            sudo sed -i "/^license_key/d" /etc/newrelic-infra.yml
+
+          else
+            sudo touch /etc/newrelic-infra.yml
           fi
-          sudo touch /etc/newrelic-infra.yml;
-        - |
-          sudo tee /etc/newrelic-infra.yml > /dev/null <<"EOT"
-          license_key: {{.NEW_RELIC_LICENSE_KEY}}
-          enable_process_metrics: true
-          EOT
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-            echo 'staging: true' | sudo tee -a /etc/newrelic-infra.yml > /dev/null
+            sudo echo 'staging: true' >> /etc/newrelic-infra.yml
+          fi
+          sudo echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
+          sudo echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
+          sudo echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
+          sudo echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
+
+    setup_proxy:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra.yml ]; then
+            sudo sed -i "/^proxy/d" /etc/newrelic-infra.yml
+          fi
+
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            sudo echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
 
     install_infra:
       cmds:
-        - sudo curl -s -o /etc/yum.repos.d/newrelic-infra.repo https://download.newrelic.com/infrastructure_agent/linux/yum/el/7/x86_64/newrelic-infra.repo
-        - sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-        - sudo yum -y -q install newrelic-infra
+        - |
+          ARCH=$(uname -m)
+          REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/amazonlinux/2/$ARCH/newrelic-infra.repo")
+          IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
+          if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
+            echo "newrelic infrastructure agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+            exit 131
+          fi
+          sudo curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+          sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+          sudo yum -y -q install newrelic-infra
       silent: true
 
     restart:
@@ -135,9 +168,39 @@ install:
           sleep 10
           IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >> /dev/stderr
+            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 31
           fi
+
+    assert_agent_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Running agent status check attempt..."
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            statusCheckOutput=$(curl http://localhost:18003/v1/status/errors -s)
+            if [ "$statusCheckOutput" == "{}" ]; then
+              echo "Agent status check ok."
+              break
+            else
+              if [ "$statusCheckOutput" == "" ]; then
+                if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  echo "infra-agent status endpoint not available" >&2
+                  exit 32
+                fi
+              else
+                if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  echo "infra-agent status check not healthy: $statusCheckOutput" >&2
+                  exit 33
+                fi
+              fi
+            fi
+
+            sleep 2
+          done
 
 postInstall:
   info: |2

@@ -6,6 +6,10 @@ repository: https://github.com/newrelic/nri-apache
 dependencies:
   - infrastructure-agent-installer
 
+observabilityPacks:
+  - name: Apache
+    level: NEWRELIC
+
 installTargets:
   - type: host
     os: linux
@@ -40,11 +44,6 @@ logMatch:
 # installed is successfully sending data to New Relic
 validationNrql: "SELECT count(*) from ApacheSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
-inputVars:
-  - name: "NR_CLI_STATUS_URL"
-    prompt: "Apache status URL (default: http://127.0.0.1/server-status?auto)"
-    default: "http://127.0.0.1/server-status?auto"
-
 preInstall:
   info: |2
       To capture data from the Apache integration, you'll first need to meet these prerequisites:
@@ -59,55 +58,114 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
-        - task: setup
+        - task: assert_infra
+        - task: input_assert
+          vars:
+            MAX_RETRIES: 3
         - task: restart
 
-    assert_pre_req:
+    assert_infra:
       cmds:
         - |
           IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >> /dev/stderr
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >&2
             exit 1
           fi
-        - |
-          STUB_STATUS_ENABLED=$(curl {{.NR_CLI_STATUS_URL}} -s | grep "IdleWorkers:" | wc -l)
-          if [ $STUB_STATUS_ENABLED -eq 0 ] ; then
-            echo "Status page is not returning data. Apache2 must be correctly configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info." >> /dev/stderr
-            exit 2
-          fi
 
-    setup:
-      label: "Installing Apache integration..."
+    input_assert:
       cmds:
         - |
+          TRIES=0
+
+          # Check Env Vars
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          NR_CLI_STATUS_URL="{{.NR_CLI_STATUS_URL}}"
+
+          # Set Defaults
+          NR_CLI_STATUS_URL=${NR_CLI_STATUS_URL:-'http://127.0.0.1/server-status?auto'}
+
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              printf "\nApache status URL (default: http://127.0.0.1/server-status?auto): "
+              read -r NR_CLI_STATUS_URL
+              NR_CLI_STATUS_URL=${NR_CLI_STATUS_URL:-http://127.0.0.1/server-status?auto}
+              ((TRIES++))
+
+              code=$(curl -I $NR_CLI_STATUS_URL -w %{response_code} -so '/dev/null')
+              if [ $code != "200" ]; then
+                if [ $code == "401" ] || [ $code == "403" ]; then
+                  echo "The status url provided $NR_CLI_STATUS_URL has forbidden access. Modify the access for this host on the Apache configuration and restart the server\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
+                elif [ $code == "000" ]; then
+                  CURL_ERROR=$(curl $NR_CLI_STATUS_URL 2>&1 1>/dev/null -s -S)
+                  ERROR_CODE=$(echo $CURL_ERROR | awk -F'[()]' '{print $2}')
+                  if [ $ERROR_CODE == "6" ]; then
+                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
+                    printf "${ERROR_MSG}\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 5; else continue; fi
+                  elif [ $ERROR_CODE == "7" ]; then
+                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
+                    printf "${ERROR_MSG}\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; else continue; fi
+                  fi
+                else
+                  printf "\nApache status page is returning http error code $code. Apache must be correctly configured for New Relic to collect data. \nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                fi
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; else continue; fi
+                echo "Please try again"
+                continue
+              fi
+              STUB_STATUS_ENABLED=$(curl $NR_CLI_STATUS_URL -s | grep "IdleWorkers:" | wc -l)
+              if [ $STUB_STATUS_ENABLED -eq 0 ] ; then
+                printf "\nStatus page is not returning expected data. Apache2 must be correctly configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
+                echo "Please try again"
+                continue
+              fi
+              break
+            done
+          fi
+          printf "\n[OK] All checks passed. Installing Apache Integration...\n\n"
+
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-        - |
           sudo yum install nri-apache -y
-        - |
+
           if [ -f /etc/newrelic-infra/integrations.d/apache-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/apache-config.yml;
           fi
-
           sudo cp /etc/newrelic-infra/integrations.d/apache-config.yml.sample /etc/newrelic-infra/integrations.d/apache-config.yml;
-
-        - |
-          sudo tee /etc/newrelic-infra/integrations.d/apache-config.yml > /dev/null <<"EOT"
+          sudo tee /etc/newrelic-infra/integrations.d/apache-config.yml > /dev/null <<EOT
           integration_name: com.newrelic.apache
 
           instances:
               - name: apache-server-metrics
                 command: metrics
                 arguments:
-                    status_url: {{.NR_CLI_STATUS_URL}}
+                    status_url: $NR_CLI_STATUS_URL
+
+                    # New users should leave this property as 'true', to identify the
+                    # monitored entities as 'remote'. Setting this property to 'false' (the
+                    # default value) is deprecated and will be removed soon, disallowing
+                    # entities that are identified as 'local'.
+                    # Please check the documentation to get more information about local
+                    # versus remote entities:
+                    # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
                     remote_monitoring: true
+
               - name: apache-server-inventory
                 command: inventory
                 arguments:
-                    status_url: {{.NR_CLI_STATUS_URL}}
+                    status_url: $NR_CLI_STATUS_URL
+
+                    # New users should leave this property as 'true', to identify the
+                    # monitored entities as 'remote'. Setting this property to 'false' (the
+                    # default value) is deprecated and will be removed soon, disallowing
+                    # entities that are identified as 'local'.
+                    # Please check the documentation to get more information about local
+                    # versus remote entities:
+                    # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
                     remote_monitoring: true
 
           EOT

@@ -17,10 +17,22 @@ keywords:
   - aspnet
   - core
 
-processMatch:
-  - w3wp.exe
+processMatch: []
 
-validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+preInstall:
+  requireAtDiscovery: |
+    powershell -command '
+    $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
+    if ($iisEnabled.State -ne "Enabled") {
+      # IIS is not installed
+      exit 3
+    }
+
+    # IIS is installed
+    exit 0
+    '
+    
+validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
 successLinkConfig:
   type: EXPLORER
@@ -35,12 +47,12 @@ install:
       cmds:
         - task: verify_continue
         - task: assert_admin_perms
-        - task: assert_pre_req
         - task: stop
         - task: remove_any_previous
         - task: install
         - task: configure
         - task: start
+        - task: cli_validate
         - task: ensure_sites_started
 
     verify_continue:
@@ -89,25 +101,8 @@ install:
           powershell -command '
           $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
           if (! $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            Write-Host -ForegroundColor Red "The installation recipe for the .NET Agent on Windows must be run with Administrator permissions."
-            exit 7
-          }
-          '
-
-    assert_pre_req:
-      cmds:
-        - |
-          powershell -command '
-          $iisEnabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-WebServer | select State
-          if ($iisEnabled.State -ne "Enabled") {
-            Write-Host -ForegroundColor Red "IIS is not installed."
-            exit 5
-          }
-
-          $aspNet45Enabled = Get-WindowsOptionalFeature -Online -FeatureName IIS-ASPNET45 | select State
-          if ($aspNet45Enabled.State -ne "Enabled") {
-            Write-Host -ForegroundColor Red "ASP.NET is not installed."
-            exit 6
+            Write-Host -ForegroundColor Red "The installation for the .NET Agent on Windows must be run in Powershell with Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
+            exit 131
           }
           '
 
@@ -115,7 +110,20 @@ install:
       cmds:
         - |
           powershell -command '
-          iisreset /stop | Out-Null
+          function Stop-IIS {
+            try {
+              iisreset /stop | Out-Null
+              return $true
+            }
+            catch { return $false }
+          }
+          
+          $DidIisStop = (Stop-IIS)       
+          if (-not $DidIisStop) {
+              # Try to stop IIS a second time.
+              # Based on past experience, the second attempt almost always works.
+              Stop-IIS | Out-Null
+          }
           '
 
     remove_any_previous:
@@ -159,13 +167,7 @@ install:
 
           $uninstallIds = Find-UninstallGuids -Match "New Relic .NET Agent"
           foreach ($uninstallId in $uninstallIds) {
-            try {
-              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-              Invoke-Expression $uninstallCommand -ErrorAction SilentlyContinue | Out-Null
-              # wait here to allow uninstall command to complete since it returns without waiting
-              Start-Sleep -s 15
-            }
-            catch {}
+            Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/x $uninstallId" -Wait -NoNewWindow
           }
           '
 
@@ -173,11 +175,38 @@ install:
       cmds:
         - |
           powershell -command '
-          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
-          (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi")
-          msiexec.exe /qn /i "$env:TEMP\NewRelicDotNetAgent_x64.msi" NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} | Out-Null
+          try {
+            [Net.ServicePointManager]::SecurityProtocol = "tls";
+            [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+          }
+          catch {}
+
+          try {
+            (New-Object System.Net.WebClient).DownloadFile("{{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi")
+          }
+          catch {
+            $baseException = $_.Exception.GetBaseException()
+            Write-Host -ForegroundColor Red "Failed to download New Relic .NET Agent ($($baseException.Message))"
+            $errorCode = 24 # unknown download error
+
+            switch ($baseException) {
+              { $_ -is [Net.WebException] }            { $errorCode = 25 } # web download error
+              { $_ -is [IO.IOException] }              { $errorCode = 26 } # file io error
+              { $_ -is [UnauthorizedAccessException] } { $errorCode = 26 } # file io error
+            }
+
+            exit $errorCode
+          }
+
+          $installCode = (Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/i","$env:TEMP\NewRelicDotNetAgent_x64.msi","NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" -PassThru -Wait -NoNewWindow -RedirectStandardOutput ".\NUL").ExitCode
+          
+          # https://docs.microsoft.com/en-us/windows/win32/msi/error-codes
+          if (@(0,1641,3010) -NotContains $installCode) {
+            Write-Host -ForegroundColor Red "Failed to install New Relic .NET Agent ($installCode)"
+            exit $installCode # install code error
+          }
           '
-        - echo "New Relic .NET agent installed"
+        - echo "New Relic .NET Agent installed"
 
     configure:
       cmds:
@@ -206,7 +235,7 @@ install:
           }
           $xdoc.Save($configPath)
           '
-        - echo "New Relic .NET agent configured"
+        - echo "New Relic .NET Agent configured"
 
     start:
       cmds:
@@ -215,47 +244,20 @@ install:
           iisreset /start | Out-Null
           '
 
+    cli_validate:
+      cmds:
+        - |
+          powershell -command '
+          Start-Process -FilePath "C:\Program Files\New Relic\New Relic CLI\newrelic.exe" -ArgumentList "diagnose","validate" -Wait -NoNewWindow -RedirectStandardOutput ".\NUL"
+          '
+
     ensure_sites_started:
       ignore_error: true
       cmds:
         - |
           powershell -command '
-          Write-Host ""
-          Write-Host -ForegroundColor Yellow "================================================================================"
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "=                                  Important                                   ="
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "=    Your application needs to be sent traffic to validate the installation.   ="
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "=         Please send approximately 3 requests to your application or          ="
-          Write-Host -ForegroundColor Yellow "=       enter the application URL and this tool will send the requests.        ="
-          Write-Host -ForegroundColor Yellow "=                                                                              ="
-          Write-Host -ForegroundColor Yellow "================================================================================"
-          Write-Host ""
-
-          # If NEW_RELIC_ASSUME_YES is set to true, will not prompt for input
-          $NEW_RELIC_ASSUME_YES = "{{.NEW_RELIC_ASSUME_YES}}"
-          if ($NEW_RELIC_ASSUME_YES -ieq "false") {
-            Write-Host "Press ENTER to skip or type URL and press ENTER to continue? " -NoNewLine
-            $NEW_RELIC_IIS_URL = $Host.UI.ReadLine()
-            Write-Host ""
-          }
-
-          Write-Host "Sending requests to your applications..."
-          if ($NEW_RELIC_IIS_URL) {
-            Write-Host $NEW_RELIC_IIS_URL
-            while($val -ne 3) {
-              try {
-                $val++
-                Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 5 -Uri $NEW_RELIC_IIS_URL -ErrorAction SilentlyContinue | Out-Null
-              }
-              catch {}
-            }
-          }
-
           try {
-            Get-WebURL "IIS:\Sites\*" | ForEach-Object { Write-Host $_.ResponseUri.AbsoluteUri }
+            Get-WebURL "IIS:\Sites\*" | Out-Null
           }
           catch {}
-          Write-Host "Finished sending requests."
           '

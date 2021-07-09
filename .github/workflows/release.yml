@@ -28,3 +28,32 @@ jobs:
           body: ${{steps.recentCommits.outputs.release_body}}
           draft: false
           prerelease: true
+
+  zip-recipes:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Zip recipes
+        uses: papeloto/action-zip@v1
+        with:
+          files: recipes/ manifest.json
+          dest: recipes.zip
+
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.2.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload recipes zip file
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/recipes.zip
+          asset_name: recipes.zip
+          asset_content_type: application/octet-stream
