@@ -83,6 +83,11 @@ install:
             fi
           done
 
+          file_exist=$(find /var/lib/docker/containers -name "*.log" | wc -l)
+          if [ $file_exist -gt 0 ]; then
+            target_log_files+=("/var/lib/docker/containers/*/*.log")
+          fi
+
           NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             if [ ${#target_log_files[@]} -gt 0 ]; then
@@ -116,8 +121,12 @@ install:
           echo "logs:" | sudo tee /etc/newrelic-infra/logging.d/logging.yml > /dev/null
           for log_file in "${target_log_files[@]}"
           do
-            NAME=$(basename $log_file)
-            echo -e "  - name: $NAME\n    file: $log_file" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+            if [ "$log_file" == "/var/lib/docker/containers/*/*.log"]; then
+              echo -e "  - name: containers\n    file: /var/lib/docker/containers/*/*.log" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+            else
+              NAME=$(basename $log_file)
+              echo -e "  - name: $NAME\n    file: $log_file" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+            fi
           done
 
     setup_discovered:
