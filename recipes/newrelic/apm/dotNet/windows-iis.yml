@@ -49,6 +49,8 @@ install:
         - task: assert_admin_perms
         - task: stop
         - task: remove_any_previous
+        - task: assert_required_powershell
+        - task: download
         - task: install
         - task: configure
         - task: start
@@ -171,7 +173,22 @@ install:
           }
           '
 
-    install:
+    assert_required_powershell:
+      cmds:
+        - |
+          powershell -command '
+          $powershellEnabled = ""
+          try {
+            $powershellEnabled = Get-Command -All powershell.exe | select Name
+          }
+          catch { }
+          if ($powershellEnabled.Name -ne "powershell.exe") {
+            Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
+            exit 131;
+          }
+          '
+
+    download:
       cmds:
         - |
           powershell -command '
@@ -197,7 +214,12 @@ install:
 
             exit $errorCode
           }
+          '
 
+    install:
+      cmds:
+        - |
+          powershell -command '
           $installCode = (Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/i","$env:TEMP\NewRelicDotNetAgent_x64.msi","NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" -PassThru -Wait -NoNewWindow -RedirectStandardOutput ".\NUL").ExitCode
           
           # https://docs.microsoft.com/en-us/windows/win32/msi/error-codes
