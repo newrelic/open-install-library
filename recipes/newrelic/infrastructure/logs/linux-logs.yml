@@ -149,7 +149,11 @@ install:
               echo -e "  - name: containers\n    file: /var/lib/docker/containers/*/*.log" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
             else
               NAME=$(basename $log_file)
-              echo -e "  - name: $NAME\n    file: $log_file" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              echo -e "  - name: $NAME" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              echo -e "    file: $log_file" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              if [ "$NAME" == "newrelic-cli.log" ]; then
+                echo -e "    attributes:\n      newrelic-cli: true" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              end
             fi
           done
 
@@ -159,7 +163,21 @@ install:
             # index is incremented to facilitate dynamic name values for each discovered log file path
             index=0
             for filePath in $(echo -n $discoveredLogFiles | sed "s/,/ /g"); do
-              echo -e "  - name: configured-logs-$index\n    file: $filePath" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+
+              echo -e "  - name: configured-logs-$index" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+              echo -e "    file: $filePath" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+
+              if [[ $filePath == *"nginx/error"* ]]; then
+                echo -e "    attributes:\n      logtype: nginx-error" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              fi
+              if [[ $filePath == *"nginx/access"* ]]; then
+                echo -e "    attributes:\n      logtype: nginx" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              fi
+
+              if [[ $filePath == *"mysql/error"* ]]; then
+                echo -e "    attributes:\n      logtype: mysql-error" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              fi
+
               index=$((index+1))
             done
           fi
