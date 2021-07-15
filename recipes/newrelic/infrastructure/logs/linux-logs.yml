@@ -35,7 +35,6 @@ install:
         - task: assert_pre_req
         - task: init
         - task: setup
-        - task: restart
         - task: logEvent
 
     assert_pre_req:
@@ -182,26 +181,11 @@ install:
             done
           fi
 
-    restart:
-      cmds:
-        - |
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            sudo systemctl restart newrelic-infra
-          else 
-            if [ {{.IS_INITCTL}} -gt 0 ]; then
-              sudo initctl restart newrelic-infra
-            else
-              sudo /etc/init.d/newrelic-infra restart
-            fi
-          fi
-      vars:
-        IS_SYSTEMCTL:
-          sh: command -v systemctl | wc -l
-        IS_INITCTL:
-          sh: command -v initctl | wc -l
-
     logEvent:
       cmds:
+        # Wait to give the services time to get going with the new configuration and plugin startup
+        - |
+          sleep 10
         - |
           echo "Log configuration:" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
           sudo cat /etc/newrelic-infra/logging.d/logging.yml | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
