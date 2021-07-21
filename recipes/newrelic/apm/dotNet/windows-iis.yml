@@ -263,7 +263,20 @@ install:
       cmds:
         - |
           powershell -command '
-          iisreset /start | Out-Null
+          function Start-IIS {
+            try {
+              iisreset /start | Out-Null
+              return $true
+            }
+            catch { return $false }
+          }
+          
+          $DidIisStart = (Start-IIS)       
+          if (-not $DidIisStart) {
+              # Try to start IIS a second time.
+              # Based on past experience, the second attempt almost always works.
+              Start-IIS | Out-Null
+          }
           '
 
     cli_validate:
