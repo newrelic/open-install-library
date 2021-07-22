@@ -120,11 +120,12 @@ install:
             catch { return $false }
           }
           
-          $DidIisStop = (Stop-IIS)       
-          if (-not $DidIisStop) {
-              # Try to stop IIS a second time.
-              # Based on past experience, the second attempt almost always works.
-              Stop-IIS | Out-Null
+          for ($tries = 0; $tries -lt 30; $tries++) {
+            if ((Stop-IIS)) {
+              break
+            }
+            # Try to stop IIS again after a delay
+            Start-Sleep -s 2
           }
           '
 
@@ -263,7 +264,21 @@ install:
       cmds:
         - |
           powershell -command '
-          iisreset /start | Out-Null
+          function Start-IIS {
+            try {
+              iisreset /start | Out-Null
+              return $true
+            }
+            catch { return $false }
+          }
+          
+          for ($tries = 0; $tries -lt 30; $tries++) {
+            if ((Start-IIS)) {
+              break
+            }
+            # Try to start IIS again after a delay
+            Start-Sleep -s 2
+          }
           '
 
     cli_validate:
