@@ -1,0 +1,508 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: php-agent-installer
+displayName: PHP Agent Installer for Debian
+description: New Relic install recipe for instrumenting PHP applications on Debian systems with php-fpm, nginx, or apache.
+repository: https://github.com/newrelic/newrelic-php-agent
+
+installTargets:
+  - type: application
+    os: linux
+    platform: "debian"
+  - type: application
+    os: linux
+    platform: "ubuntu"
+
+keywords:
+  - php
+  - fpm
+
+processMatch:
+  - php-fpm
+
+validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
+
+inputVars:
+  - name: "NR_PHP_APPLICATION"
+    prompt: "What is the name of your PHP application?"
+    default: "PHP Application"
+  - name: "NR_PHP_RESTART"
+    prompt: "Restart the PHP web service after PHP agent installation? Selecting 'y' will automatically restart php-fpm, nginx, or apache depending on the service that is detected. Selecting 'n' will require you to manually restart the process when prompted. (y/n)"
+    default: "y"
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    TMP_INSTALL_DIR:
+      sh: mktemp -d /tmp/newrelic-php-agent.XXXXXX
+    WHITE: '\033[0;97m'
+    RED: '\033[0;31m'
+    GRAY: '\033[38;5;240m'
+    CYAN: '\033[0;36m'
+    NOCOLOR: '\033[0m'
+    YELLOW: '\033[0;33m'
+    ARROW: '\033[0;36m===> \033[0;97m'
+
+  tasks:
+    default:
+      cmds:
+        - task: verify_continue
+        - task: assert_pre_req
+        - task: create_shared
+        - task: clean_slate
+        - task: detect_services
+        - task: add_gnupg2_if_required
+        - task: install_deb
+        - task: install_tarball
+        - task: configure
+        - task: restart_services
+        - task: send_transaction
+        - task: cleanup_temp_files
+
+    verify_continue:
+      cmds:
+        - |
+          echo -e "{{.WHITE}}Confirmation:  The following options were selected.  If you wish to change an option, please select 'n' at the prompt and restart the installation."
+          echo -e "* The following application name was selected: {{.NR_PHP_APPLICATION}}"
+          if [ "{{.NR_PHP_RESTART}}" = "y" ]; then
+            echo -e "{{.YELLOW}}* Automatic process restart was selected.  This installation will restart the php-fpm or nginx process depending on the application architecture detected.{{.NOCOLOR}}"
+          else
+            echo -e "{{.YELLOW}}* Manual process restart was selected.  This installation will not automatically restart the apache, php-fpm, or nginx process depending on the application architecture detected.  You will be prompted to restart manually in order to complete a successful installation of the PHP agent.{{.NOCOLOR}}"
+          fi
+          echo -e "{{.GRAY}}
+          Note: If you are hosting your PHP application on something other than apache, nginx, or php-fpm, please select 'n' and check out our other installation options:
+          https://docs.newrelic.com/docs/agents/php-agent/installation/php-agent-installation-overview/{{.NOCOLOR}}
+          "
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+            while :; do
+              echo -n -e "{{.WHITE}}Do you want to install the PHP Agent Y/N (default: Y)? {{.NOCOLOR}}"
+              read answer
+              echo ""
+              NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                NEW_RELIC_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "n" ]] || [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+                echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
+                exit 130
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "y" ]] || [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
+                break
+              fi
+              echo -e "{{.WHITE}}Please type Y or N only.{{.NOCOLOR}}"
+            done
+          fi
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ -z "$SUDO_USER" ]; then
+            echo "This installation recipe for the New Relic PHP agent must be run under sudo." >> /dev/stderr
+            exit 7
+          fi
+        - |
+          IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
+          if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]
+          then
+            echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'." >> /dev/stderr
+            exit 20
+          fi
+        - |
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >> /dev/stderr
+              exit ${code}
+            fi
+          done
+
+    create_shared:
+      cmds:
+        - |
+          rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
+          mkdir -p {{.TMP_INSTALL_DIR}}
+          echo -e "{{.WHITE}}Temporary directory {{.TMP_INSTALL_DIR}} created{{.NOCOLOR}}"
+
+    clean_slate:
+      cmds:
+        - |
+          #
+          # The `|| true` is required else if there isn't a daemon running,
+          # the killall command will always exit 1 and terminate the recipe.
+          #
+          killall -q newrelic-daemon || true
+          rm -rf /var/log/newrelic 2>/dev/null
+
+    detect_services:
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Detecting services{{.GRAY}}"
+          cd {{.TMP_INSTALL_DIR}}
+          rm -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt 2>/dev/null
+          rm -f {{.TMP_INSTALL_DIR}}/processes_to_restart.txt 2>/dev/null
+          #
+          # For guided installs, we currently support `php-fpm`, `apache`, and `nginx`.
+          # There is a reason for the order.  According our install script:
+          # If both Apache and FPM are installed, we want FPM to win:
+          # while there are many ways to end up with libapache2-mod-php5 installed,
+          # it's unlikely php5-fpm will be installed unless FPM is actually in use.
+          #
+          declare -a guided_support=("(php-fpm)" "(httpd|apache2|apache)" "(nginx)")
+          current_user=$SUDO_USER
+          for PROCESS in ${guided_support[@]}
+          do
+            #
+            # First look for the full process name with a minimal set of other values so
+            # that there is no chance of filtering off of those (for instance, when the
+            # username is `apache` or something similar to the filters.  Then use the name
+            # for other searches.
+            #
+            full_process_name=$(ps xf | egrep $PROCESS | grep -v grep | grep -v yml | head -n1 | awk '{print $5}')
+            priv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
+            fpm_nginx_process_name=$(echo "${full_process_name}" | sed -n 's/\(.*\):$/\1/p')
+            if [ -n "${fpm_nginx_process_name}" ]; then
+              fpm_process_loc=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $14}')
+              fpm_ver=$(echo "${fpm_process_loc}" | sed -n 's/.*\/php\/\([578].[0-9]\)\/.*/\1/p')
+              if [ -n "${fpm_ver}" ]; then
+                # It's fpm.
+                process_name="php${fpm_ver}-fpm"
+              else
+                # It's nginx.
+                process_name=$fpm_nginx_process_name
+              fi
+            else
+              process_name=$(echo $full_process_name | sed -n 's/.*\/\(.*\)$/\1/p')
+            fi
+            nonpriv_user=
+            if [ -n "${priv_user}" ]; then
+              nonpriv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
+            fi
+            if [ -n "${process_name}" ]; then
+              if [ -z "${nonpriv_user}" ]; then
+                nonpriv_user=$current_user
+              fi
+              #
+              # Output all processes to be restarted to a file with the following format:
+              # process_name privileged_user
+              # When the process is restarted, it will be used with the associated
+              # privileged user.
+              #
+              echo "$process_name $priv_user" >> {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
+              #
+              # Save all non-privileged users associated with detected processes.
+              # When initiating the transaction, it will ONLY be used with
+              # the first associated non-privileged user because due the reasoning above
+              # that the installation logic adheres to, between FPM and Apache,
+              # FPM will be the one to use and `newrelic-install.sh` only
+              # installs the `newrelic.ini` in one web location.
+              #
+              echo "$nonpriv_user" >> {{.TMP_INSTALL_DIR}}/nonpriv_users.txt
+            fi
+          done
+
+    add_gnupg2_if_required:
+      cmds:
+        - |
+          if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
+            #
+            # Check if gnupg is already installed, and if not, install it.
+            #
+            if [ {{.HAS_GPG}} -eq 0 ] ; then
+              sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+              sudo apt-get install gnupg2 -y
+            fi
+          fi
+      vars:
+        HAS_GPG:
+          sh: command -v gpg | wc -l
+        DEBIAN_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+
+    install_tarball:
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Installing New Relic PHP Agent{{.GRAY}}"
+          echo -e "{{.WHITE}}Downloading newest PHP Agent Release{{.GRAY}}"
+          cd {{.TMP_INSTALL_DIR}}
+          # Remove old log tarballs to ensure we don't accidentally use it later
+          rm -f /tmp/nrinstall* 2>/dev/null
+
+          # Versions of the form MAJ.MIN.PATCH.BUILD
+          VERSION_REGEX='[1-9][0-9]\?\(\.[0-9]\+\)\{3\}'
+          # PHP Agent current release tarball listing. '/' is crucial
+          # for treating directory as an HTML directory listing
+          RELEASE_URL='https://download.newrelic.com/php_agent/release/'
+          AGENT_VERSION="$(curl -s "$RELEASE_URL" | grep --only-match "$VERSION_REGEX" | head -n1)"
+          echo -e "{{.GRAY}}AGENT VERSION: $AGENT_VERSION{{.NOCOLOR}}"
+          if [ -z "${AGENT_VERSION}" ]; then
+            echo -e "{{.RED}}Unable to determine current PHP Agent version from New Relic's downloads site.{{.NOCOLOR}}"
+            # Exit with Agent install failure code exit(16)
+            exit 16
+          else
+            echo -e "{{.WHITE}}Found agent version: {{.CYAN}}$AGENT_VERSION{{.GRAY}}"
+          fi
+
+          AGENT="newrelic-php5-$AGENT_VERSION-linux"
+          AGENT_TARBALL="$AGENT.tar.gz"
+          # Lack of '/' is important. See above comment where $RELEASE_URL is
+          # defined. An extraneous '/' here treats the URL as an HTML doc.
+          curl -s "$RELEASE_URL$AGENT_TARBALL" -o "$AGENT_TARBALL"
+          gzip -dc "$AGENT_TARBALL" | tar xf -
+          pushd "$AGENT" > /dev/null
+          echo -e "{{.WHITE}}Running PHP Agent installer{{.GRAY}}"
+          NR_INSTALL_USE_CP_NOT_LN=1 NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
+          popd > /dev/null
+
+    install_deb:
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Installing New Relic PHP Agent package{{.GRAY}}"
+          echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
+          curl -s https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
+
+    configure:
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Configuring New Relic PHP Agent{{.GRAY}}"
+          cd {{.TMP_INSTALL_DIR}}
+          rm -f {{.TMP_INSTALL_DIR}}/web_info.txt 2>/dev/null
+          rm -f {{.TMP_INSTALL_DIR}}/cli_info.txt 2>/dev/null
+          NR_INSTALL_LOG={{.TMP_INSTALL_DIR}}/nrinstall.log
+          # Get path of most recent agent install log
+          tar_file=$(ls -t /tmp/nrinstall*.tar 2>/dev/null | head -1)
+          #
+          # Expand the log files from the most recent installation attempt,
+          # and get the name of the most recent log file.
+          #
+          if [ -f "${tar_file}" ]; then
+            tar xvf $tar_file
+            log_file=$(ls -t nrinstall*.log | head -1)
+            if  [ -f $log_file ]; then
+              ln -s $log_file $NR_INSTALL_LOG
+            else
+              #
+              # We really shouldn't get here if we found the tar file.
+              # Exit with Agent install failure code exit(16)
+              echo -e "{{.RED}}Unable to find agent install log.{{.NOCOLOR}}"
+              exit 16
+            fi
+          else
+            #
+            # If tar file doesn't exist, something went wrong with installation.
+            # Exit with Agent install failure code exit(16)
+            echo -e "{{.RED}}Unable to find agent install log tarfile.{{.NOCOLOR}}"
+            exit 16
+          fi
+
+          WEB_INI_DIR=($(sed -n 's/.*final pi_inidir_dso=\(.*\/\)/\1/p' $NR_INSTALL_LOG))
+          CLI_INI_DIR=($(sed -n 's/.*final pi_inidir_cli=\(.*\/\)/\1/p' $NR_INSTALL_LOG))
+
+          echo
+
+          #
+          # Loop through all the directories where the installation placed `newrelic.ini`
+          # files.
+          #
+
+          INI_DIRS=($WEB_INI_DIR $CLI_INI_DIR)
+          for dirs in $INI_DIRS; do
+            for ini in $dirs; do
+              #
+              # Get the PHP INI Directory associated with this specific NR INI file
+              #
+              php_ini_dir=$(echo $ini | sed -n 's/\(.*\)\/conf.d/\1/p')
+              if [ -z "${php_ini_dir}" ]; then
+                php_ini_dir=$ini
+              fi
+
+              #
+              # Get the PHP Binary directory associated with this particular NR INI file.
+              sed_slash_ini=$(echo "${ini}"  | sed 's/\//\\\//g')
+              php_bin=$(sed '1,/final pi_inidir_.*='"${sed_slash_ini}"'/d;/php -i output follows/,$d' $NR_INSTALL_LOG | sed -n 's/.*pi_bin=\(.*\/\)/\1/p')
+              if [ -z "${php_bin}" ]; then
+              #
+              # When there is only one PHP detected, the info format is different,
+              # we could detect from the log file, but since there is only one,
+              # just use `php`.
+              #
+                php_bin="php"
+              fi
+
+              #
+              # Modify the fresh copy of a brand new New Relic INI file.
+              #
+              ini_full_name="${ini}/newrelic.ini"
+              if [ ! -f "$ini_full_name" ]; then
+                continue
+              fi
+              sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"{{.NR_PHP_APPLICATION}}\"/" $ini_full_name
+              if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+                sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
+                sed -i 's/;newrelic.loglevel = "info"/newrelic.loglevel = "verbosedebug"/' $ini_full_name
+                sed -i 's/;newrelic.daemon.loglevel = "info"/newrelic.daemon.loglevel = "debug"/' $ini_full_name
+              fi
+
+              #
+              # Determine the target directory that the symlink is pointing to.
+              #
+              target_ini_dir="/etc/php5/conf.d/"
+              if [ -x /usr/sbin/phpquery ]; then
+                target_ini_dir="${ini}/../../mods-available/"
+              elif [ -x /usr/sbin/php5endmod ]; then
+                target_ini_dir="/etc/php5/mods-available/"
+              fi
+              if [ ! -d $target_ini_dir ]; then
+                echo -e "{{.RED}}Warning: Unable to move ${ini_full_name} to ${target_ini_dir}{{.GRAY}}"
+                continue
+              fi
+              #
+              # Move newrelic.ini created by tarball to the name that the installer will use.
+              # This ensures we always get the most up to date newrelic.ini file on the
+              # system.
+              #
+              mv ${ini_full_name} ${target_ini_dir}
+
+              #
+              # We rely on the package installer to enable the newrelic module.
+              #
+
+              # 
+              # For each php directory the installation has detected, scrape three pieces
+              # of information from the logfile:  The php binary location, the location 
+              # of the php.ini file associated with that binary, and the location of the
+              # newrelic.ini file associated with that binary.  If the logfile indicated
+              # it was a specific web directory, the information is saved in web_info.txt;
+              # otherwise, the information is saved in cli_info.txt.  
+              #
+              if [ -z "${CLI_DIRS}" ]; then
+                echo "$php_bin $php_ini_dir $target_ini_dir" >> {{.TMP_INSTALL_DIR}}/web_info.txt
+              else
+                echo "$php_bin $php_ini_dir $target_ini_dir" >> {{.TMP_INSTALL_DIR}}/cli_info.txt
+              fi
+
+            done;
+            CLI_DIRS=true
+          done
+    restart_services:
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Restarting the services, as needed{{.GRAY}}"
+          echo -e "{{.WHITE}}This step causes the changes to newrelic.ini to be picked up."
+          #
+          # Case: php-fpm/apache or php-fpm/nginx, only php-fpm needs to be restarted.
+          # Case: apache only or nginx only, they respective service needs to be restarted.
+          # This means only restart the first process in processes_to_restart.txt.
+          #
+          if [ "{{.NR_PHP_RESTART}}" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+            cd {{.TMP_INSTALL_DIR}}
+            read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+            echo -e "{{.YELLOW}}Restarting $process as privileged user $user_name{{.GRAY}}"
+            sudo -u $user_name service $process restart
+            echo -e "{{.WHITE}}Sleeping for 10 seconds to give process time to recover.{{.GRAY}}"
+            sleep 10
+          else
+            if [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+              cd {{.TMP_INSTALL_DIR}}
+              read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
+              echo -e "{{.RED}}Please restart $process as privileged user $user_name for instrumentation to be enabled.{{.NOCOLOR}}"
+            else
+              echo -e "{{.RED}}You will need to restart your PHP web server in order for web instrumentation to be enabled.{{.NOCOLORi}}"
+            fi
+            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+              while :; do
+                echo -n -e "{{.YELLOW}}Press Y if you successfully restarted your web server.  Press N if you are unable to restart your web server at this time, and you wish to exit the installation. (default: Y)? {{.NOCOLOR}}"
+                read answer
+                echo ""
+                NEW_RELIC_RESTARTED=$(echo "${answer^^}" | cut -c1-1)
+                if [[ -z "$NEW_RELIC_RESTARTED" ]]; then
+                  NEW_RELIC_RESTARTED="Y"
+                fi
+                if [[ "$NEW_RELIC_RESTARTED" == "N" ]] || [[ "$NEW_RELIC_RESTARTED" == "n" ]]; then
+                  echo -e "{{.WHITE}}Exiting the installation{{.NOCOLOR}}"
+                  # exit 130: Installation was cancelled either using Ctrl+C or by selecting not to continue the installation
+                  exit 130
+                fi
+                if [[ "$NEW_RELIC_RESTARTED" == "Y" ]] || [[ "$NEW_RELIC_RESTARTED" == "y" ]]; then
+                  break
+                fi
+                echo -e "{{.WHITE}}Please type Y or N only.{{.NOCOLOR}}"
+              done
+            fi
+          fi
+
+    send_transaction:
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Send queryable transactions{{.GRAY}}"
+          cd {{.TMP_INSTALL_DIR}}
+
+          #
+          # Get the non-privileged user that was previously stored.
+          #
+          if [ -f {{.TMP_INSTALL_DIR}}/nonpriv_users.txt ]; then
+          nonpriv_user=$(head -1 {{.TMP_INSTALL_DIR}}/nonpriv_users.txt)
+          else
+            nonpriv_user=$SUDO_USER
+          fi
+
+          #
+          # The first transaction initializes the app.
+          # The second transaction is for luck.
+          # The third time’s the charm.
+          #
+          if [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+            #
+            # Web server was detected. Send transaction associated with the webserver php.ini
+            # and the newrelic.ini file associated with that web server.
+            #
+            for i in {1..10}; do
+              sleep 1
+              #
+              #    Loop through all the detected PHP directories where newrelic.ini files
+              #    were placed.
+              #
+
+              if [ -f "{{.TMP_INSTALL_DIR}}/web_info.txt" ]; then
+                info_text="{{.TMP_INSTALL_DIR}}/web_info.txt"
+              else
+                #
+                # Fallback to CLI if no web info was detected.
+                #
+                info_text="{{.TMP_INSTALL_DIR}}/cli_info.txt"
+              fi
+              while read -r bin_loc php_ini_dir nr_ini_dir; do
+                sudo -u $nonpriv_user $bin_loc -c "${php_ini_dir}/php.ini" -c "${nr_ini_dir}/newrelic.ini" -n --ini &>/dev/null
+              done < "${info_text}"
+            done
+          else
+            #
+            # No web server detected, pure PHP CLI.
+            #
+            echo -e "{{.WHITE}}Running PHP-CLI with user ${SUDO_USER}{{.GRAY}}"
+            for i in {1..10}; do
+              sleep 1
+              sudo -u $SUDO_USER php --ini
+            done
+          fi
+          echo -e "{{.WHITE}}Transactions sent{{.GRAY}}"
+
+    cleanup_temp_files:
+      ignore_error: true
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Cleaning up{{.GRAY}}"
+          rm -rf /tmp/nrinstall* 2>/dev/null
+          rm -rf /tmp/newrelic-php-agent.* 2>/dev/null
+          echo -e "{{.WHITE}}Removed temporary directory used for installation{{.NOCOLOR}}"
