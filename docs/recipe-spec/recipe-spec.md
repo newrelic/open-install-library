@@ -94,7 +94,7 @@ keywords: list, required
 # An empty list signifies the recipe will always be run during guided install.
 #
 # Example Usage:
-#  processMatch: 
+#  processMatch:
 #    - apache       # matches any processes containing apache in the full process command
 #
 #  processMatch: [] # this recipe will always run in Guided Install
@@ -118,9 +118,13 @@ inputVars: list, optional
     secret: boolean, optional   # Indicates a password field. Use true/false (no quotes)
     default: string, optional   # default value for variable
 
+# DEPRECATED! Use `validationUrl` instead.
 # NRQL the newrelic-cli will use to validate the agent/integration this recipe
 # installed is successfully sending data to New Relic
 validationNrql: string, optional
+
+# A URL for the newrelic-cli to use to validate the agent/integration was successfully installed and is sending data to New Relic
+validationUrl: string, optional
 
 # Metadata to support generating a URL after installation success
 successLinkConfig: object, optional
