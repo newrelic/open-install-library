@@ -1,0 +1,159 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: open-telemetry-collector-installer
+displayName: OpenTelemetry Collector
+description: New Relic install recipe for the OpenTelemetry Collector
+repository: https://github.com/open-telemetry/opentelemetry-collector
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "ubuntu"
+  - type: host
+    os: linux
+    platform: "debian"
+
+keywords:
+  - OpenTelemetry
+  - Collector
+  - Linux
+  - Ubuntu
+  - Debian
+
+processMatch: []
+
+validationNrql: "SELECT count(*) FROM Metric WHERE host.name = '{{.HOSTNAME}}' SINCE 5 minutes ago"
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: no_previous_otc
+        - task: update_apt
+        - task: install_otc
+        - task: configure_otc
+        - task: restart_otc
+        - task: assert_otc_started
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_SYSTEMCTL_INSTALLED=$(command -v systemctl | wc -l)
+          if [ $IS_SYSTEMCTL_INSTALLED -eq 0 ] ; then
+            echo "OpenTelemetry Collector is only suported for systemd OSes." >&2
+            exit 34
+          fi
+        - |
+          IS_GREP_INSTALLED=$(which grep | wc -l)
+          if [ $IS_GREP_INSTALLED -eq 0 ] ; then
+            echo "grep is required to run the OpenTelemetry Collector install. Please install grep and re-run the installation." >&2
+            exit 10
+          fi
+        - |
+          IS_AWK_INSTALLED=$(which awk | wc -l)
+          if [ $IS_AWK_INSTALLED -eq 0 ] ; then
+            echo "awk is required to run the OpenTelemetry Collector install. Please install awk and re-run the installation." >&2
+            exit 12
+          fi
+        - |
+          APT_GET_STATUS=$(sudo bash -c 'apt-get -o Acquire::Check-Valid-Until=false update -yq > /dev/null 2>&1; echo $?')
+          if [ $APT_GET_STATUS -gt 0 ] ; then
+            echo "apt check exited with $APT_GET_STATUS code. $(sudo apt-get -o Acquire::Check-Valid-Until=false update -yq 2>&1 | grep "Err:")" >&2
+            exit 131
+          fi
+
+    no_previous_otc:
+      cmds:
+        - |
+          OTC_SERVICE_STATUS=$(sudo apt -qq list otel-collector |grep installed -c)
+          if [ $OTC_SERVICE_STATUS -gt 0 ] ; then
+            echo "Previous OpenTelemetry collector service available in the system, won't install" >&2
+            exit 35
+          fi
+
+    update_apt:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+      silent: true
+      # apt will return an error if fails to update any of its sources. Ignore these errors and let the task fail.
+      ignore_error: true
+
+    install_otc:
+      cmds:
+        - |
+          curl -sLO https://github.com/open-telemetry/opentelemetry-collector/releases/download/v{{.OTC_VERSION}}/otel-collector_{{.OTC_VERSION}}_{{.OTC_ARCH}}.deb
+          dpkg -i otel-collector_{{.OTC_VERSION}}_{{.OTC_ARCH}}.deb
+      silent: true
+      vars:
+        OTC_ARCH: amd64
+        OTC_VERSION: 0.20.0
+
+    configure_otc:
+      cmds:
+        - |
+          sudo echo "
+          extensions:
+            health_check:
+
+          receivers:
+            hostmetrics:
+              collection_interval: 1m
+              scrapers:
+                cpu:
+                load:
+                memory:
+                disk:
+                filesystem:
+                network:
+                processes:
+
+          processors:
+            batch:
+            attributes:
+              actions:
+                - key: host.name
+                  value: {{.HOSTNAME}}
+
+          exporters:
+            logging:
+              logLevel: debug
+            otlp:
+              endpoint: otlp.nr-data.net:4317
+              headers:
+                api-key: {{.NR_API_KEY}}
+
+          service:
+            pipelines:
+              metrics:
+                receivers: [hostmetrics]
+                processors: [batch]
+                exporters: [logging, otlp]
+            extensions: [health_check]" > /etc/otel-collector/config.yaml
+      inputVars:
+        - name: "NR_API_KEY"
+          prompt: "New Relic API key for OpenTelemtry?"
+
+    restart_otc:
+      cmds:
+        - |
+          sudo systemctl restart otel-collector
+
+    assert_otc_started:
+      cmds:
+        - |
+          OTC_RUNNING=$(sudo systemctl status otel-collector.service |grep -ic running)
+          if [ $OTC_RUNNING -eq 0 ] ; then
+            echo "OpenTelemetry collector service not running" >&2
+            exit 36
+          fi
+
+postInstall:
+  info: |2
+      OpenTelemetry collector installation finished.
