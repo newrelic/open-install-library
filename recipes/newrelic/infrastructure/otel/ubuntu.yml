@@ -23,7 +23,8 @@ keywords:
 
 processMatch: []
 
-validationNrql: "SELECT count(*) FROM Metric WHERE host.name = '{{.HOSTNAME}}' SINCE 5 minutes ago"
+# TODO UUID
+validationNrql: "SELECT count(*) FROM Metric WHERE host.id LIKE '{{.HOSTNAME}}-%' SINCE 5 minutes ago"
 
 install:
   version: "3"
@@ -66,11 +67,17 @@ install:
             echo "apt check exited with $APT_GET_STATUS code. $(sudo apt-get -o Acquire::Check-Valid-Until=false update -yq 2>&1 | grep "Err:")" >&2
             exit 131
           fi
+        - |
+          IS_UUIDGEN_INSTALLED=$(which uuidgen | wc -l)
+          if [ $IS_UUIDGEN_INSTALLED -eq 0 ] ; then
+            echo "uuidgen is required to run the OpenTelemetry Collector install. Please install uuidgen and re-run the installation." >&2
+            exit 37
+          fi
 
     no_previous_otc:
       cmds:
         - |
-          OTC_SERVICE_STATUS=$(sudo apt -qq list otel-collector |grep installed -c)
+          OTC_SERVICE_STATUS=$(sudo apt -qq list otel-contrib-collector |grep installed -c)
           if [ $OTC_SERVICE_STATUS -gt 0 ] ; then
             echo "Previous OpenTelemetry collector service available in the system, won't install" >&2
             exit 35
@@ -88,12 +95,12 @@ install:
     install_otc:
       cmds:
         - |
-          curl -sLO https://github.com/open-telemetry/opentelemetry-collector/releases/download/v{{.OTC_VERSION}}/otel-collector_{{.OTC_VERSION}}_{{.OTC_ARCH}}.deb
-          dpkg -i otel-collector_{{.OTC_VERSION}}_{{.OTC_ARCH}}.deb
+          curl -sLO https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/download/v{{.OTC_VERSION}}/otel-contrib-collector_{{.OTC_VERSION}}_{{.OTC_ARCH}}.deb
+          dpkg -i otel-contrib-collector_{{.OTC_VERSION}}_{{.OTC_ARCH}}.deb
       silent: true
       vars:
         OTC_ARCH: amd64
-        OTC_VERSION: 0.20.0
+        OTC_VERSION: 0.30.0
 
     configure_otc:
       cmds:
@@ -116,10 +123,13 @@ install:
 
           processors:
             batch:
-            attributes:
+            resourcedetection:
+              detectors: [env, system]
+            attributes/insert:
               actions:
-                - key: host.name
-                  value: {{.HOSTNAME}}
+                - key: host.id
+                  value: {{.HOSTNAME}}-{{.UUID}}
+                  action: insert
 
           exporters:
             logging:
@@ -133,22 +143,26 @@ install:
             pipelines:
               metrics:
                 receivers: [hostmetrics]
-                processors: [batch]
+                processors: [batch, resourcedetection]
                 exporters: [logging, otlp]
-            extensions: [health_check]" > /etc/otel-collector/config.yaml
-      inputVars:
-        - name: "NR_API_KEY"
-          prompt: "New Relic API key for OpenTelemtry?"
+            extensions: [health_check]" > /etc/otel-contrib-collector/config.yaml
+      vars:
+        UUID:
+          sh: uuidgen
+        NR_API_KEY: INSERT_YOUR_KEY
+#        inputVars:
+#          - name: "NR_API_KEY"
+#            prompt: "New Relic API key for OpenTelemtry?"
 
     restart_otc:
       cmds:
         - |
-          sudo systemctl restart otel-collector
+          sudo systemctl restart otel-contrib-collector
 
     assert_otc_started:
       cmds:
         - |
-          OTC_RUNNING=$(sudo systemctl status otel-collector.service |grep -ic running)
+          OTC_RUNNING=$(sudo systemctl status otel-contrib-collector |grep -ic running)
           if [ $OTC_RUNNING -eq 0 ] ; then
             echo "OpenTelemetry collector service not running" >&2
             exit 36
