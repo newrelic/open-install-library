@@ -224,17 +224,21 @@ jobs:
           docker images ghcr.io/newrelic/deployer:latest
 
       - name: Run deployer
-        id: run-deployer
+        id: deployerRun
+        continue-on-error: true
         run: |
+          set +e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
           echo $testDefinitionFile
           docker run \
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile
+          echo ::set-output name=exit_status::$?
 
       - name: Teardown any previous deployment
         if: always()
+        id: cleanupResources
         run: |
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
           echo $testDefinitionFile
