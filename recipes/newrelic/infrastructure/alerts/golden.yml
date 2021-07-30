@@ -43,27 +43,19 @@ install:
           fi
 
 
-          if [ -f /tmp/policy.json ]; then
-            sudo rm -f /tmp/policy.json
-          fi
-          sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
-          {
-            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {policiesSearch {totalCount policies { name id } } } } } }"
-          }
-          EOT
-          while :; do
+          while true; do
             POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
                 -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
                 -L -H 'Content-Type: application/json' \
-                -d @/tmp/policy.json
+                -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
             )
             if [ -f /tmp/policy.json ]; then
               sudo rm -f /tmp/policy.json
             fi
-            POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.policiesSearch.policies[0] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id | tonumber')
+            POLICY_ID=$(echo $POLICY_RESULT | ./newrelic utils jq '.data.actor.account.alerts.policiesSearch.policies[0] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id | tonumber')
             if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-              echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name'
               curl -sX DELETE $NEW_RELIC_API_URL'/v2/alerts_policies/'$POLICY_ID'.json' -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -i > /dev/null
+              continue
             else
               break
             fi
@@ -80,7 +72,7 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @/tmp/policy.json
           )
-          POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.alertsPolicyCreate.id | tonumber')
+          POLICY_ID=$(echo $POLICY_RESULT | ./newrelic utils jq '.data.alertsPolicyCreate.id | tonumber')
           if [ -f /tmp/policy.json ]; then
             rm -f /tmp/policy.json
           fi
@@ -109,7 +101,7 @@ install:
           fi
 
 
-          HIGH_CPU_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id | tonumber')
+          HIGH_CPU_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id | tonumber')
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
@@ -143,7 +135,7 @@ install:
           echo 'done'
 
 
-          HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id | tonumber')
+          HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id | tonumber')
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
@@ -177,7 +169,7 @@ install:
           echo 'done'
 
 
-          HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id | tonumber')
+          HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id | tonumber')
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
@@ -211,7 +203,7 @@ install:
           echo 'done'
 
 
-          LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id | tonumber')
+          LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | ./newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id | tonumber')
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
@@ -251,7 +243,7 @@ install:
               -d '{ "query": "{ actor { user { email } } }" }'
           )
 
-          USER_EMAIL=$(echo $USER_EMAIL_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.user.email')
+          USER_EMAIL=$(echo $USER_EMAIL_RESULT | ./newrelic utils jq '.data.actor.user.email')
           USER_EMAIL=$(echo -n "$USER_EMAIL" | sed s/^\"//g | sed s/\"\$//g)
 
           NEW_RELIC_EMAIL_CONTINUE="{{.NEW_RELIC_EMAIL_CONTINUE}}"
@@ -285,7 +277,7 @@ install:
             )
 
             JQ_MATCH=$(echo -n '.channels[0] | select(.name=="'$USER_EMAIL'" and .type=="email") | .id')
-            EXEC=$(echo "echo -n '$CHANNEL_RESULT' | /usr/local/bin/newrelic utils jq '"$JQ_MATCH"'")
+            EXEC=$(echo "echo -n '$CHANNEL_RESULT' | ./newrelic utils jq '"$JQ_MATCH"'")
             if [ -f /tmp/execJq.sh ]; then
               sudo rm -f /tmp/execJq.sh
             fi
@@ -318,7 +310,7 @@ install:
                   -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
                   -H 'Content-Type: application/json' \
                   -d @/tmp/channel.json)
-              CHANNEL_ID=$(echo $CHANNEL_RESULT | /usr/local/bin/newrelic utils jq '.channels[0] | .id')
+              CHANNEL_ID=$(echo $CHANNEL_RESULT | ./newrelic utils jq '.channels[0] | .id')
               echo 'done'
             fi
             if [ -f /tmp/channel.json ]; then
