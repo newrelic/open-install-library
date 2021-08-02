@@ -43,51 +43,46 @@ install:
           fi
 
 
-          if [ -f /tmp/policy.json ]; then
-            sudo rm -f /tmp/policy.json
-          fi
+          while true; do
+            POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                -L -H 'Content-Type: application/json' \
+                -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
+            )
+            if [ -f /tmp/policy.json ]; then
+              sudo rm -f /tmp/policy.json
+            fi
+            POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.policiesSearch.policies[0] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id | tonumber')
+            if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
+              curl -sX DELETE $NEW_RELIC_API_URL'/v2/alerts_policies/'$POLICY_ID'.json' -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -i > /dev/null
+              continue
+            else
+              break
+            fi
+          done
+          echo 'Creating alert policy {{.ALERT_POLICY_NAME}}...'
           sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
           {
-            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {policiesSearch {totalCount policies { name id } } } } } }"
+            "query": "mutation {alertsPolicyCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policy: { name: POLICY_NAME incidentPreference: PER_CONDITION_AND_TARGET }) { id name } }"
           }
           EOT
+          sudo sed -i "s/POLICY_NAME/\"\"{{.ALERT_POLICY_NAME}}\"\"/g" /tmp/policy.json
+          sudo sed -i 's/""/\\"/g' /tmp/policy.json
           POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
               -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
               -L -H 'Content-Type: application/json' \
               -d @/tmp/policy.json
           )
+          POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.alertsPolicyCreate.id | tonumber')
           if [ -f /tmp/policy.json ]; then
-            sudo rm -f /tmp/policy.json
+            rm -f /tmp/policy.json
           fi
-          POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.policiesSearch.policies[0] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id | tonumber')
           if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-            echo 'Alert policy found for {{.ALERT_POLICY_NAME}} name'
+            echo 'done'
           else
-            echo 'No existing alert policy {{.ALERT_POLICY_NAME}} found, creating alert policy {{.ALERT_POLICY_NAME}}...'
-            sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
-          {
-            "query": "mutation {alertsPolicyCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policy: { name: POLICY_NAME incidentPreference: PER_CONDITION_AND_TARGET }) { id name } }"
-          }
-          EOT
-            sudo sed -i "s/POLICY_NAME/\"\"{{.ALERT_POLICY_NAME}}\"\"/g" /tmp/policy.json
-            sudo sed -i 's/""/\\"/g' /tmp/policy.json
-            POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
-                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
-                -L -H 'Content-Type: application/json' \
-                -d @/tmp/policy.json
-            )
-            POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.alertsPolicyCreate.id | tonumber')
-            if [ -f /tmp/policy.json ]; then
-              rm -f /tmp/policy.json
-            fi
-            if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-              echo 'done'
-            else
-              echo 'Could not create a new alert policy for {{.ALERT_POLICY_NAME}} got POLICY_ID:'$POLICY_ID >> /dev/stderr
-              exit 10
-            fi
+            echo 'Could not create a new alert policy for {{.ALERT_POLICY_NAME}} got POLICY_ID:'$POLICY_ID >> /dev/stderr
+            exit 10
           fi
-
 
           if [ -f /tmp/conditionsSearch.json ]; then
             sudo rm -f /tmp/conditionsSearch.json
