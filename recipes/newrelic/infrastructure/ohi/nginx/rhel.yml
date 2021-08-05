@@ -161,12 +161,10 @@ install:
           fi
           sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml;
           sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<EOT
-          integration_name: com.newrelic.nginx
-
-          instances:
-            - name: nginx-server-metrics
-              command: metrics
-              arguments:
+          integrations:
+            - name: nri-nginx
+              env:
+                metrics: true
                 # If you're using ngx_http_api_module be certain to use the full path up to and including the version number
                 status_url: $NR_CLI_STUB_STATUS_URL
 
@@ -183,10 +181,11 @@ install:
                 remote_monitoring: true
                 # validate_certs: true
                 # default: true If the status URL is HTTPS with a self-signed certificate, set this to false if you want to avoid certificate validation
+              interval: 30
 
-            - name: nginx-server-inventory
-              command: inventory
-              arguments:
+            - name: nri-nginx
+              env:
+                inventory: true
                 config_path: /etc/nginx/nginx.conf
 
                 # New users should leave this property as 'true', to identify the
@@ -200,6 +199,9 @@ install:
 
                 # status_url is used to identify the monitored entity to which the inventory will be attached.
                 status_url: $NR_CLI_STUB_STATUS_URL
+              inventory_source: config/nginx
+              interval: 60
+
           EOT
 
     restart:
