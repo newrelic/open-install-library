@@ -70,3 +70,28 @@ docker run -i \
 -v <absolute_path>/definitions/:/mnt/deployer/definitions/ \
 --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m teardown -l debug
 ```
+
+## macOS
+
+NOTICE: According to [Apple's SLA](https://www.apple.com/legal/sla/), macOS should only be virtualized on a macOS system using official Apple hardware. Apart from legal reasons, the virtualization will simply not work in most other environments.
+
+For a macOS virtual host, clone the [following project](https://source.datanerd.us/nmcgivern/squat):
+```
+git clone https://source.datanerd.us/nmcgivern/squat
+cd squat
+```
+
+Be sure to install the [Requirements](https://source.datanerd.us/nmcgivern/squat#requirements) and follow the Docker [Build Instructions](https://source.datanerd.us/nmcgivern/squat#build-instructions).
+
+This tool allows you to run local virtual machines, including macOS:
+```
+squat macos-catalina
+cd boxes/macos-catalina
+make
+```
+
+There are two forms of access:
+- ssh: while in the macos-catalina folder, run: `vagrant ssh`
+- GUI: open the VirtualBox application, select the macos-catalina host and click Show (the vagrant user has password: `vagrant`)
+
+https://github.com/ramsey/macos-vagrant-box
