@@ -75,22 +75,28 @@ docker run -i \
 
 NOTICE: According to [Apple's SLA](https://www.apple.com/legal/sla/), macOS should only be virtualized on a macOS system using official Apple hardware. Apart from legal reasons, the virtualization will simply not work in most other environments.
 
-For a macOS virtual host, clone the [following project](https://source.datanerd.us/nmcgivern/squat):
+Install the required software:
+- [Vagrant](https://www.vagrantup.com/downloads)
+- [VirtualBox](https://www.virtualbox.org/)
+
+Initialize a working directory and Vagrantfile:
 ```
-git clone https://source.datanerd.us/nmcgivern/squat
-cd squat
+mkdir macos-catalina
+cd macos-catalina
+vagrant init ramsey/macos-catalina
 ```
 
-Be sure to install the [Requirements](https://source.datanerd.us/nmcgivern/squat#requirements) and follow the Docker [Build Instructions](https://source.datanerd.us/nmcgivern/squat#build-instructions).
-
-This tool allows you to run local virtual machines, including macOS:
+Add this line to the Vagrantfile (within the "Vagrant.configure" block of code):
 ```
-squat macos-catalina
-cd boxes/macos-catalina
-make
+config.vm.synced_folder ".", "/vagrant", disabled: true
 ```
 
-There are two forms of access:
+Start the local instance:
+```
+vagrant up
+```
+
+Once started, there are two forms of access:
 - ssh: while in the macos-catalina folder, run: `vagrant ssh`
 - GUI: open the VirtualBox application, select the macos-catalina host and click Show (the vagrant user has password: `vagrant`)
 
