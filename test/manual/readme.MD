@@ -94,4 +94,4 @@ There are two forms of access:
 - ssh: while in the macos-catalina folder, run: `vagrant ssh`
 - GUI: open the VirtualBox application, select the macos-catalina host and click Show (the vagrant user has password: `vagrant`)
 
-https://github.com/ramsey/macos-vagrant-box
+This method of running a macOS host uses a [public GitHub project](https://github.com/ramsey/macos-vagrant-box) based off [macinbox](https://github.com/bacongravy/macinbox).
