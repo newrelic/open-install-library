@@ -101,28 +101,36 @@ install:
 
           # Attempt to create required user
           SQL=$(echo "SELECT USER FROM mysql.user where USER in ('"$NR_CLI_DB_USERNAME"')")
-          EXEC_OUTPUT=$(sudo mysql -u root --port $NR_CLI_DB_PORT -ne $SQL 2>&1 | grep "ERROR" | wc -l)
+          COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
+          echo "COMMAND:"$COMMAND
+          EXEC_OUTPUT=$($COMMAND 2>&1| grep "ERROR" | wc -l)
           if [ $EXEC_OUTPUT -eq 0 ] ; then
             # No error, can login as root
-            # Attempt to create newrelic user
-            SQL=$(echo "DROP USER '"$NR_CLI_DB_USERNAME"'@'localhost';")
-            echo "SQL:"$SQL
-            EXEC_OUTPUT=$(sudo mysql -u root --port $NR_CLI_DB_PORT -ne $SQL 2>&1)
             NR_CLI_DB_PASSWORD=$(date +%s | sha256sum | base64 | head -c 16 ; echo)
 
+            # Delete any previous newrelic user
+            SQL=$(echo "DROP USER '"$NR_CLI_DB_USERNAME"'@'localhost';")
+            echo "SQL:"$SQL
+            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
+            EXEC_OUTPUT=$($COMMAND 2>&1)
+
+            # Attempt to create newrelic user
             SQL=$(echo "CREATE USER '"$NR_CLI_DB_USERNAME"'@'localhost' IDENTIFIED BY '"$NR_CLI_DB_PASSWORD"';")
             echo "SQL:"$SQL
-            EXEC_OUTPUT1=$(sudo mysql -u root --port $NR_CLI_DB_PORT -ne $SQL 2>&1)
+            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
+            EXEC_OUTPUT1=$($COMMAND 2>&1)
             echo "EXEC_OUTPUT1:"$EXEC_OUTPUT1
 
             SQL=$(echo "GRANT REPLICATION CLIENT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
             echo "SQL:"$SQL
-            EXEC_OUTPUT2=$(sudo mysql -u root --port $NR_CLI_DB_PORT -ne $SQL 2>&1)
+            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
+            EXEC_OUTPUT2=$($COMMAND 2>&1)
             echo "EXEC_OUTPUT2:"$EXEC_OUTPUT2
             
             SQL=$(echo "GRANT SELECT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
             echo "SQL:"$SQL
-            EXEC_OUTPUT3=$(sudo mysql -u root --port $NR_CLI_DB_PORT -ne $SQL 2>&1)
+            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
+            EXEC_OUTPUT3=$($COMMAND 2>&1)
             echo "EXEC_OUTPUT3:"$EXEC_OUTPUT3
 
             exit 35
