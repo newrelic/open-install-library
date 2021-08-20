@@ -13,6 +13,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
+
       - name: Get Release Changes
         id: recentCommits
         run: |
@@ -55,7 +56,7 @@ jobs:
           files: recipes/ version.txt
           dest: recipes.zip
 
-      - name: Upload recipes zip file
+      - name: Upload recipes zip file to GitHub
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -64,3 +65,23 @@ jobs:
           asset_path: ${{ github.workspace }}/recipes.zip
           asset_name: recipes.zip
           asset_content_type: application/octet-stream
+
+      - name: Upload recipes zip file to S3 (download.newrelic.com)
+        id: upload-recipes-s3
+        uses: ItsKarma/aws-cli@v1.70.0
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        with:
+          args: s3 cp ${{ github.workspace }}/recipes.zip s3://nr-downloads-main/install/open-install-library/${{ steps.get_release.outputs.tag_name }}/recipes.zip
+
+      - name: Upload currentVersion.txt to S3
+        id: upload-current-version-s3
+        uses: ItsKarma/aws-cli@v1.70.0
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        with:
+          args: s3 cp ./version.txt s3://nr-downloads-main/install/open-install-library/currentVersion.txt
