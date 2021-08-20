@@ -97,7 +97,7 @@ install:
           NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
           NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-newrelic}
           if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
-            NR_CLI_DB_PASSWORD=$(date +%s | sha256sum | base64 | head -c 16 ; echo)
+            NR_CLI_DB_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "%")
           fi
           NR_CLI_DB_ROOT_PASSWORD=""
 
@@ -149,12 +149,14 @@ install:
 
                 MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
                 echo "MYSQL_ROOT_PASSWORD:"$MYSQL_ROOT_PASSWORD
-                if [ $MYSQL_ROOT_PASSWORD -eq 0 ] ; then
+                if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
                   printf "\n[Error]: Please provide a valid MySql root password to create the newrelic user.\n" >&2
                   if [ $TRIES -lt {{.MAX_RETRIES}} ]; then 
                     echo "Please try again"
                   fi
                   continue
+                else
+                  break
                 fi
               done
             else
