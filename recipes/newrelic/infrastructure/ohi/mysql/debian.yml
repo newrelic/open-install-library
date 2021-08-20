@@ -99,6 +99,7 @@ install:
           if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
             NR_CLI_DB_PASSWORD=$(date +%s | sha256sum | base64 | head -c 16 ; echo)
           fi
+          NR_CLI_DB_ROOT_PASSWORD=""
 
           # Get and validate Port
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
@@ -171,7 +172,7 @@ install:
           # Delete any previous newrelic user
           SQL=$(echo "DROP USER '"$NR_CLI_DB_USERNAME"'@'localhost';")
           echo "SQL:"$SQL
-          if [ $MYSQL_ROOT_PASSWORD -eq 0 ] ; then
+          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL\" 2>&1)
           else
             EXEC_OUTPUT=$(eval sudo mysql -u root --port -p$NR_CLI_DB_ROOT_PASSWORD $NR_CLI_DB_PORT -ne \"$SQL\" 2>&1)
@@ -181,7 +182,7 @@ install:
           # Attempt to create newrelic user
           SQL=$(echo "CREATE USER '"$NR_CLI_DB_USERNAME"'@'localhost' IDENTIFIED BY '"$NR_CLI_DB_PASSWORD"';")
           echo "SQL:"$SQL
-          if [ $MYSQL_ROOT_PASSWORD -eq 0 ] ; then
+          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
             COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
           else
             COMMAND=$(echo "sudo mysql -u root --port -p$NR_CLI_DB_ROOT_PASSWORD "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
@@ -192,7 +193,7 @@ install:
 
           SQL=$(echo "GRANT REPLICATION CLIENT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
           echo "SQL:"$SQL
-          if [ $MYSQL_ROOT_PASSWORD -eq 0 ] ; then
+          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
             COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
           else
             COMMAND=$(echo "sudo mysql -u root --port -p$NR_CLI_DB_ROOT_PASSWORD "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
@@ -203,7 +204,7 @@ install:
           
           SQL=$(echo "GRANT SELECT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
           echo "SQL:"$SQL
-          if [ $MYSQL_ROOT_PASSWORD -eq 0 ] ; then
+          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
             COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
           else
             COMMAND=$(echo "sudo mysql -u root --port -p$NR_CLI_DB_ROOT_PASSWORD "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
@@ -211,7 +212,7 @@ install:
           echo "COMMAND:"$COMMAND
           EXEC_OUTPUT3=$(eval $COMMAND 2>&1)
           echo "EXEC_OUTPUT3:"$EXEC_OUTPUT3
-          
+
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
           # Get latest definitions and skip any failure because of deprecation
