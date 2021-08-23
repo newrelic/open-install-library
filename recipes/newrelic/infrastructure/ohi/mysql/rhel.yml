@@ -66,7 +66,6 @@ install:
         - task: input_assert
           vars:
             MAX_RETRIES: 3
-            EXIT130: ""
         - task: restart
 
     assert_infra:
@@ -86,6 +85,7 @@ install:
           NR_CLI_DB_PORT="{{.NR_CLI_DB_PORT}}"
           NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
           NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
+          NR_CLI_DB_ROOT_PASSWORD="{{.NR_CLI_DB_ROOT_PASSWORD}}"
 
           # Set Defaults
           # only localhost is supported
@@ -95,7 +95,6 @@ install:
           if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
             NR_CLI_DB_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "%")
           fi
-          NR_CLI_DB_ROOT_PASSWORD=""
 
           # Get and validate Port
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
@@ -124,10 +123,7 @@ install:
           # Attempt to create required user
           SQL_CHECK_AUTH=$(echo "SELECT USER FROM mysql.user where USER in ('"$NR_CLI_DB_USERNAME"')")
           MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
-          echo "MYSQL_ROOT_PASSWORD:"$MYSQL_ROOT_PASSWORD
-          if [ $MYSQL_ROOT_PASSWORD -eq 0 ] ; then
-            # No error, can login as root
-          else
+          if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
               # Need to prompt for MySql root password to create the user
               while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
@@ -189,7 +185,7 @@ install:
           EXEC_OUTPUT1=$(eval $COMMAND 2>&1)
           echo "EXEC_OUTPUT1:"$EXEC_OUTPUT1
 
-          SQL=$(echo "GRANT REPLICATION CLIENT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost';")
+          SQL=$(echo "GRANT REPLICATION CLIENT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
           echo "SQL:"$SQL
           if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
             COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
@@ -200,7 +196,7 @@ install:
           EXEC_OUTPUT2=$(eval $COMMAND 2>&1)
           echo "EXEC_OUTPUT2:"$EXEC_OUTPUT2
           
-          SQL=$(echo "GRANT SELECT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost';")
+          SQL=$(echo "GRANT SELECT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
           echo "SQL:"$SQL
           if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
             COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
