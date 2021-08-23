@@ -163,49 +163,18 @@ install:
             exit 131
           fi
 
-          # Delete any previous newrelic user
-          SQL=$(echo "DROP USER '"$NR_CLI_DB_USERNAME"'@'localhost';")
-          echo "SQL:"$SQL
+          # Delete any previous, and create new user with needed permissions
+          SQL=$(echo "DROP USER '"$NR_CLI_DB_USERNAME"'@'localhost'; CREATE USER '"$NR_CLI_DB_USERNAME"'@'localhost' IDENTIFIED BY '"$NR_CLI_DB_PASSWORD"'; GRANT REPLICATION CLIENT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5; GRANT SELECT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;"
           if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL\" 2>&1)
           else
             EXEC_OUTPUT=$(eval sudo mysql -u root --port "$NR_CLI_DB_PORT" -p"$NR_CLI_DB_ROOT_PASSWORD" -ne \"$SQL\" 2>&1)
           fi
-          echo "EXEC_OUTPUT:"$EXEC_OUTPUT
-
-          # Attempt to create newrelic user
-          SQL=$(echo "CREATE USER '"$NR_CLI_DB_USERNAME"'@'localhost' IDENTIFIED BY '"$NR_CLI_DB_PASSWORD"';")
-          echo "SQL:"$SQL
-          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
-            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
-          else
-            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -p"$NR_CLI_DB_ROOT_PASSWORD" -ne \""$SQL"\"")
+          SQL_OUTPUT_ERROR=$(eval echo $EXEC_OUTPUT | grep "ERROR" | wc -l)
+          if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
+            printf "\n[Error]: This installation failed to create the required newrelic user, detail:"$EXEC_OUTPUT". Please follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n" >&2
+            exit 41
           fi
-          echo "COMMAND:"$COMMAND
-          EXEC_OUTPUT1=$(eval $COMMAND 2>&1)
-          echo "EXEC_OUTPUT1:"$EXEC_OUTPUT1
-
-          SQL=$(echo "GRANT REPLICATION CLIENT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
-          echo "SQL:"$SQL
-          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
-            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
-          else
-            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -p"$NR_CLI_DB_ROOT_PASSWORD" -ne \""$SQL"\"")
-          fi
-          echo "COMMAND:"$COMMAND
-          EXEC_OUTPUT2=$(eval $COMMAND 2>&1)
-          echo "EXEC_OUTPUT2:"$EXEC_OUTPUT2
-          
-          SQL=$(echo "GRANT SELECT ON *.* TO '"$NR_CLI_DB_USERNAME"'@'localhost' WITH MAX_USER_CONNECTIONS 5;")
-          echo "SQL:"$SQL
-          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
-            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -ne \""$SQL"\"")
-          else
-            COMMAND=$(echo "sudo mysql -u root --port "$NR_CLI_DB_PORT" -p"$NR_CLI_DB_ROOT_PASSWORD" -ne \""$SQL"\"")
-          fi
-          echo "COMMAND:"$COMMAND
-          EXEC_OUTPUT3=$(eval $COMMAND 2>&1)
-          echo "EXEC_OUTPUT3:"$EXEC_OUTPUT3
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
