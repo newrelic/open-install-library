@@ -92,7 +92,7 @@ install:
           NR_CLI_DB_HOSTNAME="localhost"
           NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
           NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-newrelic}
-          if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
+          if [[ "$NR_CLI_DB_PASSWORD" == "" ]]; then
             NR_CLI_DB_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           fi
 
@@ -111,10 +111,10 @@ install:
                 CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
                 CAN_CONNECT=${CAN_CONNECT:-0}
 
-                if [ $CAN_CONNECT == "6" ]; then
+                if [[ "$CAN_CONNECT" == "6" ]]; then
                   printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached.\nThis installation must be run on the host running MySql\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
                   exit 6;
-                elif [ $CAN_CONNECT == "7" ]; then
+                elif [[ "$CAN_CONNECT" == "7" ]]; then
                   printf "\n[Error]: Connections to the port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
                   if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
                   echo "Please try again"
@@ -132,14 +132,15 @@ install:
           SQL_CHECK_AUTH=$(echo "SELECT USER FROM mysql.user where USER in ('"$NR_CLI_DB_USERNAME"')")
           MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
-            if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]] ; then
               # Need to prompt for MySql root password to create the user
+              TRIES=0
               while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
                 printf "Enter your MySql DB root password: "
                 read -r NR_CLI_DB_ROOT_PASSWORD
                 stty echo
                 ((TRIES++))
-                if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ]; then
+                if [[ "$NR_CLI_DB_ROOT_PASSWORD" == "" ]]; then
                   printf "\n[Error]: Please provide a non empty MySql root password to create the newrelic user.\n" >&2
                   if [ $TRIES -lt {{.MAX_RETRIES}} ]; then 
                     echo "Please try again"
@@ -165,14 +166,14 @@ install:
             fi
           fi
 
-          if [ $MYSQL_ROOT_PASSWORD -gt 0 ] && [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ]; then
+          if [ $MYSQL_ROOT_PASSWORD -gt 0 ] && [[ "$NR_CLI_DB_ROOT_PASSWORD" == "" ]]; then
             printf "\n[Error]: This installation requires the MySql DB root password to create the newrelic user. Please re-run this installation and enter a valid MySql root password when prompted.\n" >&2
             exit 131
           fi
 
           # Delete any previous newrelic user (continue if any error)
           SQL=$(echo "DROP USER '"$NR_CLI_DB_USERNAME"'@'localhost';")
-          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
+          if [[ "$NR_CLI_DB_ROOT_PASSWORD" == "" ]] ; then
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL\" 2>&1)
           else
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p\"$NR_CLI_DB_ROOT_PASSWORD\" -ne \"$SQL\" 2>&1)
@@ -189,7 +190,7 @@ install:
           sudo sed -i 's/NR_CLI_DB_PASSWORD/'$NR_CLI_DB_PASSWORD'/g' /tmp/sql-create-user.json
           SQL=$(cat /tmp/sql-create-user.json)
 
-          if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
+          if [[ "$NR_CLI_DB_ROOT_PASSWORD" == "" ]] ; then
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL\" 2>&1)
           else
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p\"$NR_CLI_DB_ROOT_PASSWORD\" -ne \"$SQL\" 2>&1)
