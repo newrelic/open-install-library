@@ -179,16 +179,18 @@ install:
           EOT
           sudo sed -i 's/NR_CLI_DB_USERNAME/'$NR_CLI_DB_USERNAME'/g' /tmp/sql-create-user.json
           sudo sed -i 's/NR_CLI_DB_PASSWORD/'$NR_CLI_DB_PASSWORD'/g' /tmp/sql-create-user.json
+          SQL=$(cat /tmp/sql-create-user.json)
 
           if [ "$NR_CLI_DB_ROOT_PASSWORD" == "" ] ; then
-            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"source /tmp/sql-create-user.json\" 2>&1)
+            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL\" 2>&1)
           else
-            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p\"$NR_CLI_DB_ROOT_PASSWORD\" \"source /tmp/sql-create-user.json\" 2>&1)
+            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p\"$NR_CLI_DB_ROOT_PASSWORD\" -ne \"$SQL\" 2>&1)
           fi
           SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
           if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
             sudo cat /tmp/sql-create-user.json
             echo -e "OUTPUT:"$EXEC_OUTPUT
+            echo -e "SQL:"$SQL
             printf "\n[Error]: This installation failed to create the required newrelic user. Please follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n" >&2
             exit 41
           fi
