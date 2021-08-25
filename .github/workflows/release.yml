@@ -13,6 +13,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
+
       - name: Get Release Changes
         id: recentCommits
         run: |
@@ -55,7 +56,7 @@ jobs:
           files: recipes/ version.txt
           dest: recipes.zip
 
-      - name: Upload recipes zip file
+      - name: Upload recipes zip file to GitHub
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -64,3 +65,33 @@ jobs:
           asset_path: ${{ github.workspace }}/recipes.zip
           asset_name: recipes.zip
           asset_content_type: application/octet-stream
+
+      - name: Install aws cli
+        run: |
+          sudo apt-get install awscli -y
+          tee "~/.aws/credentials" >/dev/null
+          [virtuoso_user]
+          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EOF
+          tee "~/.aws/config" >/dev/null
+          [profile virtuoso]
+          role_arn = ${{ secrets.AWS_ROLE_ARN }}
+          region = ${{ secrets.AWS_DEFAULT_REGION }}
+          source_profile = virtuoso_user
+          EOF
+
+      - name: Upload recipes zip file to S3 (download.newrelic.com)
+        id: upload-recipes-s3
+        run: |
+          aws s3 cp ${{ github.workspace }}/recipes.zip s3://nr-downloads-main/install/open-install-library/${{ steps.get_release.outputs.tag_name }}/recipes.zip --profile virtuoso
+ 
+      - name: Upload currentVersion.txt to S3
+        id: upload-current-version-s3
+        run: |
+          aws s3 cp cp ./version.txt s3://nr-downloads-main/install/open-install-library/currentVersion.txt --profile virtuoso
+
+      - name: Cleanup config
+        run: |
+        rm -rf "~/.aws/credentials"
+        rm -rf "~/.aws/config"
