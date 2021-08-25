@@ -112,19 +112,19 @@ install:
                 CAN_CONNECT=${CAN_CONNECT:-0}
 
                 if [[ "$CAN_CONNECT" == "6" ]]; then
-                  printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached.\nThis installation must be run on the host running MySql\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
-                  exit 6;
+                  printf "\nThe MySql instance on localhost cannot be reached.\nThis installation must be run on the host running MySql\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
+                  exit 131;
                 elif [[ "$CAN_CONNECT" == "7" ]]; then
-                  printf "\n[Error]: Connections to the port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
-                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
+                  printf "\nThe connections for the MySql instance using the port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
+                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; fi
                   echo "Please try again"
                 else
                   break
                 fi
               done
             else
-              printf "\n[Error]: Connections to the port ($NR_CLI_DB_PORT) are being refused.\nPlease re-run this installation and enter a valid port for the MySql instance when prompted.\n" >&2
-              exit 5;
+              printf "\nThe connections for the MySql instance using the port ($NR_CLI_DB_PORT) are being refused.\nPlease re-run this installation and enter a valid port for the MySql instance when prompted.\n" >&2
+              exit 131;
             fi
           fi
 
@@ -134,7 +134,7 @@ install:
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]] ; then
               # non-interactive mode, need a valid root password
-              printf "\n[Error]: This installation requires the MySql DB root password to create the newrelic user. Please run this installation in interactive mode.\n" >&2
+              printf "\nThis installation requires the MySql DB root password to create the newrelic user. Please run this installation in interactive mode.\n" >&2
               exit 131
             fi
           fi
@@ -155,16 +155,24 @@ install:
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             printf "The MySql root password is required to create the new user, please enter it below when prompted\n"
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p < /tmp/sql-create-user.sql 2>&1)
+            SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
+            if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
+              printf "\nThis installation failed to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPerhaps the MySql root DB password is incorrect. Please either re-run the installation with the correct root DB password, or follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n" >&2
+              sudo cat /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-create-user.sql
+              echo -e "OUTPUT:"$EXEC_OUTPUT
+              exit 131
+            fi
           else
             EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT < /tmp/sql-create-user.sql 2>&1)
-          fi
-          SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
-          if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
-            sudo cat /tmp/sql-create-user.sql
-            sudo rm -f /tmp/sql-create-user.sql
-            echo -e "OUTPUT:"$EXEC_OUTPUT
-            printf "\n[Error]: This installation failed to create the required newrelic user. Please follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n" >&2
-            exit 41
+            SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
+            if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
+              printf "\nThis installation failed to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPlease follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n" >&2
+              sudo cat /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-create-user.sql
+              echo -e "OUTPUT:"$EXEC_OUTPUT
+              exit 131
+            fi
           fi
           sudo rm -f /tmp/sql-create-user.sql
 
