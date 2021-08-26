@@ -132,7 +132,7 @@ install:
           SQL_CHECK_AUTH=$(echo "SELECT USER FROM mysql.user where USER in ('"$NR_CLI_DB_USERNAME"')")
           MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
-            if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]] ; then
+            if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]] && [[ "$NR_CLI_DB_PASSWORD" == "" ]]; then
               # non-interactive mode, need a valid root password
               printf "\nThis installation requires the MySql DB root password to create the newrelic user. Please run this installation in interactive mode.\n" >&2
               exit 131
@@ -154,7 +154,7 @@ install:
 
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             printf "The MySql root password is required to create the new user, please enter it below when prompted\n"
-            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p < /tmp/sql-create-user.sql 2>&1)
+            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
             SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
             if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
               printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPerhaps the MySql root DB password is incorrect.\nPlease either re-run the installation with the correct root DB password, or follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n\n" >&2
