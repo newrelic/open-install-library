@@ -110,12 +110,17 @@ install:
             $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
             foreach ($uninstallId in $uninstallIds) {
               $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-              Invoke-Expression $uninstallCommand
+              $er = (Invoke-Expression $uninstallCommand) 2>&1
+              if($er.Exception){
+                throw $er.Exception
+              }
               # wait here to allow uninstall command to complete since it returns without waiting
               Start-Sleep -s 15
             }
           }
-          catch { }
+          catch {
+            "We detected you may be running an anti-virus software preventing our installation to continue. Please check your anti-virus software to allow Powershell execution while running this installation."
+          }
           '
 
     download_infra:
