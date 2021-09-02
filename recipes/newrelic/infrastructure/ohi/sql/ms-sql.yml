@@ -114,62 +114,144 @@ install:
             $NR_CLI_DB_PASSWORD = [System.Web.Security.Membership]::GeneratePassword(20,2);
           }
 
-          if ($NEW_RELIC_ASSUME_YES -ieq "false") {
-            DO
-            {
-              $NR_CLI_DB_HOSTNAME = Read-Host -Prompt "SQL Server Hostname or IP (default: 127.0.0.1)"
-              if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_HOSTNAME)) {$NR_CLI_DB_HOSTNAME = "127.0.0.1"}
-              $NR_CLI_DB_PORT     = Read-Host -Prompt "SQL Server Port (default: 1433)"
-              if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_PORT)) {$NR_CLI_DB_PORT = "1433"}
+          $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"; 
+          # Remove any previous config
+          if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
+          Add-Content -Path $OhiConfig -Value @"
+          Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value @"
+          integration_name`:` com.newrelic.mssql
+          instances`:`
+          "@ -Force | Out-Null;
 
+          # Write config function
+          function Write-OhiConfig {
+            param (
+              [Parameter(Mandatory)]
+              [string]$InstanceName
+            )
+            param (
+              [Parameter(Optional)]
+              [string]$Port
+            )
 
-              $NR_CLI_DB_USERNAME = Read-Host -Prompt "MSSQL Username"
-              $NR_CLI_DB_PASSWORD = Read-Host -Prompt "MSSQL Password" -AsSecureString
-              $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($NR_CLI_DB_PASSWORD)
-              $NR_CLI_DB_PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-              $TRIES++
+            Add-Content -Path $OhiConfig -Value @"
+              - name`:` mssql-server-${InstanceName}
+                command`:` all_data
+                arguments`:`
+                  hostname`:` ${NR_CLI_DB_HOSTNAME}
+                  username`:` ${NR_CLI_DB_USERNAME}
+                  password`:` ${NR_CLI_DB_PASSWORD}
+            "@ -Force | Out-Null;
 
-              if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_USERNAME) -Or [string]::IsNullOrWhiteSpace($NR_CLI_DB_PASSWORD)) {
-                Write-Host -ForegroundColor Red "Please provide a valid Username and Password. Fields cannot be blank."
-                if ( $TRIES -ge $MAX_RETRIES ) { exit 4 } else {
-                  Write-Host "Please try again"
-                  continue
-                }
-              }
+            if ([string]::IsNullOrWhiteSpace($Port)) {
+              Add-Content -Path $OhiConfig -Value @"
+                  instance`:` ${InstanceName}
+              "@ -Force | Out-Null;
+            } else {
+              Add-Content -Path $OhiConfig -Value @"
+                  port`:` ${Port}
+              "@ -Force | Out-Null;
+            }
+          }
 
-              $output = sqlcmd -S "$NR_CLI_DB_HOSTNAME,$NR_CLI_DB_PORT" -U $NR_CLI_DB_USERNAME -P "$NR_CLI_DB_PASSWORD" -Q "SELECT GETDATE()" 2>&1
-              if ($output -like "*Connection string is not valid*") {
-                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME. Please check the if the port is a valid number."
-                if ( $TRIES -ge $MAX_RETRIES ) { exit 8 } else {
-                  Write-Host "Please try again"
-                  continue
-                }
-              }
-              if ($output -like "*No such host is known*") {
-                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME. Please check the provided hostname."
-                if ( $TRIES -ge $MAX_RETRIES ) { exit 6 } else {
-                  Write-Host "Please try again"
-                  continue
-                }
-              }
-              if ($output -like "*The wait operation timed out*") {
-                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME. Server is not responding. Please review your hostname and/or port."
-                if ( $TRIES -ge $MAX_RETRIES ) { exit 7 } else {
-                  Write-Host "Please try again"
-                  continue
-                }
-              }
-              if ($output -like "*Login failed for user*") {
-                Write-Host -ForegroundColor Red "Cannot connect to the SQL Server instance $NR_CLI_DB_HOSTNAME with the provided username $NR_CLI_DB_USERNAME and password."
-                if ( $TRIES -ge $MAX_RETRIES ) { exit 3 } else {
-                  Write-Host "Please try again"
-                  continue
-                }
-              }
-              Write-Host "Installing MSSql Integration..."
-              break
-            } While ($TRIES -le 3)
+          # Create SQL user function
+          function Create-SqlUser {
+            param (
+              [Parameter(Mandatory)]
+              [string]$InstanceName
+            )
+            param (
+              [Parameter(Optional)]
+              [string]$Port
+            )
 
+            if ([string]::IsNullOrWhiteSpace($Port)) {
+              $connection = "${NR_CLI_DB_HOSTNAME}\${instance}"
+            } else {
+              $connection = "${NR_CLI_DB_HOSTNAME}\${instance},${Port}"
+            }
+            $SqlOutput=(sqlcmd -S $connection -Q @"
+            IF EXISTS(select top 1 name from sys.syslogins where name = '${NR_CLI_DB_USERNAME}')
+            BEGIN
+              DROP LOGIN ${NR_CLI_DB_USERNAME}
+            END
+
+            CREATE LOGIN ${NR_CLI_DB_USERNAME} WITH PASSWORD = '${NR_CLI_DB_PASSWORD}';
+            GRANT CONNECT SQL TO ${NR_CLI_DB_USERNAME};
+            GRANT VIEW SERVER STATE TO ${NR_CLI_DB_USERNAME};
+            GRANT VIEW ANY DEFINITION TO ${NR_CLI_DB_USERNAME};
+
+            DECLARE @name SYSNAME
+            DECLARE db_cursor CURSOR 
+            READ_ONLY FORWARD_ONLY
+            FOR
+            SELECT NAME
+            FROM master.sys.databases
+            WHERE NAME NOT IN ('master','msdb','tempdb','model','rdsadmin','distribution')
+            OPEN db_cursor
+            FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXECUTE('USE "' + @name + '"; CREATE USER ${NR_CLI_DB_USERNAME} FOR LOGIN ${NR_CLI_DB_USERNAME};' );
+                FETCH next FROM db_cursor INTO @name
+            END
+            CLOSE db_cursor
+            DEALLOCATE db_cursor
+
+            select name from sys.syslogins where name = ${NR_CLI_DB_USERNAME}
+            "@ 2>&1);
+
+            Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value @"SqlOutput`:` ${SqlOutput}\n"@ -Force | Out-Null;
+
+            If ($SqlOutput.Length -ge 3) {
+              $userName = $SqlOutput[2]
+              If ($userName -ieq ${NR_CLI_DB_USERNAME}) {
+                # User created successfully
+                return true
+              }
+            }
+            return false
+          }
+
+          $setupCount = 0
+
+          # Create user for all DBs
+          $instances = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server').InstalledInstances
+          foreach ($instance in $instances) {
+
+            $connection = "${NR_CLI_DB_HOSTNAME}\${instance},${NR_CLI_DB_PORT}"
+            $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME as 'Name'" -l 1 2>&1)
+            If ($name.Length -ge 3) {
+              $actualName = $name[2]
+              If ($actualName -ieq $instance) {
+                # Was able to connect with port
+                @isCreated = (Create-SqlUser -InstanceName $instance -Port $NR_CLI_DB_PORT)
+                if (@isCreated) {
+                  Write-OhiConfig -InstanceName $instance -Port $NR_CLI_DB_PORT
+                  $setupCount++
+                }
+                continue
+              }
+            }
+
+            $connection = "${NR_CLI_DB_HOSTNAME}\${instance}"
+            $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME as 'Name'" -l 1 2>&1)
+            If ($name.Length -ge 3) {
+              $actualName = $name[2]
+              If ($actualName -ieq $instance) {
+                # Was able to connect with instance name
+                @isCreated = (Create-SqlUser -InstanceName $instance)
+                if (@isCreated) {
+                  Write-OhiConfig -InstanceName $instance
+                  $setupCount++
+                }
+                continue
+              }
+            }
+          }
+
+          if ($setupCount -eq 0) {
+            Write-Host "No instances were found to instrument"
+            Exit 131
           }
 
           #Remove previous versions
@@ -212,23 +294,9 @@ install:
             Start-Sleep -s 15
           }
 
-
           # Installing MSSql Integration
           (New-Object System.Net.WebClient).DownloadFile("http://download.newrelic.com/infrastructure_agent/windows/integrations/nri-mssql/nri-mssql-amd64.msi", "$env:TEMP\nri-mssql-amd64.msi");
           msiexec.exe /qn /i "$env:TEMP\nri-mssql-amd64.msi" | Out-Null;
-          $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"; if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
-          Add-Content -Path "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml" -Value @"
-          integration_name`:` com.newrelic.mssql
-
-          instances`:`
-            - name`:` mssql-server
-              command`:` all_data
-              arguments`:`
-                hostname`:` $($NR_CLI_DB_HOSTNAME)
-                username`:` $($NR_CLI_DB_USERNAME)
-                password`:` $($NR_CLI_DB_PASSWORD)
-                port`:` $($NR_CLI_DB_PORT)
-          "@ -Force | Out-Null;
 
           Restart-Service newrelic-infra
           '
