@@ -45,9 +45,21 @@ preInstall:
   info: |2
       To capture data from the NGINX integration, you'll first need to enable
       and configure the applicable extension module:
-      - For NGINX Open Source: HTTP stub status module 
+      - For NGINX Open Source: HTTP stub status module
       - For NGINX Plus: HTTP status module or HTTP API module
       - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.
+
+  requireAtDiscovery: |
+    # if it's not NGINX PLUS
+    if [ $(nginx -V 2>&1 | grep -o nginx-plus | wc -l) -eq 0 ] ; then
+      # extract NGINX status url
+      stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
+      code=$(curl -I "http://127.0.0.1:80${stub_location}" -w %{response_code} -so '/dev/null')
+      if [ $code == "200" ]; then
+        exit 0
+      fi
+    fi
+    exit 1
 
 install:
   version: "3"
@@ -73,88 +85,10 @@ install:
     input_assert:
       cmds:
         - |
-          tries=0
-
-          # Check Env Vars
-          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
-          NR_CLI_STUB_STATUS_URL="{{.NR_CLI_STUB_STATUS_URL}}"
-
-          stub_location=""
-          nginx_version=""
-          # if it's not NGINX PLUS
-          if [ $(nginx -V 2>&1 | grep -o nginx-plus | wc -l) -eq 0 ] ; then
-            # extract NGINX status url
-            stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
-          else
-            nginx_version="plus"
-          fi
+          stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
 
           # Set Defaults
-          NR_CLI_STUB_STATUS_URL=${NR_CLI_STUB_STATUS_URL:-'http://127.0.0.1/status'}
-
-          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            while [ $tries -lt {{.MAX_RETRIES}} ]; do
-              if [ "$stub_location" == "" ]; then
-                printf "\nNGINX status URL (default: http://127.0.0.1/status): "
-                read -r NR_CLI_STUB_STATUS_URL
-                NR_CLI_STUB_STATUS_URL=${NR_CLI_STUB_STATUS_URL:-http://127.0.0.1/status}
-              else
-                NR_CLI_STUB_STATUS_URL="http://127.0.0.1:80${stub_location}"
-                stub_location=""
-              fi
-              code=$(curl -I $NR_CLI_STUB_STATUS_URL -w %{response_code} -so '/dev/null')
-              if [ $code == "200" ]; then
-                break
-              fi
-              ((tries++))
-              if [ ! $tries -lt {{.MAX_RETRIES}} ]; then
-                if [ $(sudo nginx -V 2>&1 | grep -o "with-http_stub_status_module" | wc -l) -eq 0 ] ; then
-                  printf "with-http_stub_status_module should be enabled in order to monitor NGINX \nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.\n" >&2
-                  exit 4
-                fi
-                if [ $code == "401" ] || [ $code == "403" ]; then
-                  echo "The status url provided $NR_CLI_STUB_STATUS_URL has forbidden access. Modify the access for this host on the NGINX configuration and restart the server."
-                  exit 7
-                fi
-                if [ $code == "000" ]; then
-                  CURL_ERROR=$(curl $NR_CLI_STUB_STATUS_URL 2>&1 1>/dev/null -s -S)
-                  ERROR_CODE=$(echo $CURL_ERROR | awk -F'[()]' '{print $2}')
-                  if [ $ERROR_CODE == "6" ]; then
-                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
-                    printf "${ERROR_MSG}\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.\n" >&2
-                    exit 8
-                  elif [ $ERROR_CODE == "7" ]; then
-                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
-                    printf "${ERROR_MSG}\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.\n" >&2
-                    exit 9
-                  fi
-                fi
-                if [ "$nginx_version" == "plus" ]; then
-                  printf "NGINX PLUS API status page should be set up with a locally accessible URL in the conf server block. \nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.\n" >&2
-                  exit 5
-                fi
-                printf "NGINX HTTP status page should be set up with a locally accessible URL in the conf server block. \nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.\n" >&2
-                exit 2
-              else
-                if [ $code == "401" ] || [ $code == "403" ]; then
-                  echo "The status url provided $NR_CLI_STUB_STATUS_URL has forbidden access. Modify the access for this host on the NGINX configuration and restart the server."
-                elif [ $code == "000" ]; then
-                  CURL_ERROR=$(curl $NR_CLI_STUB_STATUS_URL 2>&1 1>/dev/null -s -S)
-                  ERROR_CODE=$(echo $CURL_ERROR | awk -F'[()]' '{print $2}')
-                  if [ $ERROR_CODE == "6" ]; then
-                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
-                    echo "${ERROR_MSG}"
-                  elif [ $ERROR_CODE == "7" ]; then
-                    ERROR_MSG=$(echo $CURL_ERROR | awk -F'[()]' '{print $3}' | sed 's/^ *//')
-                    echo "${ERROR_MSG}"
-                  fi
-                else
-                  echo "The status url provided $NR_CLI_STUB_STATUS_URL does not exist on the server or it's not reachable"
-                fi
-                echo "Try again with a correct url."
-              fi
-            done
-          fi
+          NR_CLI_STUB_STATUS_URL="http://127.0.0.1:80${stub_location}"
 
           STATUS_RESPONSE=$(curl $NR_CLI_STUB_STATUS_URL -s | iconv -f utf-8 -t utf-8 -c)
           if [ ! $(echo $STATUS_RESPONSE | grep "Active connections:" | wc -l) -eq 0 ] ; then
@@ -164,10 +98,6 @@ install:
           elif [ ! $(echo $STATUS_RESPONSE | grep '"nginx"' | wc -l) -eq 0 ] ; then
             NR_CLI_STATUS_MODULE="ngx_http_api_module"
           else
-            if [ "$nginx_version" == "plus" ]; then
-              printf "The endpoint provided is not an NGINX PLUS api endpoint. \nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.\n" >&2
-              exit 6
-            fi
             printf "The endpoint provided is not an NGINX status endpoint. \nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.\n" >&2
             exit 3
           fi
