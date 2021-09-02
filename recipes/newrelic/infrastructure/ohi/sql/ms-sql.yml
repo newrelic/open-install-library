@@ -29,6 +29,7 @@ preInstall:
       $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
       If ($instances.Length -eq 0) {
         # No SQL Server instances locally
+        Write-Host "No SQL Server instances locally"
         Exit 1
       }
 
@@ -40,27 +41,35 @@ preInstall:
 
       # Loop on each instance names to see if we can connect
       foreach ($instance in $instances) {
+        Write-Host "instance:${instance}"
         $connection = "${NR_CLI_DB_HOSTNAME}\${instance},${NR_CLI_DB_PORT}"
+        Write-Host "connection:${connection}"
         $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
         If ($name.Length -ge 3) {
           $actualName = $name[2].ToString().Trim();
+          Write-Host "actualName:${actualName}"
           If ($actualName -eq $instance) {
             # Found at least 1 instance connecting on default port
+            Write-Host "Found at least 1 instance connecting on default port"
             Exit 0
           }
         }
 
         $connection = "${NR_CLI_DB_HOSTNAME}\${instance}"
+        Write-Host "connection:${connection}"
         $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
         If ($name.Length -ge 3) {
           $actualName = $name[2].ToString().Trim();
+          Write-Host "actualName:${actualName}"
           If ($actualName -eq $instance) {
             # Found at least 1 instance connecting
+            Write-Host "Found at least 1 instance connecting"
             Exit 0
           }
         }
 
       }
+      Write-Host "Nothing found"
       Exit 2
       '
   info: |
