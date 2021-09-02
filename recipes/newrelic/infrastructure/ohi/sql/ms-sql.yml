@@ -32,12 +32,15 @@ preInstall:
         Exit 1
       }
 
-      $hostname = hostname
+      $NR_CLI_DB_HOSTNAME=   "{{.NR_CLI_DB_HOSTNAME}}"
+      if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_HOSTNAME)) {$NR_CLI_DB_HOSTNAME = {{.HOSTNAME}}}
+
       $NR_CLI_DB_PORT = "{{.NR_CLI_DB_PORT}}"
       if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_PORT)) {$NR_CLI_DB_PORT = "1433"}
+
       # Loop on each instance names to see if we can connect
       foreach ($instance in $instances) {
-        $connection = "${hostname}\${instance},${NR_CLI_DB_PORT}"
+        $connection = "${NR_CLI_DB_HOSTNAME}\${instance},${NR_CLI_DB_PORT}"
         $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME as 'Name'" -l 1 2>&1)
         If ($name.Length -ge 3) {
           $actualName = $name[2]
@@ -47,7 +50,7 @@ preInstall:
           }
         }
 
-        $connection = "${hostname}\${instance}"
+        $connection = "${NR_CLI_DB_HOSTNAME}\${instance}"
         $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME as 'Name'" -l 1 2>&1)
         If ($name.Length -ge 3) {
           $actualName = $name[2]
@@ -59,10 +62,10 @@ preInstall:
 
       }
       Exit 2
-  info: |2
-      To capture data from the Microsoft SQL Server integration, you'll first need to meet these prerequisites:
-      - Microsoft SQL Server version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/microsoft-sql-server-monitoring-integration#about)
-      - Microsoft SQL Server user with user privileges for both CONNECT and VIEW SERVER STATE, and READ access permissions
+  info: |
+      To capture data from the Microsoft SqlServer integration, we need to create a new SqlServer user with specific permissions (CONNECT, VIEW SERVER STATE, READ).
+      The installation will create a strong randomly generated password for that new user.
+      More information regarding the prerequisites can be found at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/microsoft-sql-server-monitoring-integration#about
 
 install:
   version: "3"
@@ -95,17 +98,21 @@ install:
 
           # Check Env Vars
           $NEW_RELIC_ASSUME_YES= "{{.NEW_RELIC_ASSUME_YES}}"
-          $NR_CLI_DB_HOSTNAME=   "{{.NR_CLI_DB_HOSTNAME}}"
-          $NR_CLI_DB_PORT=       "{{.NR_CLI_DB_PORT}}"
-          $NR_CLI_DB_USERNAME=   "{{.NR_CLI_DB_USERNAME}}"
-          $NR_CLI_DB_PASSWORD=   "{{.NR_CLI_DB_PASSWORD}}"
 
-          # Set Defaults
-          if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_HOSTNAME)) {$NR_CLI_DB_HOSTNAME = "127.0.0.1"}
+          $NR_CLI_DB_HOSTNAME=   "{{.NR_CLI_DB_HOSTNAME}}"
+          if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_HOSTNAME)) {$NR_CLI_DB_HOSTNAME = {{.HOSTNAME}}}
+
+          $NR_CLI_DB_PORT = "{{.NR_CLI_DB_PORT}}"
           if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_PORT)) {$NR_CLI_DB_PORT = "1433"}
 
-          # Get all instances on the host
-          # (get-itemproperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server').InstalledInstances
+          $NR_CLI_DB_USERNAME=   "{{.NR_CLI_DB_USERNAME}}"
+          if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_USERNAME)) {$NR_CLI_DB_USERNAME = "newrelic"}
+
+          $NR_CLI_DB_PASSWORD=   "{{.NR_CLI_DB_PASSWORD}}"
+          if ([string]::IsNullOrWhiteSpace($NR_CLI_DB_PASSWORD)) {
+            Add-Type -AssemblyName System.Web;
+            $NR_CLI_DB_PASSWORD = [System.Web.Security.Membership]::GeneratePassword(20,2);
+          }
 
           if ($NEW_RELIC_ASSUME_YES -ieq "false") {
             DO
