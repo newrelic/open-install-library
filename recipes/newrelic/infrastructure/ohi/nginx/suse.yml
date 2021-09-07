@@ -49,18 +49,13 @@ preInstall:
       - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.
 
   requireAtDiscovery: |
-    # We check that the version is not NGINX PLUS, so it's NGINX OS
-    # we didn't detect users using the guided install NGINX Plus, and the status url it's
-    # way harder to detect in NGINX PLUS
-    if [ $(nginx -V 2>&1 | grep -o nginx-plus | wc -l) -eq 0 ] ; then
-      # extract NGINX status url
-      stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
-      code=$(curl -I "http://127.0.0.1:80${stub_location}" -w %{response_code} -so '/dev/null')
-      if [ $code == "200" ]; then
-        exit 0
-      fi
+    # extract NGINX status url
+    stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
+    code=$(curl -I "http://127.0.0.1:80${stub_location}" -w %{response_code} -so '/dev/null')
+    if [ $code == "200" ]; then
+      exit 0
     fi
-    # if it's NGINX Plus or the status url is not correct we exit
+
     exit 1
 
 install:
