@@ -20,7 +20,43 @@ keywords:
   - fpm
 
 processMatch:
+  # several possible configurations we can match on:
+  # - older apache and no php-fpm (process named httpd)
+  # - newer apache and no php-fpm (process named apache2)
+  # - nginx and php-fpm (process named php-fpm)
+  # in the preInstall we will check if php is installed and further filter down the possible scenarios
   - php-fpm
+  - apache2
+  - httpd
+
+preInstall:
+  requireAtDiscovery: |
+      # verify running with sudo
+      if [ -z "$SUDO_USER" ]; then
+        exit 3
+      fi
+
+      # verify systemctl is installed
+      IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
+      if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
+        exit 3
+      fi
+
+      # Map of tool names to the associated error code
+      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22"
+
+      for tuple in $required_tools_and_error_codes; do
+        tool=$(echo ${tuple} |cut -d':' -f1)
+        code=$(echo ${tuple} |cut -d':' -f2)
+
+        IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+        if [ "$IS_TOOL_INSTALLED" -eq 0 ]; then
+          exit 3
+        fi
+      done
+
+      # everything looks good!
+      exit 0
 
 validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
 
@@ -113,7 +149,7 @@ install:
           fi
         - |
           # Map of tool names to the associated error code
-          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22"
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22"
 
           for tuple in $required_tools_and_error_codes; do
             tool=$(echo ${tuple} |cut -d':' -f1)
@@ -396,13 +432,13 @@ install:
               # We rely on the package installer to enable the newrelic module.
               #
 
-              # 
+              #
               # For each php directory the installation has detected, scrape three pieces
-              # of information from the logfile:  The php binary location, the location 
+              # of information from the logfile:  The php binary location, the location
               # of the php.ini file associated with that binary, and the location of the
               # newrelic.ini file associated with that binary.  If the logfile indicated
               # it was a specific web directory, the information is saved in web_info.txt;
-              # otherwise, the information is saved in cli_info.txt.  
+              # otherwise, the information is saved in cli_info.txt.
               #
               if [ -z "${CLI_DIRS}" ]; then
                 echo "$php_bin $php_ini_dir $target_ini_dir" >> {{.TMP_INSTALL_DIR}}/web_info.txt
