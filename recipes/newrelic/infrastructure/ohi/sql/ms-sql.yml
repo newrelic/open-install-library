@@ -167,9 +167,26 @@ install:
             } else {
               $connection = "${NR_CLI_DB_HOSTNAME}\${instance},${Port}"
             }
-            $SQL=@"
+
+            $SQL_DROP_EXIST=@"
           SET QUOTED_IDENTIFIER OFF;
+          DECLARE @name SYSNAME
+          DECLARE db_cursor CURSOR 
+          READ_ONLY FORWARD_ONLY
+          FOR SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`")
+          OPEN db_cursor
+          FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+          BEGIN
+              EXECUTE(`"USE [`" + @name + `"]; IF EXISTS(select top 1 name from sys.syslogins where name = `"`"${NR_CLI_DB_USERNAME}`"`") DROP USER ${NR_CLI_DB_USERNAME};`" )
+              FETCH next FROM db_cursor INTO @name
+          END
+          CLOSE db_cursor
+          DEALLOCATE db_cursor
           IF EXISTS(select top 1 name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`") DROP LOGIN ${NR_CLI_DB_USERNAME}
+          "@
+
+            $SQL_CREATE=@"
+          SET QUOTED_IDENTIFIER OFF;
           CREATE LOGIN ${NR_CLI_DB_USERNAME} WITH PASSWORD = `"${NR_CLI_DB_PASSWORD}`"
           GRANT CONNECT SQL, VIEW SERVER STATE, VIEW ANY DEFINITION TO ${NR_CLI_DB_USERNAME}
           DECLARE @name SYSNAME
@@ -179,18 +196,27 @@ install:
           OPEN db_cursor
           FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
           BEGIN
-              EXECUTE(`"USE [`" + @name + `"]; IF EXISTS(select top 1 name from sys.syslogins where name = `"`"${NR_CLI_DB_USERNAME}`"`") DROP USER ${NR_CLI_DB_USERNAME}; CREATE USER ${NR_CLI_DB_USERNAME} FOR LOGIN ${NR_CLI_DB_USERNAME};`" )
+              EXECUTE(`"USE [`" + @name + `"]; CREATE USER ${NR_CLI_DB_USERNAME} FOR LOGIN ${NR_CLI_DB_USERNAME};`" )
               FETCH next FROM db_cursor INTO @name
           END
           CLOSE db_cursor
           DEALLOCATE db_cursor
           select name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`"
           "@
-            $SqlCreateFile = "$env:TEMP\nri-sql-create.sql"
-            if (Test-Path $SqlCreateFile) { Remove-Item $SqlCreateFile }
-            Add-Content -Path $SqlCreateFile -Value $SQL -Force 2>&1
-            $SqlOutput=(sqlcmd -S $connection -i $SqlCreateFile 2>&1)
-            if (Test-Path $SqlCreateFile) { Remove-Item $SqlCreateFile }
+
+            $NriSqlFile = "$env:TEMP\nri-sql.sql"
+
+            # Delete user and login if exist
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            Add-Content -Path $NriSqlFile -Value $SQL_DROP_EXIST -Force 2>&1
+            $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
+
+            # Create login and user
+            Add-Content -Path $NriSqlFile -Value $SQL_CREATE -Force 2>&1
+            $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
             $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
 
             If ($SqlOutput.Length -ge 3) {
