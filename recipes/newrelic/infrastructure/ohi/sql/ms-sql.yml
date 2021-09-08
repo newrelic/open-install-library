@@ -168,7 +168,7 @@ install:
               $connection = "${NR_CLI_DB_HOSTNAME}\${instance},${Port}"
             }
 
-            $SQL_DROP_EXIST=@"
+            $SQL=@"
           SET QUOTED_IDENTIFIER OFF;
           DECLARE @name SYSNAME
           DECLARE db_user_cursor CURSOR 
@@ -200,38 +200,31 @@ install:
 
             DROP LOGIN ${NR_CLI_DB_USERNAME}
           END
-          "@
 
-            $SQL_CREATE=@"
-          SET QUOTED_IDENTIFIER OFF;
           CREATE LOGIN ${NR_CLI_DB_USERNAME} WITH PASSWORD = `"${NR_CLI_DB_PASSWORD}`"
+
           GRANT CONNECT SQL, VIEW SERVER STATE, VIEW ANY DEFINITION TO ${NR_CLI_DB_USERNAME}
-          DECLARE @name SYSNAME
-          DECLARE db_cursor CURSOR 
+          DECLARE db_create_cursor CURSOR 
           READ_ONLY FORWARD_ONLY
           FOR SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`")
-          OPEN db_cursor
-          FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+          OPEN db_create_cursor
+          FETCH NEXT FROM db_create_cursor INTO @name WHILE @@FETCH_STATUS = 0
           BEGIN
               EXECUTE(`"USE [`" + @name + `"]; CREATE USER ${NR_CLI_DB_USERNAME} FOR LOGIN ${NR_CLI_DB_USERNAME};`" )
-              FETCH next FROM db_cursor INTO @name
+              FETCH next FROM db_create_cursor INTO @name
           END
-          CLOSE db_cursor
-          DEALLOCATE db_cursor
+          CLOSE db_create_cursor
+          DEALLOCATE db_create_cursor
+
           select name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`"
           "@
 
             $NriSqlFile = "$env:TEMP\nri-sql.sql"
 
             # Delete user and login if exist
+            # Then create new login and user
             if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-            Add-Content -Path $NriSqlFile -Value $SQL_DROP_EXIST -Force 2>&1
-            $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
-            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-            $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
-
-            # Create login and user
-            Add-Content -Path $NriSqlFile -Value $SQL_CREATE -Force 2>&1
+            Add-Content -Path $NriSqlFile -Value $SQL -Force 2>&1
             $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
             if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
             $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
@@ -284,7 +277,7 @@ install:
           }
 
           if ($setupCount -eq 0) {
-            Write-Host "No instances were found to instrument"
+            Write-Host "No SQL Server instances were found to instrument"
             Exit 131
           }
 
