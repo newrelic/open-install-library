@@ -169,9 +169,9 @@ install:
             }
             $SQL=@"
           SET QUOTED_IDENTIFIER OFF;
-          IF EXISTS(select top 1 name from sys.syslogins where name = `"newrelic`") DROP LOGIN newrelic
-          CREATE LOGIN newrelic WITH PASSWORD = `"${NR_CLI_DB_PASSWORD}`"
-          GRANT CONNECT SQL, VIEW SERVER STATE, VIEW ANY DEFINITION TO newrelic
+          IF EXISTS(select top 1 name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`") DROP LOGIN ${NR_CLI_DB_USERNAME}
+          CREATE LOGIN ${NR_CLI_DB_USERNAME} WITH PASSWORD = `"${NR_CLI_DB_PASSWORD}`"
+          GRANT CONNECT SQL, VIEW SERVER STATE, VIEW ANY DEFINITION TO ${NR_CLI_DB_USERNAME}
           DECLARE @name SYSNAME
           DECLARE db_cursor CURSOR 
           READ_ONLY FORWARD_ONLY
@@ -179,12 +179,12 @@ install:
           OPEN db_cursor
           FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
           BEGIN
-              EXECUTE(`"USE [`" + @name + `"]; CREATE USER newrelic FOR LOGIN newrelic;`" )
+              EXECUTE(`"USE [`" + @name + `"]; IF EXISTS(select top 1 name from sys.syslogins where name = `"`"${NR_CLI_DB_USERNAME}`"`") DROP USER ${NR_CLI_DB_USERNAME}; CREATE USER ${NR_CLI_DB_USERNAME} FOR LOGIN ${NR_CLI_DB_USERNAME};`" )
               FETCH next FROM db_cursor INTO @name
           END
           CLOSE db_cursor
           DEALLOCATE db_cursor
-          select name from sys.syslogins where name = `"newrelic`"
+          select name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`"
           "@
             $SqlCreateFile = "$env:TEMP\nri-sql-create.sql"
             if (Test-Path $SqlCreateFile) { Remove-Item $SqlCreateFile }
