@@ -171,18 +171,35 @@ install:
             $SQL_DROP_EXIST=@"
           SET QUOTED_IDENTIFIER OFF;
           DECLARE @name SYSNAME
-          DECLARE db_cursor CURSOR 
+          DECLARE db_user_cursor CURSOR 
           READ_ONLY FORWARD_ONLY
           FOR SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`")
-          OPEN db_cursor
-          FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+          OPEN db_user_cursor
+          FETCH NEXT FROM db_user_cursor INTO @name WHILE @@FETCH_STATUS = 0
           BEGIN
               EXECUTE(`"USE [`" + @name + `"]; IF EXISTS(select top 1 name from sys.syslogins where name = `"`"${NR_CLI_DB_USERNAME}`"`") DROP USER ${NR_CLI_DB_USERNAME};`" )
-              FETCH next FROM db_cursor INTO @name
+              FETCH next FROM db_user_cursor INTO @name
           END
-          CLOSE db_cursor
-          DEALLOCATE db_cursor
-          IF EXISTS(select top 1 name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`") DROP LOGIN ${NR_CLI_DB_USERNAME}
+          CLOSE db_user_cursor
+          DEALLOCATE db_user_cursor
+
+          IF EXISTS(select top 1 name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`")
+          BEGIN
+            DECLARE @session_id INT
+            DECLARE db_login_cursor CURSOR 
+            READ_ONLY FORWARD_ONLY
+            FOR SELECT session_id FROM sys.dm_exec_sessions WHERE login_name = `"${NR_CLI_DB_USERNAME}`"
+            OPEN db_login_cursor 
+            FETCH NEXT FROM db_login_cursor  INTO @session_id WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXECUTE(`"KILL `" + @session_id )
+                FETCH next FROM db_login_cursor  INTO @session_id
+            END
+            CLOSE db_login_cursor
+            DEALLOCATE db_login_cursor
+
+            DROP LOGIN ${NR_CLI_DB_USERNAME}
+          END
           "@
 
             $SQL_CREATE=@"
