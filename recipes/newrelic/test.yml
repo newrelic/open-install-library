@@ -1,0 +1,59 @@
+name: test-recipe
+displayName: Test Recipe
+description: A recipe to test the preInstall script
+repository: https://github.com/newrelic/newrelic-cli
+
+installTargets:
+  - type: host
+    os: linux
+
+keywords:
+  - PreInstall
+
+successLinkConfig:
+  type: EXPLORER
+
+preInstall:
+  requireAtDiscovery: |
+    sudo rm -rf src.txt
+    echo "# listen in a comment" >> src.txt
+    echo "listen     80 default_server;" >> src.txt
+    echo "# proxy the PHP scripts to Apache listening on 127.0.0.1:80" >> src.txt
+    echo "# pass the PHP scripts to FastCGI server listening on 127.0.0.1:9000" >> src.txt
+    sudo cat src.txt | grep listen
+
+    exit_code=1
+    echo "Start" >> /home/ec2-user/trace.txt
+    sudo cat src.txt | grep listen | while read -r line ; do
+      # we chech the line is not commented
+      echo $line >> /home/ec2-user/trace.txt
+      if ! echo $line | grep -aoPq "#"; then
+        echo "Valid" >> /home/ec2-user/trace.txt
+        echo $line | grep -aoP "\d+" >> /home/ec2-user/trace.txt
+        port=$(echo $line | grep -aoP "\d+")
+        echo "Port:"$port >> /home/ec2-user/trace.txt
+
+        code="200"
+        if [ $code == "200" ]; then
+          echo "OK" >> /home/ec2-user/trace.txt
+          exit_code=0
+          exit 0
+        fi
+      fi
+      echo "looping" >> /home/ec2-user/trace.txt
+    done
+    echo "Done not OK:"$exit_code >> /home/ec2-user/trace.txt
+    exit $exit_code
+
+install:
+  version: "3"
+  silent: true
+  tasks:
+    default:
+      cmds:
+        - task: install_task
+
+    install_task:
+      cmds:
+        - |
+          printf "\n[OK] recipe has executed\n\n"
