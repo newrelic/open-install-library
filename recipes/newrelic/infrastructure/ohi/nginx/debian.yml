@@ -58,10 +58,29 @@ preInstall:
       exit 1
     fi
 
-    code=$(curl -I "http://127.0.0.1:80${stub_location}" -w %{response_code} -so '/dev/null')
-    if [ $code == "200" ]; then
-      exit 0
-    fi
+    curledPorts=""
+
+    # split on lines
+    IFS=$'\n'
+    portlines=$(sudo nginx -Tq | grep listen)
+    for line in $portlines; do
+      # we chech the line is not commented
+      if ! echo $line | grep -aoPq "#"; then
+        port=$(echo $line | grep -aoP "\d+")
+
+        # we set this port variable with the surrounded by the hash symbol so we can distinct 20 from 200
+        currentPort="#{$port}#"
+
+        # then we check if it doesn't exist on our curledPorts var
+        if ! echo $curledPorts | grep -qw "$currentPort"; then
+          code=$(curl -I "http://127.0.0.1:${port}${stub_location}" -w %{response_code} -so '/dev/null')
+          if [ $code == "200" ]; then
+            exit 0
+          fi
+          curledPorts+=${currentPort}
+          fi
+        fi
+    done
 
     exit 1
 
@@ -89,8 +108,29 @@ install:
         - |
           stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
 
+          port=""
+          curledPorts=""
+          sudo nginx -T | grep listen | while read -r line ; do
+            # we chech the line is not commented
+            if ! echo $line | grep -aoPq "#"; then
+              port=$(echo $line | grep -aoP "\d+")
+
+              # we set this port variable with the surrounded by the hash symbol so we can distinct 20 from 200
+              currentPort="#{$port}#"
+
+              # then we check if it doesn't exist on our curledPorts var
+              if ! echo $curledPorts | grep -qw "$currentPort"; then
+                code=$(curl -I "http://127.0.0.1:${port}${stub_location}" -w %{response_code} -so '/dev/null')
+                if [ $code == "200" ]; then
+                  break
+                fi
+                curledPorts+=${currentPort}
+              fi
+            fi
+          done
+
           # Set Defaults
-          NR_CLI_STUB_STATUS_URL="http://127.0.0.1:80${stub_location}"
+          NR_CLI_STUB_STATUS_URL="http://127.0.0.1:${port}${stub_location}"
 
           STATUS_RESPONSE=$(curl $NR_CLI_STUB_STATUS_URL -s | iconv -f utf-8 -t utf-8 -c)
           if [ ! $(echo $STATUS_RESPONSE | grep "Active connections:" | wc -l) -eq 0 ] ; then
