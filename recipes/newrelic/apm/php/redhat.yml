@@ -30,25 +30,29 @@ preInstall:
   requireAtDiscovery: |
       # verify running with sudo
       if [ -z "$SUDO_USER" ]; then
+        echo "This installation recipe for the New Relic PHP agent must be run under sudo."
         exit 3
       fi
 
-      # verify systemctl is installed
       IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
-      if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
-        exit 3
+      if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]
+      then
+        echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'."
+        exit 20
       fi
 
       # Map of tool names to the associated error code
-      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22"
+      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22 yum:22"
 
       for tuple in $required_tools_and_error_codes; do
         tool=$(echo ${tuple} |cut -d':' -f1)
         code=$(echo ${tuple} |cut -d':' -f2)
 
         IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
-        if [ "$IS_TOOL_INSTALLED" -eq 0 ]; then
-          exit 3
+        if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+        then
+          echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed."
+          exit ${code}
         fi
       done
 
@@ -146,7 +150,7 @@ install:
           fi
         - |
           # Map of tool names to the associated error code
-          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22"
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22 yum:22"
 
           for tuple in $required_tools_and_error_codes; do
             tool=$(echo ${tuple} |cut -d':' -f1)
