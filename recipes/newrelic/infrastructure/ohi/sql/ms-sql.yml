@@ -134,13 +134,12 @@ install:
             $NR_CLI_DB_PASSWORD = [System.Web.Security.Membership]::GeneratePassword(20,2);
           }
 
-          $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml"; 
+          $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml";
           # Remove any previous config
           if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
 
           Add-Content -Path $OhiConfig -Value @"
-          integration_name: com.newrelic.mssql
-          instances:
+          integrations:
           "@ -Force | Out-Null;
 
           # Write config function
@@ -152,18 +151,20 @@ install:
               [string] $Port
             )
 
-            Add-Content -Path $OhiConfig -Value "  - name`:` mssql-${InstanceName}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "    command`:` all_data" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "    arguments`:` " -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      hostname`:` ${NR_CLI_DB_HOSTNAME}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      username`:` ${NR_CLI_DB_USERNAME}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      password`:` `"${NR_CLI_DB_PASSWORD}`"" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "  - name`:` nri-mssql" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "    env`:` " -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      HOSTNAME`:` ${NR_CLI_DB_HOSTNAME}" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NR_CLI_DB_USERNAME}" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NR_CLI_DB_PASSWORD}`"" -Force | Out-Null;
 
             if ([string]::IsNullOrWhiteSpace($Port)) {
-              Add-Content -Path $OhiConfig -Value "      instance`:` ${InstanceName}" -Force | Out-Null;
+              Add-Content -Path $OhiConfig -Value "      INSTANCE`:` ${InstanceName}" -Force | Out-Null;
             } else {
-              Add-Content -Path $OhiConfig -Value "      port`:` ${Port}" -Force | Out-Null;
+              Add-Content -Path $OhiConfig -Value "      PORT`:` ${Port}" -Force | Out-Null;
             }
+
+            Add-Content -Path $OhiConfig -Value "    inventory_source`:` config/mssql" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "    interval`:` 15" -Force | Out-Null;
           }
 
           # Create SQL user function
@@ -184,7 +185,7 @@ install:
             $SQL=@"
           SET QUOTED_IDENTIFIER OFF;
           DECLARE @name SYSNAME
-          DECLARE db_user_cursor CURSOR 
+          DECLARE db_user_cursor CURSOR
           READ_ONLY FORWARD_ONLY
           FOR SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`")
           OPEN db_user_cursor
@@ -199,10 +200,10 @@ install:
           IF EXISTS(select top 1 name from sys.syslogins where name = `"${NR_CLI_DB_USERNAME}`")
           BEGIN
             DECLARE @session_id INT
-            DECLARE db_login_cursor CURSOR 
+            DECLARE db_login_cursor CURSOR
             READ_ONLY FORWARD_ONLY
             FOR SELECT session_id FROM sys.dm_exec_sessions WHERE login_name = `"${NR_CLI_DB_USERNAME}`"
-            OPEN db_login_cursor 
+            OPEN db_login_cursor
             FETCH NEXT FROM db_login_cursor  INTO @session_id WHILE @@FETCH_STATUS = 0
             BEGIN
                 EXECUTE(`"KILL `" + @session_id )
@@ -217,7 +218,7 @@ install:
           CREATE LOGIN ${NR_CLI_DB_USERNAME} WITH PASSWORD = `"${NR_CLI_DB_PASSWORD}`"
 
           GRANT CONNECT SQL, VIEW SERVER STATE, VIEW ANY DEFINITION TO ${NR_CLI_DB_USERNAME}
-          DECLARE db_create_cursor CURSOR 
+          DECLARE db_create_cursor CURSOR
           READ_ONLY FORWARD_ONLY
           FOR SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`")
           OPEN db_create_cursor

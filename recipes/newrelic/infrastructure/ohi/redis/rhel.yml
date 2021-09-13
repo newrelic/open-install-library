@@ -157,18 +157,16 @@ install:
             sudo rm /etc/newrelic-infra/integrations.d/redis-config.yml;
           fi
           sudo tee /etc/newrelic-infra/integrations.d/redis-config.yml > /dev/null <<EOT
-          integration_name: com.newrelic.redis
-
-          instances:
-            - name: redis-metrics
-              command: metrics
-              arguments:
-                hostname: $NR_CLI_HOSTNAME
-                port: $NR_CLI_PORT
-                keys: $NR_CLI_KEYS
-                password: $NR_CLI_PASSWORD
-                config_inventory: true
-                keys_limit: 30
+          integrations:
+            - name: nri-redis
+              env:
+                METRICS: true
+                HOSTNAME: $NR_CLI_HOSTNAME
+                PORT: $NR_CLI_PORT
+                KEYS: $NR_CLI_KEYS
+                PASSWORD: $NR_CLI_PASSWORD
+                CONFIG_INVENTORY: true
+                KEYS_LIMIT: 30
 
                 # New users should leave this property as 'true', to identify the
                 # monitored entities as 'remote'. Setting this property to 'false' (the
@@ -177,18 +175,19 @@ install:
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
-                remote_monitoring: true
+                REMOTE_MONITORING: true
 
                 # New users should leave this property as 'true', to uniquely identify the monitored entities when using
-                # Unix sockets.
-                use_unix_socket: false
+                # Unix sockets. It requires UNIX_SOCKET_PATH
+                USE_UNIX_SOCKET: false
+              interval: 15
 
-            - name: redis-inventory
-              command: inventory
-              arguments:
-                hostname: $NR_CLI_HOSTNAME
-                port: $NR_CLI_PORT
-                password: $NR_CLI_PASSWORD
+            - name: nri-redis
+              env:
+                INVENTORY: true
+                HOSTNAME: $NR_CLI_HOSTNAME
+                PORT: $NR_CLI_PORT
+                PASSWORD: $NR_CLI_PASSWORD
 
                 # New users should leave this property as 'true', to identify the
                 # monitored entities as 'remote'. Setting this property to 'false' (the
@@ -197,11 +196,13 @@ install:
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
-                remote_monitoring: true
+                REMOTE_MONITORING: true
 
                 # New users should leave this property as 'true', to uniquely identify the monitored entities when using
-                # Unix sockets.
-                use_unix_socket: false
+                # Unix sockets. It requires UNIX_SOCKET_PATH
+                USE_UNIX_SOCKET: false
+              inventory_source: config/redis
+              interval: 60
           EOT
 
     restart:

@@ -161,17 +161,15 @@ install:
           fi
           sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml;
           sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<EOT
-          integration_name: com.newrelic.nginx
-
-          instances:
-            - name: nginx-server-metrics
-              command: metrics
-              arguments:
+          integrations:
+            - name: nri-nginx
+              env:
+                METRICS: true
                 # If you're using ngx_http_api_module be certain to use the full path up to and including the version number
-                status_url: $NR_CLI_STUB_STATUS_URL
+                STATUS_URL: $NR_CLI_STUB_STATUS_URL
 
                 # Name of Nginx status module OHI is to query against. discover | ngx_http_stub_status_module | ngx_http_status_module | ngx_http_api_module
-                status_module: $NR_CLI_STATUS_MODULE
+                STATUS_MODULE: $NR_CLI_STATUS_MODULE
 
                 # New users should leave this property as 'true', to identify the
                 # monitored entities as 'remote'. Setting this property to 'false' (the
@@ -180,14 +178,16 @@ install:
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
-                remote_monitoring: true
-                # validate_certs: true
-                # default: true If the status URL is HTTPS with a self-signed certificate, set this to false if you want to avoid certificate validation
+                REMOTE_MONITORING: true
 
-            - name: nginx-server-inventory
-              command: inventory
-              arguments:
-                config_path: /etc/nginx/nginx.conf
+                # default true. If the status URL is HTTPS with a self-signed certificate, set this to false if you want to avoid certificate validation
+                # VALIDATE_CERTS: true
+              interval: 30
+
+            - name: nri-nginx
+              env:
+                INVENTORY: true
+                CONFIG_PATH: /etc/nginx/nginx.conf
 
                 # New users should leave this property as 'true', to identify the
                 # monitored entities as 'remote'. Setting this property to 'false' (the
@@ -196,10 +196,13 @@ install:
                 # Please check the documentation to get more information about local
                 # versus remote entities:
                 # https://github.com/newrelic/infra-integrations-sdk/blob/master/docs/entity-definition.md
-                remote_monitoring: true #new users should leave remote_monitoring = true
+                REMOTE_MONITORING: true #new users should leave remote_monitoring = true
 
                 # status_url is used to identify the monitored entity to which the inventory will be attached.
-                status_url: $NR_CLI_STUB_STATUS_URL
+                STATUS_URL: $NR_CLI_STUB_STATUS_URL
+              inventory_source: config/nginx
+              interval: 60
+
           EOT
 
     restart:
