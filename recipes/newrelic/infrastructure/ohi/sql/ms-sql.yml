@@ -29,12 +29,13 @@ preInstall:
       $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
       if ($loginModes.Length -eq 0) {
         # No SQL Server instances to login with SQL Server authentication
+        exit 1
       }
 
       $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
       If ($instances.Length -eq 0) {
         # No SQL Server instances locally
-        exit 1
+        exit 2
       }
 
       $NR_CLI_DB_HOSTNAME=   "$env:NR_CLI_DB_HOSTNAME"
@@ -51,7 +52,7 @@ preInstall:
           $actualName = $name[2].ToString().Trim();
           If ($actualName -eq $instance) {
             $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
-            if (-Not $canLogin -eq $null) {
+            if (-Not ($canLogin -eq $null)) {
               # Found at least 1 instance connecting on default port
               exit 0
             }
@@ -64,7 +65,7 @@ preInstall:
           $actualName = $name[2].ToString().Trim();
           If ($actualName -eq $instance) {
             $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
-            if (-Not $canLogin -eq $null) {
+            if (-Not ($canLogin -eq $null)) {
               # Found at least 1 instance connecting
               exit 0
             }
@@ -72,7 +73,7 @@ preInstall:
         }
 
       }
-      exit 2
+      exit 3
       '
   info: |
       To capture data from the Microsoft SqlServer integration, we need to create a new SqlServer user with specific permissions (CONNECT, VIEW SERVER STATE, READ).
@@ -266,7 +267,7 @@ install:
               If ($actualName -eq $instance) {
                 # Was able to connect with port
                 $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
-                if (-Not $canLogin -eq $null) {
+                if (-Not ($canLogin -eq $null)) {
                   $isCreated = (Create-SqlUser -InstanceName $instance -Port $NR_CLI_DB_PORT)
                   if ($isCreated) {
                     Write-OhiConfig -InstanceName $instance -Port $NR_CLI_DB_PORT
@@ -284,7 +285,7 @@ install:
               If ($actualName -eq $instance) {
                 # Was able to connect with instance name
                 $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
-                if (-Not $canLogin -eq $null) {
+                if (-Not ($canLogin -eq $null)) {
                   $isCreated = (Create-SqlUser -InstanceName $instance)
                   if ($isCreated) {
                     Write-OhiConfig -InstanceName $instance
