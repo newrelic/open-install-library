@@ -35,14 +35,13 @@ preInstall:
       fi
 
       IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
-      if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]
-      then
+      if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
         echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'."
         exit 20
       fi
 
       # Map of tool names to the associated error code
-      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22 yum:22"
+      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 mount:131 php:22 yum:22"
 
       for tuple in $required_tools_and_error_codes; do
         tool=$(echo ${tuple} |cut -d':' -f1)
@@ -55,6 +54,13 @@ preInstall:
           exit ${code}
         fi
       done
+
+      # check if /tmp is mounted noexec - this causes problems with how the recipe works
+      tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
+      if [ ! -z "${tmp_is_noexec}" ]; then
+        echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec."
+        exit 131
+      fi
 
       # everything looks good!
       exit 0
@@ -150,7 +156,7 @@ install:
           fi
         - |
           # Map of tool names to the associated error code
-          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 php:22 yum:22"
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 mount:131 php:22 yum:22"
 
           for tuple in $required_tools_and_error_codes; do
             tool=$(echo ${tuple} |cut -d':' -f1)
@@ -163,6 +169,13 @@ install:
               exit ${code}
             fi
           done
+        - |
+          # check if /tmp is mounted noexec
+          tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
+          if [ ! -z "${tmp_is_noexec}" ]; then
+            echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec."
+            exit 131
+          fi
 
     create_shared:
       cmds:
