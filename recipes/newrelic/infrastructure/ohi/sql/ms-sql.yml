@@ -26,10 +26,16 @@ validationNrql: "SELECT count(*) from MssqlInstanceSample where hostname like '{
 preInstall:
   requireAtDiscovery: |
       powershell -command '
+      $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
+      if ($loginModes.Length -eq 0) {
+        # No SQL Server instances to login with SQL Server authentication
+        exit 1
+      }
+
       $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
       If ($instances.Length -eq 0) {
         # No SQL Server instances locally
-        exit 1
+        exit 2
       }
 
       $NR_CLI_DB_HOSTNAME=   "$env:NR_CLI_DB_HOSTNAME"
@@ -45,8 +51,11 @@ preInstall:
         If ($name.Length -ge 3) {
           $actualName = $name[2].ToString().Trim();
           If ($actualName -eq $instance) {
-            # Found at least 1 instance connecting on default port
-            exit 0
+            $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+            if (-Not ($canLogin -eq $null)) {
+              # Found at least 1 instance connecting on default port
+              exit 0
+            }
           }
         }
 
@@ -55,17 +64,21 @@ preInstall:
         If ($name.Length -ge 3) {
           $actualName = $name[2].ToString().Trim();
           If ($actualName -eq $instance) {
-            # Found at least 1 instance connecting
-            exit 0
+            $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+            if (-Not ($canLogin -eq $null)) {
+              # Found at least 1 instance connecting
+              exit 0
+            }
           }
         }
 
       }
-      exit 2
+      exit 3
       '
   info: |
       To capture data from the Microsoft SqlServer integration, we need to create a new SqlServer user with specific permissions (CONNECT, VIEW SERVER STATE, READ).
       The installation will create a strong randomly generated password for that new user.
+      Note, this installation requires Sql Server Authentication, also referenced as Mixed mode.
       More information regarding the prerequisites can be found at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/microsoft-sql-server-monitoring-integration#about
 
 install:
@@ -142,7 +155,7 @@ install:
             Add-Content -Path $OhiConfig -Value "    env`:` " -Force | Out-Null;
             Add-Content -Path $OhiConfig -Value "      HOSTNAME`:` ${NR_CLI_DB_HOSTNAME}" -Force | Out-Null;
             Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NR_CLI_DB_USERNAME}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      PASSWORD`:` ${NR_CLI_DB_PASSWORD}" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NR_CLI_DB_PASSWORD}`"" -Force | Out-Null;
 
             if ([string]::IsNullOrWhiteSpace($Port)) {
               Add-Content -Path $OhiConfig -Value "      INSTANCE`:` ${InstanceName}" -Force | Out-Null;
@@ -228,7 +241,10 @@ install:
             Add-Content -Path $NriSqlFile -Value $SQL -Force 2>&1
             $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
             if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-            $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
+            try {
+              $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
+            }
+            catch { }
 
             If ($SqlOutput.Length -ge 3) {
               $userName = $SqlOutput[2].ToString().Trim();
@@ -244,6 +260,8 @@ install:
 
           # Create user for all DBs
           $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
+          $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
+
           foreach ($instance in $instances) {
 
             $connection = "${NR_CLI_DB_HOSTNAME}\${instance},${NR_CLI_DB_PORT}"
@@ -252,10 +270,13 @@ install:
               $actualName = $name[2].ToString().Trim();
               If ($actualName -eq $instance) {
                 # Was able to connect with port
-                $isCreated = (Create-SqlUser -InstanceName $instance -Port $NR_CLI_DB_PORT)
-                if ($isCreated) {
-                  Write-OhiConfig -InstanceName $instance -Port $NR_CLI_DB_PORT
-                  $setupCount++
+                $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+                if (-Not ($canLogin -eq $null)) {
+                  $isCreated = (Create-SqlUser -InstanceName $instance -Port $NR_CLI_DB_PORT)
+                  if ($isCreated) {
+                    Write-OhiConfig -InstanceName $instance -Port $NR_CLI_DB_PORT
+                    $setupCount++
+                  }
                 }
                 continue
               }
@@ -267,10 +288,13 @@ install:
               $actualName = $name[2].ToString().Trim();
               If ($actualName -eq $instance) {
                 # Was able to connect with instance name
-                $isCreated = (Create-SqlUser -InstanceName $instance)
-                if ($isCreated) {
-                  Write-OhiConfig -InstanceName $instance
-                  $setupCount++
+                $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+                if (-Not ($canLogin -eq $null)) {
+                  $isCreated = (Create-SqlUser -InstanceName $instance)
+                  if ($isCreated) {
+                    Write-OhiConfig -InstanceName $instance
+                    $setupCount++
+                  }
                 }
                 continue
               }
