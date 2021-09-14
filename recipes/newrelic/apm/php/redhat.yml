@@ -17,7 +17,56 @@ keywords:
   - fpm
 
 processMatch:
+  # several possible configurations we can match on:
+  # - older apache and no php-fpm (process named httpd)
+  # - newer apache and no php-fpm (process named apache2)
+  # - nginx and php-fpm (process named php-fpm)
+  # in the preInstall we will check if php is installed and further filter down the possible scenarios
   - php-fpm
+
+  # Going to leave these out for now as it will potentially pull in
+  # lots of matches which do not actually need PHP instrumentation
+  #- apache2
+  #- httpd
+
+preInstall:
+  requireAtDiscovery: |
+      # verify running with sudo
+      if [ -z "$SUDO_USER" ]; then
+        echo "This installation recipe for the New Relic PHP agent must be run under sudo."
+        exit 3
+      fi
+
+      IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
+      if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
+        echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'."
+        exit 20
+      fi
+
+      # Map of tool names to the associated error code
+      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 mount:131 php:22 yum:22"
+
+      for tuple in $required_tools_and_error_codes; do
+        tool=$(echo ${tuple} |cut -d':' -f1)
+        code=$(echo ${tuple} |cut -d':' -f2)
+
+        IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+        if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+        then
+          echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed."
+          exit ${code}
+        fi
+      done
+
+      # check if /tmp is mounted noexec - this causes problems with how the recipe works
+      tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
+      if [ ! -z "${tmp_is_noexec}" ]; then
+        echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec."
+        exit 131
+      fi
+
+      # everything looks good!
+      exit 0
 
 validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
 
@@ -110,7 +159,7 @@ install:
           fi
         - |
           # Map of tool names to the associated error code
-          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22"
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 mount:131 php:22 yum:22"
 
           for tuple in $required_tools_and_error_codes; do
             tool=$(echo ${tuple} |cut -d':' -f1)
@@ -123,6 +172,13 @@ install:
               exit ${code}
             fi
           done
+        - |
+          # check if /tmp is mounted noexec
+          tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
+          if [ ! -z "${tmp_is_noexec}" ]; then
+            echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec."
+            exit 131
+          fi
 
     create_shared:
       cmds:
