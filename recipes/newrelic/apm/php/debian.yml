@@ -243,8 +243,15 @@ install:
             priv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
 
             pid=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $2}')
-            # Use the pid to find the systemctl service name and remove '.service' from the end of the name
-            service_name=$(systemctl status $pid | head -n1 | awk '{print substr($2, 0, length($2)-8)}')
+            # Use the pid to find the systemctl service name
+            service_name=$(systemctl status $pid | head -n1 | awk '{print $2}')
+            if [ ${#service_name} -le 8 ]
+            then
+              echo -e "{{.RED}}Found php process \"${full_process_name}\" but failed to find associated systemctl service{{.NOCOLOR}}"
+              exit 131
+            fi
+            # Remove .service from the end of the service name
+            service_name=$(echo "$service_name" | awk '{print substr($1, 0, length($1)-8)}')
 
             echo -e "{{.WHITE}}Found service: {{.CYAN}}$service_name{{.NOCOLOR}}"
 
