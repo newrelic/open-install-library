@@ -1,0 +1,148 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: cassandra-open-source-integration
+displayName: Cassandra Open Source Integration
+description: New Relic install recipe for default Cassandra Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-cassandra
+
+dependencies:
+  - infrastructure-agent-installer
+
+observabilityPacks:
+  - name: Cassandra
+    level: NEWRELIC
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - Cassandra
+
+# Examine Infrastructure events for correlated data
+processMatch:
+  - cassandra
+  - cassandradaemon
+  - cqlsh
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: cassandra-system
+    file: /var/log/cassandra/system.log*
+  - name: cassandra-debug
+    file: /var/log/cassandra/debug.log*
+
+validationNrql: "SELECT count(*) from CassandraSample where hostname like '{{.HOSTNAME}}%' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "Cassandra connection Username (via JMX)"
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "Cassandra connection Password (via JMX)"
+    secret: true
+  - name: "NR_CLI_DB_HOSTNAME"
+    prompt: "Cassandra node Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_DB_PORT"
+    prompt: "Cassandra Port (default: 7199)"
+    default: 7199
+
+preInstall:
+  info: |2
+      To capture data from the Cassandra integration, you'll first need to meet these prerequisites:
+      - Apache Cassandra version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/cassandra-monitoring-integration#req)
+      - Java Runtime Environment 7 or higher
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+        - task: restart
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >&2
+            exit 1
+          fi
+
+    setup:
+      label: "Installing Cassandra integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+        - |
+          sudo apt-get install nri-cassandra -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+          fi
+
+          sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
+
+        - |
+          sudo tee /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
+          integrations:
+            - name: nri-cassandra
+              env:
+                METRICS: true
+                HOSTNAME: {{.NR_CLI_DB_HOSTNAME}}
+                PORT: {{.NR_CLI_DB_PORT}}
+                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                REMOTE_MONITORING: true
+              interval: 30
+            - name: nri-cassandra
+              env:
+                INVENTORY: true
+                HOSTNAME: {{.NR_CLI_DB_HOSTNAME}}
+                CONFIG_PATH: /etc/cassandra/cassandra.yaml
+                REMOTE_MONITORING: true
+              inventory_source: config/redis
+              interval: 60
+          EOT
+
+    restart:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
+
+postInstall:
+  info: |2
+      ⚙️  The Cassandra configuration file can be found in /etc/newrelic-infra/integrations.d/cassandra-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/cassandra-monitoring-integration#config

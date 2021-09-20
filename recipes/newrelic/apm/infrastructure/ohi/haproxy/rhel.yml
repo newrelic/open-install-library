@@ -1,0 +1,114 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: haproxy-open-source-integration
+displayName: HAProxy Open Source Integration
+description: New Relic install recipe for default HAProxy Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-haproxy
+
+dependencies:
+  - infrastructure-agent-installer
+
+observabilityPacks:
+  - name: HAProxy
+    level: NEWRELIC
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "amazon"
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "redhat"
+  - type: host
+    os: linux
+    platform: "centos"
+
+keywords:
+  - Infrastructure
+  - Integration
+  - haproxy
+
+processMatch:
+  - haproxy
+
+logMatch:
+  - name: haproxy
+    file: /var/log/haproxy.log
+
+validationNrql: "SELECT count(*) from HAProxyBackendSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "HAProxy Username"
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "HAProxy Password"
+    secret: true
+  - name: "NR_CLI_STATS_URL"
+    prompt: "HAProxy Stats URL"
+  - name: "NR_CLI_CLUSTER_NAME"
+    prompt: "HAProxy Cluster Name"
+
+preInstall:
+  info: |2
+      To capture data from the HAProxy integration, you'll first need to meet these prerequisites:
+      - HAProxy version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/haproxy-monitoring-integration#comp-req)
+      - HAProxy statistics page enabled and accessible
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >&2
+            exit 1
+          fi
+
+    setup:
+      label: "Installing HAProxy integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+        - |
+          sudo yum install nri-haproxy -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/haproxy-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/haproxy-config.yml;
+          fi
+        - |
+          sudo tee -a /etc/newrelic-infra/integrations.d/haproxy-config.yml > /dev/null <<"EOT"
+          integrations:
+            - name: nri-haproxy
+              env:
+                # The URL to the enabled stats page on the
+                # HAProxy instance
+                STATS_URL: {{.NR_CLI_STATS_URL}}
+                # Basic auth username
+                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                # Basic auth password
+                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                CLUSTER_NAME: {{.NR_CLI_CLUSTER_NAME}}
+              inventory_source: config/haproxy
+              interval: 15
+          EOT
+        - |
+          sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The HAProxy configuration file can be found in /etc/newrelic-infra/integrations.d/haproxy-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/haproxy-monitoring-integration#config

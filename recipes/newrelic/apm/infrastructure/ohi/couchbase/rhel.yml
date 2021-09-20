@@ -1,0 +1,145 @@
+name: couchbase-open-source-integration
+displayName: Couchbase Open Source Integration
+description: New Relic install recipe for default Couchbase Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-couchbase
+
+dependencies:
+  - infrastructure-agent-installer
+
+observabilityPacks:
+  - name: Couchbase
+    level: NEWRELIC
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "amazon"
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: "redhat"
+  - type: host
+    os: linux
+    platform: "centos"
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - couchbase
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - couchbase
+
+# Matches partial list of the Log forwarding parameters
+logMatch:
+  - name: Couchbase Error
+    file: /opt/couchbase/var/lib/couchbase/logs/error.log
+  - name: Couchbase General
+    file: /opt/couchbase/var/lib/couchbase/logs/couchdb.log
+
+validationNrql: "SELECT count(*) from CouchbaseNodeSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
+
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "Couchbase Username"
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "Couchbase Password"
+    secret: true
+  - name: "NR_CLI_API_HOSTNAME"
+    prompt: "Couchbase Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_API_PORT"
+    prompt: "Couchbase Port (default: 8091)"
+    default: 8091
+  - name: "NR_CLI_API_QUERY_PORT"
+    prompt: "Couchbase Query Port (default: 8093)"
+    default: 8093
+  - name: "NR_CLI_API_USE_SSL"
+    prompt: "Use SSL to connect? (false/true)"
+    default: false
+  - name: "NR_CLI_API_CA_BUNDLE_DIR"
+    prompt: "SSL Certificate Directory (if applicable)"
+  - name: "NR_CLI_API_CA_BUNDLE_FILE"
+    prompt: "SSL Certificate File (if applicable)"
+
+preInstall:
+  info: |2
+      To capture data from the Couchbase integration, you'll first need to meet these prerequisites:
+      - Couchbase version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/couchbase-monitoring-integration#req)
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: setup
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/new-relic-guided-installation-overview" >&2
+            exit 1
+          fi
+
+    setup:
+      label: "Installing Couchbase integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+        - |
+          sudo yum install nri-couchbase -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/couchbase-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/couchbase-config.yml;
+          fi
+
+          sudo touch /etc/newrelic-infra/integrations.d/couchbase-config.yml;
+        - |
+          if [ {{.NR_CLI_API_USE_SSL}} == false ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+          integrations:
+            - name: nri-couchbase
+              env:
+                HOSTNAME: {{.NR_CLI_API_HOSTNAME}}
+                PORT: {{.NR_CLI_API_PORT}}
+                QUERY_PORT: {{.NR_CLI_API_QUERY_PORT}}
+                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                USE_SSL: {{.NR_CLI_API_USE_SSL}}
+              inventory_source: config/couchbase
+              interval: 15
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/couchbase-config.yml > /dev/null <<"EOT"
+          integrations:
+            - name: nri-couchbase
+              env:
+                HOSTNAME: {{.NR_CLI_API_HOSTNAME}}
+                PORT: {{.NR_CLI_API_PORT}}
+                QUERY_PORT: {{.NR_CLI_API_QUERY_PORT}}
+                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                USE_SSL: {{.NR_CLI_API_USE_SSL}}
+                CA_BUNDLE_DIR: {{.NR_CLI_API_CA_BUNDLE_DIR}}
+                CA_BUNDLE_FILE: {{.NR_CLI_API_CA_BUNDLE_FILE}}
+              inventory_source: config/couchbase
+              interval: 15
+          EOT
+          fi
+
+        - sudo systemctl restart newrelic-infra.service
+
+postInstall:
+  info: |2
+      ⚙️  The Couchbase configuration file can be found in /etc/newrelic-infra/integrations.d/couchbase-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/couchbase-monitoring-integration#config

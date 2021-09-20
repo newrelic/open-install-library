@@ -1,0 +1,344 @@
+name: alerts-golden-signal
+displayName: Golden Signal Alerts
+description: New Relic install recipe for golden signal alerts
+repository: https://github.com/newrelic/newrelic-cli
+
+installTargets:
+  - type: host
+    os: linux
+
+keywords:
+  - Alerts
+  - Golden
+
+processMatch: []
+
+preInstall:
+  info: |2
+      This installation will setup alerts for any existing, and future, hosts and applications reporting to newrelic with the Golden Signal conditions:
+      - High CPU
+      - High Application Error Rate
+      - High Application Response Time
+      - Low Application Throughput
+      This policy can be modified under Alerts & AI\Policies.
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+          fi
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+          fi
+
+
+          while true; do
+            POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                -L -H 'Content-Type: application/json' \
+                -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
+            )
+            if [ -f /tmp/policy.json ]; then
+              sudo rm -f /tmp/policy.json
+            fi
+            POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.policiesSearch.policies[0] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id | tonumber')
+            if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
+              curl -sX DELETE $NEW_RELIC_API_URL'/v2/alerts_policies/'$POLICY_ID'.json' -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' -i > /dev/null
+              continue
+            else
+              break
+            fi
+          done
+          echo 'Creating alert policy {{.ALERT_POLICY_NAME}}...'
+          sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsPolicyCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policy: { name: POLICY_NAME incidentPreference: PER_CONDITION_AND_TARGET }) { id name } }"
+          }
+          EOT
+          sudo sed -i "s/POLICY_NAME/\"\"{{.ALERT_POLICY_NAME}}\"\"/g" /tmp/policy.json
+          sudo sed -i 's/""/\\"/g' /tmp/policy.json
+          POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/policy.json
+          )
+          POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.alertsPolicyCreate.id | tonumber')
+          if [ -f /tmp/policy.json ]; then
+            rm -f /tmp/policy.json
+          fi
+          if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
+            echo 'done'
+          else
+            echo 'Could not create a new alert policy for {{.ALERT_POLICY_NAME}} got POLICY_ID:'$POLICY_ID >> /dev/stderr
+            exit 10
+          fi
+
+          if [ -f /tmp/conditionsSearch.json ]; then
+            sudo rm -f /tmp/conditionsSearch.json
+          fi
+          sudo tee -a /tmp/conditionsSearch.json > /dev/null <<"EOT"
+          {
+            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {nrqlConditionsSearch {totalCount nrqlConditions { description name id enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } nrql { query } policyId runbookUrl signal { aggregationWindow fillOption evaluationOffset fillValue } terms { operator priority threshold thresholdDuration thresholdOccurrences } type violationTimeLimitSeconds ... on AlertsNrqlBaselineCondition { id name nrql { query } baselineDirection description enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } policyId runbookUrl signal { aggregationWindow evaluationOffset fillOption fillValue } terms { operator priority threshold thresholdDuration thresholdOccurrences } type violationTimeLimitSeconds } } } } } } }"
+          }
+          EOT
+          CONDITIONS_LOOKUP_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/conditionsSearch.json
+          )
+          if [ -f /tmp/conditionsSearch.json ]; then
+            sudo rm -f /tmp/conditionsSearch.json
+          fi
+
+
+          HIGH_CPU_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id | tonumber')
+          if [ -f /tmp/condition.json ]; then
+            sudo rm -f /tmp/condition.json
+          fi
+          if [ -n "$HIGH_CPU_CONDITION_ID" ] && [ $HIGH_CPU_CONDITION_ID -gt 0 ] ; then
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionStaticUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 85 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 valueFunction: SINGLE_VALUE }) { id name } }"
+          }
+          EOT
+          else
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionStaticCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 85 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 valueFunction: SINGLE_VALUE }) { id name } }"
+          }
+          EOT
+          fi
+          sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
+          sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_CPU_CONDITION_NAME}}\"\"/g" /tmp/condition.json
+          sudo sed -i "s/CONDITION_ID/\"\"$HIGH_CPU_CONDITION_ID\"\"/g" /tmp/condition.json
+          sudo sed -i "s/NRQL_QUERY/\"\"SELECT average(\`host.cpuPercent\`) FROM Metric FACET entity.guid, host.hostname\"\"/g" /tmp/condition.json
+          sudo sed -i 's/""/\\"/g' /tmp/condition.json
+          echo 'Adding alert condition {{.ALERT_HIGH_CPU_CONDITION_NAME}}...'
+          CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/condition.json
+          )
+          if [ -f /tmp/condition.json ]; then
+            rm -f /tmp/condition.json
+          fi
+          echo 'done'
+
+
+          HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id | tonumber')
+          if [ -f /tmp/condition.json ]; then
+            sudo rm -f /tmp/condition.json
+          fi
+          if [ -n "$HIGH_ERROR_CONDITION_ID" ] && [ $HIGH_ERROR_CONDITION_ID -gt 0 ] ; then
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
+          }
+          EOT
+          else
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
+          }
+          EOT
+          fi
+          sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
+          sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_ERROR_RATE_NAME}}\"\"/g" /tmp/condition.json
+          sudo sed -i "s/CONDITION_ID/\"\"$HIGH_ERROR_CONDITION_ID\"\"/g" /tmp/condition.json
+          sudo sed -i "s/NRQL_QUERY/\"\"FROM Metric SELECT count(apm.service.error.count) \/ count(apm.service.transaction.duration) as 'Error Rate' WHERE appName LIKE '%' FACET entity.guid, appName\"\"/g" /tmp/condition.json
+          sudo sed -i 's/""/\\"/g' /tmp/condition.json
+          echo 'Adding alert condition {{.ALERT_HIGH_ERROR_RATE_NAME}}...'
+          CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/condition.json
+          )
+          if [ -f /tmp/condition.json ]; then
+            sudo rm -f /tmp/condition.json
+          fi
+          echo 'done'
+
+
+          HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id | tonumber')
+          if [ -f /tmp/condition.json ]; then
+            sudo rm -f /tmp/condition.json
+          fi
+          if [ -n "$HIGH_RESPONSE_CONDITION_ID" ] && [ $HIGH_RESPONSE_CONDITION_ID -gt 0 ] ; then
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
+          }
+          EOT
+          else
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
+          }
+          EOT
+          fi
+          sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
+          sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_RESPONSE_TIME_NAME}}\"\"/g" /tmp/condition.json
+          sudo sed -i "s/CONDITION_ID/\"\"$HIGH_RESPONSE_CONDITION_ID\"\"/g" /tmp/condition.json
+          sudo sed -i "s/NRQL_QUERY/\"\"SELECT average(newrelic.goldenmetrics.apm.application.responseTimeMs) FROM Metric FACET entity.guid, appName\"\"/g" /tmp/condition.json
+          sudo sed -i 's/""/\\"/g' /tmp/condition.json
+          echo 'Adding alert condition {{.ALERT_HIGH_RESPONSE_TIME_NAME}}...'
+          CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/condition.json
+          )
+          if [ -f /tmp/condition.json ]; then
+            sudo rm -f /tmp/condition.json
+          fi
+          echo 'done'
+
+
+          LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[0] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id | tonumber')
+          if [ -f /tmp/condition.json ]; then
+            sudo rm -f /tmp/condition.json
+          fi
+          if [ -n "$LOW_THROUGHPUT_CONDITION_ID" ] && [ $LOW_THROUGHPUT_CONDITION_ID -gt 0 ] ; then
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: LOWER_ONLY expiration: { closeViolationsOnExpiration: true expirationDuration: 600 openViolationOnExpiration: true } }) { id name } }"
+          }
+          EOT
+          else
+            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          {
+            "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationWindow: 60 evaluationOffset: 3 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: LOWER_ONLY expiration: { closeViolationsOnExpiration: true expirationDuration: 600 openViolationOnExpiration: true } }) { id name } }"
+          }
+          EOT
+          fi
+          sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
+          sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_LOW_THROUGHPUT_NAME}}\"\"/g" /tmp/condition.json
+          sudo sed -i "s/CONDITION_ID/\"\"$LOW_THROUGHPUT_CONDITION_ID\"\"/g" /tmp/condition.json
+          sudo sed -i "s/NRQL_QUERY/\"\"SELECT average(\`newrelic.goldenmetrics.apm.application.throughput\`) FROM Metric FACET entity.guid, appName\"\"/g" /tmp/condition.json
+          sudo sed -i 's/""/\\"/g' /tmp/condition.json
+          echo 'Adding alert condition {{.ALERT_LOW_THROUGHPUT_NAME}}...'
+          CONDITIONS_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/condition.json
+          )
+          if [ -f /tmp/condition.json ]; then
+            sudo rm -f /tmp/condition.json
+          fi
+          echo 'done'
+
+
+          USER_EMAIL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d '{ "query": "{ actor { user { email } } }" }'
+          )
+
+          USER_EMAIL=$(echo $USER_EMAIL_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.user.email')
+          USER_EMAIL=$(echo -n "$USER_EMAIL" | sed s/^\"//g | sed s/\"\$//g)
+
+          NEW_RELIC_EMAIL_CONTINUE="{{.NEW_RELIC_EMAIL_CONTINUE}}"
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          if [ "$NEW_RELIC_ASSUME_YES" != "true" ]  && [ "$NEW_RELIC_EMAIL_CONTINUE" == "" ]; then
+            while :; do
+              echo -n "Would you like to be notified on your registered email address "$USER_EMAIL" when this alert triggers Y/N (default: Y)? "
+              read answer
+              echo ""
+              NEW_RELIC_EMAIL_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_EMAIL_CONTINUE" ]]; then
+                NEW_RELIC_EMAIL_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "N" ]]; then
+                break
+              fi
+              if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "Y" ]]; then
+                break
+              fi
+              echo -e "Please type Y or N only."
+            done
+          fi
+          if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "Y" ]]; then
+
+            NEW_RELIC_ALERT_CHANNEL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_channels.json')
+            NEW_RELIC_ALERT_POLICY_CHANNEL_URL=$(echo -n $NEW_RELIC_API_URL'/v2/alerts_policy_channels.json')
+
+            CHANNEL_RESULT=$(curl -sX GET $NEW_RELIC_ALERT_CHANNEL_URL'?limit1000' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                -H 'Content-Type: application/json'
+            )
+
+            JQ_MATCH=$(echo -n '.channels[0] | select(.name=="'$USER_EMAIL'" and .type=="email") | .id')
+            EXEC=$(echo "echo -n '$CHANNEL_RESULT' | /usr/local/bin/newrelic utils jq '"$JQ_MATCH"'")
+            if [ -f /tmp/execJq.sh ]; then
+              sudo rm -f /tmp/execJq.sh
+            fi
+            echo $EXEC > /tmp/execJq.sh
+            CHANNEL_ID=$(bash /tmp/execJq.sh)
+
+            if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
+              echo 'Notification channel found for email address '$USER_EMAIL
+            else
+              echo 'Notification channel not found for email address '$USER_EMAIL', creating notification channel...'
+
+              if [ -f /tmp/channel.json ]; then
+                sudo rm -f /tmp/channel.json
+              fi
+              sudo tee -a /tmp/channel.json > /dev/null <<"EOT"
+          {
+            "channel": {
+              "name": "CHANNEL_NAME",
+              "type": "email",
+              "configuration": {
+                "recipients" : "RECIPIENT_NAME",
+                "include_json_attachment" : true
+              }
+            }
+          }
+          EOT
+              sudo sed -i 's/CHANNEL_NAME/'$USER_EMAIL'/g' /tmp/channel.json
+              sudo sed -i 's/RECIPIENT_NAME/'$USER_EMAIL'/g' /tmp/channel.json
+              CHANNEL_RESULT=$(curl -sX POST $NEW_RELIC_ALERT_CHANNEL_URL \
+                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                  -H 'Content-Type: application/json' \
+                  -d @/tmp/channel.json)
+              CHANNEL_ID=$(echo $CHANNEL_RESULT | /usr/local/bin/newrelic utils jq '.channels[0] | .id')
+              echo 'done'
+            fi
+            if [ -f /tmp/channel.json ]; then
+              sudo rm -f /tmp/channel.json
+            fi
+
+            if [ -n "$CHANNEL_ID" ] && [ $CHANNEL_ID -gt 0 ] ; then
+              echo 'Subscribing alert policy to notification channel...'
+              POLICY_CHANNEL_RESULT=$(curl -sX PUT $NEW_RELIC_ALERT_POLICY_CHANNEL_URL \
+                  -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                  -H 'Content-Type: application/json' \
+                  -G -d 'policy_id='$POLICY_ID'&channel_ids='$CHANNEL_ID
+                  )
+              echo 'done'
+            fi
+
+          fi
+
+      vars:
+        ALERT_POLICY_NAME:
+          sh: echo 'Golden Signals'
+        ALERT_HIGH_CPU_CONDITION_NAME:
+          sh: echo 'High CPU'
+        ALERT_HIGH_ERROR_RATE_NAME:
+          sh: echo 'High Application Error percentage'
+        ALERT_HIGH_RESPONSE_TIME_NAME:
+          sh: echo 'High Application Response Time'
+        ALERT_LOW_THROUGHPUT_NAME:
+          sh: echo 'Low Application Throughput'
+
