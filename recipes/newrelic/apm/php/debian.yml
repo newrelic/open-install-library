@@ -245,10 +245,11 @@ install:
             pid=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $2}')
             # Use the pid to find the systemctl service name
             service_name=$(systemctl status $pid | head -n1 | awk '{print $2}')
-            if [ ${#service_name} -le 8 ]
+            # Check systemctl found a .service
+            if [[ ! $service_name =~ ".service" ]]
             then
-              echo -e "{{.RED}}Found php process \"${full_process_name}\" but failed to find associated systemctl service{{.NOCOLOR}}"
-              exit 131
+              echo -e "{{.RED}}Found service-process \"${full_process_name}\" but failed to find associated systemctl service{{.NOCOLOR}}"
+              continue
             fi
             # Remove .service from the end of the service name
             service_name=$(echo "$service_name" | awk '{print substr($1, 0, length($1)-8)}')
