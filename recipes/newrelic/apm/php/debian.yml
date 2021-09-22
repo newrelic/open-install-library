@@ -241,38 +241,36 @@ install:
               continue
             fi
             priv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
-            fpm_nginx_process_name=$(echo "${full_process_name}" | sed -n 's/\(.*\):$/\1/p')
-            if [ -n "${fpm_nginx_process_name}" ]; then
-              fpm_process_loc=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $14}')
-              fpm_ver=$(echo "${fpm_process_loc}" | sed -n 's/.*\/php\/\([578].[0-9]\)\/.*/\1/p')
-              if [ -n "${fpm_ver}" ]; then
-                # It's fpm.
-                process_name="php${fpm_ver}-fpm"
-              else
-                # It's nginx.
-                process_name=$fpm_nginx_process_name
-              fi
-            else
-              process_name=$(echo $full_process_name | sed -n 's/.*\/\(.*\)$/\1/p')
-            fi
 
-            echo -e "{{.WHITE}}Found service: {{.CYAN}}$process_name{{.NOCOLOR}}"
+            pid=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $2}')
+            # Use the pid to find the systemctl service name
+            service_name=$(systemctl status $pid | head -n1 | awk '{print $2}')
+            # Check systemctl found a .service
+            if [[ ! $service_name =~ ".service" ]]
+            then
+              echo -e "{{.RED}}Found service-process \"${full_process_name}\" but failed to find associated systemctl service{{.NOCOLOR}}"
+              continue
+            fi
+            # Remove .service from the end of the service name
+            service_name=$(echo "$service_name" | awk '{print substr($1, 0, length($1)-8)}')
+
+            echo -e "{{.WHITE}}Found service: {{.CYAN}}$service_name{{.NOCOLOR}}"
 
             nonpriv_user=
             if [ -n "${priv_user}" ]; then
               nonpriv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
             fi
-            if [ -n "${process_name}" ]; then
+            if [ -n "${service_name}" ]; then
               if [ -z "${nonpriv_user}" ]; then
                 nonpriv_user=$current_user
               fi
               #
               # Output all processes to be restarted to a file with the following format:
-              # process_name privileged_user
+              # service_name privileged_user
               # When the process is restarted, it will be used with the associated
               # privileged user.
               #
-              echo "$process_name $priv_user" >> {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
+              echo "$service_name $priv_user" >> {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
               #
               # Save all non-privileged users associated with detected processes.
               # When initiating the transaction, it will ONLY be used with
