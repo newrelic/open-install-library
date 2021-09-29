@@ -231,13 +231,23 @@ install:
             # Use the pid to find the systemctl service name
             service_name=$(systemctl status $pid | head -n1 | awk '{print $2}')
             # Check that systemctl found a .service
-            if [[ ! $service_name =~ ".service" ]]
+            if [[ ! $service_name =~ '.service' ]]
             then
               echo -e "{{.RED}}Found service-process \"${full_process_name}\" but failed to find associated systemctl service{{.NOCOLOR}}"
               continue
             fi
             # Remove .service from the end of the service name
-            service_name=$(echo "$service_name" | awk '{print substr($1, 0, length($1)-8)}')
+            service_name=${service_name%".service"}
+
+            # Check that service name is somewhat expected
+            if [[ ! $service_name =~ 'php.*fpm' ]] && \
+               [[ ! $service_name =~ 'apache' ]] && \
+               [[ ! $service_name =~ 'httpd' ]] && \
+               [[ ! $service_name =~ 'nginx' ]]
+            then
+              echo -e "{{.RED}}Found systemctl service \"${service_name}\" that was assumed to be a php service ${PROCESS}, but the name suggests otherwise{{.NOCOLOR}}"
+              continue
+            fi
 
             echo -e "{{.WHITE}}Found service: {{.CYAN}}$service_name{{.NOCOLOR}}"
 
