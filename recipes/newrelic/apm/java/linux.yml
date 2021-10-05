@@ -30,15 +30,21 @@ processMatch:
 
 preInstall:
   requireAtDiscovery: |
+    user=$(whoami)
+    if [[ "$user" != "root" ]]; then
+      echo -e "This script must be run as root." >&2
+      exit 132
+    fi
+
     tmpDir=$(mktemp -d /tmp/newrelic.XXXXXX)
     cd $tmpDir
     isYumInstalled=$(which yum 2>&1 || true)
     if [[ -n "$isYumInstalled" ]]; then
       curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm
-      sudo yum install -y -q nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm 2> /dev/null || true
+      yum install -y -q nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm 2> /dev/null || true
     else
       curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb
-      sudo apt-get install -y -qq ./nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb 2> /dev/null || true
+      apt-get install -y -qq ./nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb 2> /dev/null || true
     fi
 
     nri-lsi-java -list | tr -d '[]' | tr ',' '\n' > $tmpDir/processes
@@ -87,12 +93,6 @@ install:
         - |
           red='\033[0;31m'
           noColor='\033[0m'
-
-          user=$(whoami)
-          if [[ "$user" != "root" ]]; then
-            echo -e "${red}This script must be run as root.${noColor}" >&2
-            exit 7
-          fi
 
           cutInstalled=$(which cut 2> /dev/null)
           if [[ -z "$cutInstalled" ]]; then
@@ -164,10 +164,10 @@ install:
           isYumInstalled=$(which yum 2>&1 || true)
           if [[ -n "$isYumInstalled" ]]; then
             curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm
-            sudo yum install -y -q nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm 2> /dev/null || true
+            yum install -y -q nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm 2> /dev/null || true
           else
             curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb
-            sudo apt-get install -y -qq ./nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb 2> /dev/null || true
+            apt-get install -y -qq ./nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb 2> /dev/null || true
           fi
 
     get-agent:
