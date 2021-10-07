@@ -49,14 +49,6 @@ preInstall:
       - Apache version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#comp-req)
       - Apache status module enabled and configured for Apache instance
       - Apache status module endpoint (default server-status) available
-  requireAtDiscovery: |
-    # Set Defaults
-    NR_CLI_STATUS_URL=${NR_CLI_STATUS_URL:-'http://127.0.0.1/server-status?auto'}
-    STUB_STATUS_ENABLED=$(curl $NR_CLI_STATUS_URL -s | grep -i "idle" | wc -l)
-    if [ $STUB_STATUS_ENABLED -eq 0 ] ; then
-      exit 132
-    fi
-    exit 0
 
 install:
   version: "3"
@@ -83,11 +75,40 @@ install:
         - |
           # Set Defaults
           NR_CLI_STATUS_URL=${NR_CLI_STATUS_URL:-'http://127.0.0.1/server-status?auto'}
-
           STUB_STATUS_ENABLED=$(curl $NR_CLI_STATUS_URL -s | grep -i "idle" | wc -l)
           if [ $STUB_STATUS_ENABLED -eq 0 ] ; then
-            printf "\nStatus page is not returning expected data. Apache2 must be correctly configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
-            exit 2
+            if [ -f /etc/httpd/conf.d/server-status.conf ]; then
+              printf "\nThe status page is not returning expected data. Apache2 must be correctly configured for New Relic to collect data. \n - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/apache-monitoring-integration#config for more info.\n" >&2
+              exit 131
+            fi
+            echo "\nThe server-status module is currently not enabled. This installation would like to add the file /etc/httpd/conf.d/server-status.conf to enable this module.\n"
+            echo "\n<Location "/server-status">\nSetHandler server-status\nRequire host localhost\n</Location>\n"
+            NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+            if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+              while :; do
+                echo -n "Please confirm Y/N (default: Y)? "
+                read answer
+                echo ""
+                NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+                if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                  NEW_RELIC_CONTINUE="Y"
+                fi
+                if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+                  echo "Exiting the installation"
+                  exit 130
+                fi
+                if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
+                  break
+                fi
+                echo -e "Please type Y or N only."
+              done
+            fi
+            sudo tee /etc/httpd/conf.d/server-status.conf > /dev/null <<EOT
+            <Location "/server-status">
+            SetHandler server-status
+            Require host localhost
+            </Location>
+            EOT
           fi
 
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
