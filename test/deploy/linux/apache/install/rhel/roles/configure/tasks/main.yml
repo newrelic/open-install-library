@@ -7,6 +7,11 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
+- name: Set default open_status_url (default not open)
+  set_fact:
+    open_status_url: "false"
+  when: open_status_url is undefined
+
 - name: Update packages
   shell: yum update -y
   become: true
@@ -15,11 +20,13 @@
   shell: yum install httpd -y
   become: true
 
-- name: Copy apache server status file
-  template:
-    src: server-status.conf
-    dest: /etc/httpd/conf.d/server-status.conf
-  become: true
+- block:
+  - name: Copy apache server status file
+    template:
+      src: server-status.conf
+      dest: /etc/httpd/conf.d/server-status.conf
+    become: true
+  when: open_status_url|bool
 
 - name: Restart Apache
   shell: systemctl restart httpd
