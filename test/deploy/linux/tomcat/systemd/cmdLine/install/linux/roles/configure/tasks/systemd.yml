@@ -1,0 +1,34 @@
+---
+
+
+- name: Exec permission
+  shell: "sh -c 'chmod 777 /etc/default'"
+  become: yes
+
+- template:
+    src: tomcat-env
+    dest: /etc/default/tomcat
+
+- name: Exec permission
+  shell: "sh -c 'chmod 777 /etc/systemd/system'"
+  become: yes
+
+- template:
+    src: systemd.conf
+    dest: /etc/systemd/system/{{ service_id }}.service
+
+- name: Get systemctl path
+  shell: which systemctl
+  register: systemctl_path
+
+- name: systemctl reload daemon
+  shell: '{{ systemctl_path.stdout }} restart {{ service_id }}.service'
+  become: true
+
+- name: systemctl enable {{ service_id }}.service
+  shell: '{{ systemctl_path.stdout }} enable {{ service_id }}.service'
+  become: true
+
+- name: systemctl start {{ service_id }}.service
+  shell: '{{ systemctl_path.stdout }} start {{ service_id }}.service'
+  become: true
