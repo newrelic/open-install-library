@@ -22,20 +22,38 @@ processMatch: []
 
 preInstall:
   requireAtDiscovery: |
+    # Get .NET introspector tooling
     TMP_DIR=$(mktemp -dq /tmp/newrelic.XXXXXX)
     curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
     zcat ${TMP_DIR}/dotnet-is-linux-x64.gz > ${TMP_DIR}/nri-lsi-dotnet
     chmod u+x $TMP_DIR/nri-lsi-dotnet >/dev/null
-    processCount=$(${TMP_DIR}/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' | wc -w)
-    if [[ "$processCount" -ne 0 ]]; then
-      # Found .NET processes - return 0
+    
+    # Record all .NET processes
+    ${TMP_DIR}/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > ${TMP_DIR}/dotnet_processes.txt
+    processCount=$(cat ${TMP_DIR}/dotnet_processes.txt | wc -w)
+    if [[ "$processCount" -eq 0 ]]; then
       rm -rf $TMP_DIR >/dev/null
-      exit 0
+      exit 3
     fi
 
-    # No .NET processes - return 3 (No processes found to monitor)
+    # Record all systemd services and check if any are .NET
+    systemctl list-unit-files --type service | awk '{ print $1 }' > ${TMP_DIR}/all_services.txt
+    for sn in `cat ${TMP_DIR}/all_services.txt`; do
+        mainpid=$(systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
+        for dnp in `cat ${TMP_DIR}/dotnet_processes.txt`; do
+            
+            # .NET systemd service found!
+            if [[ "$mainpid" -eq "$dnp" ]]
+            then
+              rm -rf $TMP_DIR >/dev/null
+              exit 0
+            fi
+        done
+    done
+    
+    # .NET processes found, but none are running as systemd services :(
     rm -rf $TMP_DIR >/dev/null
-    exit 3
+    exit 20
 
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
