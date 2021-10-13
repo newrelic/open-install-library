@@ -247,6 +247,8 @@ install:
             local configFilename=$2
             local user=$3
             local service=$4
+            local checkService=$5
+            local instanceName=$6
             local configFile="$configFolder/$configFilename"
             local appName="{{.HOSTNAME}}"
 
@@ -278,11 +280,17 @@ install:
               chmod 500 $configFile
             fi
 
+            if [[ $checkService == "true" ]]; then
+              echo "if [[ \"\$NAME\" == \"$instanceName\" ]]; then" >> $configFile
+            fi
             # rewrite CATALINA_OPTS
             sudo sed -i "/New Relic switch automatically/d" $configFile
             sudo sed -i "/CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:\/opt\/newrelic/d" $configFile
             echo "# ---- New Relic switch automatically added on $(date)" >> $configFile
             echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$appName/newrelic.jar\"" >> $configFile
+            if [[ $checkService == "true" ]]; then
+              echo "fi" >> $configFile
+            fi
 
             mkdir -p /opt/newrelic/$appName/logs
             cp {{.TMP_DIR}}/newrelic.jar /opt/newrelic/$appName
@@ -311,6 +319,8 @@ install:
             local configurationType=""
             if [[ -f $catalinaHome/bin/catalina.sh ]]; then
               configurationType="setenv.sh"
+            elif [[ -f /etc/tomcat/tomcat.conf && -n $service ]]; then
+              configurationType="tomcat.conf"
             else
               local red='\033[0;31m'
               local noColor='\033[0m'
@@ -322,7 +332,12 @@ install:
             fi
 
             if [[ "{{.NEW_RELIC_TEST_MODE}}" != "true" ]]; then
-                tomcat_save_configuration $catalinaBase/bin setenv.sh $user $service || return 1
+              if [[ "$configurationType" == "setenv.sh" ]]; then
+                tomcat_save_configuration $catalinaBase/bin setenv.sh $user $service false || return 1
+              elif [[ "$configurationType" == "tomcat.conf" ]]; then
+                local instanceName=$(echo $service | grep -oP "@\K[^@]+$")
+                tomcat_save_configuration /etc/tomcat/conf.d $service.nr.conf $user $service true $instanceName || return 1
+              fi
             fi
           }
 
