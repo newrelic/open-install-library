@@ -1,0 +1,109 @@
+---
+- block:
+    - name: install python-setuptools
+      package:
+        name: python-setuptools
+        state: present
+      ignore_errors: yes
+      become: yes
+
+    - name: check if pip is already installed
+      shell: whereis pip | grep "bin/pip" | wc -l
+      register: pip_installed
+    - name: check if pip is local
+      shell: which pip | grep -E "usr/bin|usr/local" | wc -l
+      register: pip_local
+      when: pip_installed.stdout|int == 1
+
+    - name: Uninstalling system pip
+      shell: pip uninstall -y pip
+      become: yes
+      ignore_errors: true
+      when: pip_installed.stdout|int == 1 and pip_local.stdout|int == 0
+    - name: Installing latest pip - fetch
+      shell: curl -sSL https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py
+      when: (pip_installed.stdout|int == 0) or (pip_installed.stdout|int == 1 and pip_local.stdout|int == 0)
+    - name: Installing pip
+      shell: python get-pip.py "pip < 21.0" --force-reinstall
+      become: yes
+      when: (pip_installed.stdout|int == 0) or (pip_installed.stdout|int == 1 and pip_local.stdout|int == 0)
+
+    - name: Get pip path
+      shell: which pip
+      register: pip_path
+
+    - name: install supervisor with easy_install
+      shell: '{{pip_path.stdout}} install -U supervisor'
+      become: yes
+
+    - file:
+        path: /var/log/supervisor
+        state: directory
+        mode: 0777
+      become: yes
+
+    - name: Creates supervisord run directory
+      file: path=/var/run/supervisor state=directory
+      become: yes
+
+    - synchronize:
+        src: supervisord.conf
+        dest: /etc
+      become: yes
+
+    - synchronize:
+        src: init.d-supervisord
+        dest: /etc/init.d/supervisord
+      become: yes
+
+    - file:
+        path: /etc/init.d/supervisord
+        state: file
+        mode: 0764
+      become: yes
+
+    - file:
+        path: /etc/supervisor/conf.d
+        state: directory
+        mode: 0777
+      become: yes
+
+    - name: Check /usr/local/bin/supervisord exists
+      stat:
+        path: /usr/local/bin/supervisord
+      register: localbinsupervisordfile
+
+    - name: Remove /local sub-path
+      replace:
+        dest: /etc/init.d/supervisord
+        regexp: '/usr/local/bin'
+        replace: '/usr/bin'
+      when: localbinsupervisordfile.stat.exists == False
+      become: yes
+
+    - name: install superlance for memory restart
+      shell: '{{pip_path.stdout}} install -U superlance'
+      become: yes
+
+    - name: Enable services for automatic start
+      service:
+        name: '{{ item }}'
+        enabled: yes
+      with_items:
+        - supervisord
+      become: yes
+    - shell: chkconfig --add supervisord
+      become: yes
+      ignore_errors: yes
+    - shell: chkconfig --level 35 supervisord on
+      become: yes
+      ignore_errors: yes
+    - name: check if supervisord is running
+      shell: pgrep supervisord | wc -l
+      register: supervisord_running
+    - name: start supervisord (async)
+      command: service supervisord start
+      when: supervisord_running.stdout|int == 0
+      async: 60
+      poll: 0
+      become: yes
