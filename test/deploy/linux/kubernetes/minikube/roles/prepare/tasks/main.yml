@@ -18,15 +18,20 @@
   shell: service docker start
   become: true
 
-- name: Granting permission to docker from ec2-user
-  shell: "groupadd docker"
-  become: true
-  ignore_errors: yes
+- name: Ensure group "docker" exists
+  ansible.builtin.group:
+    name: docker
+    state: present
 
-- name: Granting permission to docker from ec2-user
-  shell: "usermod -a -G docker {{ ansible_user }}"
-  become: true
-  ignore_errors: yes
+- name: adding existing user "{{ ansible_user }}" to group docker
+   user:
+     name: "{{ ansible_user }}"
+     groups: docker
+     append: yes
+   become: yes
+
+- name: Get docker version
+  shell: 'docker version'
 
 - block:
   - name: Download Minikube
