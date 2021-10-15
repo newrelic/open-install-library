@@ -32,25 +32,24 @@
     shell: 'minikube config set driver docker'
   when: is_minikube_installed.stdout|int == 0
  
-- name: Add minikube alias
-  blockinfile:
-    path: ~/.bash_aliases
-    create: yes
-    block: |
-      alias kubectl="minikube kubectl --"
-
-- name: Source bash aliases
-  blockinfile:
-    path: ~/.bashrc
-    block: |
-      source .bash_aliases
-
 - name: Start Minikube
   shell: 'minikube start'
   register: output
   retries: 3
   delay: 10
   until: output is not failed
+
+- name: Create kubectl wrap command
+  blockinfile:
+    path: /usr/bin/kubectl
+    create: yes
+    block: |
+      #!/bin/bash
+      /usr/local/bin/minikube kubectl -- $1 $2 $3 $4 $5 $6 $7
+
+- name: Get list of pods
+  shell: 'chmod 777 /usr/bin/kubectl'
+  become: true
 
 - name: Get list of pods
   shell: 'kubectl get pods --all-namespaces'
