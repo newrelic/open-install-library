@@ -21,10 +21,12 @@
 - name: Granting permission to docker from ec2-user
   shell: "groupadd docker"
   become: true
+  ignore_errors: yes
 
 - name: Granting permission to docker from ec2-user
   shell: "usermod -a -G docker {{ ansible_user }}"
   become: true
+  ignore_errors: yes
 
 - block:
   - name: Download Minikube
@@ -44,12 +46,12 @@
   until: output is not failed
 
 - name: Create kubectl wrap command
-  blockinfile:
-    path: /usr/bin/kubectl
-    create: yes
-    block: |
-      #!/bin/bash
-      /usr/local/bin/minikube kubectl -- $1 $2 $3 $4 $5 $6 $7
+  template:
+    src: kubectl.wrap
+    dest: "/usr/bin/kubectl"
+  force: yes
+  mode: '0777'
+  become: yes
 
 - name: Get list of pods
   shell: 'chmod 777 /usr/bin/kubectl'
