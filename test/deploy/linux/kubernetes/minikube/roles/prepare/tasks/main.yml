@@ -14,8 +14,15 @@
     state: present
   become: yes
 
-- name: Start docker service
-  shell: service docker start
+- block:
+  - name: Enable docker service
+    shell: "systemctl enable docker.service"
+  - name: Enable docker service
+    shell: "systemctl enable containerd.service"
+  - name: Start docker service
+    shell: "systemctl start docker.service"
+  - name: Start docker service
+    shell: "systemctl start containerd.service"
   become: true
 
 - name: Ensure group "docker" exists
@@ -32,6 +39,9 @@
 
 - name: Get docker version
   shell: 'docker version'
+  retries: 3
+  delay: 10
+  until: output is not failed
 
 - block:
   - name: Download Minikube
