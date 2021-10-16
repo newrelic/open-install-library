@@ -1,0 +1,72 @@
+---
+- debug:
+    msg: Install Minikube
+
+- name: Is Minikube installed
+  shell: 'minikube version | grep "minikube version:" | wc -l'
+  register: is_minikube_installed
+
+- name: Install required packages
+  yum:
+    name:
+      - docker
+      - conntrack
+    state: present
+  become: yes
+
+- block:
+  - name: Enable docker service
+    shell: "systemctl enable docker.service"
+  - name: Enable docker service
+    shell: "systemctl enable containerd.service"
+  - name: Start docker service
+    shell: "systemctl start docker.service"
+  - name: Start docker service
+    shell: "systemctl start containerd.service"
+  become: true
+
+- name: Ensure group "docker" exists
+  ansible.builtin.group:
+    name: docker
+    state: present
+
+- name: adding existing user "{{ ansible_user }}" to group docker
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+  become: yes
+
+- name: reset ssh connection for user group change to take effect
+  meta: reset_connection
+
+- name: Get docker version
+  shell: 'docker version'
+  register: docker_output
+  retries: 3
+  delay: 10
+  until: docker_output is not failed
+
+- block:
+  - name: Download Minikube
+    shell: 'curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64'
+  - name: Install Minikube
+    shell: 'install minikube-linux-amd64 /usr/local/bin/minikube'
+    become: yes
+  - name: Configure minikube driver
+    shell: 'minikube config set driver docker'
+  when: is_minikube_installed.stdout|int == 0
+ 
+- name: Start Minikube
+  shell: 'minikube start'
+
+- name: Create kubectl wrap command
+  template:
+    src: kubectl.wrap
+    dest: "/usr/bin/kubectl"
+    force: yes
+    mode: '0777'
+  become: yes
+
+- name: Get list of pods
+  shell: 'kubectl get pods --all-namespaces'
