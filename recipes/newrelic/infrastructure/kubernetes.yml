@@ -25,24 +25,60 @@ processMatch: []
 successLinkConfig:
   type: EXPLORER
 
-validationNrql: "SELECT count(*) FROM K8sClusterSample FACET entityGuid SINCE 10 minutes AGO" # TODO add WHERE clusterName LIKE '{{.NR_CLI_CLUSTERNAME}}'
+validationNrql: "SELECT count(*) FROM K8sClusterSample FACET entityGuid WHERE clusterName LIKE '{{.NR_CLI_CLUSTERNAME}}' SINCE 10 minutes AGO"
 
 preInstall:
   info: |2
     The Kubernetes Open Source Integration installation will use Helm if available.
     If Helm is not available a manifest will be generated and applied using kubectl.
-    This installation is not available if kubectl is not installed.
-
-    Please hold as this installation can take a few minutes to complete...
 
   requireAtDiscovery: |
+    # Check the required tools
     if ! which kubectl >/dev/null; then
-      exit 132
+      echo "kubectl is required to install the Kubernetes Open Source Integration." >&2
+      exit 10
+    fi
+    if ! which curl >/dev/null ; then
+      echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+      exit 11
+    fi
+    if ! which awk >/dev/null ; then
+      echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >&2
+      exit 12
+    fi
+    if ! which grep >/dev/null ; then
+      echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
+      exit 13
+    fi
+    if ! which sed >/dev/null ; then
+      echo "sed is required to run the newrelic install. Please install sed and re-run the installation." >&2
+      exit 14
+    fi
+    if ! which cut >/dev/null ; then
+      echo "cut is required to run the newrelic install. Please install cut and re-run the installation." >&2
+      exit 15
+    fi
+
+    # Check the Kubernetes version
+    SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
+
+    KUBECTL_VERSION=$($SUDO kubectl version --short)
+    CLIENT_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
+    CLIENT_MINOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $2; }')
+    SERVER_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Server Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
+    SERVER_MINOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Server Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $2; }')
+
+    if [[ "$CLIENT_MAJOR_VERSION" -lt 1 ]] || [[ "$CLIENT_MAJOR_VERSION" -eq 1 && "$CLIENT_MINOR_VERSION" -lt 10 ]]; then
+      echo "kubectl v1.10 or higher is required, found v${CLIENT_MAJOR_VERSION}.${CLIENT_MINOR_VERSION}" >&2
+      exit 21
+    fi
+
+    if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]]; then
+      echo "Kubernetes v1.16 or higher is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
+      exit 22
     fi
 
 inputVars:
-  - name: "NR_CLI_CLUSTERNAME"
-    prompt: "Name of the current cluster (use `kubectl config current-context`)"
   - name: "NR_CLI_NAMESPACE"
     prompt: "Namespace to install the Kubernetes integration"
     default: "newrelic"
@@ -76,103 +112,105 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
-        - task: assert_kubernetes
-        - task: create_namespace
-        - task: check_privileged
-        - task: setup_crds
-        - task: deploy_integration
+        - task: confirm
+        - task: install
 
-    assert_pre_req:
+    confirm:
       cmds:
         - |
-          if ! which curl >/dev/null ; then
-            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
-            exit 10
-          fi
-        - |
-          if ! which awk >/dev/null ; then
-            echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >&2
-            exit 11
-          fi
-        - |
-          if ! which grep >/dev/null ; then
-            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
-            exit 12
-          fi
-        - |
-          if ! which sed >/dev/null ; then
-            echo "sed is required to run the newrelic install. Please install sed and re-run the installation." >&2
-            exit 13
-          fi
-        - |
-          if ! which cut >/dev/null ; then
-            echo "cut is required to run the newrelic install. Please install cut and re-run the installation." >&2
-            exit 14
+          CLUSTER=$($SUDO kubectl config current-context)
+
+          if [[ "{{.NR_CLI_CLUSTERNAME}}" == "" && "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+            while :; do
+              echo -e -n "Do you want to install the Kubernetes integration on cluster \033[1m${CLUSTER}\033[0m Y/N (default: Y)? "
+              read answer
+              echo ""
+              NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                NEW_RELIC_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+                echo "Exiting the installation"
+                exit 130
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
+                break
+              fi
+              echo -e "Please type Y or N only."
+            done
           fi
 
-    assert_kubernetes:
+    install:
       cmds:
         - |
-          # Check the kubectl and Kubernetes version
-          KUBECTL_VERSION=$($SUDO kubectl version --short)
-          CLIENT_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
-          CLIENT_MINOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $2; }')
-          SERVER_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Server Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
-          SERVER_MINOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Server Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $2; }')
+          NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"
 
-          if [[ "$CLIENT_MAJOR_VERSION" -lt 1 ]] || [[ "$CLIENT_MAJOR_VERSION" -eq 1 && "$CLIENT_MINOR_VERSION" -lt 10 ]]; then
-            echo "kubectl v1.10 or higher is required, found v${CLIENT_MAJOR_VERSION}.${CLIENT_MINOR_VERSION}" >&2
-            exit 21
+          NR_CLI_CLUSTERNAME="{{.NR_CLI_CLUSTERNAME}}"
+          NR_CLI_NAMESPACE="{{.NR_CLI_NAMESPACE}}"
+
+          NR_CLI_KSM="{{.NR_CLI_KSM}}"
+          NR_CLI_KUBE_EVENTS="{{.NR_CLI_KUBE_EVENTS}}"
+          NR_CLI_LOGGING="{{.NR_CLI_LOGGING}}"
+          NR_CLI_PROMETHEUS="{{.NR_CLI_PROMETHEUS}}"
+          NR_CLI_LOW_DATA_MODE="{{.NR_CLI_LOW_DATA_MODE}}"
+          NR_CLI_PRIVILEGED="{{.NR_CLI_PRIVILEGED}}"
+
+          NR_CLI_PIXIE="{{.NR_CLI_PIXIE}}"
+          NR_CLI_NEWRELIC_PIXIE="{{.NR_CLI_NEWRELIC_PIXIE}}"
+          NR_CLI_PIXIE_API_KEY="{{.NR_CLI_PIXIE_API_KEY}}"
+          NR_CLI_PIXIE_DEPLOY_KEY="{{.NR_CLI_PIXIE_DEPLOY_KEY}}"
+
+          CLUSTER=$($SUDO kubectl config current-context)
+
+          # Detect the clustername if not provided
+          if [[ "$NR_CLI_CLUSTERNAME" == "" ]]; then
+            NR_CLI_CLUSTERNAME="$CLUSTER"
+            echo -e "Cluster name set to \033[1m${NR_CLI_CLUSTERNAME}\033[0m" >&2
           fi
 
-          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]]; then
-            echo "Kubernetes v1.16 or higher is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
-            exit 22
-          fi
-        - |
           # Check the Linux kernel version if Pixie is enabled
-          if [[ "{{.NR_CLI_PIXIE}}" == "true" ]]; then
+          if [[ "$NR_CLI_PIXIE" == "true" ]]; then
             KERNEL_VERSION=$($SUDO kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}')
             KERNEL_MAJOR_VERSION=$(echo "${KERNEL_VERSION}" | awk -F. '{ print $1; }')
             KERNEL_MINOR_VERSION=$(echo "${KERNEL_VERSION}" | awk -F. '{ print $2; }')
             if [[ "$KERNEL_MAJOR_VERSION" -lt 4 ]] || [[ "$KERNEL_MAJOR_VERSION" -eq 4 && "$KERNEL_MINOR_VERSION" -lt 14 ]]; then
               echo "Linux kernel v4.14 or higher is required for Pixie, found ${KERNEL_MAJOR_VERSION}.${KERNEL_MINOR_VERSION}" >&2
-              echo "Turn off the Pixie option and re-run the installation." >&2
-              exit 23
+              echo -e "\033[0;31mTurning off Pixie for this instalation\033[0m" >&2
+              NR_CLI_PIXIE=false
             fi
           fi
-        - |
+
           # Check if the user has permissions to create a new namespace
           CAN_CREATE_NAMESPACE=$($SUDO kubectl auth can-i create namespace 2>/dev/null)
 
-          $SUDO kubectl get namespace {{.NR_CLI_NAMESPACE}} 1>/dev/null 2>&1
+          $SUDO kubectl get namespace ${NR_CLI_NAMESPACE} 1>/dev/null 2>&1
           NAMESPACE_EXISTS=$?
 
           if [[ "$NAMESPACE_EXISTS" -ne "0" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
-            echo "The {{.NR_CLI_NAMESPACE}} namespace does not exist and you don't have permissions to create a new namespace." >&2
+            echo "The ${NR_CLI_NAMESPACE} namespace does not exist and you don't have permissions to create a new namespace." >&2
             echo "Use an existing namespace or obtain permissions to create a new namespace." >&2
-            exit 24
+            exit 1
           fi
           
-          if [[ "{{.NR_CLI_PIXIE}}" == "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
+          if [[ "$NR_CLI_PIXIE" == "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
             echo "Permissions to create a new namespace are required for Pixie." >&2
-            echo "If you cannot obtain this permission, turn off the Pixie option and re-run the installation." >&2
-            exit 25
+            echo -e "\033[0;31mTurning off Pixie for this instalation\033[0m" >&2
+            NR_CLI_PIXIE=false
           fi
-        - |
-          if [[ "{{.NR_CLI_PIXIE}}" == "true" ]]; then
+
+          # Check if the cluster type is supported by Pixie
+          if [[ "$NR_CLI_PIXIE" == "true" ]]; then
             CLUSTER=$($SUDO kubectl config current-context)
+            SUPPORTED=false
 
             if [[ "$CLUSTER" == "docker-desktop" ]]; then
               echo "Docker for desktop is not supported. To create a test cluster to try out Pixie, use minikube instead." >&2
-              exit 26
             fi
 
             if which kind; then
               if $SUDO kind get clusters | grep '^$(echo "'"${CLUSTER}"'" | sed -e "s/^kind-//g")$'; then
                 echo "Kind is not supported. To create a test cluster to try out Pixie, use minikube instead." >&2
-                exit 27
               fi
             fi
 
@@ -180,13 +218,12 @@ install:
               if $SUDO minikube profile list | grep " ${CLUSTER} "; then
                 DRIVER=$(minikube profile list | grep " ${CLUSTER} " | cut -f3 -d'|')
                 if [[ "$DRIVER" == "kvm2" || "$DRIVER" == "hyperkit" ]] ; then
-                  echo "Unrecognized minikube driver. Please use kvm2 or HyperKit instead." >&2
-                  exit 28
+                  echo "Unrecognized minikube driver. To create a test cluster to try out Pixie, use kvm2 or HyperKit instead." >&2
+                else
+                  SUPPORTED=true
                 fi
               fi
             fi
-
-            SUPPORTED=false
 
             if which az; then
               if $SUDO az aks list | grep '"name": "'"${CLUSTER}"'"'; then
@@ -205,23 +242,19 @@ install:
 
             if [[ "$SUPPORTED" != "true" ]]; then
               echo "This type of Kubernetes cluster is not supported by Pixie: GKE, EKS, AKS & Minikube are supported." >&2
-              echo "Turn off the Pixie option and re-run the installation." >&2
-              exit 29
+              echo -e "\033[0;31mTurning off Pixie for this instalation\033[0m" >&2
+              NR_CLI_PIXIE=false
             fi
           fi
 
-    create_namespace:
-      cmds:
-        - |
-          if ! $SUDO kubectl get namespace {{.NR_CLI_NAMESPACE}} 1>/dev/null 2>&1; then
-            $SUDO kubectl create namespace {{.NR_CLI_NAMESPACE}}
+          # Create the namespace
+          if ! $SUDO kubectl get namespace ${NR_CLI_NAMESPACE} >/dev/null 2>&1; then
+            $SUDO kubectl create namespace ${NR_CLI_NAMESPACE}
           fi
 
-    check_privileged:
-      cmds:
-        - |
           # Check if a privileged container can be deployed in the namespace
-          cat << EOF | $SUDO kubectl apply -n {{.NR_CLI_NAMESPACE}} -f - >/dev/null
+          if [[ "$NR_CLI_PRIVILEGED" == "true" ]]; then
+          cat <<EOF | $SUDO kubectl apply -n ${NR_CLI_NAMESPACE} -f - >/dev/null
           apiVersion: v1
           kind: Pod
           metadata:
@@ -239,83 +272,85 @@ install:
           EOF
           if [[ $? -ne 0 ]]; then
             echo "Failed to deploy a privileged container to the Kubernetes cluster." >&2
-            echo "Turn on unprivileged mode and re-run the installation." >&2
-            exit 31
+            echo -e "\033[0;31mReverting to unprivileged mode for this instalation. Turning off Logging and Pixie.\033[0m" >&2
+            NR_CLI_PRIVILEGED=false
+            NR_CLI_PIXIE=false
+            NR_CLI_LOGGING=false
           fi
-        - |
-          $SUDO kubectl delete pod priv-check -n {{.NR_CLI_NAMESPACE}} >/dev/null
+          $SUDO kubectl delete pod priv-check -n ${NR_CLI_NAMESPACE} 1>/dev/null 2>&1 || echo ""
+          fi
 
-    setup_crds:
-      cmds:
-        - |
-          if [ "{{.NR_CLI_PIXIE}}" = "true" ]; then
+          # Setup the Pixie CRDs
+          if [ "${NR_CLI_PIXIE}" = "true" ]; then
             $SUDO kubectl apply -f https://raw.githubusercontent.com/pixie-labs/pixie/main/k8s/operator/crd/base/px.dev_viziers.yaml
             $SUDO kubectl apply -f https://raw.githubusercontent.com/pixie-labs/pixie/main/k8s/operator/helm/crds/olm_crd.yaml
           fi
 
-    deploy_integration:
-      cmds:
-        - |
+          # Deploy the integration
           if which helm >/dev/null; then
+            echo ""
             echo "Using helm to install the Kubernetes integration"
+            echo ""
 
             $SUDO helm repo add newrelic https://helm-charts.newrelic.com
             $SUDO helm repo update
 
             ARGS="--install newrelic-bundle newrelic/nri-bundle"
-            ARGS="${ARGS} --set global.licenseKey={{.NEW_RELIC_LICENSE_KEY}}"
-            ARGS="${ARGS} --set global.cluster={{.NR_CLI_CLUSTERNAME}}"
-            ARGS="${ARGS} --namespace={{.NR_CLI_NAMESPACE}}"
-            ARGS="${ARGS} --set newrelic-infrastructure.privileged={{.NR_CLI_PRIVILEGED}}"
-            ARGS="${ARGS} --set global.lowDataMode={{.NR_CLI_LOW_DATA_MODE}}"
-            ARGS="${ARGS} --set ksm.enabled={{.NR_CLI_KSM}}"
-            ARGS="${ARGS} --set prometheus.enabled={{.NR_CLI_PROMETHEUS}}"
-            ARGS="${ARGS} --set kubeEvents.enabled={{.NR_CLI_KUBE_EVENTS}}"
-            ARGS="${ARGS} --set logging.enabled={{.NR_CLI_LOGGING}}"
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+            ARGS="${ARGS} --set global.licenseKey=${NEW_RELIC_LICENSE_KEY}"
+            ARGS="${ARGS} --set global.cluster=${NR_CLI_CLUSTERNAME}"
+            ARGS="${ARGS} --namespace=${NR_CLI_NAMESPACE}"
+            ARGS="${ARGS} --set newrelic-infrastructure.privileged=${NR_CLI_PRIVILEGED}"
+            ARGS="${ARGS} --set global.lowDataMode=${NR_CLI_LOW_DATA_MODE}"
+            ARGS="${ARGS} --set ksm.enabled=${NR_CLI_KSM}"
+            ARGS="${ARGS} --set prometheus.enabled=${NR_CLI_PROMETHEUS}"
+            ARGS="${ARGS} --set kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
+            ARGS="${ARGS} --set logging.enabled=${NR_CLI_LOGGING}"
+            if [ "${NEW_RELIC_REGION}" = "STAGING" ]; then
               ARGS="${ARGS} --set global.nrStaging=true"
             fi
-            if [ "{{.NR_CLI_NEWRELIC_PIXIE}}" = "true" ]; then
+            if [ "${NR_CLI_NEWRELIC_PIXIE}" = "true" ]; then
               ARGS="${ARGS} --set newrelic-pixie.enabled=true"
-              ARGS="${ARGS} --set newrelic-pixie.apiKey={{.NR_CLI_PIXIE_API_KEY}}"
-              if [ "{{.NR_CLI_PIXIE}}" = "true" ]; then
+              ARGS="${ARGS} --set newrelic-pixie.apiKey=${NR_CLI_PIXIE_API_KEY}"
+              if [ "${NR_CLI_PIXIE}" = "true" ]; then
                 ARGS="${ARGS} --set pixie-chart.enabled=true"
-                ARGS="${ARGS} --set pixie-chart.deployKey={{.NR_CLI_PIXIE_DEPLOY_KEY}}"
-                ARGS="${ARGS} --set pixie-chart.clusterName={{.NR_CLI_CLUSTERNAME}}"
-                if [ ! -z "{{.NR_CLI_PIXIE_ADDRESS}}" ]; then
-                  ARGS="${ARGS} --set pixie-chart.cloudAddr={{.NR_CLI_PIXIE_ADDRESS}}"
-                  ARGS="${ARGS} --set pixie-chart.cloudUpdateAddr={{.NR_CLI_PIXIE_ADDRESS}}"
+                ARGS="${ARGS} --set pixie-chart.deployKey=${NR_CLI_PIXIE_DEPLOY_KEY}"
+                ARGS="${ARGS} --set pixie-chart.clusterName=${NR_CLI_CLUSTERNAME}"
+                if [ ! -z "${NR_CLI_PIXIE_ADDRESS}" ]; then
+                  ARGS="${ARGS} --set pixie-chart.cloudAddr=${NR_CLI_PIXIE_ADDRESS}"
+                  ARGS="${ARGS} --set pixie-chart.cloudUpdateAddr=${NR_CLI_PIXIE_ADDRESS}"
                 fi
               fi
             fi
 
             $SUDO helm upgrade $ARGS
           else
+            echo ""
             echo "Using kubectl to install the Kubernetes integration"
+            echo ""
 
             URL="https://k8s-config-generator.service.newrelic.com/generate?"
-            URL="${URL}global.cluster={{.NR_CLI_CLUSTERNAME}}"
-            URL="${URL}&global.namespace={{.NR_CLI_NAMESPACE}}"
-            URL="${URL}&newrelic-infrastructure.privileged={{.NR_CLI_PRIVILEGED}}"
-            URL="${URL}&global.lowDataMode={{.NR_CLI_LOW_DATA_MODE}}"
-            URL="${URL}&ksm.enabled={{.NR_CLI_KSM}}"
-            URL="${URL}&prometheus.enabled={{.NR_CLI_PROMETHEUS}}"
-            URL="${URL}&kubeEvents.enabled={{.NR_CLI_KUBE_EVENTS}}"
-            URL="${URL}&logging.enabled={{.NR_CLI_LOGGING}}"
-            URL="${URL}&global.licenseKey={{.NEW_RELIC_LICENSE_KEY}}"
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+            URL="${URL}global.cluster=${NR_CLI_CLUSTERNAME}"
+            URL="${URL}&global.namespace=${NR_CLI_NAMESPACE}"
+            URL="${URL}&newrelic-infrastructure.privileged=${NR_CLI_PRIVILEGED}"
+            URL="${URL}&global.lowDataMode=${NR_CLI_LOW_DATA_MODE}"
+            URL="${URL}&ksm.enabled=${NR_CLI_KSM}"
+            URL="${URL}&prometheus.enabled=${NR_CLI_PROMETHEUS}"
+            URL="${URL}&kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
+            URL="${URL}&logging.enabled=${NR_CLI_LOGGING}"
+            URL="${URL}&global.licenseKey=${NEW_RELIC_LICENSE_KEY}"
+            if [ "${NEW_RELIC_REGION}" = "STAGING" ]; then
               URL="${URL}&global.nrStaging=true"
             fi
-            if [ "{{.NR_CLI_NEWRELIC_PIXIE}}" = "true" ]; then
+            if [ "${NR_CLI_NEWRELIC_PIXIE}" = "true" ]; then
               URL="${URL}&newrelic-pixie.enabled=true"
-              URL="${URL}&newrelic-pixie.apiKey={{.NR_CLI_PIXIE_API_KEY}}"
-              if [ "{{.NR_CLI_PIXIE}}" = "true" ]; then
+              URL="${URL}&newrelic-pixie.apiKey=${NR_CLI_PIXIE_API_KEY}"
+              if [ "${NR_CLI_PIXIE}" = "true" ]; then
                 URL="${URL}&pixie-chart.enabled=true"
-                URL="${URL}&pixie-chart.deployKey={{.NR_CLI_PIXIE_DEPLOY_KEY}}"
-                URL="${URL}&pixie-chart.clusterName={{.NR_CLI_CLUSTERNAME}}"
-                if [ ! -z "{{.NR_CLI_PIXIE_ADDRESS}}" ]; then
-                  URL="${URL}&pixie-chart.cloudAddr={{.NR_CLI_PIXIE_ADDRESS}}"
-                  URL="${URL}&pixie-chart.cloudUpdateAddr={{.NR_CLI_PIXIE_ADDRESS}}"
+                URL="${URL}&pixie-chart.deployKey=${NR_CLI_PIXIE_DEPLOY_KEY}"
+                URL="${URL}&pixie-chart.clusterName=$NR_CLI_CLUSTERNAME"
+                if [ ! -z "${NR_CLI_PIXIE_ADDRESS}" ]; then
+                  URL="${URL}&pixie-chart.cloudAddr=${NR_CLI_PIXIE_ADDRESS}"
+                  URL="${URL}&pixie-chart.cloudUpdateAddr=${NR_CLI_PIXIE_ADDRESS}"
                 fi
               fi
             fi
@@ -323,10 +358,13 @@ install:
             $SUDO kubectl apply -f newrelic-k8s.yml
           fi
 
-postInstall:
-  info: |2
-    The Kubernetes Open Sources Integration deploymented is complete. You can check the progress by running
+          # Show post install message
+          echo ""
+          echo "The Kubernetes Open Sources Integration deploymented is complete. You can check the progress by running"
+          echo ""
+          echo "     kubectl get pods -o wide -n ${NR_CLI_NAMESPACE}"
+          echo ""
 
-        kubectl get pods -o wide -n {{.NR_CLI_NAMESPACE}}
-
-    If you are not using Helm, please store the generated newrelic-k8s.yml file in a safe location in order to upgrade or remove the integration.
+          if ! which helm >/dev/null; then
+            echo "Store the generated newrelic-k8s.yml file in a safe location in order to upgrade or remove the integration."
+          fi
