@@ -27,6 +27,7 @@ install:
   vars:
     CONFIG_FILE: "/usr/local/etc/newrelic-infra/newrelic-infra.yml"
     CONFIG_FILE_DIR: "/usr/local/etc/newrelic-infra"
+    ARROW: '\033[0;36m===> \033[0;97m'
 
   tasks:
     default:
@@ -63,8 +64,30 @@ install:
         - |
           IS_BREW_INSTALLED=$(which brew | wc -l)
           if [ $IS_BREW_INSTALLED -eq 0 ] ; then
-            echo "brew is required to run the newrelic install. Please install brew and re-run the installation." >&2
-            exit 16
+            while :; do
+              echo -n "brew is required to run the newrelic install. Do you want to install it? Y/N (default: Y) "
+              read answer
+              echo ""
+              NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                NEW_RELIC_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+                echo "brew is required to run the newrelic install. Please install brew and re-run the installation." >&2
+                exit 131
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
+                break
+              fi
+              echo -e "Please type Y or N only."
+            done
+            echo -e "{{.ARROW}}Installing brew...{{.GRAY}}"
+            echo ""
+            BREW_INSTALL_SUCCESS=$(sudo -i -u $SUDO_USER /bin/bash -c 'curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | bash > /dev/null 2>&1; echo $?')
+            if [ "$BREW_INSTALL_SUCCESS" -gt 0 ]; then
+              echo "brew install failed. Try to install it manually following instructions in https://brew.sh and re-run the installation."
+              exit 16
+            fi
           fi
         - |
           IS_CURL_INSTALLED=$(which curl | wc -l)
