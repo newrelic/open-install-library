@@ -316,6 +316,45 @@ install:
             touch {{.TMP_DIR}}/tomcat_configured
           }
 
+          save_sysd_yum_configuration() {
+            local APP_NAME=$1
+            local SERVICE=$1
+            local CONFIG_ROOT=$2
+            local USER=$(ps -q $pid -h -o user)
+
+            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+              echo -n "Enter an app name (default: $APP_NAME): "
+              read -r answer
+              if [[ -n $answer ]]; then
+                APP_NAME=$answer
+              fi
+            fi
+
+            # backup all existing .nr.conf files
+            touch {{ .TMP_DIR}}/existing_nr_configs
+            local EXISTING_NR_CONFIG_FILES=$(find "$CONFIG_ROOT" -type f -name "*.nr.conf" >> {{ .TMP_DIR }}/existing_nr_configs)
+            for EXISTING_CONFIG in $(cat {{ .TMP_DIR }}/existing_nr_configs)
+            do
+              cp $EXISTING_CONFIG $EXISTING_CONFIG.bkp
+              rm $EXISTING_CONFIG
+            done
+
+            # then re-create with current appname
+            local CONFIG_FILE="$CONFIG_ROOT/$APP_NAME.nr.conf"
+            echo "Creating $CONFIG_FILE"
+            touch $CONFIG_FILE
+            chown $USER $CONFIG_FILE
+            chmod 711 $CONFIG_FILE
+
+            # rewrite CATALINA_OPTS
+            echo "# ---- New Relic switch automatically added on $(date)" >> $CONFIG_FILE
+            echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$APP_NAME/newrelic.jar\"" >> $CONFIG_FILE
+
+            save_newrelic_configuration $SERVICE $USER $APP_NAME
+
+            touch {{.TMP_DIR}}/tomcat_configured
+          }
+
           save_sysd_script_configuration() {
             local APP_NAME=$1
             local SERVICE=$1
@@ -390,6 +429,19 @@ install:
 
             SERVICE_CONFIG_FILE=$(systemctl status $SERVICE | grep -oP '(?<=\().*(?=\; enabled)')
             if [[ ! -z $SERVICE_CONFIG_FILE ]]; then
+
+              # 0 - check if tomcat appears to be yum-installed
+              INSTALLED_WITH_YUM=$(cat $SERVICE_CONFIG_FILE | grep -oP 'EnvironmentFile=/etc/tomcat/tomcat.conf' | wc -l)
+              if [ $INSTALLED_WITH_YUM -gt 0 ]; then
+                YUM_CONFIG_ROOT="/etc/tomcat/conf.d"
+                if [ -d $YUM_CONFIG_ROOT ]; then
+                  save_sysd_yum_configuration $SERVICE $YUM_CONFIG_ROOT
+                  return 0
+                else
+                  echo -e "$YUM_CONFIG_ROOT does not exist for yum-installed tomcat" >&2
+                  return 1
+                fi
+              fi
 
               # 1 - check if command line, add javaagent here
               CMDLINE_START_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=/{:start /start/!{N;b start};/org.apache.catalina.startup.Bootstrap/p}')
