@@ -443,7 +443,7 @@ install:
                 fi
               fi
 
-              # 1 - check if command line, add javaagent here
+              # 1 - check if command line, add javaagent accordingly
               CMDLINE_START_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=/{:start /start/!{N;b start};/org.apache.catalina.startup.Bootstrap/p}')
               CATALINA_OPTS_EXIST=$(echo $CMDLINE_START_COMMAND | grep 'CATALINA_OPTS' | wc -l)
               if [ $CATALINA_OPTS_EXIST -gt 0 ]; then
@@ -453,16 +453,14 @@ install:
               fi
 
               # 2 - check if shell script, if catalina/daemon/startup/tomcat-start we can use setenv.sh
-              CATALINA_SH_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=.*catalina.sh/p'  | wc -l)
-              START_SH_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=.*startup.sh/p'  | wc -l)
-              TOMCAT_START_SH_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=.*tomcat-start.sh/p'  | wc -l)
-              if [[ $CATALINA_SH_COMMAND -gt 0 || $START_SH_COMMAND -gt 0 || $TOMCAT_START_SH_COMMAND -gt 0 ]]; then
+              SH_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=.*.sh/p'  | wc -l)
+              if [ $SH_COMMAND -gt 0 ]; then
                 save_sysd_script_configuration $SERVICE $CATALINA_HOME
                 return 0
               fi
 
               # found a config, but could not configure
-              if [[ $CATALINA_OPTS_EXIST -eq 0 && $CATALINA_SH_COMMAND -eq 0 && $START_SH_COMMAND -eq 0 && $TOMCAT_START_SH_COMMAND -eq 0 ]]; then
+              if [[ $CATALINA_OPTS_EXIST -eq 0 && $SH_COMMAND -eq 0 ]]; then
                 echo -e "Systemd service configuration found, but could not configure: $service" >&2
                 return 1
               fi
