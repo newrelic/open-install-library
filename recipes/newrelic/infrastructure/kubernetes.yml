@@ -8,6 +8,9 @@ repository: https://github.com/newrelic/nri-kubernetes
 
 installTargets:
   - type: host
+    os: linux
+  - type: host
+    os: darwin
 
 keywords:
   - Infrastructure
@@ -89,15 +92,32 @@ install:
   tasks:
     default:
       cmds:
-        - task: confirm
         - task: install
 
-    confirm:
+    install:
       cmds:
         - |
-          CLUSTER=$($SUDO kubectl config current-context)
+          NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"
 
-          if [[ "{{.NR_CLI_CLUSTERNAME}}" == "" && "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+          NR_CLI_CLUSTERNAME="{{.NR_CLI_CLUSTERNAME}}"
+          NR_CLI_NAMESPACE="{{.NR_CLI_NAMESPACE}}"
+          NR_CLI_KSM="{{.NR_CLI_KSM}}"
+          NR_CLI_KUBE_EVENTS="{{.NR_CLI_KUBE_EVENTS}}"
+          NR_CLI_LOGGING="{{.NR_CLI_LOGGING}}"
+          NR_CLI_PROMETHEUS="{{.NR_CLI_PROMETHEUS}}"
+          NR_CLI_LOW_DATA_MODE="{{.NR_CLI_LOW_DATA_MODE}}"
+          NR_CLI_PRIVILEGED="{{.NR_CLI_PRIVILEGED}}"
+
+          NR_CLI_PIXIE="{{.NR_CLI_PIXIE}}"
+          NR_CLI_NEWRELIC_PIXIE="{{.NR_CLI_NEWRELIC_PIXIE}}"
+          NR_CLI_PIXIE_API_KEY="{{.NR_CLI_PIXIE_API_KEY}}"
+          NR_CLI_PIXIE_DEPLOY_KEY="{{.NR_CLI_PIXIE_DEPLOY_KEY}}"
+
+          # Determine the cluster name if not provided
+          CLUSTER=$($SUDO kubectl config current-context 2>/dev/null || echo "unknown")
+
+          if [[ "$NR_CLI_CLUSTERNAME" == "" && "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
             while :; do
               echo -e -n "Do you want to install the Kubernetes integration on cluster \033[1m${CLUSTER}\033[0m Y/N (default: Y)? "
               read answer
@@ -117,28 +137,10 @@ install:
             done
           fi
 
-    install:
-      cmds:
-        - |
-          NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
-          NEW_RELIC_REGION="{{.NEW_RELIC_REGION}}"
-
-          NR_CLI_CLUSTERNAME="{{.NR_CLI_CLUSTERNAME}}"
-          NR_CLI_NAMESPACE="{{.NR_CLI_NAMESPACE}}"
-
-          NR_CLI_KSM="{{.NR_CLI_KSM}}"
-          NR_CLI_KUBE_EVENTS="{{.NR_CLI_KUBE_EVENTS}}"
-          NR_CLI_LOGGING="{{.NR_CLI_LOGGING}}"
-          NR_CLI_PROMETHEUS="{{.NR_CLI_PROMETHEUS}}"
-          NR_CLI_LOW_DATA_MODE="{{.NR_CLI_LOW_DATA_MODE}}"
-          NR_CLI_PRIVILEGED="{{.NR_CLI_PRIVILEGED}}"
-
-          NR_CLI_PIXIE="{{.NR_CLI_PIXIE}}"
-          NR_CLI_NEWRELIC_PIXIE="{{.NR_CLI_NEWRELIC_PIXIE}}"
-          NR_CLI_PIXIE_API_KEY="{{.NR_CLI_PIXIE_API_KEY}}"
-          NR_CLI_PIXIE_DEPLOY_KEY="{{.NR_CLI_PIXIE_DEPLOY_KEY}}"
-
-          CLUSTER=$($SUDO kubectl config current-context)
+          if [[ "$NR_CLI_CLUSTERNAME" == "" ]]; then
+            NR_CLI_CLUSTERNAME="$CLUSTER"
+            echo -e "Cluster name set to \033[1m${NR_CLI_CLUSTERNAME}\033[0m" >&2
+          fi
 
           # Set default values for variables
           NR_CLI_NAMESPACE=${NR_CLI_NAMESPACE:-newrelic}
@@ -148,12 +150,6 @@ install:
           NR_CLI_PROMETHEUS=${NR_CLI_PROMETHEUS:-true}
           NR_CLI_LOW_DATA_MODE=${NR_CLI_LOW_DATA_MODE:-true}
           NR_CLI_PRIVILEGED=${NR_CLI_PRIVILEGED:-true}
-
-          # Detect the clustername if not provided
-          if [[ "$NR_CLI_CLUSTERNAME" == "" ]]; then
-            NR_CLI_CLUSTERNAME="$CLUSTER"
-            echo -e "Cluster name set to \033[1m${NR_CLI_CLUSTERNAME}\033[0m" >&2
-          fi
 
           # Check the Linux kernel version if Pixie is enabled
           if [[ "$NR_CLI_PIXIE" == "true" ]]; then
@@ -187,7 +183,6 @@ install:
 
           # Check if the cluster type is supported by Pixie
           if [[ "$NR_CLI_PIXIE" == "true" ]]; then
-            CLUSTER=$($SUDO kubectl config current-context)
             SUPPORTED=false
 
             if [[ "$CLUSTER" == "docker-desktop" ]]; then
