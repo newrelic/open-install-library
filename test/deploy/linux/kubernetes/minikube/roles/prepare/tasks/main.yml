@@ -6,12 +6,15 @@
   shell: 'minikube version | grep "minikube version:" | wc -l'
   register: is_minikube_installed
 
+- name: Is Kubectl installed
+  shell: 'kubectl | grep "Client Version:" | wc -l'
+  register: is_kubectl_installed
+
 - name: Install required packages
   yum:
     name:
       - docker
       - conntrack
-      - kubectl
     state: present
   become: yes
 
@@ -60,6 +63,13 @@
  
 - name: Start Minikube
   shell: 'minikube start'
+
+- block:
+  - name: Download Kubectl
+    shell: 'curl -LO https://dl.k8s.io/release/v1.22.0/bin/linux/amd64/kubectl'
+  - name: Install Kubectl
+    shell: 'install kubectl /usr/local/bin/kubectl'
+  when: is_kubectl_installed.stdout|int == 0
 
 - name: Get list of pods
   shell: 'kubectl get pods --all-namespaces'
