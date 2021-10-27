@@ -433,11 +433,12 @@ install:
             if [[ ! -z $SERVICE_CONFIG_FILE ]]; then
 
               # 0 - check if tomcat appears to be yum-installed
-              INSTALLED_WITH_YUM=$(cat $SERVICE_CONFIG_FILE | grep -oP 'EnvironmentFile=/etc/tomcat/tomcat.conf' | wc -l)
-              if [ $INSTALLED_WITH_YUM -gt 0 ]; then
-                YUM_CONFIG_ROOT="/etc/tomcat/conf.d"
-                if [ -d $YUM_CONFIG_ROOT ]; then
-                  save_sysd_yum_configuration $SERVICE $YUM_CONFIG_ROOT
+              TOMCAT_CONFIG_FROM_YUM=$(find / -name tomcat.conf)
+              if [[ ! -z $TOMCAT_CONFIG_FROM_YUM ]]; then
+                YUM_CONFIG_ROOT=$(echo $TOMCAT_CONFIG_FROM_YUM | grep -oP '\K.*(?=/tomcat.conf)')
+                YUM_CUSTOM_CONFIG_DIR=$YUM_CONFIG_ROOT/conf.d
+                if [ -d $YUM_CUSTOM_CONFIG_DIR ]; then
+                  save_sysd_yum_configuration $SERVICE $YUM_CUSTOM_CONFIG_DIR
                   return 0
                 else
                   echo -e "$YUM_CONFIG_ROOT does not exist for yum-installed tomcat" >&2
