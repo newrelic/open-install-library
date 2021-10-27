@@ -36,8 +36,10 @@ preInstall:
     If Helm is not available a manifest will be generated and applied using kubectl.
 
   requireAtDiscovery: |
+    SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
+
     # Check the required tools
-    if ! which kubectl >/dev/null; then
+    if ! $SUDO which kubectl >/dev/null; then
       echo "kubectl is required to install the Kubernetes Open Source Integration." >&2
       exit 10
     fi
@@ -63,8 +65,6 @@ preInstall:
     fi
 
     # Check the Kubernetes version
-    SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
-
     KUBECTL_VERSION=$($SUDO kubectl version --short)
     CLIENT_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
     CLIENT_MINOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $2; }')
@@ -189,15 +189,15 @@ install:
               echo "Docker for desktop is not supported. To create a test cluster to try out Pixie, use minikube instead." >&2
             fi
 
-            if which kind; then
+            if $SUDO which kind; then
               if $SUDO kind get clusters | grep '^$(echo "'"${CLUSTER}"'" | sed -e "s/^kind-//g")$'; then
                 echo "Kind is not supported. To create a test cluster to try out Pixie, use minikube instead." >&2
               fi
             fi
 
-            if which minikube; then
+            if $SUDO which minikube; then
               if $SUDO minikube profile list | grep " ${CLUSTER} "; then
-                DRIVER=$(minikube profile list | grep " ${CLUSTER} " | cut -f3 -d'|')
+                DRIVER=$($SUDO minikube profile list | grep " ${CLUSTER} " | cut -f3 -d'|')
                 if [[ "$DRIVER" == "kvm2" || "$DRIVER" == "hyperkit" ]] ; then
                   echo "Unrecognized minikube driver. To create a test cluster to try out Pixie, use kvm2 or HyperKit instead." >&2
                 else
@@ -206,7 +206,7 @@ install:
               fi
             fi
 
-            if which az; then
+            if $SUDO which az; then
               if $SUDO az aks list | grep '"name": "'"${CLUSTER}"'"'; then
                 SUPPORTED=true
               fi
