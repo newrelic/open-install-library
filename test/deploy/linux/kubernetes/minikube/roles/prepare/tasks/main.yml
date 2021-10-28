@@ -6,10 +6,6 @@
   shell: 'minikube version | grep "minikube version:" | wc -l'
   register: is_minikube_installed
 
-- name: Is Kubectl installed
-  shell: 'kubectl | grep "Client Version:" | wc -l'
-  register: is_kubectl_installed
-
 - name: Install required packages
   yum:
     name:
@@ -52,29 +48,25 @@
   until: docker_output is not failed
 
 - block:
-  - name: Download Kubectl
-    shell: 'curl -LO https://dl.k8s.io/release/v1.22.0/bin/linux/amd64/kubectl'
-  - name: Install Kubectl
-    shell: 'install kubectl /usr/bin/kubectl'
-    become: yes
-  - name: Create kubectl config
-    file:
-      path: ~/.kube
-      state: directory
-  when: is_kubectl_installed.stdout|int == 0
-
-- block:
   - name: Download Minikube
     shell: 'curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64'
   - name: Install Minikube
-    shell: 'install minikube-linux-amd64 /usr/bin/minikube'
+    shell: 'install minikube-linux-amd64 /usr/local/bin/minikube'
     become: yes
   - name: Configure minikube driver
     shell: 'minikube config set driver docker'
   when: is_minikube_installed.stdout|int == 0
-
+ 
 - name: Start Minikube
   shell: 'minikube start'
+
+- name: Create kubectl wrap command
+  template:
+    src: kubectl.wrap
+    dest: "/usr/bin/kubectl"
+    force: yes
+    mode: '0777'
+  become: yes
 
 - name: Get list of pods
   shell: 'kubectl get pods --all-namespaces'
