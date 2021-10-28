@@ -39,27 +39,27 @@ preInstall:
     SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
 
     # Check the required tools
-    if ! $SUDO which kubectl >/dev/null; then
+    if ! $SUDO which kubectl 2>/dev/null; then
       echo "kubectl is required to install the Kubernetes Open Source Integration." >&2
       exit 10
     fi
-    if ! which curl >/dev/null ; then
+    if ! which curl 2>/dev/null ; then
       echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
       exit 11
     fi
-    if ! which awk >/dev/null ; then
+    if ! which awk 2>/dev/null ; then
       echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >&2
       exit 12
     fi
-    if ! which grep >/dev/null ; then
+    if ! which grep 2>/dev/null ; then
       echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
       exit 13
     fi
-    if ! which sed >/dev/null ; then
+    if ! which sed 2>/dev/null ; then
       echo "sed is required to run the newrelic install. Please install sed and re-run the installation." >&2
       exit 14
     fi
-    if ! which cut >/dev/null ; then
+    if ! which cut 2>/dev/null ; then
       echo "cut is required to run the newrelic install. Please install cut and re-run the installation." >&2
       exit 15
     fi
@@ -164,12 +164,14 @@ install:
           fi
 
           # Check if the user has permissions to create a new namespace
-          CAN_CREATE_NAMESPACE=$($SUDO kubectl auth can-i create namespace)
+          CAN_CREATE_NAMESPACE=$($SUDO kubectl auth can-i create namespace 2>/dev/null)
 
-          $SUDO kubectl get namespace ${NR_CLI_NAMESPACE} 1>/dev/null 2>&1
-          NAMESPACE_EXISTS=$?
+          NAMESPACE_EXISTS=true
+          if $SUDO kubectl get namespace ${NR_CLI_NAMESPACE} 1>/dev/null 2>&1; then
+            NAMESPACE_EXISTS=false
+          fi
 
-          if [[ "$NAMESPACE_EXISTS" -ne "0" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
+          if [[ "$NAMESPACE_EXISTS" != "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
             echo "The ${NR_CLI_NAMESPACE} namespace does not exist and you don't have permissions to create a new namespace." >&2
             echo "Use an existing namespace or obtain permissions to create a new namespace." >&2
             exit 1
@@ -189,13 +191,13 @@ install:
               echo "Docker for desktop is not supported. To create a test cluster to try out Pixie, use minikube instead." >&2
             fi
 
-            if $SUDO which kind; then
+            if $SUDO which kind 2>/dev/null; then
               if $SUDO kind get clusters | grep '^$(echo "'"${CLUSTER}"'" | sed -e "s/^kind-//g")$'; then
                 echo "Kind is not supported. To create a test cluster to try out Pixie, use minikube instead." >&2
               fi
             fi
 
-            if $SUDO which minikube; then
+            if $SUDO which minikube 2>/dev/null; then
               if $SUDO minikube profile list | grep " ${CLUSTER} "; then
                 DRIVER=$($SUDO minikube profile list | grep " ${CLUSTER} " | cut -f3 -d'|')
                 if [[ "$DRIVER" == "kvm2" || "$DRIVER" == "hyperkit" ]] ; then
@@ -206,7 +208,7 @@ install:
               fi
             fi
 
-            if $SUDO which az; then
+            if $SUDO which az 2>/dev/null; then
               if $SUDO az aks list | grep '"name": "'"${CLUSTER}"'"'; then
                 SUPPORTED=true
               fi
@@ -268,7 +270,7 @@ install:
           fi
 
           # Deploy the integration
-          if which helm >/dev/null; then
+          if which helm 2>/dev/null; then
             echo ""
             echo "Using helm to install the Kubernetes integration"
             echo ""
@@ -346,6 +348,6 @@ install:
           echo "     kubectl get pods -o wide -n ${NR_CLI_NAMESPACE}"
           echo ""
 
-          if ! which helm >/dev/null; then
+          if ! which helm 2>/dev/null; then
             echo "Store the generated newrelic-k8s.yml file in a safe location in order to upgrade or remove the integration."
           fi
