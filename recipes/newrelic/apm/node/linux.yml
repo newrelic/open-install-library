@@ -15,7 +15,29 @@ keywords:
   - node
 
 processMatch:
+  - node
   - pm2
+
+preInstall:
+  requireAtDiscovery: |
+      ASSERT_NODE_INSTALLED=$(sudo -i -u $SUDO_USER command -v node)
+      if [ -z "$ASSERT_NODE_INSTALLED" ] ; then
+        exit 1
+      fi
+      ASSERT_NPM_INSTALLED=$(sudo -i -u $SUDO_USER command -v npm)
+      if [ -z "$ASSERT_NPM_INSTALLED" ] ; then
+        exit 2
+      fi
+      # Only PM2 is supported at this time
+      ASSERT_PM2_INSTALLED=$(sudo -i -u $SUDO_USER command -v pm2)
+      if [ -z "$ASSERT_PM2_INSTALLED" ] ; then
+        exit 131
+      fi
+      IS_PM2_RUNNING=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
+      if [ $IS_PM2_RUNNING -eq 0 ] ; then
+        exit 131
+      fi
+      exit 0
 
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 5 minutes ago"
 
@@ -31,7 +53,6 @@ install:
     default:
       cmds:
         - task: verify_continue
-        - task: assert_pre_req
         - task: setup
         - task: install_agent
         - task: cli_validate
@@ -75,33 +96,6 @@ install:
               fi
               echo -e "Please type Y or N only."
             done
-          fi
-
-    assert_pre_req:
-      cmds:
-        - |
-          ASSERT_NODE_INSTALLED=$(sudo -i -u $SUDO_USER command -v node)
-          if [ -z "$ASSERT_NODE_INSTALLED" ] ; then
-            echo "A valid Node.js installation is required." >&2
-            exit 130
-          fi
-        - |
-          ASSERT_NPM_INSTALLED=$(sudo -i -u $SUDO_USER command -v npm)
-          if [ -z "$ASSERT_NPM_INSTALLED" ] ; then
-            echo "A valid NPM installation is required." >&2
-            exit 130
-          fi
-        - |
-          ASSERT_PM2_INSTALLED=$(sudo -i -u $SUDO_USER command -v pm2)
-          if [ -z "$ASSERT_PM2_INSTALLED" ] ; then
-            echo "A valid PM2 installation is required." >&2
-            exit 130
-          fi
-        - |
-          IS_PM2_RUNNING=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
-          if [ $IS_PM2_RUNNING -eq 0 ] ; then
-            echo "The PM2 process manager is required." >&2
-            exit 130
           fi
 
     setup:
