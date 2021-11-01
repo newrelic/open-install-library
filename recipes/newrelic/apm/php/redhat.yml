@@ -23,11 +23,8 @@ processMatch:
   # - nginx and php-fpm (process named php-fpm)
   # in the preInstall we will check if php is installed and further filter down the possible scenarios
   - php-fpm
-
-  # Going to leave these out for now as it will potentially pull in
-  # lots of matches which do not actually need PHP instrumentation
-  #- apache2
-  #- httpd
+  - apache2
+  - httpd
 
 preInstall:
   requireAtDiscovery: |
@@ -37,6 +34,18 @@ preInstall:
         exit 3
       fi
 
+      IS_PHP_INSTALLED=$(which php | wc -l)
+      if [ "$IS_PHP_INSTALLED" -eq 0 ] then
+        # PHP not installed, no detection
+        exit 1
+      fi
+      # Only PHP-FPM is supported at this time
+      IS_FPM_RUNNING=$(sudo ps aux | grep php-fpm | grep -v grep | wc -l)
+      if [ "$IS_FPM_RUNNING" -eq 0 ] then
+        # No FPM running, but PHP installed, signal detection
+        exit 131
+      fi
+
       IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
       if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
         echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'."
@@ -44,7 +53,7 @@ preInstall:
       fi
 
       # Map of tool names to the associated error code
-      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 mount:131 php:22 yum:22"
+      required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 mount:131 yum:22"
 
       for tuple in $required_tools_and_error_codes; do
         tool=$(echo ${tuple} |cut -d':' -f1)
