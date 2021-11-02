@@ -33,7 +33,7 @@ preInstall:
   requireAtDiscovery: |
       # verify running with sudo
       if [ -z "$SUDO_USER" ]; then
-        echo "This installation recipe for the New Relic PHP agent must be run under sudo."
+        echo "This installation recipe for the New Relic PHP agent must be run under sudo." >&2
         exit 3
       fi
 
@@ -58,17 +58,18 @@ preInstall:
             # No FPM, Apache is running, but not PHP module enabled, no detection
             exit 5
           else
-            # No FPM, Apache running with PHP module, signal DETECTION
-            exit 132
+            echo "No FPM, Apache running with PHP module, Ok to install" >&2
           fi
         fi
+      else
+        echo "PHP-FPM present, Ok to install" >&2
       fi
 
-      # FPM & PHP enabled, will signal DETECTED or ok to install
+      # Either FPM or Apache present with PHP enabled, will signal DETECTED or ok to install
 
       IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
       if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
-        echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'."
+        echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'." >&2
         exit 132
       fi
 
@@ -82,7 +83,7 @@ preInstall:
         IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
         if [ "$IS_TOOL_INSTALLED" -eq 0 ]
         then
-          echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed."
+          echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >&2
           exit ${code}
         fi
       done
@@ -90,13 +91,13 @@ preInstall:
       # check if /tmp is mounted noexec - this causes problems with how the recipe works
       tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
       if [ ! -z "${tmp_is_noexec}" ]; then
-        echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec."
+        echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec." >&2
         exit 132
       fi
 
       # need directory for extra repositories to exist
       if [ ! -d "/etc/apt/sources.list.d/" ]; then
-        echo "This installation recipe for the New Relic PHP Agent on Linux requires the directory /etc/apt/sources.list.d to exist."
+        echo "This installation recipe for the New Relic PHP Agent on Linux requires the directory /etc/apt/sources.list.d to exist." >&2
         exit 132
       fi
 
