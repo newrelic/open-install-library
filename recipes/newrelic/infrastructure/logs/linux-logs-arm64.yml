@@ -1,0 +1,238 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: logs-integration
+displayName: Logs integration
+description: New Relic install recipe for Logging via Infra-Agent
+repository: https://github.com/newrelic/infrastructure-agent/tree/master/assets/examples/logging
+
+dependencies:
+  - infrastructure-agent-installer
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "10.0" #Buster
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "9.0" #Strecht
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "8.0" #Jessie - only v1.7.9
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "ubuntu"
+    platformVersion: "20.04" #Focal
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "ubuntu"
+    platformVersion: "18.04" #Bionic
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "ubuntu"
+    platformVersion: "16.04" #Xenial - only v1.7.9
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "centos"
+    platformFamily: rhel
+    platformVersion: "7" #only v1.7.4
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "centos"
+    platformFamily: rhel
+    platformVersion: "8" #only v1.7.4
+    kernelArch: aarch64
+
+keywords:
+  - Logs
+
+processMatch: []
+
+validationNrql: "SELECT count(*) from Log where hostname like '{{.HOSTNAME}}%' FACET entity.guids SINCE 10 minutes ago"
+
+install:
+  version: "3"
+  silent: true
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: init
+        - task: setup
+        - task: logEvent
+
+    assert_pre_req:
+      cmds:
+        - |
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:10 sed:11 tee:14 touch:15"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo "This installation recipe for the New Relic .NET agent on Linux requires '${tool}' to be installed." >&2
+              exit ${code}
+            fi
+          done
+
+    init:
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/logging.d"
+        - |
+          if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
+            sudo rm /etc/newrelic-infra/logging.d/logging.yml;
+          fi
+          sudo touch /etc/newrelic-infra/logging.d/logging.yml;
+        - |
+          if [ -f /etc/newrelic-infra/logging.d/discovered.yml ]; then
+            sudo rm /etc/newrelic-infra/logging.d/discovered.yml;
+          fi
+          sudo touch /etc/newrelic-infra/logging.d/discovered.yml;
+
+    setup:
+      cmds:
+        - |
+          target_log_files=()
+          target_discovered_log_files=()
+          source_log_files=("/var/log/alternatives.log")
+          source_log_files+=("/var/log/cloud-init.log")
+          source_log_files+=("/var/log/auth.log")
+          source_log_files+=("/var/log/dpkg.log")
+          source_log_files+=("/var/log/messages")
+          source_log_files+=("/var/log/secure")
+          source_log_files+=("/var/log/yum.log")
+
+          for log_file in "${source_log_files[@]}"
+          do
+            file_exist=$(ls $log_file 2>1 | wc -l)
+            if [ $file_exist -gt 0 ]; then
+              target_log_files+=($log_file)
+            fi
+          done
+
+          discoveredLogFiles=$(echo -n "{{.NR_DISCOVERED_LOG_FILES | trim}}")
+          discoveredLogsStringLength=${#discoveredLogFiles}
+          # Disable glob expansion (necessary for discovered logs)
+          set -f
+          if [ $discoveredLogsStringLength -gt 0 ]; then
+            for filePath in $(echo -n $discoveredLogFiles | sed "s/,/ /g"); do
+              target_discovered_log_files+=($filePath)
+            done
+          fi
+
+          file_exist=$(sudo find /var/lib/docker/containers -name "*.log" 2>1 | wc -l)
+          if [ $file_exist -gt 0 ]; then
+            target_log_files+=("/var/lib/docker/containers/*/*.log")
+          fi
+
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            if [ ${#target_log_files[@]} -gt 0 ]; then
+              while :; do
+                echo "The log files below have been detected:"
+                for log_file in "${target_log_files[@]}"
+                do
+                  echo "  "$log_file
+                done
+                for log_file in "${target_discovered_log_files[@]}"
+                do
+                  echo "  "$log_file
+                done
+                echo -n "Would you like to tail those log files to New Relic Y/N (default: Y)? "
+                read answer
+                echo ""
+                NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+                if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                  NEW_RELIC_CONTINUE="Y"
+                fi
+                if [ "$NEW_RELIC_CONTINUE" == "N" ] ||  [ "$NEW_RELIC_CONTINUE" == "n" ]; then
+                  target_log_files=()
+                  target_discovered_log_files=()
+                  break
+                fi
+                if [ "$NEW_RELIC_CONTINUE" == "Y" ] ||  [ "$NEW_RELIC_CONTINUE" == "y" ]; then
+                  break
+                fi
+                echo -e "Please type Y or N only."
+              done
+            fi
+          fi
+
+          target_log_files+=({{.NEW_RELIC_CLI_LOG_FILE_PATH}})
+
+          echo "logs:" | sudo tee /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+          for log_file in "${target_log_files[@]}"
+          do
+            if [ "$log_file" == "/var/lib/docker/containers/*/*.log" ]; then
+              echo -e "  - name: containers\n    file: /var/lib/docker/containers/*/*.log" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+            else
+              NAME=$(basename $log_file)
+              echo -e "  - name: $NAME" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              echo -e "    file: $log_file" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              if [[ "$NAME" == "newrelic-cli.log" ]]; then
+                echo -e "    attributes:\n      newrelic-cli: true" | sudo tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              fi
+            fi
+          done
+
+          if [ ${#target_discovered_log_files[@]} -gt 0 ]; then
+            echo "logs:" | sudo tee /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+
+            # index is incremented to facilitate dynamic name values for each discovered log file path
+            index=0
+            for filePath in $(echo -n $discoveredLogFiles | sed "s/,/ /g"); do
+
+              echo -e "  - name: configured-logs-$index" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+              echo -e "    file: $filePath" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+
+              if [[ $filePath == *"nginx/error"* ]]; then
+                echo -e "    attributes:\n      logtype: nginx-error" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+              fi
+              if [[ $filePath == *"nginx/access"* ]]; then
+                echo -e "    attributes:\n      logtype: nginx" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+              fi
+
+              if [[ $filePath == *"mysql/error"* ]]; then
+                echo -e "    attributes:\n      logtype: mysql-error" | sudo tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+              fi
+
+              index=$((index+1))
+            done
+          fi
+
+    logEvent:
+      cmds:
+        # Wait to give the services time to get going with the new configuration and plugin startup
+        - |
+          sleep 10
+        - |
+          echo "Log configuration:" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+          sudo cat /etc/newrelic-infra/logging.d/logging.yml | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+          echo "Log installation completed" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+
+postInstall:
+  info: |2
+      ⚙️  The Logs configuration file (base configuration) can be found in /etc/newrelic-infra/logging.d/logging.yml
+      ⚙️  The Logs configuration file for discovered processes can be found in /etc/newrelic-infra/logging.d/discovered.yml
+      Edit these files to make changes or configure advanced features for the Logs integration. See the docs for options:
+      https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
