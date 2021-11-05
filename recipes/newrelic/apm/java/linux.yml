@@ -16,6 +16,8 @@ installTargets:
     kernelArch: x86_64
     platformFamily: "debian"
 
+dependencies:
+  - infrastructure-agent-installer
 
 keywords:
   - Apm
@@ -30,71 +32,37 @@ logMatch:
     file: /var/log/*tomcat*/catalina.out
 
 processMatch:
-  - java.*org\.apache\.catalina\.startup\.Bootstrap
-  - java.*wildfly.*jboss\-modules\.jar
-  - java.*jetty.*start\.jar
+  - java.*org.apache.catalina.startup.Bootstrap
 
 preInstall:
   requireAtDiscovery: |
-    # must be root user
-    USER=$(whoami)
-    if [[ "$USER" != "root" ]]; then
+    user=$(whoami)
+    if [[ "$user" != "root" ]]; then
       echo -e "This script must be run as root." >&2
       exit 132
     fi
 
-    # must be using systemd as init system
-    INIT_SYSTEM=$(cat /proc/1/status | grep -oP 'Name:\s+\K\w+')
-    if  [[ -z $INIT_SYSTEM || "$INIT_SYSTEM" != "systemd" ]]; then
-      echo -e "Unsupported process management system: $INIT_SYSTEM" >&2
+    cutInstalled=$(which cut 2> /dev/null)
+    if [[ -z "$cutInstalled" ]]; then
+      echo -e "This installation recipe for the New Relic Java Agent on Linux requires 'cut' to be installed." >&2
       exit 132
     fi
 
-    TMP_DIR=$(mktemp -d /tmp/newrelic.XXXXXX)
-    cd $TMP_DIR
-
-    isYumInstalled=$(which yum 2>&1 || true)
-    if [[ -n "$isYumInstalled" ]]; then
-      curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm
-      yum install -y -q nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm 2> /dev/null || true
-    else
-      curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb
-      apt-get install -y -qq ./nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb 2> /dev/null || true
-    fi
-
-    # check if any tomcat instances are service-managed
-    nri-lsi-java -list | tr -d '[]' | tr ',' '\n' > $TMP_DIR/all_java_processes
-    for JAVA_PID in $(cat $TMP_DIR/all_java_processes)
-    do
-      INTROSPECTION_DATA=$(nri-lsi-java -introspect ${JAVA_PID})
-      IS_JAVA_TOMCAT=$(echo $INTROSPECTION_DATA | grep "org.apache.catalina.startup.Bootstrap" | grep -v grep | wc -l)
-      if [ "$IS_JAVA_TOMCAT" -gt 0 ]; then
-        IS_MANAGED_TOMCAT=$(systemctl status $JAVA_PID | head -n1 | grep -oP "(?<=. )\K.+(?=\.service)" | wc -l)
-        if [ "$IS_MANAGED_TOMCAT" -gt 0 ]; then
-          rm -rf $TMP_DIR
-          exit 0
-        fi
-      else
-        touch $TMP_DIR/non_tomcat_java_process
+    # Map of tool names to the associated error code
+    required_tools_and_error_codes="grep:132 cat:132 tee:132"
+    for tuple in $required_tools_and_error_codes; do
+      tool=$(echo ${tuple} |cut -d':' -f1)
+      code=$(echo ${tuple} |cut -d':' -f2)
+      toolInstalled=$(which ${tool} | wc -l)
+      if [[ "$toolInstalled" -eq 0 ]]; then
+        echo -e "This installation recipe for the New Relic Java Agent on Linux requires '${tool}' to be installed." >&2
+        exit ${code}
       fi
     done
 
-    if [[ -f $TMP_DIR/non_tomcat_java_process ]]; then
-      echo -e "Java processes other than Tomcat have been detected" >&2
-    else
-      echo -e "Tomcat processes were detected, but no running java processes found" >$2
-    fi
+    exit 0
 
-    if [[ -n "$isYumInstalled" ]]; then
-      yum remove -y -q nri-introspector-java 2> /dev/null
-    else
-      apt remove -y -qq nri-introspector-java 2> /dev/null
-    fi
-
-    rm -rf $TMP_DIR
-    exit 132
-
-validationNrql: "SELECT count(*) FROM ApplicationAgentContext WHERE host LIKE '{{.HOSTNAME}}%' SINCE 10 minutes AGO"
+validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
 successLinkConfig:
   type: EXPLORER
@@ -105,45 +73,15 @@ install:
   version: "3"
   silent: true
 
-  vars:
-    TMP_DIR:
-      sh: mktemp -d /tmp/newrelic.XXXXXX
-
   tasks:
     default:
       cmds:
-        - task: verify-pre-requisites
         - task: verify-continue
+        - task: init
         - task: get-introspector
-        - task: get-agent
-        - task: install-agent
-        - task: verify-servers-restarted
-        - task: notify-done
-        - task: cleanup
-
-    verify-pre-requisites:
-      cmds:
-        - |
-          red='\033[0;31m'
-          noColor='\033[0m'
-
-          cutInstalled=$(which cut 2> /dev/null)
-          if [[ -z "$cutInstalled" ]]; then
-            echo -e "${red}This installation recipe for the New Relic Java Agent on Linux requires 'cut' to be installed.${noColor}" >&2
-            exit 22
-          fi
-
-          # Map of tool names to the associated error code
-          required_tools_and_error_codes="grep:10 sed:11 awk:12 cat:13 tee:14 touch:15 mktemp:22 readlink:22 realpath:22"
-          for tuple in $required_tools_and_error_codes; do
-            tool=$(echo ${tuple} |cut -d':' -f1)
-            code=$(echo ${tuple} |cut -d':' -f2)
-            toolInstalled=$(which ${tool} | wc -l)
-            if [[ "$toolInstalled" -eq 0 ]]; then
-              echo -e "${red}This installation recipe for the New Relic Java Agent on Linux requires '${tool}' to be installed.${noColor}" >&2
-              exit ${code}
-            fi
-          done
+        - task: install-instrument-script
+        - task: add-on-host-integration
+        - task: cli_validate
 
     verify-continue:
       cmds:
@@ -151,17 +89,18 @@ install:
           YELLOW='\033[0;33m'
           NOCOLOR='\033[0m'
           echo -e "${YELLOW}
-          ================================================================================
-          =                                                                              =
-          =                                   Warning                                    =
-          =                                                                              =
-          =       This installation will automatically restart all Tomcat services       =
-          =       upon completion.                                                       =
-          =                                                                              =
-          ================================================================================
+          ================================================================================================
+          =                                                                                              =
+          =                                           Warning                                            =
+          =                                                                                              =
+          =         This installation will periodically check for new Tomcat processes to monitor.       =
+          =    Any new Tomcat processes started after this installation will report data to New Relic.   =
+          =                                                                                              =
+          =                                                                                              =
+          ================================================================================================
           ${NOCOLOR}"
           echo "
-          If you are hosting your Java application differently then check out our other installation options:
+          If you prefer to instrument your Java application differently then check out our other installation options:
           https://docs.newrelic.com/docs/agents/java-agent/installation/install-java-agent/.
           "
           if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
@@ -184,434 +123,238 @@ install:
             done
           fi
 
-    get-introspector:
-      label: "Retrieving Java Introspector..."
+    init:
       cmds:
         - |
-          introspector=$(which nri-lsi-java)
-          if [[ -n "$introspector" ]]; then
-            exit 0
+          if [ ! -f /etc/newrelic-java ]; then
+            mkdir -p /etc/newrelic-java/install
           fi
-          cd {{.TMP_DIR}}
+
+    get-introspector:
+      cmds:
+        - |
+          echo "Retrieving Java Introspector..."
           isYumInstalled=$(which yum 2>&1 || true)
           if [[ -n "$isYumInstalled" ]]; then
-            curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm
-            yum install -y -q nri-introspector-java-0.1.0_SNAPSHOT-2.x86_64.rpm 2> /dev/null || true
+            curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/null
+            yum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || true
           else
-            curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb
-            apt-get install -y -qq ./nri-introspector-java_0.1.0_SNAPSHOT-2_amd64.deb 2> /dev/null || true
+            curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/null
+            apt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || true
+          fi
+          while :; do
+            isJavaLsiRunning=$(sudo ps aux | grep nri-lsi-java | grep -v grep | wc -l)
+            if [ "$isJavaLsiRunning" -eq 0 ]
+            then
+              break
+            else
+              sleep 1
+            fi
+          done
+
+    install-instrument-script:
+      cmds:
+        - |
+          # removing existing OHI script
+          if [ -f /etc/newrelic-java/dynamic-attach.sh ]; then
+            rm -f /etc/newrelic-java/dynamic-attach.sh
           fi
 
-    get-agent:
-      label: "Retrieving Java Agent..."
-      cmds:
-        - mkdir -p {{.TMP_DIR}}
-        - echo -e "\nRetrieving Java Agent..."
-        - |
-          cd {{.TMP_DIR}}
-          curl -s -O {{.NEW_RELIC_DOWNLOAD_URL}}newrelic/java-agent/newrelic-agent/current/newrelic.jar
-          curl -s -O {{.NEW_RELIC_DOWNLOAD_URL}}newrelic/java-agent/newrelic-agent/current/newrelic.yml
+          # reset non-docker pid state
+          if [ -f /etc/newrelic-java/install/.pids ]; then
+            rm /etc/newrelic-java/install/.pids
+          fi
+          sudo touch /etc/newrelic-java/install/.pids
+          sudo chmod 755 /etc/newrelic-java/install/.pids
 
-    install-agent:
-      label: "Finding Java processes and installing Java agent"
-      cmds:
-        - |
-          findServerType () {
-            local mainClass=$( echo "$1" | grep -oP '.*\K(?<=mainClass":").*?(?=\")' )
-            if [[ "$mainClass" == "org.apache.catalina.startup.Bootstrap" ]]; then
-              echo "tomcat"
-            else
-              echo "other"
-            fi
-          }
+          # reset docker pid state
+          if [ -f /etc/newrelic-java/install/.pids_in_docker ]; then
+            rm /etc/newrelic-java/install/.pids_in_docker
+          fi
+          sudo touch /etc/newrelic-java/install/.pids_in_docker
+          sudo chmod 755 /etc/newrelic-java/install/.pids_in_docker
 
-          systemd_restart_service() {
-            local SERVICE=$1
-            echo "Restarting $SERVICE..." >&2
-            if [[ -f {{.TMP_DIR}}/systemd_daemon_reload ]]; then
-              systemctl daemon-reload
-            fi
-
-            systemctl restart ${SERVICE}
-
-            echo "$SERVICE" >> {{.TMP_DIR}}/systemd_restarted_services
-          }
-
-          supervisord_restart_service() {
-            local service=$1
-            supervisorctl restart ${service} > /dev/null
-            echo "$service" >> {{.TMP_DIR}}/supervisord_restarted_services
-          }
-
-          save_newrelic_configuration() {
-            local SERVICE=$1
-            local USER=$2
-            local APP_NAME=$3
-
-            mkdir -p /opt/newrelic/$APP_NAME/logs
-            cp {{.TMP_DIR}}/newrelic.jar /opt/newrelic/$APP_NAME
-            cp {{.TMP_DIR}}/newrelic.yml /opt/newrelic/$APP_NAME
-
-            if [[ -f {{ .TMP_DIR }}/$SERVICE.newrelic.bkp ]]; then
-              cp {{ .TMP_DIR }}/$SERVICE.newrelic.bkp /opt/newrelic/$APP_NAME
-              echo "Original service configuration for $SERVICE: /opt/newrelic/$APP_NAME/"$SERVICE".newrelic.bkp"
-            fi
-
-            chown -R $USER /opt/newrelic/$APP_NAME
-
-            local host=""
-            local nr_region="{{.NEW_RELIC_REGION}}"
-            if [[ "${nr_region^^}" == "STAGING" ]]; then
-              host="\n  host: 'staging-collector.newrelic.com'"
-            elif [[ "${nr_region^^}" == "EU" ]]; then
-              host="\n  host: 'collector.eu.newrelic.com'"
-            fi
-
-            sed -i "s/license_key: '<%= license_key %>'/license_key: '{{.NEW_RELIC_LICENSE_KEY}}'$host/"  /opt/newrelic/$APP_NAME/newrelic.yml
-            sed -i "s/app_name: My Application$/app_name: $APP_NAME/" /opt/newrelic/$APP_NAME/newrelic.yml
-          }
-
-          save_supervisord_configuration() {
-            local configFolder=$1
-            local configFilename=$2
-            local user=$3
-            local service=$4
-            local configFile="$configFolder/$configFilename"
-            local appName="{{.HOSTNAME}}"
-
-            if [[ -n "$service" && "$service" != "tomcat" ]]; then
-              appName="$service"
-            fi
-
-            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-              echo -n "Enter an app name (default: $appName): "
-              read -r answer
-              if [[ -n $answer ]]; then
-                appName=$answer
-              fi
-            fi
-
-            local configFile="$configFolder/$configFilename"
-            if [[ -f $configFile ]]; then
-              echo "Modifying $configFile"
-              cp $configFile $configFile.newrelic.bkp
-            else
-              echo "Creating $configFile"
-              if [[ ! -d "$configFolder" ]]; then
-                mkdir $configFolder
-                chown $user $configFolder
-                chmod 700 $configFolder
-              fi
-              touch $configFile
-              chown $user $configFile
-              chmod 500 $configFile
-            fi
-
-            # rewrite CATALINA_OPTS
-            sudo sed -i "/New Relic switch automatically/d" $configFile
-            sudo sed -i "/CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:\/opt\/newrelic/d" $configFile
-            echo "# ---- New Relic switch automatically added on $(date)" >> $configFile
-            echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$appName/newrelic.jar\"" >> $configFile
-
-            save_newrelic_configuration $service $user $appName
-
-            touch {{.TMP_DIR}}/tomcat_configured
-          }
-
-          save_sysd_yum_configuration() {
-            local APP_NAME=$1
-            local SERVICE=$1
-            local CONFIG_ROOT=$2
-            local USER=$(ps -q $pid -h -o user)
-
-            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-              echo -n "Enter an app name (default: $APP_NAME): "
-              read -r answer
-              if [[ -n $answer ]]; then
-                APP_NAME=$answer
-              fi
-            fi
-
-            # backup all existing .nr.conf files
-            touch {{ .TMP_DIR}}/existing_nr_configs
-            local EXISTING_NR_CONFIG_FILES=$(find "$CONFIG_ROOT" -type f -name "*.nr.conf" >> {{ .TMP_DIR }}/existing_nr_configs)
-            for EXISTING_CONFIG in $(cat {{ .TMP_DIR }}/existing_nr_configs)
+          # FYI message to user about containerNames - may not be necessary
+          # we don't ask for user input if all processes are within docker
+          isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
+          if [ $isDockerRunning -gt 0 ]; then
+            for CONTAINER in $(sudo docker ps -q);
             do
-              cp $EXISTING_CONFIG $EXISTING_CONFIG.bkp
-              rm $EXISTING_CONFIG
+              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.pids_in_docker
             done
+            sudo sort -o /etc/newrelic-java/install/.pids_in_docker /etc/newrelic-java/install/.pids_in_docker
+            echo "The following container names will be used for your New Relic APMs:$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' | tr '/' '  ')"
+          fi
 
-            # then re-create with current appname
-            local CONFIG_FILE="$CONFIG_ROOT/$APP_NAME.nr.conf"
-            echo "Creating $CONFIG_FILE"
-            touch $CONFIG_FILE
-            chown $USER $CONFIG_FILE
-            chmod 711 $CONFIG_FILE
+          # get java processes not in docker, use this to prompt for user input
+          sudo nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" >> /etc/newrelic-java/install/.pids
+          sudo sort -o /etc/newrelic-java/install/.pids /etc/newrelic-java/install/.pids
 
-            # rewrite CATALINA_OPTS
-            echo "# ---- New Relic switch automatically added on $(date)" >> $CONFIG_FILE
-            echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$APP_NAME/newrelic.jar\"" >> $CONFIG_FILE
-
-            save_newrelic_configuration $SERVICE $USER $APP_NAME
-
-            touch {{.TMP_DIR}}/tomcat_configured
-          }
-
-          save_sysd_script_configuration() {
-            local APP_NAME=$1
-            local SERVICE=$1
-            local CATALINA_HOME=$2
-            local USER=$(ps -q $pid -h -o user)
-
+          # set here to replace in script as a default
+          defaultAppName='Tomcat'
+          nonDockerPids=$(sudo comm -3 /etc/newrelic-java/install/.pids /etc/newrelic-java/install/.pids_in_docker | wc -l)
+          if [ $nonDockerPids -gt 0 ]; then
             if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-              echo -n "Enter an app name (default: $APP_NAME): "
+              echo -n "Enter app name for non-containerized Tomcat instances (default: '$defaultAppName'): "
               read -r answer
               if [[ -n $answer ]]; then
-                APP_NAME=$answer
+                defaultAppName=$answer
               fi
             fi
+          fi
 
-            local CONFIG_FILE="$CATALINA_HOME/bin/setenv.sh"
-            if [[ -f $CONFIG_FILE ]]; then
-              echo "Modifying $CONFIG_FILE"
-              cp $CONFIG_FILE $CONFIG_FILE.newrelic.bkp
-            else
-              echo "Creating $CONFIG_FILE"
-              cd $CATALINA_HOME/bin
-              touch setenv.sh
-              chown $USER setenv.sh
-              chmod 711 setenv.sh
-            fi
+          # cleanup install-specific directories/files
+          sudo rm -rf /etc/newrelic-java/install/
 
-            # rewrite CATALINA_OPTS
-            sudo sed -i "/New Relic switch automatically/d" "$CONFIG_FILE"
-            sudo sed -i "/CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:\/opt\/newrelic/d" "$CONFIG_FILE"
-            echo "# ---- New Relic switch automatically added on $(date)" >> $CONFIG_FILE
-            echo "CATALINA_OPTS=\"\$CATALINA_OPTS -javaagent:/opt/newrelic/$APP_NAME/newrelic.jar\"" >> $CONFIG_FILE
-
-            save_newrelic_configuration $SERVICE $USER $APP_NAME
-
-            touch {{.TMP_DIR}}/tomcat_configured
+          tee -a /etc/newrelic-java/dynamic-attach.sh > /dev/null <<"EOT"
+          #!/bin/bash
+          build_stdout_json() {
+            message=$1
+            cat << EOF
+            {
+               "name": "java-dynamic-attach",
+               "protocol_version": "3",
+               "integration_version": "1.0.0",
+               "metrics": [
+                 {
+                   "event_type": "JavaDynamicAttachSample",
+                   "provider": "com.newrelic.virtuoso",
+                   "provider.executableName": "$message"
+                 }
+               ]
+            }
+          EOF
           }
+          license={{.NEW_RELIC_LICENSE_KEY}}
+          region={{.NEW_RELIC_REGION}}
+          appName=DEFAULT_APP
+          pattern='org.apache.catalina.startup.Bootstrap'
 
-          save_sysd_command_line_configuration() {
-            local APP_NAME=$1
-            local SERVICE=$1
-            local SERVICE_CONFIG_FILE=$2
-            local START_COMMAND=$3
-            local USER=$(ps -q $pid -h -o user)
 
-            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-              echo -n "Enter an app name (default: $APP_NAME): "
-              read -r answer
-              if [[ -n $answer ]]; then
-                APP_NAME=$answer
-              fi
+          # installation/currently running lsi safeguards
+          isJavaLsiInstalled=$(which nri-lsi-java 2>&1 || true)
+          if [[ -z "$isJavaLsiInstalled" ]]; then
+            (exit 0)
+          fi
+          isJavaLsiRunning=$(sudo ps aux | grep nri-lsi-java | grep -v grep | wc -l)
+          if [ "$isJavaLsiRunning" -gt 0 ]; then
+            (exit 0)
+          fi
+
+          # file cleanup safeguards
+          if [ ! -f /etc/newrelic-java/.pids ]; then
+            sudo touch /etc/newrelic-java/.pids
+            sudo chmod -R 755 /etc/newrelic-java/.pids
+          fi
+          if [ ! -f /etc/newrelic-java/.ignored_pids ]; then
+            sudo touch /etc/newrelic-java/.ignored_pids
+            sudo chmod -R 755 /etc/newrelic-java/.ignored_pids
+          fi
+
+          # capture docker pids if docker is running
+          isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
+          if [ $isDockerRunning -gt 0 ]; then
+            if [ -f /etc/newrelic-java/.pids_in_docker ]; then
+              rm /etc/newrelic-java/.pids_in_docker
             fi
+            sudo touch /etc/newrelic-java/.pids_in_docker
+            sudo chmod 777 /etc/newrelic-java/.pids_in_docker
+            for CONTAINER in $(sudo docker ps -q);
+            do
+              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/.pids_in_docker
+            done
+            sudo sort -o /etc/newrelic-java/.pids_in_docker /etc/newrelic-java/.pids_in_docker
+          fi
 
-            EXISTING_SERVICE_NAME=$(cat $SERVICE_CONFIG_FILE| grep -oP '(?<=\/opt\/newrelic\/).*(?=/newrelic.jar)' | head -1)
-            if [[ ! -z "$EXISTING_SERVICE_NAME" ]]; then
-              # update the javaagent application name
-              sed -i "s|/opt/newrelic/$EXISTING_SERVICE_NAME/newrelic.jar|/opt/newrelic/$APP_NAME/newrelic.jar|" $SERVICE_CONFIG_FILE
-              touch {{ .TMP_DIR }}/systemd_daemon_reload
-            else
-              # add the entire javaagent line..
-              sed -i "s/CATALINA_OPTS/CATALINA_OPTS -javaagent\:\/opt\/newrelic\/${APP_NAME}\/newrelic.jar/" $SERVICE_CONFIG_FILE
-              touch {{ .TMP_DIR }}/systemd_daemon_reload
-            fi
+          # capture all java PIDs using intropector
+          sudo touch /etc/newrelic-java/.detected_pids
+          sudo chmod 755 /etc/newrelic-java/.detected_pids
+          sudo nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" >> /etc/newrelic-java/.detected_pids
+          sudo sort -o /etc/newrelic-java/.detected_pids /etc/newrelic-java/.detected_pids
 
-            save_newrelic_configuration $SERVICE $USER $APP_NAME
-
-            touch {{.TMP_DIR}}/tomcat_configured
-          }
-
-          save_systemd_configuration() {
-            local SERVICE=$1
-            local CATALINA_HOME=$2
-
-            SERVICE_CONFIG_FILE=$(systemctl status $SERVICE | grep -oP '(?<=\().*(?=\; enabled)')
-            if [[ ! -z $SERVICE_CONFIG_FILE ]]; then
-
-              # 0 - check if tomcat appears to be yum-installed
-              TOMCAT_CONFIG_FROM_YUM=$(find / \( -path /proc -o -path /sys -o -path /tmp \) -prune -o -name tomcat.conf -print)
-              if [[ ! -z $TOMCAT_CONFIG_FROM_YUM ]]; then
-                YUM_CONFIG_ROOT=$(echo $TOMCAT_CONFIG_FROM_YUM | grep -oP '\K.*(?=/tomcat.conf)')
-                YUM_CUSTOM_CONFIG_DIR=$YUM_CONFIG_ROOT/conf.d
-                if [ -d $YUM_CUSTOM_CONFIG_DIR ]; then
-                  save_sysd_yum_configuration $SERVICE $YUM_CUSTOM_CONFIG_DIR
-                  return 0
-                else
-                  echo -e "$YUM_CONFIG_ROOT does not exist for yum-installed tomcat" >&2
-                  return 1
+          # if differences in state are detected, swap pid file with detected and attempt to attach
+          new_ids=$(sudo comm -3 /etc/newrelic-java/.detected_pids /etc/newrelic-java/.pids | wc -l)
+          if [[ $new_ids -gt 0 ]]; then
+            sudo rm /etc/newrelic-java/.pids
+            sudo mv /etc/newrelic-java/.detected_pids /etc/newrelic-java/.pids
+            for JAVA_PID in $(sudo cat /etc/newrelic-java/.pids);
+            do
+              # check if we should ignore, either from previous failure or previous successful attachment
+              ignoredPid=$(cat /etc/newrelic-java/.ignored_pids | grep $JAVA_PID | grep -v grep | wc -l)
+              if [[ $ignoredPid -eq 0 ]]; then
+                INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${JAVA_PID})
+                isMatchingPattern=$(echo $INTROSPECTION_DATA | grep $pattern | grep -v grep | wc -l)
+                if [[ $isMatchingPattern -gt 0 ]]; then
+                  if [[ -f /etc/newrelic-java/.pids_in_docker && $(cat /etc/newrelic-java/.pids_in_docker | grep $JAVA_PID | grep -v grep | wc -l) -gt 0 ]]; then
+                    CONTAINER_ID=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $JAVA_PID | sed  -n -e "s|$JAVA_PID, ||p")
+                    if [[ $CONTAINER_ID ]]; then
+                      dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $CONTAINER_ID | tr -d '/')
+                      echo $(build_stdout_json "Running Tomcat process detected in container '$dockerAppName' ($CONTAINER_ID)")
+                      YUM_INSTALLED=$(sudo docker exec $CONTAINER_ID sh -c "which yum 2>&1 || true")
+                      if [[ $YUM_INSTALLED ]]; then
+                        sudo docker exec $CONTAINER_ID sh -c "curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/null"
+                        sudo docker exec $CONTAINER_ID sh -c "yum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || true"
+                      else
+                        sudo docker exec $CONTAINER_ID sh -c "curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/null"
+                        sudo docker exec $CONTAINER_ID sh -c "apt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || true"
+                      fi
+                      echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...")
+                      output=$(sudo docker exec $CONTAINER_ID sh -c "nri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $region 2> /dev/null | wc -l")
+                      if [[ $output -gt 0 ]]; then
+                        echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
+                      else
+                        echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
+                      fi
+                      echo $JAVA_PID >> /etc/newrelic-java/.ignored_pids
+                    else
+                      echo $(build_stdout_json "Skipping instrumentation of process id $JAVA_PID: could not determine owning container")
+                    fi
+                  else
+                    echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...")
+                    output=$(sudo nri-lsi-java -apm $JAVA_PID -appName $appName -license $license -region $region 2> /dev/null | wc -l)
+                    if [[ $output -gt 0 ]]; then
+                      echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...failed!")
+                    else
+                      echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID..complete!")
+                    fi
+                    echo $JAVA_PID >> /etc/newrelic-java/.ignored_pids
+                  fi
                 fi
               fi
-
-              # 1 - check if command line, add javaagent accordingly
-              CMDLINE_START_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=/{:start /start/!{N;b start};/org.apache.catalina.startup.Bootstrap/p}')
-              CATALINA_OPTS_EXIST=$(echo $CMDLINE_START_COMMAND | grep 'CATALINA_OPTS' | wc -l)
-              if [ $CATALINA_OPTS_EXIST -gt 0 ]; then
-                cp $SERVICE_CONFIG_FILE {{ .TMP_DIR }}/$SERVICE.newrelic.bkp
-                save_sysd_command_line_configuration $SERVICE $SERVICE_CONFIG_FILE $CMDLINE_START_COMMAND
-                return 0
-              fi
-
-              # 2 - check if shell script, if catalina/daemon/startup/tomcat-start we can use setenv.sh
-              SH_COMMAND=$(cat $SERVICE_CONFIG_FILE | sed -n '/ExecStart=.*.sh/p'  | wc -l)
-              if [ $SH_COMMAND -gt 0 ]; then
-                save_sysd_script_configuration $SERVICE $CATALINA_HOME
-                return 0
-              fi
-
-              # found a config, but could not configure
-              if [[ $CATALINA_OPTS_EXIST -eq 0 && $SH_COMMAND -eq 0 ]]; then
-                echo -e "Systemd service configuration found, but could not configure: $service" >&2
-                return 1
-              fi
-            else
-              echo "Systemd service configuration not found: $service" >&2
-              return 1
-            fi
-          }
-
-          tomcat_configure() {
-            local catalinaBase=$1
-            local catalinaHome=$2
-            local user=$3
-            local service=$4
-            local isManagedBySupervisor=$5
-            if [[ "$isManagedBySupervisor" == "false" ]]; then
-              save_systemd_configuration $service $catalinaHome || return 1
-              systemd_restart_service $service
-            else
-              if [[ -f $catalinaHome/bin/catalina.sh ]]; then
-                save_supervisord_configuration $catalinaBase/bin setenv.sh $user $service || return 1
-              else
-                local red='\033[0;31m'
-                local noColor='\033[0m'
-                echo -e "
-                  ${red}Unable to find the proper configuration file.
-                  Check https://docs.newrelic.com/docs/agents/java-agent/installation/install-java-agent/ for manual configuration options.${noColor}
-                "
-                return 1
-              fi
-            fi
-          }
-
-          tomcat() {
-            local pid=$1
-            local workDir=$(readlink /proc/$pid/cwd)
-            local catalinaBase=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.base=)\K[\-\.\w/]+")
-            catalinaBase=$(cd $workDir; realpath $catalinaBase)
-            local catalinaHome=$(cat /proc/$pid/cmdline | xargs -0 | grep -oP "(?<=catalina\.home=)\K[\-\.\w/]+")
-            catalinaHome=$(cd $workDir; realpath $catalinaHome)
-            local user=$(ps -q $pid -h -o user)
-
-            # check if systemd is managing supervisord.service that is running tomcat
-            local service=""
-            local isSupervisord="false"
-            service=$(systemctl status $pid | head -n1 | grep -oP "(?<=. )\K.+(?=\.service)")
-            if [[ "$service" == "supervisor" || "$service" == "supervisord" ]]; then
-              isSupervisord="true"
-              service=$(supervisorctl status | grep "pid $pid" | cut -d' ' -f1)
-            fi
-
-            local configFailed="false"
-            tomcat_configure $catalinaBase $catalinaHome $user $service $isSupervisord || configFailed="true"
-            if [[ "$configFailed" == "true" ]]; then
-              return 0
-            fi
-
-            # restart only for supervisord managed instances
-            if [[ "$isSupervisord" == "true" ]]; then
-              echo "$catalinaBase/bin/setenv.sh" > {{.TMP_DIR}}/supervisord_$service.configFile
-              echo "Configuration finished."
-              echo "Restarting Tomcat."
-              supervisord_restart_service $service
-              echo "Restart completed."
-            fi
-
-          }
-
-          ##################
-          # main
-          ##################
-          nri-lsi-java -list | tr -d '[]' | tr ',' '\n' > {{.TMP_DIR}}/processes
-          for JAVA_PID in $(cat {{.TMP_DIR}}/processes)
-          do
-            INTROSPECTION_DATA=$(nri-lsi-java -introspect ${JAVA_PID})
-            SERVER_TYPE=$(findServerType $INTROSPECTION_DATA)
-            IS_STANDALONE=$(systemctl status $JAVA_PID | head -n1 | grep -oP "(?<=. )\K.+(?=\.scope)" | wc -l)
-
-            if [[ "$SERVER_TYPE" == "tomcat" && $IS_STANDALONE -eq 0 ]]; then
-              touch {{.TMP_DIR}}/tomcat_found
-              tomcat $JAVA_PID
-            fi
-          done
-
-          if [[ ! -f {{.TMP_DIR}}/tomcat_found ]]; then
-            echo -e "\nNo Tomcat processes found running on the host.\n" >&2
-            exit 3
-          fi
-
-          if [[ ! -f {{.TMP_DIR}}/tomcat_configured ]]; then
-            echo -e "\nUnable to configure any Tomcats running on the host.\n" >&2
-            exit 2
-          fi
-
-    verify-servers-restarted:
-      cmds:
-        - |
-          [[ -f {{.TMP_DIR}}/systemd_restarted_services || -f {{.TMP_DIR}}/systemd_restarted_services ]] || sleep 10
-          red='\033[0;31m'
-          noColor='\033[0m'
-
-          for systemdService in $(cat {{.TMP_DIR}}/systemd_restarted_services 2> /dev/null)
-          do
-            configFile=$(cat {{.TMP_DIR}}/systemd_$systemdService.configFile 2> /dev/null)
-
-            systemctl status $systemdService > /dev/null || echo -e "
-              ${red}The systemd service \"$systemdService\" did not restart properly.
-              Revert by restoring the backup of $configFile
-              ${noColor}"
-          done
-
-          for supervisordService in $(cat {{.TMP_DIR}}/supervisord_restarted_services 2> /dev/null)
-          do
-            configFile=$(cat {{.TMP_DIR}}/supervisord_$supervisordService.configFile 2> /dev/null)
-
-            supervisorctl status $supervisordService | grep " RUNNING " > /dev/null || echo -e "
-              ${red}The supervisor service \"$supervisordService\" did not restart properly.
-              Revert by restoring the backup of $configFile
-              ${noColor}"
-          done
-
-    notify-done:
-      cmds:
-        - |
-          YELLOW='\033[0;33m'
-          NOCOLOR='\033[0m'
-          echo -e "${YELLOW}
-          ================================================================================
-          =                                                                              =
-          =                                  Important                                   =
-          =                                                                              =
-          =              Your application is sending JVM data to New Relic.              =
-          =                                                                              =
-          =      To view transaction data, send a few requests to your application.      =
-          =                                                                              =
-          ================================================================================
-          ${NOCOLOR}
-          "
-
-    cleanup:
-      cmds:
-        - |
-          rm -rf {{.TMP_DIR}}
-          isYumInstalled=$(which yum 2>&1 || true)
-          if [[ -n "$isYumInstalled" ]]; then
-            yum remove -y -q nri-introspector-java &> /dev/null
+            done
           else
-            apt remove -y -qq nri-introspector-java &> /dev/null
+            # otherwise remove our detecteds as they are the same state
+            sudo rm /etc/newrelic-java/.detected_pids
           fi
 
+          # cleanup
+          if [ -f /etc/newrelic-java/.pids_in_docker ]; then
+            sudo rm /etc/newrelic-java/.pids_in_docker
+          fi
 
+          (exit 0)
+          EOT
+          sudo sed -i "s/DEFAULT_APP/$defaultAppName/g" /etc/newrelic-java/dynamic-attach.sh
+          sudo chmod 700 /etc/newrelic-java/dynamic-attach.sh
+
+    add-on-host-integration:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml ]; then
+            rm -f /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml
+          fi
+          tee -a /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml > /dev/null <<"EOT"
+          integrations:
+            - name: dynamic-attach
+              exec: ./dynamic-attach.sh
+              working_dir: /etc/newrelic-java
+              interval: 60s
+              timeout: 1200s
+              integration_user: root
+
+          EOT
+          sudo chmod 755 /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml
+
+    cli_validate:
+      cmds:
+        - sudo NEW_RELIC_REGION={{.NEW_RELIC_REGION}} NEW_RELIC_API_KEY={{.NEW_RELIC_API_KEY}} NEW_RELIC_ACCOUNT_ID={{.NEW_RELIC_ACCOUNT_ID}} NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} NEW_RELIC_INSIGHTS_INSERT_KEY={{.NEW_RELIC_INSIGHTS_INSERT_KEY}} /usr/local/bin/newrelic diagnose validate &> /dev/null

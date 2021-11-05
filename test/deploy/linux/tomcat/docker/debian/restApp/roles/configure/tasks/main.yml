@@ -1,0 +1,43 @@
+---
+
+- include_tasks: installJava.yml
+- include_tasks: installMaven.yml
+- include_tasks: installTomcat.yml
+
+- name: purge python-pip
+  shell: apt-get purge --auto-remove python-pip
+  become: yes
+
+- name: apt-get update
+  shell: apt-get update
+  become: yes
+  ignore_errors: true
+
+- name: install pip
+  shell: apt-get -y install python3-pip
+  become: yes
+
+- name: install docker-py
+  shell: pip install docker-py
+  become: yes
+
+- name: Upload war to host
+  synchronize: src=. dest=/home/{{ ansible_user }}
+  become: yes
+
+- name: move war to tomcat
+  shell: "cp /home/{{ ansible_user }}/spring-boot-rest.war /opt/tomcat/latest/webapps/spring-boot-rest.war"
+  become: yes
+
+- name: Build Tomcat Image
+  docker_image: >
+    name=spring-boot-rest
+    tag=1
+    path=/home/{{ ansible_user }}
+    state=present
+  become: yes
+
+- name: Run Tomcat Docker container
+  shell: "sudo docker run -d -p 9090:8080 --env TOMCAT_USERNAME=tomcat --env TOMCAT_PASSWORD=tomcat spring-boot-rest:1"
+  become: yes
+
