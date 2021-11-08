@@ -50,9 +50,9 @@ installTargets: list, required
     os: string (enum), optional               # linux, darwin, windows
     platform: string (enum), optional         # One of [ amazon, ubuntu, debian, centos, redhat, suse ]
     platformFamily: string (enum), optional   # One of [ debian, rhel, suse, ... ]
-    platformVersion: string, optional         # "17.10"
-    kernelVersion: string, optional           # version of the OS kernel (if available)
-    kernelArch: string, optional              # native cpu architecture queried at runtime, as returned by `uname -m` or empty string in case of error
+    platformVersion: string, optional         # "17.10". Supports regex expression, however the regex must be enclosed between parenthesis.
+    kernelVersion: string, optional           # version of the OS kernel (if available). Supports regex expression, however the regex must be enclosed between parenthesis.
+    kernelArch: string, optional              # native cpu architecture queried at runtime, as returned by `uname -m` or empty string in case of error. Supports regex expression, however the regex must be enclosed between parenthesis.
 
 # keyword convention for dealing with search terms that could land someone on this instrumentation project
 # Example:
@@ -68,7 +68,7 @@ keywords: list, required
 #  processMatch:
 #    - apache       # matches any processes containing apache in the full process command
 #
-#  processMatch: [] # this recipe will always run in Guided Install
+#  processMatch: [] # this recipe will always run in Guided Install. Supports regex expression
 processMatch: list, required
 
 # Matches partial list of the Log forwarding parameters
