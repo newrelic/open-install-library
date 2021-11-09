@@ -101,3 +101,58 @@ Once started, there are two forms of access:
 - GUI: open the VirtualBox application, select the macos-catalina host and click Show (the vagrant user has password: `vagrant`)
 
 This method of running a macOS host uses a [public GitHub project](https://github.com/ramsey/macos-vagrant-box) based off [macinbox](https://github.com/bacongravy/macinbox).
+
+## Ansible install scripts with Vagrant
+
+Our install scripts can be used locally through the following steps.
+
+Create a working directory:
+```
+mkdir vagrant-ansible-test
+cd vagrant-ansible-test
+```
+
+Initialize a new Vagrantfile and playbook:
+```
+vagrant init bento/debian-10
+touch playbook.yml
+```
+
+Edit the contents of the playbook:
+```
+---
+- hosts: all
+  gather_facts: true
+  become: true
+  roles:
+    - ROLENAME
+```
+
+Add Ansible provisioning section to the Vagrantfile:
+```
+Vagrant.configure("2") do |config|
+
+  # Add this section to use the playbook
+  config.vm.provision "ansible" do |ansible|
+    ansible.playbook = "playbook.yml"
+    ansible.extra_vars = {
+      create_newrelic_user: true # required for some install scripts
+    }
+  end
+end
+```
+
+Create roles directory:
+```
+mkdir -p ./roles/ROLENAME/tasks
+```
+
+Download a task file (i.e. Apache) to this directory:
+```
+curl -sLo ./roles/ROLENAME/tasks/main.yml https://raw.githubusercontent.com/newrelic/open-install-library/main/test/deploy/linux/apache/install/debian/roles/configure/tasks/main.yml
+```
+
+Smoke test:
+```
+vagrant up && vagrant destroy -f
+```
