@@ -15,23 +15,26 @@ keywords:
   - rabbitmq
 
 processMatch:
-  - erlsrv\\.exe
+  - erlsrv\.exe
 
 preInstall:
   requireAtDiscovery: |
-      powershell -command '
-      try{
-        if (Get-Service "rabbitmq" -ErrorAction SilentlyContinue) {
-          $response=Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri http://localhost:15672/ 
-          $foundRabbitMQ = $response -match 'rabbitmq' -ieq 'True'
-
-          if($response.statuscode -ieq "200" -and $foundRabbitMQ){
-            exit 132
-          }
-        }
+    powershell -command '
+    try{
+      if (Get-Service "rabbitmq" -ErrorAction SilentlyContinue) {
+         exit 132
       }
-      catch {}
-      exit 1
+      
+      $rabbitMQMgmtUrl = "http://localhost:15672/"
+      $response=Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $rabbitMQmgmtUrl
+      $foundRabbitMQMgmt = $response -match 'rabbitmq' -ieq 'True'
+      
+      if($foundRabbitMQMgmt){
+        exit 132
+      }
+    }
+    catch {}
+    exit 1
     '
   info: |2
       To capture data from the RabbitMQ integration, you'll first need to meet these prerequisites:
@@ -55,6 +58,6 @@ install:
 
 postInstall:
   info: |2
-      ⚙️  The RabbitMQ configuration file can be found in /etc/newrelic-infra/integrations.d/rabbitmq-config.yml
+      ??  The RabbitMQ configuration file can be found in /etc/newrelic-infra/integrations.d/rabbitmq-config.yml
       Edit this file to make changes or configure advanced features for this integration. See the docs for options:
       https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/rabbitmq-monitoring-integration#config
