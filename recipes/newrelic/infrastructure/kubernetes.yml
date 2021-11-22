@@ -159,6 +159,16 @@ install:
             fi
           fi
 
+          # Check if the nodes have sufficient memory
+          if [[ "$NR_CLI_PIXIE" == "true" ]]; then
+            MEMORY=$(kubectl get nodes -o jsonpath='{.items[0].status.capacity.memory}' | sed 's/Ki$//')
+            if [[ "$MEMORY" -lt 7950912 ]]; then
+              echo "Pixie requires nodes with 8 Gb of memory or more, got ${MEMORY}." >&2
+              echo -e "\033[0;31mTurning off Pixie for this instalation\033[0m" >&2
+              NR_CLI_PIXIE=false
+            fi
+          fi
+
           # Check if the user has permissions to create a new namespace
           CAN_CREATE_NAMESPACE=$($SUDO kubectl auth can-i create namespace 2>/dev/null)
 
@@ -194,7 +204,7 @@ install:
             fi
 
             if $SUDO which minikube 1>/dev/null 2>&1; then
-              if $SUDO minikube profile list | grep " ${CLUSTER} "; then
+              if $SUDO minikube profile list | grep " ${CLUSTER} " 2>/dev/null; then
                 DRIVER=$($SUDO minikube profile list | grep " ${CLUSTER} " | cut -f3 -d'|')
                 if [[ "$DRIVER" == "kvm2" || "$DRIVER" == "hyperkit" ]] ; then
                   echo "Unrecognized minikube driver. To create a test cluster to try out Pixie, use kvm2 or HyperKit instead." >&2
