@@ -1,0 +1,58 @@
+name: mysql-open-source-integration
+displayName: MySQL Open Source Integration
+description: New Relic install recipe for default MySQL Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-mysql
+
+dependencies:
+  - infrastructure-agent-installer
+
+installTargets:
+  - type: host
+    os: windows
+    kernelArch: x86_64
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - mysql
+
+processMatch:
+  - mysqld\.exe
+
+preInstall:
+  requireAtDiscovery: |
+    powershell -command '
+    try{
+      if (Get-Service "mysql" -ErrorAction SilentlyContinue) {
+          exit 132
+      }
+    }
+    catch {}
+    exit 1
+    '
+info: |2
+      To capture data from the MySQL integration, we need to create a new MySql user with specific permissions (REPLICATION, SELECT).
+      The installation will create a strong randomly generated password for that new user.
+      This installation may prompt for your MySql root user password in order to create this new user.
+      More information regarding the prerequisites can be found at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#req
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          exit 131
+
+postInstall:
+  info: |2
+      ⚙️  The MySQL configuration file can be found in /etc/newrelic-infra/integrations.d/mysql-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config
