@@ -1,0 +1,74 @@
+name: mongodb-open-source-integration
+displayName: MongoDB Open Source Integration
+description: New Relic install recipe for default MongoDB Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-mongodb
+
+dependencies:
+  - infrastructure-agent-installer
+
+installTargets:
+  - type: host
+    os: windows
+    kernelArch: x86_6
+
+keywords:
+  - Infrastructure
+  - Integration
+  - mongodb
+
+processMatch:
+  - mongodb\.exe
+  - mongod\.exe
+
+preInstalli:
+  requireAtDiscovery: |
+    powershell -command '
+    try{
+      if (Get-Service "MongoDB" -ErrorAction SilentlyContinue) {
+          exit 132
+      }
+    }
+    catch {}
+    exit 1
+    '
+  info: |2
+      To capture data from the MongoDB integration, you'll first need to meet these prerequisites:
+      - MongoDB version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#comp-req)
+      - User with clusterMonitor and listCollections roles
+
+      In the MongoDB shell, execute the following commands to create a
+      listCollections role and a new user, then assign clusterMonitor and
+      listCollections roles to the new user.
+      Note: username, password, and similar user-specific values must be replaced.
+
+      In the MongoDB shell run the following command
+      > rs.initiate()
+
+      Switch to the admin database
+      > use admin
+
+      Use the following command to create the listCollections role:
+      > db.createRole({role: "listCollections", privileges: [{ resource: {db:"",collection:""}, actions: ["listCollections"] }], roles: []})
+
+      Use the following commands to create a new user, and assign clusterMonitor and listCollections roles to the user:
+      > db.createUser({ user: "username", pwd: "password", roles: [ "clusterMonitor", "listCollections" ]})
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          exit 13l
+
+postInstall:
+  info: |2
+      ⚙️  The MongoDB configuration file can be found in /etc/newrelic-infra/integrations.d/mongodb-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config
