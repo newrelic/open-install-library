@@ -161,8 +161,8 @@ install:
         - |
           sudo touch /etc/newrelic-java/install/.pids
           sudo chmod 755 /etc/newrelic-java/install/.pids
-          sudo touch /etc/newrelic-java/install/.pids_in_docker
-          sudo chmod 755 /etc/newrelic-java/install/.pids_in_docker
+          sudo touch /etc/newrelic-java/install/.docker_pids
+          sudo chmod 755 /etc/newrelic-java/install/.docker_pids
 
           # FYI message to user about containerNames - may not be necessary
           # we don't ask for user input if all processes are within docker
@@ -170,9 +170,9 @@ install:
           if [ $isDockerRunning -gt 0 ]; then
             for CONTAINER in $(sudo docker ps -q);
             do
-              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.pids_in_docker
+              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.docker_pids
             done
-            sudo sort -o /etc/newrelic-java/install/.pids_in_docker /etc/newrelic-java/install/.pids_in_docker
+            sudo sort -o /etc/newrelic-java/install/.docker_pids /etc/newrelic-java/install/.docker_pids
             echo "The following container names will be used for your New Relic APMs:$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' | tr '/' '  ')"
           fi
 
@@ -182,7 +182,7 @@ install:
 
           # set here to replace in script as a default
           defaultAppName='Tomcat'
-          nonDockerPids=$(sudo comm -3 /etc/newrelic-java/install/.pids /etc/newrelic-java/install/.pids_in_docker | wc -l)
+          nonDockerPids=$(sudo comm -3 /etc/newrelic-java/install/.pids /etc/newrelic-java/install/.docker_pids | wc -l)
           if [ $nonDockerPids -gt 0 ]; then
             if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
               echo -n "Enter app name for non-containerized Tomcat instances (default: '$defaultAppName'): "
@@ -228,12 +228,6 @@ install:
             (exit 0)
           fi
 
-          # file cleanup safeguards
-          if [ ! -f /etc/newrelic-java/install/.pids ]; then
-            sudo touch /etc/newrelic-java/install/.pids
-            sudo chmod -R 755 /etc/newrelic-java/install/.pids
-          fi
-
           createIgnoreFiles=0
           currentTime=$(date +%s)
           if [ ! -f /etc/newrelic-java/install/.ignored_created_time ]; then
@@ -259,82 +253,75 @@ install:
           # capture docker pids if docker is running
           isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
           if [ $isDockerRunning -gt 0 ]; then
-            if [ -f /etc/newrelic-java/install/.pids_in_docker ]; then
-              rm -f /etc/newrelic-java/install/.pids_in_docker
+            if [ -f /etc/newrelic-java/install/.docker_pids ]; then
+              rm -f /etc/newrelic-java/install/.docker_pids
             fi
-            sudo touch /etc/newrelic-java/install/.pids_in_docker
-            sudo chmod 777 /etc/newrelic-java/install/.pids_in_docker
+            sudo touch /etc/newrelic-java/install/.docker_pids
+            sudo chmod 777 /etc/newrelic-java/install/.docker_pids
             for CONTAINER in $(sudo docker ps -q);
             do
-              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.pids_in_docker
+              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.docker_pids
             done
-            sudo sort -o /etc/newrelic-java/install/.pids_in_docker /etc/newrelic-java/install/.pids_in_docker
+            sudo sort -o /etc/newrelic-java/install/.docker_pids /etc/newrelic-java/install/.docker_pids
           fi
 
           # capture all java PIDs using intropector
-          sudo touch /etc/newrelic-java/install/.detected_pids
-          sudo chmod 755 /etc/newrelic-java/install/.detected_pids
-          sudo nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" >> /etc/newrelic-java/install/.detected_pids
-          sudo sort -o /etc/newrelic-java/install/.detected_pids /etc/newrelic-java/install/.detected_pids
+          sudo rm -f /etc/newrelic-java/install/.last_detected_pids
+          sudo touch /etc/newrelic-java/install/.last_detected_pids
+          sudo chmod 755 /etc/newrelic-java/install/.last_detected_pids
+          sudo nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" >> /etc/newrelic-java/install/.last_detected_pids
+          sudo sort -o /etc/newrelic-java/install/.last_detected_pids /etc/newrelic-java/install/.last_detected_pids
 
-          # if differences in state are detected, swap pid file with detected and attempt to attach
-          new_ids=$(sudo comm -3 /etc/newrelic-java/install/.detected_pids /etc/newrelic-java/install/.pids | wc -l)
-          if [[ $new_ids -gt 0 ]]; then
-            sudo rm -f /etc/newrelic-java/install/.pids
-            sudo mv /etc/newrelic-java/install/.detected_pids /etc/newrelic-java/install/.pids
-            for JAVA_PID in $(sudo cat /etc/newrelic-java/install/.pids);
-            do
-              # check if we should ignore, either from previous failure or previous successful attachment
-              ignoredPid=$(cat /etc/newrelic-java/install/.ignored_pids | grep $JAVA_PID | grep -v grep | wc -l)
-              if [[ $ignoredPid -eq 0 ]]; then
-                INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${JAVA_PID})
-                isMatchingPattern=$(echo $INTROSPECTION_DATA | grep $pattern | grep -v grep | wc -l)
-                if [[ $isMatchingPattern -gt 0 ]]; then
-                  if [[ -f /etc/newrelic-java/install/.pids_in_docker && $(cat /etc/newrelic-java/install/.pids_in_docker | grep $JAVA_PID | grep -v grep | wc -l) -gt 0 ]]; then
-                    CONTAINER_ID=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $JAVA_PID | sed  -n -e "s|$JAVA_PID, ||p")
-                    if [[ $CONTAINER_ID ]]; then
-                      dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $CONTAINER_ID | tr -d '/')
-                      echo $(build_stdout_json "Running Tomcat process detected in container '$dockerAppName' ($CONTAINER_ID)")
-                      YUM_INSTALLED=$(sudo docker exec $CONTAINER_ID sh -c "which yum 2>&1 || true")
-                      if [[ $YUM_INSTALLED ]]; then
-                        sudo docker exec $CONTAINER_ID sh -c "curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/null"
-                        sudo docker exec $CONTAINER_ID sh -c "yum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || true"
-                      else
-                        sudo docker exec $CONTAINER_ID sh -c "curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/null"
-                        sudo docker exec $CONTAINER_ID sh -c "apt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || true"
-                      fi
-                      echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...")
-                      output=$(sudo docker exec $CONTAINER_ID sh -c "nri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $region 2> /dev/null | wc -l")
-                      if [[ $output -gt 0 ]]; then
-                        echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
-                      else
-                        echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
-                      fi
-                      echo $JAVA_PID >> /etc/newrelic-java/install/.ignored_pids
+          for JAVA_PID in $(sudo cat /etc/newrelic-java/install/.last_detected_pids);
+          do
+            # check if we should ignore, either from previous failure or previous successful attachment
+            ignoredPid=$(cat /etc/newrelic-java/install/.ignored_pids | grep $JAVA_PID | grep -v grep | wc -l)
+            if [[ $ignoredPid -eq 0 ]]; then
+              INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${JAVA_PID})
+              isMatchingPattern=$(echo $INTROSPECTION_DATA | grep $pattern | grep -v grep | wc -l)
+              if [[ $isMatchingPattern -gt 0 ]]; then
+                if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $JAVA_PID | grep -v grep | wc -l) -gt 0 ]]; then
+                  CONTAINER_ID=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $JAVA_PID | sed  -n -e "s|$JAVA_PID, ||p")
+                  if [[ $CONTAINER_ID ]]; then
+                    dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $CONTAINER_ID | tr -d '/')
+                    echo $(build_stdout_json "Running Tomcat process detected in container '$dockerAppName' ($CONTAINER_ID)")
+                    YUM_INSTALLED=$(sudo docker exec $CONTAINER_ID sh -c "which yum 2>&1 || true")
+                    if [[ $YUM_INSTALLED ]]; then
+                      sudo docker exec $CONTAINER_ID sh -c "curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/null"
+                      sudo docker exec $CONTAINER_ID sh -c "yum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || true"
                     else
-                      echo $(build_stdout_json "Skipping instrumentation of process id $JAVA_PID: could not determine owning container")
+                      sudo docker exec $CONTAINER_ID sh -c "curl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/null"
+                      sudo docker exec $CONTAINER_ID sh -c "apt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || true"
                     fi
-                  else
-                    echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...")
-                    output=$(sudo nri-lsi-java -apm $JAVA_PID -appName $appName -license $license -region $region 2> /dev/null | wc -l)
+                    echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...")
+                    output=$(sudo docker exec $CONTAINER_ID sh -c "nri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $region 2> /dev/null | wc -l")
                     if [[ $output -gt 0 ]]; then
-                      echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...failed!")
+                      echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
                     else
-                      echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID..complete!")
+                      echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
                     fi
                     echo $JAVA_PID >> /etc/newrelic-java/install/.ignored_pids
+                  else
+                    echo $(build_stdout_json "Skipping instrumentation of process id $JAVA_PID: could not determine owning container")
                   fi
+                else
+                  echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...")
+                  output=$(sudo nri-lsi-java -apm $JAVA_PID -appName $appName -license $license -region $region 2> /dev/null | wc -l)
+                  if [[ $output -gt 0 ]]; then
+                    echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...failed!")
+                  else
+                    echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID..complete!")
+                  fi
+                  echo $JAVA_PID >> /etc/newrelic-java/install/.ignored_pids
                 fi
               fi
-            done
-          else
-            # otherwise remove our detecteds as they are the same state
-            sudo rm -f /etc/newrelic-java/install/.detected_pids
+            fi
+          done
           fi
 
           # cleanup
-          if [ -f /etc/newrelic-java/install/.pids_in_docker ]; then
-            sudo rm -f /etc/newrelic-java/install/.pids_in_docker
+          if [ -f /etc/newrelic-java/install/.docker_pids ]; then
+            sudo rm -f /etc/newrelic-java/install/.docker_pids
           fi
 
           (exit 0)
