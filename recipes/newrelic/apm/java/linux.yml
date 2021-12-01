@@ -229,56 +229,56 @@ install:
           fi
 
           # file cleanup safeguards
-          if [ ! -f /etc/newrelic-java/.pids ]; then
-            sudo touch /etc/newrelic-java/.pids
-            sudo chmod -R 755 /etc/newrelic-java/.pids
+          if [ ! -f /etc/newrelic-java/install/.pids ]; then
+            sudo touch /etc/newrelic-java/install/.pids
+            sudo chmod -R 755 /etc/newrelic-java/install/.pids
           fi
-          if [ ! -f /etc/newrelic-java/.ignored_pids ]; then
-            sudo touch /etc/newrelic-java/.ignored_pids
-            sudo chmod -R 755 /etc/newrelic-java/.ignored_pids
+          if [ ! -f /etc/newrelic-java/install/.ignored_pids ]; then
+            sudo touch /etc/newrelic-java/install/.ignored_pids
+            sudo chmod -R 755 /etc/newrelic-java/install/.ignored_pids
           else
-            if [ $(($(date +%s)-$(stat -c "%W" /etc/newrelic-java/.ignored_pids))) -gt (60*60*24) ]; then
-              sudo rm -f /etc/newrelic-java/.ignored_pids
-              sudo touch /etc/newrelic-java/.ignored_pids
-              sudo chmod -R 755 /etc/newrelic-java/.ignored_pids
+            if [ $(($(date +%s)-$(stat -c "%W" /etc/newrelic-java/install/.ignored_pids))) -gt (60*60*24) ]; then
+              sudo rm -f /etc/newrelic-java/install/.ignored_pids
+              sudo touch /etc/newrelic-java/install/.ignored_pids
+              sudo chmod -R 755 /etc/newrelic-java/install/.ignored_pids
             fi
           fi
 
           # capture docker pids if docker is running
           isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
           if [ $isDockerRunning -gt 0 ]; then
-            if [ -f /etc/newrelic-java/.pids_in_docker ]; then
-              rm -f /etc/newrelic-java/.pids_in_docker
+            if [ -f /etc/newrelic-java/install/.pids_in_docker ]; then
+              rm -f /etc/newrelic-java/install/.pids_in_docker
             fi
-            sudo touch /etc/newrelic-java/.pids_in_docker
-            sudo chmod 777 /etc/newrelic-java/.pids_in_docker
+            sudo touch /etc/newrelic-java/install/.pids_in_docker
+            sudo chmod 777 /etc/newrelic-java/install/.pids_in_docker
             for CONTAINER in $(sudo docker ps -q);
             do
-              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/.pids_in_docker
+              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.pids_in_docker
             done
-            sudo sort -o /etc/newrelic-java/.pids_in_docker /etc/newrelic-java/.pids_in_docker
+            sudo sort -o /etc/newrelic-java/install/.pids_in_docker /etc/newrelic-java/install/.pids_in_docker
           fi
 
           # capture all java PIDs using intropector
-          sudo touch /etc/newrelic-java/.detected_pids
-          sudo chmod 755 /etc/newrelic-java/.detected_pids
-          sudo nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" >> /etc/newrelic-java/.detected_pids
-          sudo sort -o /etc/newrelic-java/.detected_pids /etc/newrelic-java/.detected_pids
+          sudo touch /etc/newrelic-java/install/.detected_pids
+          sudo chmod 755 /etc/newrelic-java/install/.detected_pids
+          sudo nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" >> /etc/newrelic-java/install/.detected_pids
+          sudo sort -o /etc/newrelic-java/install/.detected_pids /etc/newrelic-java/install/.detected_pids
 
           # if differences in state are detected, swap pid file with detected and attempt to attach
-          new_ids=$(sudo comm -3 /etc/newrelic-java/.detected_pids /etc/newrelic-java/.pids | wc -l)
+          new_ids=$(sudo comm -3 /etc/newrelic-java/install/.detected_pids /etc/newrelic-java/install/.pids | wc -l)
           if [[ $new_ids -gt 0 ]]; then
-            sudo rm -f /etc/newrelic-java/.pids
-            sudo mv /etc/newrelic-java/.detected_pids /etc/newrelic-java/.pids
-            for JAVA_PID in $(sudo cat /etc/newrelic-java/.pids);
+            sudo rm -f /etc/newrelic-java/install/.pids
+            sudo mv /etc/newrelic-java/install/.detected_pids /etc/newrelic-java/install/.pids
+            for JAVA_PID in $(sudo cat /etc/newrelic-java/install/.pids);
             do
               # check if we should ignore, either from previous failure or previous successful attachment
-              ignoredPid=$(cat /etc/newrelic-java/.ignored_pids | grep $JAVA_PID | grep -v grep | wc -l)
+              ignoredPid=$(cat /etc/newrelic-java/install/.ignored_pids | grep $JAVA_PID | grep -v grep | wc -l)
               if [[ $ignoredPid -eq 0 ]]; then
                 INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${JAVA_PID})
                 isMatchingPattern=$(echo $INTROSPECTION_DATA | grep $pattern | grep -v grep | wc -l)
                 if [[ $isMatchingPattern -gt 0 ]]; then
-                  if [[ -f /etc/newrelic-java/.pids_in_docker && $(cat /etc/newrelic-java/.pids_in_docker | grep $JAVA_PID | grep -v grep | wc -l) -gt 0 ]]; then
+                  if [[ -f /etc/newrelic-java/install/.pids_in_docker && $(cat /etc/newrelic-java/install/.pids_in_docker | grep $JAVA_PID | grep -v grep | wc -l) -gt 0 ]]; then
                     CONTAINER_ID=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $JAVA_PID | sed  -n -e "s|$JAVA_PID, ||p")
                     if [[ $CONTAINER_ID ]]; then
                       dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $CONTAINER_ID | tr -d '/')
@@ -298,7 +298,7 @@ install:
                       else
                         echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
                       fi
-                      echo $JAVA_PID >> /etc/newrelic-java/.ignored_pids
+                      echo $JAVA_PID >> /etc/newrelic-java/install/.ignored_pids
                     else
                       echo $(build_stdout_json "Skipping instrumentation of process id $JAVA_PID: could not determine owning container")
                     fi
@@ -310,19 +310,19 @@ install:
                     else
                       echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID..complete!")
                     fi
-                    echo $JAVA_PID >> /etc/newrelic-java/.ignored_pids
+                    echo $JAVA_PID >> /etc/newrelic-java/install/.ignored_pids
                   fi
                 fi
               fi
             done
           else
             # otherwise remove our detecteds as they are the same state
-            sudo rm -f /etc/newrelic-java/.detected_pids
+            sudo rm -f /etc/newrelic-java/install/.detected_pids
           fi
 
           # cleanup
-          if [ -f /etc/newrelic-java/.pids_in_docker ]; then
-            sudo rm -f /etc/newrelic-java/.pids_in_docker
+          if [ -f /etc/newrelic-java/install/.pids_in_docker ]; then
+            sudo rm -f /etc/newrelic-java/install/.pids_in_docker
           fi
 
           (exit 0)
