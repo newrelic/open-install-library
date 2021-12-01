@@ -49,7 +49,7 @@ preInstall:
     fi
 
     # Map of tool names to the associated error code
-    required_tools_and_error_codes="grep:132 cat:132 tee:132 stat:132 date:132"
+    required_tools_and_error_codes="grep:132 cat:132 tee:132 date:132"
     for tuple in $required_tools_and_error_codes; do
       tool=$(echo ${tuple} |cut -d':' -f1)
       code=$(echo ${tuple} |cut -d':' -f2)
@@ -216,7 +216,7 @@ install:
           }
           license={{.NEW_RELIC_LICENSE_KEY}}
           region={{.NEW_RELIC_REGION}}
-          appName=DEFAULT_APP
+          appName=DEFAULT_APP_NAME
           pattern='org.apache.catalina.startup.Bootstrap'
 
 
@@ -237,6 +237,7 @@ install:
           else
             fileIgnoredCreatedTime=$(sudo cat /etc/newrelic-java/install/.ignored_created_time 2> /dev/null || echo 0)
             if [ $(($currentTime-$fileIgnoredCreatedTime)) -gt $((60*60*24)) ]; then
+              # Ignore file older than 1 day, purge and re-create new ones
               createIgnoreFiles=1
             fi
           fi
@@ -249,6 +250,7 @@ install:
             sudo rm -f /etc/newrelic-java/install/.ignored_created_time
             sudo touch /etc/newrelic-java/install/.ignored_created_time
             sudo chmod -R 755 /etc/newrelic-java/install/.ignored_created_time
+            # Keep current timestamp to know when to purge next
             echo $currentTime >> /etc/newrelic-java/install/.ignored_created_time
           fi
 
@@ -328,7 +330,7 @@ install:
 
           (exit 0)
           EOT
-          sudo sed -i "s/DEFAULT_APP/$defaultAppName/g" /etc/newrelic-java/dynamic-attach.sh
+          sudo sed -i "s/DEFAULT_APP_NAME/$defaultAppName/g" /etc/newrelic-java/dynamic-attach.sh
           sudo chmod 700 /etc/newrelic-java/dynamic-attach.sh
 
     add-on-host-integration:
