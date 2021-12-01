@@ -49,7 +49,7 @@ preInstall:
     fi
 
     # Map of tool names to the associated error code
-    required_tools_and_error_codes="grep:132 cat:132 tee:132"
+    required_tools_and_error_codes="grep:132 cat:132 tee:132 stat:132 date:132"
     for tuple in $required_tools_and_error_codes; do
       tool=$(echo ${tuple} |cut -d':' -f1)
       code=$(echo ${tuple} |cut -d':' -f2)
@@ -77,8 +77,8 @@ install:
     default:
       cmds:
         - task: verify-continue
-        - task: init
         - task: get-introspector
+        - task: reset-install
         - task: install-instrument-script
         - task: add-on-host-integration
         - task: cli_validate
@@ -123,13 +123,6 @@ install:
             done
           fi
 
-    init:
-      cmds:
-        - |
-          if [ ! -f /etc/newrelic-java ]; then
-            mkdir -p /etc/newrelic-java/install
-          fi
-
     get-introspector:
       cmds:
         - |
@@ -152,25 +145,22 @@ install:
             fi
           done
 
+    reset-install:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml ]; then
+            rm -f /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml
+          fi
+          if [ -d /etc/newrelic-java ]; then
+            rm -rf /etc/newrelic-java
+          fi
+          mkdir -p /etc/newrelic-java/install
+
     install-instrument-script:
       cmds:
         - |
-          # removing existing OHI script
-          if [ -f /etc/newrelic-java/dynamic-attach.sh ]; then
-            rm -f /etc/newrelic-java/dynamic-attach.sh
-          fi
-
-          # reset non-docker pid state
-          if [ -f /etc/newrelic-java/install/.pids ]; then
-            rm /etc/newrelic-java/install/.pids
-          fi
           sudo touch /etc/newrelic-java/install/.pids
           sudo chmod 755 /etc/newrelic-java/install/.pids
-
-          # reset docker pid state
-          if [ -f /etc/newrelic-java/install/.pids_in_docker ]; then
-            rm /etc/newrelic-java/install/.pids_in_docker
-          fi
           sudo touch /etc/newrelic-java/install/.pids_in_docker
           sudo chmod 755 /etc/newrelic-java/install/.pids_in_docker
 
@@ -202,9 +192,6 @@ install:
               fi
             fi
           fi
-
-          # cleanup install-specific directories/files
-          sudo rm -rf /etc/newrelic-java/install/
 
           tee -a /etc/newrelic-java/dynamic-attach.sh > /dev/null <<"EOT"
           #!/bin/bash
@@ -249,13 +236,19 @@ install:
           if [ ! -f /etc/newrelic-java/.ignored_pids ]; then
             sudo touch /etc/newrelic-java/.ignored_pids
             sudo chmod -R 755 /etc/newrelic-java/.ignored_pids
+          else
+            if [ $(($(date +%s)-$(stat -c "%W" /etc/newrelic-java/.ignored_pids))) -gt (60*60*24) ]; then
+              sudo rm -f /etc/newrelic-java/.ignored_pids
+              sudo touch /etc/newrelic-java/.ignored_pids
+              sudo chmod -R 755 /etc/newrelic-java/.ignored_pids
+            fi
           fi
 
           # capture docker pids if docker is running
           isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
           if [ $isDockerRunning -gt 0 ]; then
             if [ -f /etc/newrelic-java/.pids_in_docker ]; then
-              rm /etc/newrelic-java/.pids_in_docker
+              rm -f /etc/newrelic-java/.pids_in_docker
             fi
             sudo touch /etc/newrelic-java/.pids_in_docker
             sudo chmod 777 /etc/newrelic-java/.pids_in_docker
@@ -275,7 +268,7 @@ install:
           # if differences in state are detected, swap pid file with detected and attempt to attach
           new_ids=$(sudo comm -3 /etc/newrelic-java/.detected_pids /etc/newrelic-java/.pids | wc -l)
           if [[ $new_ids -gt 0 ]]; then
-            sudo rm /etc/newrelic-java/.pids
+            sudo rm -f /etc/newrelic-java/.pids
             sudo mv /etc/newrelic-java/.detected_pids /etc/newrelic-java/.pids
             for JAVA_PID in $(sudo cat /etc/newrelic-java/.pids);
             do
@@ -324,12 +317,12 @@ install:
             done
           else
             # otherwise remove our detecteds as they are the same state
-            sudo rm /etc/newrelic-java/.detected_pids
+            sudo rm -f /etc/newrelic-java/.detected_pids
           fi
 
           # cleanup
           if [ -f /etc/newrelic-java/.pids_in_docker ]; then
-            sudo rm /etc/newrelic-java/.pids_in_docker
+            sudo rm -f /etc/newrelic-java/.pids_in_docker
           fi
 
           (exit 0)
@@ -340,12 +333,9 @@ install:
     add-on-host-integration:
       cmds:
         - |
-          if [ -f /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml ]; then
-            rm -f /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml
-          fi
           tee -a /etc/newrelic-infra/integrations.d/java-dynamic-attach.yml > /dev/null <<"EOT"
           integrations:
-            - name: dynamic-attach
+            - name: java-dynamic-attach
               exec: ./dynamic-attach.sh
               working_dir: /etc/newrelic-java
               interval: 60s
