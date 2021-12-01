@@ -233,15 +233,27 @@ install:
             sudo touch /etc/newrelic-java/install/.pids
             sudo chmod -R 755 /etc/newrelic-java/install/.pids
           fi
-          if [ ! -f /etc/newrelic-java/install/.ignored_pids ]; then
+
+          createIgnoreFiles=0
+          currentTime=$(date +%s)
+          if [ ! -f /etc/newrelic-java/install/.ignored_created_time ]; then
+            createIgnoreFiles=1
+          else
+            fileIgnoredCreatedTime=$(sudo cat /etc/newrelic-java/install/.ignored_created_time 2> /dev/null || echo 0)
+            if [ $(($currentTime-$fileIgnoredCreatedTime)) -gt $((60*60*24)) ]; then
+              createIgnoreFiles=1
+            fi
+          fi
+          if [ $createIgnoreFiles -eq 1]; then
+            # Reset ignore pids file
+            sudo rm -f /etc/newrelic-java/install/.ignored_pids
             sudo touch /etc/newrelic-java/install/.ignored_pids
             sudo chmod -R 755 /etc/newrelic-java/install/.ignored_pids
-          else
-            if [ $(($(date +%s)-$(stat -c "%W" /etc/newrelic-java/install/.ignored_pids))) -gt (60*60*24) ]; then
-              sudo rm -f /etc/newrelic-java/install/.ignored_pids
-              sudo touch /etc/newrelic-java/install/.ignored_pids
-              sudo chmod -R 755 /etc/newrelic-java/install/.ignored_pids
-            fi
+            # Reset timestamp for next cleanup
+            sudo rm -f /etc/newrelic-java/install/.ignored_created_time
+            sudo touch /etc/newrelic-java/install/.ignored_created_time
+            sudo chmod -R 755 /etc/newrelic-java/install/.ignored_created_time
+            echo currentTime >> /etc/newrelic-java/install/.ignored_created_time
           fi
 
           # capture docker pids if docker is running
