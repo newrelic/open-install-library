@@ -58,11 +58,11 @@ install:
           powershell -command '
           $powershellEnabled = ""
           try {
-            $powershellEnabled = Get-Process powershell | select Name
+            $powershellEnabled = Get-Command -All powershell.exe | select Name
           }
           catch { }
-          if(!$powershellEnabled){
-            Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command." 
+          if ($powershellEnabled.Name -ne "powershell.exe") {
+            Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
             exit 131;
           }
           '
@@ -109,7 +109,7 @@ install:
 
             $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
             foreach ($uninstallId in $uninstallIds) {
-              $uninstallCommand = "C:\\windows\\system32\\msiexec /x """ + $uninstallId + """ /qn"
+              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
               $er = (Invoke-Expression $uninstallCommand) 2>&1
               if($er.Exception){
                 throw $er.Exception
@@ -159,7 +159,7 @@ install:
           $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
 
           if (Test-Path $InfraConfig) {
-            C:\\windows\\system32\\msiexec /qn /i $env:TEMP\newrelic-infra.msi 
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
 
             (Get-Content $InfraConfig) | Where-Object {
               $_ -notmatch "^staging"
@@ -181,14 +181,7 @@ install:
               $_ -replace "^license_key: .*", ("license_key: " + $LICENSE_KEY) `
             } | Set-Content $InfraConfig
           } else {
-            C:\\windows\\system32\\msiexec /qn /i $env:TEMP\newrelic-infra.msi GENERATE_CONFIG=true LICENSE_KEY=$LICENSE_KEY
-          }
-
-          $maxWait = 60
-          $interval = 5
-          while (!(Test-Path $InfraConfig) -and ($maxWait -gt 0)) { 
-            Start-Sleep $interval
-            $maxWait = $maxWait - $interval 
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
           }
 
           $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
@@ -209,7 +202,7 @@ install:
 
     start_infra:
       cmds:
-        - powershell -command 'c:\\windows\\system32\\net start newrelic-infra'
+        - powershell -command 'net start newrelic-infra'
         - echo "New Relic infrastructure agent for Windows installed and started"
 
     assert_agent_started:
