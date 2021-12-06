@@ -164,16 +164,17 @@ install:
           sudo touch /etc/newrelic-java/install/.docker_pids
           sudo chmod 755 /etc/newrelic-java/install/.docker_pids
 
-          # FYI message to user about containerNames - may not be necessary
-          # we don't ask for user input if all processes are within docker
+          # collect any docker processIds
           isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
           if [ $isDockerRunning -gt 0 ]; then
-            for CONTAINER in $(sudo docker ps -q);
-            do
-              sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.docker_pids
-            done
-            sudo sort -o /etc/newrelic-java/install/.docker_pids /etc/newrelic-java/install/.docker_pids
-            echo "The following container names will be used for your New Relic APMs:$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' | tr '/' '  ')"
+            isContainerRunning=$(sudo docker ps -q | wc -l)
+            if [ $isContainerRunning -gt 0 ]; then
+              for CONTAINER in $(sudo docker ps -q);
+              do
+                sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.docker_pids
+              done
+              sudo sort -o /etc/newrelic-java/install/.docker_pids /etc/newrelic-java/install/.docker_pids
+            fi
           fi
 
           # get java processes not in docker, use this to prompt for user input
@@ -230,6 +231,7 @@ install:
             (exit 0)
           fi
 
+          # reset ignore file once daily
           createIgnoreFiles=0
           currentTime=$(date +%s)
           if [ ! -f /etc/newrelic-java/install/.ignored_created_time ]; then
@@ -241,6 +243,7 @@ install:
               createIgnoreFiles=1
             fi
           fi
+
           if [[ $createIgnoreFiles -eq 1 ]]; then
             # Reset ignore pids file
             sudo rm -f /etc/newrelic-java/install/.ignored_pids
