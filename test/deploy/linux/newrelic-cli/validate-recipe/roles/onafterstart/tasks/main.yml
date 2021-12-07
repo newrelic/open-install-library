@@ -1,0 +1,88 @@
+---
+# Parameters:
+# nrql_query: A query to run against the NRQL database through the Graphql API to see if an entity is reporting
+# newrelic_api_url: (optional) the URL for the newrelic REST API, default to main us URL
+
+# Testing with EU
+# - set_fact:
+#     newrelic_api_url: "api.eu.newrelic.com"
+
+- fail:
+    msg: "A nrql_query is required. Create this entry in your deploy config file"
+  when: nrql_query is not defined
+
+- set_fact:
+    containerized: false
+
+- name: Get Hostname
+  set_fact:
+    hostname_value: "{{ansible_hostname}}"
+
+- name: Set hostname if required
+  set_fact:
+    nrql_query: "{{ nrql_query | replace('HOSTNAME', hostname_value) }}"
+  when: '"HOSTNAME" in nrql_query'
+
+- name: Check NRQL for container ID clause
+  set_fact:
+    containerized: true
+  when: '"CONTAINERID" in nrql_query'
+
+- name: Lookup container name
+  when: containerized == true
+  shell: "docker ps -qa"
+  become: yes
+  register: docker_output
+
+- name: Set containerid if required
+  when: containerized == true
+  set_fact:
+    nrql_query: "{{ nrql_query | replace('CONTAINERID', docker_output.stdout) }}"
+
+
+- name: Set default newrelic api url
+  set_fact:
+    newrelic_api_url: "api.newrelic.com"
+  when: newrelic_api_url is undefined
+
+- name: Ensure https api url
+  set_fact:
+    newrelic_api_url: "https://{{ newrelic_api_url }}"
+  when: not newrelic_api_url | regex_search('^https', ignorecase=True)
+
+- debug:
+    msg: "Using newrelic_api_url:{{ newrelic_api_url }}"
+
+- block:
+    - name: Create payload
+      template:
+        src: application-agent-context-query.source.gpl
+        dest: "{{ playbook_dir }}/application-agent-context-query.gql"
+    - name: Prepare POST payload for graphql
+      set_fact:
+        gql_content: "{{ lookup('file', '{{playbook_dir}}/application-agent-context-query.gql') | replace('\n', ' ') }}"
+    - name: Create payload file
+      template:
+        src: gql-query.source.gpl
+        dest: "{{ playbook_dir }}/gql-query.json"
+    - name: Run NRQL via nerdgraph
+      shell: "curl -sX POST '{{ newrelic_api_url }}/graphql' \
+      -H 'API-Key: {{ newrelic_personal_api_key }}' \
+      -L -H 'Content-Type: application/json' \
+      -d @{{ playbook_dir }}/gql-query.json"
+      register: output
+      retries: 20
+      delay: 15
+      until: output is not failed and (output.stdout | from_json | json_query('data.actor.account.nrql.results[0].count') | int > 0)
+  delegate_to: localhost
+
+- name: Parse output
+  set_fact:
+    count: "{{ output.stdout | from_json | json_query(query) | int }}"
+  vars:
+    query: "data.actor.account.nrql.results[0].count"
+
+- name: Assert count is greater than zero
+  fail:
+    msg: "No counts from VirtuosoInstallRecipe using query:'{{ nrql_query }}'"
+  when: count is not defined or count | int == 0
