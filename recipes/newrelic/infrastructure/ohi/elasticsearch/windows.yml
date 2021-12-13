@@ -1,0 +1,69 @@
+name: elasticsearch-open-source-integration
+displayName: Elasticsearch Open Source Integration
+description: New Relic install recipe for default Elasticsearch Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-elasticsearch
+
+dependencies:
+  - infrastructure-agent-installer
+
+installTargets:
+  - type: host
+    os: windows
+    kernelArch: x86_64
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - elastic
+  - elasticsearch
+
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
+processMatch:
+  - elasticsearch-service-x64\.exe
+  - elasticsearch-service-x86\.exe
+  - elasticsearch\.exe
+
+preInstall:
+  requireAtDiscovery: |
+    powershell -command '
+    try{
+      if (Get-Service "elasticsearch*" -ErrorAction SilentlyContinue) {
+          exit 132
+      }
+      
+      $elasticSearchUrl = "http://localhost:9200/"
+      $response=Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $elasticSearchUrl
+      $okStatusCode = $response.statuscode -ieq "200"
+      $foundElasticSearch = $response -match "elasticsearch" -ieq "True"
+      
+      if($okStatusCode -and $foundElasticSearch){
+        exit 132
+      }
+    }
+    catch {}
+    exit 1
+    '
+  info: |2
+      To capture data from the Elasticsearch integration, you'll first need to meet these prerequisites:
+      - Elasticsearch version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/elasticsearch-monitoring-integration#req)
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          exit 131
+
+postInstall:
+  info: |2
+      ⚙️  The Elasticsearch configuration file can be found in /etc/newrelic-infra/integrations.d/elasticsearch-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/elasticsearch-monitoring-integration#config
