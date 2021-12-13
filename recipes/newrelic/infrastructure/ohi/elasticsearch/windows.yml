@@ -20,7 +20,9 @@ keywords:
 
 # CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
 processMatch:
-  - elasticsearch*
+  - elasticsearch-service-x64\.exe
+  - elasticsearch-service-x86\.exe
+  - elasticsearch\.exe
 
 preInstall:
   requireAtDiscovery: |
@@ -28,6 +30,15 @@ preInstall:
     try{
       if (Get-Service "elasticsearch*" -ErrorAction SilentlyContinue) {
           exit 132
+      }
+      
+      $elasticSearchUrl = "http://localhost:9200/"
+      $response=Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $elasticSearchUrl
+      $okStatusCode = $response.statuscode -ieq "200"
+      $foundElasticSearch = $response -match "elasticsearch" -ieq "True"
+      
+      if($okStatusCode -and $foundElasticSearch){
+        exit 132
       }
     }
     catch {}
