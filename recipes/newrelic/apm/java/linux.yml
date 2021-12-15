@@ -216,6 +216,30 @@ install:
           EOF
           }
 
+          create_deployment_marker() {
+            javaPid=$1
+            appName=$2
+            deploymentTimestamp=$3
+            api_key={{.NEW_RELIC_API_KEY}}
+            javaAgentVersion=JAVA_AGENT_VERSION
+
+            appId=$(curl -sX GET "DEFAULT_API_URL/v2/applications.json" -H "Api-Key:${api_key}" -d "filter[name]=${appName}" | sed 's/.*"id":"\{0,1\}\([^,"]*\)"\{0,1\}.*/\1/')
+            >/dev/null curl -sX POST "DEFAULT_API_URL/v2/applications/$appId/deployments.json" \
+            -H "Api-Key:${api_key}" \
+            -H "Content-Type: application/json" \
+            --data-binary @- << EOF
+            {
+              "deployment": {
+              "revision": "v${javaAgentVersion}",
+              "changelog": "Attached java agent v${javaAgentVersion} to PID ${javaPid} for APM Service '${appName}'",
+              "user": "New Relic Java",
+              "timestamp": "${deploymentTimestamp}"
+              }
+            }
+          EOF
+            return 0
+          }
+
           attach_to_pid() {
             javaPid=$1
             license={{.NEW_RELIC_LICENSE_KEY}}
@@ -228,6 +252,7 @@ install:
             attachOutput=$(sudo nri-lsi-java -apm $javaPid -appName $appName -license $license -region $region | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
             if [[ $attachOutput -gt 0 ]]; then
               echo $(build_stdout_json "Attaching agent to Tomcat process with PID $javaPid..complete!")
+              create_deployment_marker $javaPid $appName $deploymentTimestamp
             else
               echo $(build_stdout_json "Attaching agent to Tomcat process with PID $javaPid...failed!")
             fi
@@ -258,6 +283,7 @@ install:
             attachOutput=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $regionCOMMAND_QUOTE" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
             if [[ $attachOutput -gt 0 ]]; then
               echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
+              create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
             else
               echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
             fi
@@ -381,6 +407,18 @@ install:
 
           sudo sed -i 's/COMMAND_QUOTE/\\"/g' /etc/newrelic-java/dynamic-attach.sh
           sudo sed -i "s/DEFAULT_APP_NAME/$defaultAppName/g" /etc/newrelic-java/dynamic-attach.sh
+
+          NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+          fi
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+          fi
+          sudo sed -i "s,DEFAULT_API_URL,$NEW_RELIC_API_URL,g" /etc/newrelic-java/dynamic-attach.sh
+
+          javaAgentVersion=$(nri-lsi-java -agentVersion | grep -Po '"agentVersion":.*"' | awk -F': ' '{print $2}' | tr -d '"')
+          sudo sed -i "s/JAVA_AGENT_VERSION/$javaAgentVersion/g" /etc/newrelic-java/dynamic-attach.sh
 
           sudo chmod 700 /etc/newrelic-java/dynamic-attach.sh
 
