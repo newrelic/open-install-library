@@ -49,7 +49,7 @@ preInstall:
     fi
 
     # Map of tool names to the associated error code
-    required_tools_and_error_codes="grep:132 cat:132 tee:132 date:132"
+    required_tools_and_error_codes="grep:132 cat:132 tee:132 date:132 awk:132 tr:132"
     for tuple in $required_tools_and_error_codes; do
       tool=$(echo ${tuple} |cut -d':' -f1)
       code=$(echo ${tuple} |cut -d':' -f2)
@@ -217,7 +217,9 @@ install:
           }
           license={{.NEW_RELIC_LICENSE_KEY}}
           region={{.NEW_RELIC_REGION}}
+          api_key={{.NEW_RELIC_API_KEY}}
           appName=DEFAULT_APP_NAME
+          javaAgentVersion=JAVA_AGENT_VERSION
           pattern='org.apache.catalina.startup.Bootstrap'
 
 
@@ -287,6 +289,7 @@ install:
               INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${JAVA_PID})
               isMatchingPattern=$(echo $INTROSPECTION_DATA | grep $pattern | grep -v grep | wc -l)
               if [[ $isMatchingPattern -gt 0 ]]; then
+                deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
                 if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $JAVA_PID | grep -v grep | wc -l) -gt 0 ]]; then
                   CONTAINER_ID=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $JAVA_PID | sed  -n -e "s|$JAVA_PID, ||p")
                   if [[ $CONTAINER_ID ]]; then
@@ -301,22 +304,54 @@ install:
                       sudo docker exec $CONTAINER_ID sh -c "apt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || true"
                     fi
                     echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...")
-                    output=$(sudo docker exec $CONTAINER_ID sh -c "nri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $region 2> /dev/null | wc -l")
+                    grepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
+                    output=$(sudo docker exec $CONTAINER_ID sh -c "nri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $region " | grep ${grepPattern} | grep -v grep  | wc -l)
                     if [[ $output -gt 0 ]]; then
-                      echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
-                    else
                       echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
+                      # add deployment marker
+                      appId=$(curl -sX GET "DEFAULT_API_URL/v2/applications.json" -H "Api-Key:${api_key}" -d "filter[name]=${dockerAppName}" | sed 's/.*"id":"\{0,1\}\([^,"]*\)"\{0,1\}.*/\1/')
+                      >/dev/null curl -sX POST "DEFAULT_API_URL/v2/applications/$appId/deployments.json" \
+                      -H "Api-Key:${api_key}" \
+                      -H "Content-Type: application/json" \
+                      --data-binary @- << EOF
+                      {
+                        "deployment": {
+                        "revision": "JAVA-DYNAMIC-ATTACH",
+                        "changelog": "/etc/newrelic-infra/integrations.d/java-dynamic-attach.yml attached java agent ${javaAgentVersion} to PID ${JAVA_PID} for APM Service '${dockerAppName}'",
+                        "user": "/etc/newrelic-java/dynamic-attach.sh",
+                        "timestamp": "${deploymentTimestamp}"
+                        }
+                      }
+          EOF
+                    else
+                      echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
                     fi
                   else
                     echo $(build_stdout_json "Skipping instrumentation of process id $JAVA_PID: could not determine owning container")
                   fi
                 else
                   echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...")
-                  output=$(sudo nri-lsi-java -apm $JAVA_PID -appName $appName -license $license -region $region 2> /dev/null | wc -l)
+                  grepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
+                  output=$(sudo nri-lsi-java -apm $JAVA_PID -appName $appName -license $license -region $region | grep ${grepPattern} | grep -v grep  | wc -l)
                   if [[ $output -gt 0 ]]; then
-                    echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...failed!")
-                  else
                     echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID..complete!")
+                    # add deployment marker
+                    appId=$(curl -sX GET "DEFAULT_API_URL/v2/applications.json" -H "Api-Key:${api_key}" -d "filter[name]=${appName}" | sed 's/.*"id":"\{0,1\}\([^,"]*\)"\{0,1\}.*/\1/')
+                    >/dev/null curl -sX POST "DEFAULT_API_URL/v2/applications/$appId/deployments.json" \
+                    -H "Api-Key:${api_key}" \
+                    -H "Content-Type: application/json" \
+                    --data-binary @- << EOF
+                    {
+                      "deployment": {
+                      "revision": "JAVA-DYNAMIC-ATTACH",
+                      "changelog": "/etc/newrelic-infra/integrations.d/java-dynamic-attach.yml attached java agent ${javaAgentVersion} to PID ${JAVA_PID} for APM Service '${appName}'",
+                      "user": "/etc/newrelic-java/dynamic-attach.sh",
+                      "timestamp": "${deploymentTimestamp}"
+                      }
+                    }
+          EOF
+                  else
+                    echo $(build_stdout_json "Attaching agent to Tomcat process with PID $JAVA_PID...failed!")
                   fi
                 fi
               fi
@@ -332,7 +367,21 @@ install:
 
           (exit 0)
           EOT
+
           sudo sed -i "s/DEFAULT_APP_NAME/$defaultAppName/g" /etc/newrelic-java/dynamic-attach.sh
+
+          NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+          fi
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+          fi
+          sudo sed -i "s,DEFAULT_API_URL,$NEW_RELIC_API_URL,g" /etc/newrelic-java/dynamic-attach.sh
+
+          javaAgentVersion=$(nri-lsi-java -agentVersion | grep -Po '"agentVersion":.*"' | awk -F': ' '{print $2}' | tr -d '"')
+          sudo sed -i "s/JAVA_AGENT_VERSION/$javaAgentVersion/g" /etc/newrelic-java/dynamic-attach.sh
+
           sudo chmod 700 /etc/newrelic-java/dynamic-attach.sh
 
     add-on-host-integration:
