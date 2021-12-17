@@ -1,0 +1,30 @@
+---
+- debug:
+    msg: Starting Zookeper and Kafka Server
+
+- name: check if batch script for zookeeper exists
+  ansible.windows.win_stat:
+    path: c:\kafka\bin\windows\zookeeper-server-start.bat
+  register: zookeeper_batch_path
+
+- name: check if batch script for kafka exists
+  ansible.windows.win_stat:
+    path: c:\kafka\bin\windows\kafka-server-start.bat
+  register: kafka_batch_path
+
+- block:
+    - name: Starting Zookeper
+      win_shell: c:\kafka\bin\windows\zookeeper-server-start.bat c:\kafka\config\zookeeper.properties
+      async: 5
+      poll: 0
+    - name: Starting Kafka Server
+      win_shell: c:\kafka\bin\windows\kafka-server-start.bat c:\kafka\config\server.properties
+      async: 5
+      poll: 0
+  when: zookeeper_batch_path.stat.exists and kafka_batch_path.stat.exists
+
+- block:
+    - name: Cannot find zookeper, kafka
+      fail:
+        msg: "The zookeeper or kafka batch script doesn't exist in c:\\kafka\\bin\\windows, unable to start kafka"
+  when: not zookeeper_batch_path.stat.exists or not kafka_batch_path.stat.exists

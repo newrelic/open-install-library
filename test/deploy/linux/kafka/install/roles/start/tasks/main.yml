@@ -1,0 +1,33 @@
+---
+- debug:
+    msg: Starting Zookeper and Kafka Server
+
+- name: check if shell script for zookeeper exists
+  stat:
+    path: /opt/kafka/bin/zookeeper-server-start.sh
+  register: zookeeper_shell_path
+
+- name: check if shell script for kafka exists
+  stat:
+    path: /opt/kafka/bin/kafka-server-start.sh
+  register: kafka_shell_path
+
+- block:
+    - name: Start Zookeeper
+      shell: |
+        cd /opt/kafka/ && sudo bin/zookeeper-server-start.sh config/zookeeper.properties &
+      become: true
+      async: 5
+      poll: 0
+    - name: Start Kafka Server
+      shell: cd /opt/kafka/ && sudo bin/kafka-server-start.sh config/server.properties &
+      become: true
+      async: 5
+      poll: 0
+  when: zookeeper_shell_path.stat.exists and kafka_shell_path.stat.exists
+
+- block:
+    - name: Cannot find zookeper, kafka
+      fail:
+        msg: "The zookeeper or kafka shell script doesn't exist in /opt/kafka/, unable to start kafka"
+  when: not zookeeper_shell_path.stat.exists or not kafka_shell_path.stat.exists
