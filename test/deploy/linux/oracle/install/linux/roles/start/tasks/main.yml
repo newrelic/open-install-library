@@ -1,0 +1,23 @@
+---
+- debug:
+    msg: Starting Oracle database Server
+
+- name: check if shell script exists
+  become: yes
+  become_user: oracle
+  stat:
+    path: ~/scripts/start_all.sh
+  register: path_start_sh
+
+- name: start script
+  become: yes
+  become_user: oracle
+  shell: cd ~/scripts/ && ./start_all.sh &
+  async: 5
+  poll: 0
+  when: path_start_sh.stat.exists
+
+- name: Cannot find oracle script
+  fail:
+    msg: "The oracle start script doesn't exist (/scripts/start_all.sh), unable to start oracle"
+  when: not path_start_sh.stat.exists
