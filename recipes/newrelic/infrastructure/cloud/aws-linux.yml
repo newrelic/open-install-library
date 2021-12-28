@@ -20,8 +20,9 @@ processMatch: []
 preInstall:
   requireAtDiscovery: |
       code=$(curl -I http://169.254.169.254/latest/meta-data/instance-id -w %{response_code} -so '/dev/null')
+      echo "AWS HERE"
       if [ $code == "200" ]; then
-        exit 132
+        exit 0
       fi
       exit 1
   info: |2
@@ -40,12 +41,103 @@ install:
     assert_pre_req:
       cmds:
         - |
-          exit 0
+          # Constants
+          roleName="NewRelicInfrastructure-Integrations"
+
+          if ! command -v aws &> /dev/null; then
+              echo "The aws-cli is required to install this integration..."
+              echo "Docs: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+              exit 1
+          fi
+
+          callerIdentity=$(aws sts get-caller-identity 2>&1)
+
+          if [[ "$(echo "$callerIdentity" | grep "^Unable*" | wc -l)" -eq "1" ]] ; then
+              echo "$callerIdentity" >&2
+              exit 1
+          fi
+
+          policy=$(cat <<EOT
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Sid": "",
+                      "Effect": "Allow",
+                      "Principal": {
+                          "AWS": "arn:aws:iam::754728514883:root"
+                      },
+                      "Action": "sts:AssumeRole",
+                      "Condition": {
+                          "StringEquals": {
+                              "sts:ExternalId": "{{.NEW_RELIC_ACCOUNT_ID}}"
+                          }
+                      }
+                  }
+              ]
+          }
+          EOT
+          )
+
+          createRole=$(aws iam create-role --role-name $roleName --assume-role-policy-document file://<(echo $policy) 2>&1)
+
+          getRole=$(aws iam get-role --role-name $roleName 2>&1)
+
+          if [[ "$(echo "$getRole" | grep "^An error occurred (NoSuchEntity)*" | wc -l)" -eq "1" ]] ; then
+              echo "$createRole" >&2
+              exit 1
+          fi
+
+          aws iam attach-role-policy --role-name $roleName --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
+
+          policy=$(cat <<EOT
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                  "Effect": "Allow",
+                  "Action": [
+                      "budgets:ViewBudget"
+                  ],
+                  "Resource": "*"
+                  }
+              ]
+          }
+          EOT
+          )
+
+          aws iam put-role-policy --role-name $roleName --policy-name NewRelicBudget --policy-document file://<(echo $policy)
 
     setup:
       cmds:
         - |
-          exit 131
+          # Variables
+          accountName="" # AWS account name
+
+          # Constants
+          roleName="NewRelicInfrastructure-Integrations"
+
+          # Download and fix CloudFormation template
+          curl -sLo /tmp/MetricStreams_CloudFormation.yml https://nr-downloads-main.s3.amazonaws.com/cloud_integrations/aws/cloudformation/MetricStreams_CloudFormation.yml
+          sed -ie "s/AWS::AccountId/\'AWS::AccountId\'/g" /tmp/MetricStreams_CloudFormation.yml
+
+          printf "\nDeploying CloudFormation template, this may take a few minutes...\n"
+          deploy=$(aws cloudformation deploy --template-file /tmp/MetricStreams_CloudFormation.yml --stack-name NewRelic-Metric-Stream --parameter-overrides NewRelicLicenseKey={{.NEW_RELIC_LICENSE_KEY}} --capabilities CAPABILITY_NAMED_IAM 2>&1)
+          echo "CloudFormation deployment complete"
+
+          rm /tmp/MetricStreams_CloudFormation.yml
+
+          getRole=$(aws iam get-role --role-name $roleName 2>&1)
+          arn=$(echo $getRole | sed -ne 's/.*"Arn": "\(.*\)".*/\1/p')
+
+          query=$(echo { \"query\": \"mutation { cloudLinkAccount\(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, accounts: { aws: { name: \\\"$accountName\\\", arn: \\\"$arn\\\", metricCollectionMode: PUSH}}\) { linkedAccounts { id name authLabel createdAt updatedAt } } }\" })
+
+          curlQuery=$(echo $query | curl https://api.newrelic.com/graphql \
+          -H 'Content-Type: application/json' \
+          -H 'API-Key: {{.NEW_RELIC_API_KEY}}' \
+          -d @- 2>&1)
+
+          echo "Your AWS and New Relic accounts are linked"
 
 postInstall:
   info: |2
