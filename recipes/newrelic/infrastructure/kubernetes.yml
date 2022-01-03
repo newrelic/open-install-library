@@ -34,6 +34,8 @@ preInstall:
     If Helm is not available a manifest will be generated and applied using kubectl.
 
   requireAtDiscovery: |
+    /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"require\" }"
+
     SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
 
     # Check the required tools
@@ -71,11 +73,13 @@ preInstall:
 
     if [[ "$CLIENT_MAJOR_VERSION" -lt 1 ]] || [[ "$CLIENT_MAJOR_VERSION" -eq 1 && "$CLIENT_MINOR_VERSION" -lt 10 ]]; then
       echo "kubectl v1.10 or higher is required, found v${CLIENT_MAJOR_VERSION}.${CLIENT_MINOR_VERSION}" >&2
+      /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"failed\", \"reason\":\"kubectl client version unsupported\", \"kubectlVersion\":\"$KUBECTL_VERSION\" }"
       exit 21
     fi
 
     if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]]; then
       echo "Kubernetes v1.16 or higher is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
+      /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"failed\", \"reason\":\"kubectl server version unsupported\", \"kubectlVersion\":\"$KUBECTL_VERSION\" }"
       exit 22
     fi
 
@@ -108,6 +112,8 @@ install:
           NR_CLI_PIXIE_API_KEY="{{.NR_CLI_PIXIE_API_KEY}}"
           NR_CLI_PIXIE_DEPLOY_KEY="{{.NR_CLI_PIXIE_DEPLOY_KEY}}"
           NR_CLI_PIXIE_ADDRESS="{{.NR_CLI_PIXIE_ADDRESS}}"
+
+          /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"install\", \"clusterName\":\"$NR_CLI_CLUSTERNAME\", \"namespace\":\"$NR_CLI_NAMESPACE\", \"ksm\":\"$NR_CLI_KSM\", \"kubeEvents\":\"$NR_CLI_KUBE_EVENTS\", \"logging\":\"$NR_CLI_LOGGING\", \"prometheus\":\"$NR_CLI_PROMETHEUS\", \"lowDataMode\":\"$NR_CLI_LOW_DATA_MODE\", \"privileged\":\"$NR_CLI_PRIVILEGED\", \"pixie\":\"$NR_CLI_PIXIE\", \"newrelicPixie\":\"$NR_CLI_NEWRELIC_PIXIE\" }"
 
           SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
 
@@ -181,6 +187,8 @@ install:
           if [[ "$NAMESPACE_EXISTS" != "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
             echo "The ${NR_CLI_NAMESPACE} namespace does not exist and you don't have permissions to create a new namespace." >&2
             echo "Use an existing namespace or obtain permissions to create a new namespace." >&2
+
+            /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"failed\", \"clusterName\":\"$NR_CLI_CLUSTERNAME\", \"reason\":\"cannot create namespace\" }"
             exit 1
           fi
 
@@ -272,6 +280,8 @@ install:
           rm nr-check-privileged.yaml
           fi
 
+          /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"configure\", \"clusterName\":\"$NR_CLI_CLUSTERNAME\", \"namespace\":\"$NR_CLI_NAMESPACE\", \"ksm\":\"$NR_CLI_KSM\", \"kubeEvents\":\"$NR_CLI_KUBE_EVENTS\", \"logging\":\"$NR_CLI_LOGGING\", \"prometheus\":\"$NR_CLI_PROMETHEUS\", \"lowDataMode\":\"$NR_CLI_LOW_DATA_MODE\", \"privileged\":\"$NR_CLI_PRIVILEGED\", \"pixie\":\"$NR_CLI_PIXIE\", \"newrelicPixie\":\"$NR_CLI_NEWRELIC_PIXIE\", \"clusterFromContext\":\"$CLUSTER\", \"kernelVersion\":\"$KERNEL_VERSION\", \"memory\":\"$MEMORY\", \"canCreateNamespace\":\"$CAN_CREATE_NAMESPACE\", \"namespaceExists\":\"$NAMESPACE_EXISTS\", \"privilegedUnsupported\":\"$PRIVILEGED_UNSUPPORTED\" }"
+
           # Setup the Pixie CRDs
           if [ "${NR_CLI_PIXIE}" = "true" ]; then
             $SUDO kubectl apply -f https://raw.githubusercontent.com/pixie-labs/pixie/main/k8s/operator/crd/base/px.dev_viziers.yaml
@@ -283,6 +293,7 @@ install:
             echo ""
             echo "Using helm to install the Kubernetes integration"
             echo ""
+            HELM=true
 
             $SUDO helm repo add newrelic https://helm-charts.newrelic.com
             $SUDO helm repo update
@@ -319,6 +330,7 @@ install:
             echo ""
             echo "Using kubectl to install the Kubernetes integration"
             echo ""
+            HELM=false
 
             URL="https://k8s-config-generator.service.newrelic.com/generate?"
             URL="${URL}global.cluster=${NR_CLI_CLUSTERNAME}"
@@ -350,6 +362,8 @@ install:
             $SUDO kubectl apply -f newrelic-k8s.yml
           fi
 
+          /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"installed\", \"clusterName\":\"$NR_CLI_CLUSTERNAME\", \"helm\":\"$HELM\" }"
+
           # Wait on newrelic-infrastructure pod to be running
           echo "Running newrelic-infrastructure status check attempt..."
           MAX_RETRIES=60
@@ -367,6 +381,8 @@ install:
             fi
             sleep 2
           done
+
+          /usr/local/bin/newrelic events post --event "{ \"eventType\":\"NrInstall\", \"recipe\":\"kubernetes-open-source-integration\", \"step\":\"verified\", \"clusterName\":\"$NR_CLI_CLUSTERNAME\" }"
 
           # Show post install message
           echo ""
