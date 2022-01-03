@@ -20,11 +20,22 @@ processMatch: []
 preInstall:
   requireAtDiscovery: |
       code=$(curl -I http://169.254.169.254/latest/meta-data/instance-id -w %{response_code} -so '/dev/null')
-      echo "AWS HERE"
-      if [ $code == "200" ]; then
-        exit 0
+
+      if [ $code != "200" ]; then
+        exit 1
       fi
-      exit 1
+
+      if [ ! -f ~/.aws/credentials ]; then
+        exit 1
+      fi
+
+      if [ ! -f ~/.aws/config ]; then
+        exit 1
+      fi
+
+      if ! command -v aws &> /dev/null; then
+        exit 1
+      fi
   info: |2
       Amazon integrations let you monitor your AWS data in several New Relic features.
 
@@ -43,12 +54,6 @@ install:
         - |
           # Constants
           roleName="NewRelicInfrastructure-Integrations"
-
-          if ! command -v aws &> /dev/null; then
-              echo "The aws-cli is required to install this integration..."
-              echo "Docs: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
-              exit 1
-          fi
 
           callerIdentity=$(aws sts get-caller-identity 2>&1)
 
@@ -112,14 +117,14 @@ install:
       cmds:
         - |
           # Variables
-          accountName="" # AWS account name
+          accountName="hello-world-account"
 
           # Constants
           roleName="NewRelicInfrastructure-Integrations"
 
           # Download and fix CloudFormation template
           curl -sLo /tmp/MetricStreams_CloudFormation.yml https://nr-downloads-main.s3.amazonaws.com/cloud_integrations/aws/cloudformation/MetricStreams_CloudFormation.yml
-          sed -ie "s/AWS::AccountId/\'AWS::AccountId\'/g" /tmp/MetricStreams_CloudFormation.yml
+          sed -ie "s/AWS::AccountId,/\'AWS::AccountId\',/g" /tmp/MetricStreams_CloudFormation.yml
 
           printf "\nDeploying CloudFormation template, this may take a few minutes...\n"
           deploy=$(aws cloudformation deploy --template-file /tmp/MetricStreams_CloudFormation.yml --stack-name NewRelic-Metric-Stream --parameter-overrides NewRelicLicenseKey={{.NEW_RELIC_LICENSE_KEY}} --capabilities CAPABILITY_NAMED_IAM 2>&1)
