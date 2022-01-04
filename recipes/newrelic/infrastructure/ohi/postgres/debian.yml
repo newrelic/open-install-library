@@ -95,7 +95,6 @@ install:
           NR_CLI_DATABASE=${NR_CLI_DATABASE:-'postgres'}
           NR_CLI_SSL=${NR_CLI_SSL:='false'}
           NR_CLI_TRUST_SERVER_CERTIFICATE=${NR_CLI_TRUST_SERVER_CERTIFICATE:-'false'}
-          new_password=$(LC_CTYPE=C tr -dc A-Za-z0-9_\!\@\#\$\%\^\&\*\(\)-+= < /dev/urandom | head -c 32 | xargs)
 
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
@@ -125,14 +124,12 @@ install:
           TRIES=0
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-              printf "Postgres Username (default: newrelic): "
+              printf "Postgres Username: "
               read -r NR_CLI_DB_USERNAME
-              NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-'newrelic'}
-              printf "Postgres Password (default: <<generated>>): "
+              printf "Postgres Password: "
               stty -echo
               read -r NR_CLI_DB_PASSWORD
               stty echo
-              NR_CLI_DB_PASSWORD=${NR_CLI_DB_PASSWORD:-$new_password}
               printf "\nPostgres Database (default: postgres): "
               read -r NR_CLI_DATABASE
               NR_CLI_DATABASE=${NR_CLI_DATABASE:-postgres}
@@ -143,24 +140,12 @@ install:
                 echo "Please try again"
                 continue
               fi
-              
-              # if it's default user, attempt to create NR cli user
-              if [ "$NR_CLI_DB_USERNAME" == "newrelic" ] || [ "$NR_CLI_DB_PASSWORD" == "$new_password" ]; then
-                sudo -u postgres psql -c "SELECT 1 FROM pg_roles WHERE rolname='$NR_CLI_DB_USERNAME'" | grep -q 1 || sudo -u postgres psql -c "CREATE USER $NR_CLI_DB_USERNAME" > /dev/null 2> /dev/null
-                sudo -u postgres psql -c "ALTER USER newrelic WITH PASSWORD '$NR_CLI_DB_PASSWORD'" >> /dev/null 2> /dev/null
-              fi 
 
               IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
-
               if [ $IS_DATABASE_VALID -eq 0 ] ; then
                 printf "\n[Error]: The provided database name is not accessible with the provided username and password and port.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
                 echo "Please try again"
-              else
-                # grant the user permissions
-                sudo -u postgres psql -c "GRANT SELECT ON pg_stat_database TO \"$NR_CLI_DB_USERNAME\"" > /dev/null 2> /dev/null
-                sudo -u postgres psql -c "GRANT SELECT ON pg_stat_database_conflicts TO \"$NR_CLI_DB_USERNAME\"" > /dev/null 2> /dev/null
-                sudo -u postgres psql -c "GRANT SELECT ON pg_stat_bgwriter TO \"$NR_CLI_DB_USERNAME\"" > /dev/null 2> /dev/null
               fi
               break
             done
