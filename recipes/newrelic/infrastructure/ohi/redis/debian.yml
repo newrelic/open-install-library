@@ -83,24 +83,23 @@ install:
           # Set Defaults
           NR_CLI_HOSTNAME=${NR_CLI_HOSTNAME:-'localhost'}
           NR_CLI_PORT=${NR_CLI_PORT:-'6379'}
+          CLIRESPONSE=""
 
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-              printf "\nRedis Hostname (default: localhost): "
-              read -r NR_CLI_HOSTNAME
-              NR_CLI_HOSTNAME=${NR_CLI_HOSTNAME:-localhost}
-              printf "Redis Port (default: 6379): "
-              read -r NR_CLI_PORT
-              NR_CLI_PORT=${NR_CLI_PORT:-6379}
-              ((TRIES++))
-
               CLI_RESPONSE=$(redis-cli -h "$NR_CLI_HOSTNAME" -p "$NR_CLI_PORT" -a "$NR_CLI_PASSWORD" PING 2>&1)
+
               if [ $(echo $CLI_RESPONSE | grep "Could not connect" | wc -l) -gt 0 ] ; then
-                printf "\n[Error]: Could not connect to Redis server. Check hostname and port.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration/#config for more info.\n" >&2
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
+                printf "\n[Error]: Could not connect to Redis server with default port 6379. Please provide a port number.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration/#config for more info.\n" >&2
+                printf "Redis Port (default: 6379): "
+                read -r NR_CLI_PORT
+                NR_CLI_PORT=${NR_CLI_PORT:-6379}
+                ((TRIES++))
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; else continue; fi
                 echo "Please try again"
               fi
-              if [ $(echo $CLI_RESPONSE | grep "Authentication required" | wc -l) -gt 0 ] ; then
+
+              if [ $(echo $CLI_RESPONSE | grep "NOAUTH" | wc -l) -gt 0 ] ; then
                 TRIES=0
                 while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
                   printf "Redis Password: "
@@ -111,7 +110,7 @@ install:
                   ((TRIES++))
 
                   CLI_RESPONSE=$(redis-cli -h "$NR_CLI_HOSTNAME" -p "$NR_CLI_PORT" -a "$NR_CLI_PASSWORD" PING 2>&1)
-                  if [ "$CLI_RESPONSE" != "PONG" ] ; then
+                  if [ $(echo $CLI_RESPONSE | grep "PONG" | wc -l) -eq 0 ] ; then
                     printf "\n[Error]: Could not authenticate on Redis server. Check password.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration/#config for more info.\n" >&2
                     if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; else continue; fi
                     echo "Please try again"
@@ -119,8 +118,6 @@ install:
                   break
                 done
               fi
-              printf "\nKeyspace Metrics (expected: single-line JSON format): "
-              read -r NR_CLI_KEYS
               break
             done
           fi
@@ -221,3 +218,5 @@ postInstall:
       ⚙️  The Redis configuration file can be found in /etc/newrelic-infra/integrations.d/redis-config.yml
       Edit this file to make changes or configure advanced features for this integration. See the docs for options:
       https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration#config
+
+#TODO redis
