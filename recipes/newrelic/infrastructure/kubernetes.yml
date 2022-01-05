@@ -206,13 +206,14 @@ install:
               fi
             fi
 
-            if $SUDO which minikube 1>/dev/null 2>&1; then
-              if $SUDO minikube profile list | grep " ${CLUSTER} " 2>/dev/null; then
-                DRIVER=$($SUDO minikube profile list | grep " ${CLUSTER} " | cut -f3 -d'|')
+            MINIKUBE=$($SUDO which minikube 2>/dev/null || echo '/usr/local/bin/minikube')
+            if [[ -x $MINIKUBE ]]; then
+              if $SUDO $MINIKUBE profile list | grep " ${CLUSTER} " 1>/dev/null 2>&1; then
+                DRIVER=$($SUDO $MINIKUBE profile list | grep " ${CLUSTER} " | awk -F"|" '{ gsub(" ", "", $3); print $3; }')
                 if [[ "$DRIVER" == "kvm2" || "$DRIVER" == "hyperkit" ]] ; then
-                  echo "Unrecognized minikube driver. To create a test cluster to try out Pixie, use kvm2 or HyperKit instead." >&2
-                else
                   PIXIE_SUPPORTED=true
+                else
+                  echo "Unrecognized minikube driver. To create a test cluster to try out Pixie, use kvm2 or HyperKit instead." >&2
                 fi
               fi
             fi
