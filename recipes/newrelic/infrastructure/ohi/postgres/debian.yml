@@ -38,7 +38,7 @@ preInstall:
   info: |2
       To capture data from the PostgreSQL integration, we need to create a new PostgreSQL user with specific permissions (READ).
       The installation will create a strong randomly generated password for that new user.
-      This installation may prompt for your postgres root user password in order to create this new user.
+      This installation may prompt for your postgres user password in order to create this new user.
       More information regarding the prerequisites can be found at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req
 
 install:
@@ -117,7 +117,6 @@ install:
             while [[ $TRIES -lt {{.MAX_RETRIES}} && "$CAN_CONNECT" == "7" ]]; do
               printf "\nPlease enter the port number for your PostgreSQL instance: "
               read -r NR_CLI_DB_PORT
-              NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-5432}
               ((TRIES++))
               CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
               CAN_CONNECT=${CAN_CONNECT:-0}
@@ -130,71 +129,43 @@ install:
             done
           fi
 
-          # if it's generated default user, attempt to create 
-          if [ "$NR_CLI_DB_USERNAME" -eq "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" -eq "$GEN_PASSWORD" ]; then
-            sudo tee .script.sql > /dev/null <<EOT
+          try_create_user () {
+            # if it's generated default user, attempt to create 
+            if [ "$NR_CLI_DB_USERNAME" -eq "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" -eq "$GEN_PASSWORD" ]; then
+              sql=$(cat <<EOT
+          DO
+          \$do\$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE  rolname = 'newrelic') THEN
+              CREATE ROLE newrelic LOGIN PASSWORD '$GEN_PASSWORD';
+            END IF;
+            ALTER USER newrelic WITH PASSWORD '$GEN_PASSWORD';
+            GRANT SELECT ON pg_stat_database TO \"$NR_CLI_DB_USERNAME\";
+            GRANT SELECT ON pg_stat_database_conflicts TO \"$NR_CLI_DB_USERNAME\";
+            GRANT SELECT ON pg_stat_bgwriter TO \"$NR_CLI_DB_USERNAME\";
+          END
+          \$do\$;
 
-              BEGIN                                                                                                                                                                                                                │
-               IF NOT EXISTS (                                                                                                                                                                                                   │
-                  SELECT FROM pg_catalog.pg_roles  -- SELECT list can be empty for this                                                                                                                                          │
-                  WHERE  rolname = 'newrelic') THEN                                                                                                                                                                             │
-                  CREATE ROLE newrelic2  LOGIN PASSWORD "$GEN_PASSWORD";                                                                                                                                                           │
-               END IF;                                                                                                                                                                                                           │
-               ALTER USER newrelic2 WITH PASSWORD '$GEN_PASSWORD';                                                                                                                                                                  │
-               GRANT SELECT ON pg_stat_database TO \"$NR_CLI_DB_USERNAME\"" 
-               GRANT SELECT ON pg_stat_database_conflicts TO \"$NR_CLI_DB_USERNAME\""
-               GRANT SELECT ON pg_stat_bgwriter TO \"$NR_CLI_DB_USERNAME\""
-             END5
-
-            EOT
-          fi
-          
-          exit 12345
-
-          IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
-
-          # if default failed, prompt user
-          if [ $IS_DATABASE_VALID -eq 0 ] ; then
-            TRIES=0
-            if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-              while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-                printf "Postgres Username: "
-                read -r NR_CLI_DB_USERNAME
-                printf "Postgres Password: "
-                stty -echo
-                read -r NR_CLI_DB_PASSWORD
-                stty echo
-                printf "\nPostgres Database (default: postgres): "
-                read -r NR_CLI_DATABASE
-                NR_CLI_DATABASE=${NR_CLI_DATABASE:-postgres}
-                ((TRIES++))
-                if [ "$NR_CLI_DB_USERNAME" == "" ] || [ "$NR_CLI_DB_PASSWORD" == "" ]; then
-                  printf "\n[Error]: Please provide a valid Username and Password. Fields cannot be blank.\n" >&2
-                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
-                  echo "Please try again"
-                  continue
-                fi
-
-                IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
-
-                if [ $IS_DATABASE_VALID -eq 0 ] ; then
-                  printf "\n[Error]: The provided database name is not accessible with the provided username and password and port.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req for more info.\n" >&2
-                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
-                  echo "Please try again"
-                fi
-                break
-              done
-              printf "\nConnectivity and User Credentials are valid!\n\n"
+          EOT
+          )
+              sudo -u postgres psql -t -A -c "${sql}" > /dev/null 2>&1 || true
+              sudo rm -f .nr_script.sql > /dev/null 2>&1
             fi
-          fi
+            IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
+            IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
+          } 
 
-          IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
+          try_create_user
+          TRIES=0
+          while [[ $TRIES -lt {{.MAX_RETRIES}} && $IS_DATABASE_VALID -eq "0" ]]; do
+            ((TRIES++))
+            printf "\n\nUnable to create the required newrelic user.  PostgreSQL account password is required.  Please try again.\n\n" >&3
+            try_create_user
+          done
 
-          if [ $IS_DATABASE_VALID -ne 0 ] ; then
-            # grant the user permissions
-            sudo -u postgres psql -c "GRANT SELECT ON pg_stat_database TO \"$NR_CLI_DB_USERNAME\"" > /dev/null 2> /dev/null
-            sudo -u postgres psql -c "GRANT SELECT ON pg_stat_database_conflicts TO \"$NR_CLI_DB_USERNAME\"" > /dev/null 2> /dev/null
-            sudo -u postgres psql -c "GRANT SELECT ON pg_stat_bgwriter TO \"$NR_CLI_DB_USERNAME\"" > /dev/null 2> /dev/null
+          # if still unable to connect exit out
+          if [[ $IS_DATABASE_VALID -eq "0" ]]; then
+            exit 130
           fi
 
           if [ "$NR_CLI_DB_USERNAME" == "" ]; then

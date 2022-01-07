@@ -40,9 +40,9 @@ successLinkConfig:
 
 preInstall:
   info: |2
-      To capture data from the PostgreSQL integration, we need to create a newrelic user with specific permissions (READ).
+      To capture data from the PostgreSQL integration, we need to create a new PostgreSQL user with specific permissions (READ).
       The installation will create a strong randomly generated password for that new user.
-      This installation may prompt for your PostgreSQL root user password in order to create this new user.
+      This installation may prompt for your postgres user password in order to create this new user.
       More information regarding the prerequisites can be found at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/postgresql-monitoring-integration#comp-req
 
 install:
@@ -136,8 +136,7 @@ install:
           try_create_user () {
             # if it's generated default user, attempt to create 
             if [ "$NR_CLI_DB_USERNAME" -eq "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" -eq "$GEN_PASSWORD" ]; then
-              sudo rm -f .nr_script.sql >&2
-              sudo tee .nr_script.sql > /dev/null <<EOT
+              sql=$(cat <<EOT
           DO
           \$do\$
           BEGIN
@@ -152,7 +151,7 @@ install:
           \$do\$;
 
           EOT
-              sql="$(<".nr_script.sql")"
+          )
               sudo -u postgres psql -t -A -c "${sql}" > /dev/null 2>&1 || true
               sudo rm -f .nr_script.sql > /dev/null 2>&1
             fi
@@ -168,8 +167,9 @@ install:
             try_create_user
           done
           
+          # if still unable to connect exit out
           if [[ $IS_DATABASE_VALID -eq "0" ]]; then
-            exit 4;
+            exit 130
           fi
 
           if [ "$NR_CLI_DB_USERNAME" == "" ]; then
