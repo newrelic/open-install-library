@@ -73,7 +73,7 @@ install:
       cmds:
         - |
           # Map of tool names to the associated error code
-          required_tools_and_error_codes="date:41 sha256sum:42 base64:43 head:44"
+          required_tools_and_error_codes="date:41 sha256sum:42 base64:43 head:44 awk:12"
           for tuple in $required_tools_and_error_codes; do
             tool=$(echo ${tuple} |cut -d':' -f1)
             code=$(echo ${tuple} |cut -d':' -f2)
@@ -133,8 +133,12 @@ install:
             done
           fi
           
-          try_create_user () {
-            # if it's generated default user, attempt to create 
+          TRIES=0
+          
+          # the while statement prompt user for postgresql password if required
+          # user will have 3 chances to enter correct password
+          while [[ $TRIES -lt {{.MAX_RETRIES}} ]]; do
+            # try to generate user base on default credentials
             if [ "$NR_CLI_DB_USERNAME" -eq "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" -eq "$GEN_PASSWORD" ]; then
               sql=$(cat <<EOT
           DO
@@ -155,16 +159,16 @@ install:
               sudo -u postgres psql -t -A -c "${sql}" > /dev/null 2>&1 || true
               sudo rm -f .nr_script.sql > /dev/null 2>&1
             fi
+
             IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
             IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
-          }
           
-          try_create_user
-          TRIES=0
-          while [[ $TRIES -lt {{.MAX_RETRIES}} && $IS_DATABASE_VALID -eq "0" ]]; do
-            ((TRIES++))
-            printf "\n\nUnable to create the required newrelic user.  PostgreSQL account password is required.  Please try again.\n\n" >&3
-            try_create_user
+            if [[ $IS_DATABASE_VALID -gt "0" ]]; then 
+              break
+            else
+              printf "\n\nUnable to create the required newrelic user.  PostgreSQL account password is required.  Please try again.\n\n" >&3
+              ((TRIES++))
+            fi
           done
           
           # if still unable to connect exit out
