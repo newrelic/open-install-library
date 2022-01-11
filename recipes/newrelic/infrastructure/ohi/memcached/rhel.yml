@@ -65,7 +65,6 @@ install:
     setup:
       label: "Installing Memcached integration..."
       cmds:
-        - sudo yum install libmemcached -y > /dev/null
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
@@ -105,31 +104,12 @@ install:
             fi
           done
           
-          CAN_CONNECT=""
-          if [ -z "$NR_CLI_DB_USERNAME" ] && [ -z "$NR_CLI_DB_PASSWORD" ]; then
-            CAN_CONNECT=$(memstat --servers="$NR_CLI_HOST" | grep uptime | wc -l)
-          else
-            CAN_CONNECT=$(memstat --servers="$NR_CLI_HOST" --username="$NR_CLI_DB_USERNAME" --password="$NR_CLI_DB_PASSWORD" | grep uptime | wc -l)
-          fi
-
-          TRIES=0 
-          while [[ $TRIES -lt $MAX_RETRIES && $CAN_CONNECT -eq 0 ]]; do
-            printf "\nPlease enter the username for your Memcached instance: "
-            read -r NR_CLI_DB_USERNAME
-            printf "Please enter the password for your Memcached instance: "
-            stty -echo
-            read -r NR_CLI_DB_PASSWORD
-            stty echo
-            ((TRIES++))
-
-            CAN_CONNECT=$(memstat --servers="$NR_CLI_HOST" --username="$NR_CLI_DB_USERNAME" --password="$NR_CLI_DB_PASSWORD" | grep uptime | wc -l)
-            
-            if [ $CAN_CONNECT -eq 0 ] ; then
-              printf "\n\nUnable to connect your Memcached instance using provided username and password.\n" >&2
-              if [ ! $TRIES -lt $MAX_RETRIES ]; then exit 2; else continue; fi
-              echo "Please try again"
-            fi
-          done 
+          printf "\nPlease enter the username for your Memcached instance (default: none): "
+          read -r NR_CLI_DB_USERNAME
+          printf "Please enter the password for your Memcached instance (default: none): "
+          stty -echo
+          read -r NR_CLI_DB_PASSWORD
+          stty echo
           
           if [ -z $NR_CLI_DB_USERNAME ] && [ -z $NR_CLI_DB_PASSWORD ]; then
             sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<EOT
