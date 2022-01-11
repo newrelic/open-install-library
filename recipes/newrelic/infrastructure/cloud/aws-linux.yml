@@ -36,6 +36,77 @@ preInstall:
       if ! command -v aws &> /dev/null; then
         exit 1
       fi
+
+      callerIdentity=$(aws sts get-caller-identity 2>&1)
+
+      if [ "$(echo "$callerIdentity" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+        exit 1
+      fi
+
+      username=$(echo "$callerIdentity" | sed -ne 's/.*"Arn": ".*\/\(.*\)".*/\1/p')
+
+      echo "username: $username"
+
+      userPolicies=$(aws iam list-user-policies --user-name $username 2>&1)
+
+      if [ "$(echo "$userPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+        exit 1
+      fi
+
+      attachedUserPolicies=$(aws iam list-attached-user-policies --user-name $username 2>&1)
+
+      if [ "$(echo "$attachedUserPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+        exit 1
+      fi
+
+      if [ "$(echo "$attachedUserPolicies" | grep AdministratorAccess | wc -l)" ]; then
+        exit 0
+      fi
+
+      groups=$(aws iam list-groups-for-user --user-name $username 2>&1)
+
+      # For each group in groups
+      listOfGroups=$(echo "$groups" | sed -n 's/.*:group\/\(.*\)",.*/\1/p')
+
+      for i in $listOfGroups; do
+        groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
+
+        if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          exit 1
+        fi
+
+        attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
+
+        if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          exit 1
+        fi
+
+        if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" ]; then
+          exit 0
+        fi
+
+        groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
+
+        if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          exit 1
+        fi
+
+        attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
+
+        if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          exit 1
+        fi
+
+        if [ "$(echo "$groupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
+          exit 0
+        fi
+
+        if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
+          exit 0
+        fi
+      done
+
+      exit 1
   info: |2
       Amazon integrations let you monitor your AWS data in several New Relic features.
 
@@ -54,13 +125,6 @@ install:
         - |
           # Constants
           roleName="NewRelicInfrastructure-Integrations"
-
-          callerIdentity=$(aws sts get-caller-identity 2>&1)
-
-          if [[ "$(echo "$callerIdentity" | grep "^Unable*" | wc -l)" -eq "1" ]] ; then
-              echo "$callerIdentity" >&2
-              exit 1
-          fi
 
           policy=$(cat <<EOT
           {
@@ -88,7 +152,7 @@ install:
 
           getRole=$(aws iam get-role --role-name $roleName 2>&1)
 
-          if [[ "$(echo "$getRole" | grep "^An error occurred (NoSuchEntity)*" | wc -l)" -eq "1" ]] ; then
+          if [ "$(echo "$getRole" | grep "^An error occurred (NoSuchEntity)*" | wc -l)" -eq "1" ] ; then
               echo "$createRole" >&2
               exit 1
           fi
@@ -116,18 +180,34 @@ install:
     setup:
       cmds:
         - |
-          # Variables
-          accountName="hello-world-account"
-
           # Constants
           roleName="NewRelicInfrastructure-Integrations"
 
+          callerIdentity=$(aws sts get-caller-identity 2>&1)
+          accountName=$(echo "$callerIdentity" | sed -ne 's/.*Account": "\(.*\)",/\1/p')
+
           # Download and fix CloudFormation template
-          curl -sLo /tmp/MetricStreams_CloudFormation.yml https://nr-downloads-main.s3.amazonaws.com/cloud_integrations/aws/cloudformation/MetricStreams_CloudFormation.yml
+          curl -sLo /tmp/MetricStreams_CloudFormation.yml {{.NEW_RELIC_DOWNLOAD_URL}}cloud_integrations/aws/cloudformation/MetricStreams_CloudFormation.yml
           sed -ie "s/AWS::AccountId,/\'AWS::AccountId\',/g" /tmp/MetricStreams_CloudFormation.yml
 
           printf "\nDeploying CloudFormation template, this may take a few minutes...\n"
           deploy=$(aws cloudformation deploy --template-file /tmp/MetricStreams_CloudFormation.yml --stack-name NewRelic-Metric-Stream --parameter-overrides NewRelicLicenseKey={{.NEW_RELIC_LICENSE_KEY}} --capabilities CAPABILITY_NAMED_IAM 2>&1)
+
+          if [ "$(echo "$deploy" | grep "^An error occurred (AlreadyExistsException)*" | wc -l)" -eq "1" ] ; then
+              echo "CloudFormation stack already exists"
+              exit 0
+          fi
+
+          if [ "$(echo "$deploy" | grep "^An error occurred (InvalidChangeSetStatus)*" | wc -l)" -eq "1" ] ; then
+              echo "CloudFormation stack is already being deployed"
+              exit 0
+          fi
+
+          if [ "$(echo "$deploy" | grep "*CREATE_IN_PROGRESS*" | wc -l)" -eq "1" ] ; then
+              echo "CloudFormation stack is already being deployed"
+              exit 0
+          fi
+
           echo "CloudFormation deployment complete"
 
           rm /tmp/MetricStreams_CloudFormation.yml
