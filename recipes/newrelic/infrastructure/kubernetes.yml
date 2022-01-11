@@ -109,6 +109,8 @@ install:
           NR_CLI_PIXIE_DEPLOY_KEY="{{.NR_CLI_PIXIE_DEPLOY_KEY}}"
           NR_CLI_PIXIE_ADDRESS="{{.NR_CLI_PIXIE_ADDRESS}}"
 
+          PIXIE_SUPPORTED=true
+
           SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
 
           # Determine the cluster name if not provided
@@ -156,17 +158,17 @@ install:
             if [[ "$KERNEL_MAJOR_VERSION" -lt 4 ]] || [[ "$KERNEL_MAJOR_VERSION" -eq 4 && "$KERNEL_MINOR_VERSION" -lt 14 ]]; then
               echo "Linux kernel v4.14 or higher is required for Pixie, found ${KERNEL_MAJOR_VERSION}.${KERNEL_MINOR_VERSION}" >&2
               echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
-              NR_CLI_PIXIE=false
+              PIXIE_SUPPORTED=false
             fi
           fi
 
           # Check if the nodes have sufficient memory
-          if [[ "$NR_CLI_PIXIE" == "true" ]]; then
-            MEMORY=$(kubectl get nodes -o jsonpath='{.items[0].status.capacity.memory}' | sed 's/Ki$//')
+          if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
+            MEMORY=$($SUDO kubectl get nodes -o jsonpath='{.items[0].status.capacity.memory}' | sed 's/Ki$//')
             if [[ "$MEMORY" -lt 7950912 ]]; then
               echo "Pixie requires nodes with 8 Gb of memory or more, got ${MEMORY}." >&2
               echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
-              NR_CLI_PIXIE=false
+              PIXIE_SUPPORTED=false
             fi
           fi
 
@@ -184,15 +186,15 @@ install:
             exit 1
           fi
 
-          if [[ "$NR_CLI_PIXIE" == "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
+          if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
             echo "Permissions to create a new namespace are required for Pixie." >&2
             echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
-            NR_CLI_PIXIE=false
+            PIXIE_SUPPORTED=false
           fi
 
           # Check if the cluster type is supported by Pixie
-          if [[ "$NR_CLI_PIXIE" == "true" ]]; then
-            SUPPORTED=false
+          if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
+            PIXIE_SUPPORTED=false
 
             if [[ "$CLUSTER" == "docker-desktop" ]]; then
               echo "Docker for desktop is not supported. To create a test cluster to try out Pixie, use minikube instead." >&2
@@ -204,36 +206,36 @@ install:
               fi
             fi
 
-            if $SUDO which minikube 1>/dev/null 2>&1; then
-              if $SUDO minikube profile list | grep " ${CLUSTER} " 2>/dev/null; then
-                DRIVER=$($SUDO minikube profile list | grep " ${CLUSTER} " | cut -f3 -d'|')
+            MINIKUBE=$($SUDO which minikube 2>/dev/null || echo '/usr/local/bin/minikube')
+            if [[ -x $MINIKUBE ]]; then
+              if $SUDO $MINIKUBE profile list | grep " ${CLUSTER} " 1>/dev/null 2>&1; then
+                DRIVER=$($SUDO $MINIKUBE profile list | grep " ${CLUSTER} " | awk -F"|" '{ gsub(" ", "", $3); print $3; }')
                 if [[ "$DRIVER" == "kvm2" || "$DRIVER" == "hyperkit" ]] ; then
-                  echo "Unrecognized minikube driver. To create a test cluster to try out Pixie, use kvm2 or HyperKit instead." >&2
+                  PIXIE_SUPPORTED=true
                 else
-                  SUPPORTED=true
+                  echo "Unrecognized minikube driver. To create a test cluster to try out Pixie, use kvm2 or HyperKit instead." >&2
                 fi
               fi
             fi
 
             if $SUDO which az 1>/dev/null 2>&1; then
               if $SUDO az aks list | grep '"name": "'"${CLUSTER}"'"'; then
-                SUPPORTED=true
+                PIXIE_SUPPORTED=true
               fi
             fi
 
             K8S_VERSION=$($SUDO kubectl version --short | grep "Server Version")
             if echo ${K8S_VERSION} | grep "\-gke\."; then
-              SUPPORTED=true
+              PIXIE_SUPPORTED=true
             fi
 
             if echo ${K8S_VERSION} | grep "\-eks\-"; then
-              SUPPORTED=true
+              PIXIE_SUPPORTED=true
             fi
 
-            if [[ "$SUPPORTED" != "true" ]]; then
+            if [[ "$PIXIE_SUPPORTED" != "true" ]]; then
               echo "This type of Kubernetes cluster is not supported by Pixie: GKE, EKS, AKS & Minikube are supported." >&2
               echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
-              NR_CLI_PIXIE=false
             fi
           fi
 
@@ -265,15 +267,15 @@ install:
             echo "Failed to deploy a privileged container to the Kubernetes cluster." >&2
             echo -e "\033[0;31mReverting to unprivileged mode for this installation. Turning off Logging and Pixie.\033[0m" >&2
             NR_CLI_PRIVILEGED=false
-            NR_CLI_PIXIE=false
+            PIXIE_SUPPORTED=false
             NR_CLI_LOGGING=false
           fi
-          $SUDO kubectl delete -n ${NR_CLI_NAMESPACE} -f nr-check-privileged.yaml 1>/dev/null 2>&1 || echo ""
+          $SUDO kubectl delete --wait=false -n ${NR_CLI_NAMESPACE} -f nr-check-privileged.yaml 1>/dev/null 2>&1 || echo ""
           rm nr-check-privileged.yaml
           fi
 
           # Setup the Pixie CRDs
-          if [ "${NR_CLI_PIXIE}" = "true" ]; then
+          if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
             $SUDO kubectl apply -f https://raw.githubusercontent.com/pixie-labs/pixie/main/k8s/operator/crd/base/px.dev_viziers.yaml
             $SUDO kubectl apply -f https://raw.githubusercontent.com/pixie-labs/pixie/main/k8s/operator/helm/crds/olm_crd.yaml
           fi
@@ -297,17 +299,17 @@ install:
             ARGS="${ARGS} --set prometheus.enabled=${NR_CLI_PROMETHEUS}"
             ARGS="${ARGS} --set kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
             ARGS="${ARGS} --set logging.enabled=${NR_CLI_LOGGING}"
-            if [ "${NEW_RELIC_REGION}" = "STAGING" ]; then
+            if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
               ARGS="${ARGS} --set global.nrStaging=true"
             fi
-            if [ "${NR_CLI_NEWRELIC_PIXIE}" = "true" ]; then
+            if [[ "${NR_CLI_NEWRELIC_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" ]]; then
               ARGS="${ARGS} --set newrelic-pixie.enabled=true"
               ARGS="${ARGS} --set newrelic-pixie.apiKey=${NR_CLI_PIXIE_API_KEY}"
-              if [ "${NR_CLI_PIXIE}" = "true" ]; then
+              if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
                 ARGS="${ARGS} --set pixie-chart.enabled=true"
                 ARGS="${ARGS} --set pixie-chart.deployKey=${NR_CLI_PIXIE_DEPLOY_KEY}"
                 ARGS="${ARGS} --set pixie-chart.clusterName=${NR_CLI_CLUSTERNAME}"
-                if [ ! -z "${NR_CLI_PIXIE_ADDRESS}" ]; then
+                if [[ ! -z "${NR_CLI_PIXIE_ADDRESS}" ]]; then
                   ARGS="${ARGS} --set pixie-chart.cloudAddr=${NR_CLI_PIXIE_ADDRESS}"
                   ARGS="${ARGS} --set pixie-chart.cloudUpdateAddr=${NR_CLI_PIXIE_ADDRESS}"
                 fi
@@ -330,17 +332,17 @@ install:
             URL="${URL}&kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
             URL="${URL}&logging.enabled=${NR_CLI_LOGGING}"
             URL="${URL}&global.licenseKey=${NEW_RELIC_LICENSE_KEY}"
-            if [ "${NEW_RELIC_REGION}" = "STAGING" ]; then
+            if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
               URL="${URL}&global.nrStaging=true"
             fi
-            if [ "${NR_CLI_NEWRELIC_PIXIE}" = "true" ]; then
+            if [[ "${NR_CLI_NEWRELIC_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" ]]; then
               URL="${URL}&newrelic-pixie.enabled=true"
               URL="${URL}&newrelic-pixie.apiKey=${NR_CLI_PIXIE_API_KEY}"
-              if [ "${NR_CLI_PIXIE}" = "true" ]; then
+              if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
                 URL="${URL}&pixie-chart.enabled=true"
                 URL="${URL}&pixie-chart.deployKey=${NR_CLI_PIXIE_DEPLOY_KEY}"
                 URL="${URL}&pixie-chart.clusterName=$NR_CLI_CLUSTERNAME"
-                if [ ! -z "${NR_CLI_PIXIE_ADDRESS}" ]; then
+                if [[ ! -z "${NR_CLI_PIXIE_ADDRESS}" ]]; then
                   URL="${URL}&pixie-chart.cloudAddr=${NR_CLI_PIXIE_ADDRESS}"
                   URL="${URL}&pixie-chart.cloudUpdateAddr=${NR_CLI_PIXIE_ADDRESS}"
                 fi
@@ -352,11 +354,11 @@ install:
 
           # Wait on newrelic-infrastructure pod to be running
           echo "Running newrelic-infrastructure status check attempt..."
-          MAX_RETRIES=60
+          MAX_RETRIES=150
           TRIES=0
           while [ $TRIES -lt $MAX_RETRIES ]; do
             ((TRIES++))
-            IS_INFRA_POD_STARTED=$($SUDO kubectl get pods -o wide -n $NR_CLI_NAMESPACE | grep newrelic-infrastructure | grep -i "running" | wc -l)
+            IS_INFRA_POD_STARTED=$($SUDO kubectl get pods -o wide -n $NR_CLI_NAMESPACE | grep newrelic-infrastructure | grep -i "running" | wc -l | sed 's/ //g')
             if [[ $IS_INFRA_POD_STARTED -gt 0 ]]; then
               echo "newrelic-infrastructure pod started"
               break
