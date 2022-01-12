@@ -95,7 +95,9 @@ install:
           NR_CLI_DB_HOSTNAME="{{.NR_CLI_DB_HOSTNAME}}"
           NR_CLI_DB_PORT="{{.NR_CLI_DB_PORT}}"
           NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
+          echo "NR_CLI_DB_USERNAME:"$NR_CLI_DB_USERNAME
           NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
+          echo "NR_CLI_DB_PASSWORD:"$NR_CLI_DB_PASSWORD
           NR_CLI_DATABASE="{{.NR_CLI_DATABASE}}"
           NR_CLI_SSL="{{.NR_CLI_SSL}}"
           NR_CLI_CLIENT_CERT_FILE="{{.NR_CLI_CLIENT_CERT_FILE}}"
@@ -111,10 +113,13 @@ install:
           NR_CLI_TRUST_SERVER_CERTIFICATE=${NR_CLI_TRUST_SERVER_CERTIFICATE:-'false'}
           NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-'newrelic'}
           GEN_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
+          echo "GEN_PASSWORD:"$GEN_PASSWORD
           NR_CLI_DB_PASSWORD=${NR_CLI_DB_PASSWORD:-"$GEN_PASSWORD"}
+          echo "NR_CLI_DB_PASSWORD:"$NR_CLI_DB_PASSWORD
 
           # Check default connect
           CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+          echo "CAN_CONNECT:"$CAN_CONNECT
           CAN_CONNECT=${CAN_CONNECT:-0}
 
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
@@ -123,6 +128,7 @@ install:
               read -r NR_CLI_DB_PORT
               ((TRIES++))
               CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+              echo "CAN_CONNECT:"$CAN_CONNECT
               CAN_CONNECT=${CAN_CONNECT:-0}
 
               if [ $CAN_CONNECT == "7" ]; then
@@ -145,6 +151,7 @@ install:
           while [[ $TRIES -lt {{.MAX_RETRIES}} ]]; do
             # try to generate user base on default credentials
             if [ "$NR_CLI_DB_USERNAME" == "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" == "$GEN_PASSWORD" ]; then
+              echo "Creating user..."
               sql=$(cat <<EOT
           DO
           \$do\$
@@ -163,11 +170,13 @@ install:
           )
               sudo -u postgres psql -t -A -c "${sql}" > /dev/null 2>&1 || true
               sudo rm -f .nr_script.sql > /dev/null 2>&1
+              echo "User created"
             fi
 
             IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
+            echo "IS_DATABASE_VALID:"$IS_DATABASE_VALID
             IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
-          
+
             if [[ $IS_DATABASE_VALID -gt "0" ]]; then 
               break
             else
