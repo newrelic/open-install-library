@@ -21,18 +21,15 @@
   synchronize: src=. dest=/home/{{ ansible_user }}
   become: yes
 
-- name: move war to tomcat
-  shell: "cp /home/{{ ansible_user }}/spring-boot-rest.war /opt/tomcat/latest/webapps/spring-boot-rest.war"
-  become: yes
-
-- name: Build Tomcat Image
+- name: Build JBoss Image
   docker_image: >
     name=spring-boot-rest
-    tag=1
+    tag=wildfly
     path=/home/{{ ansible_user }}
     state=present
   become: yes
 
-- name: Run Tomcat Docker container
-  shell: "sudo docker run -d -p {{ service_port }}:8080 --env TOMCAT_USERNAME=tomcat --env TOMCAT_PASSWORD=tomcat spring-boot-rest:1"
+# NOTE: context root of deployed app is name of artifact i.e. http://localhost:<service_port>/spring-boot-rest
+- name: Run JBoss Docker container
+  shell: "docker run -d -p {{ service_port }}:8080 spring-boot-rest:wildfly /opt/jboss/wildfly/bin/standalone.sh -b 0.0.0.0"
   become: yes
