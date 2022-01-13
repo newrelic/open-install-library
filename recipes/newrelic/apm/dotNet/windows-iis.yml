@@ -257,13 +257,24 @@ install:
             $xdoc.configuration.AppendChild($child) | Out-Null
           }
           if ("$env:HTTPS_PROXY") {
-            $proxy = $xdoc.GetElementsByTagName("proxy")[0]
-            if ($proxy) {
-              $xdoc.configuration.service.RemoveChild($proxy) | Out-Null
+            $uri = ""
+            try {
+              $uri = [System.Uri]::new("$env:HTTPS_PROXY")
             }
-            $child = $xdoc.CreateElement("proxy", "urn:newrelic-config")
-            $child.SetAttribute("uriPath", "$env:HTTPS_PROXY")
-            $xdoc.configuration.service.AppendChild($child) | Out-Null
+            catch { }
+            if ($uri) {
+              $proxy = $xdoc.GetElementsByTagName("proxy")[0]
+              if ($proxy) {
+                $xdoc.configuration.service.RemoveChild($proxy) | Out-Null
+              }
+              $child = $xdoc.CreateElement("proxy", "urn:newrelic-config")
+              $child.SetAttribute("host", $uri.Host)
+              $child.SetAttribute("port", $uri.Port)
+              if ($uri.PathAndQuery -and $uri.PathAndQuery -ne "/" ) {
+                $child.SetAttribute("uriPath", $uri.PathAndQuery)
+              }
+              $xdoc.configuration.service.AppendChild($child) | Out-Null
+            }
           }
 
           $xdoc.Save($configPath)
