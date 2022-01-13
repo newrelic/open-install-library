@@ -39,7 +39,7 @@ preInstall:
 
       callerIdentity=$(aws sts get-caller-identity 2>&1)
 
-      if [ "$(echo "$callerIdentity" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+      if [ "$(echo "$callerIdentity" | grep AccessDenied | wc -l)" -eq 1 ] ; then
         exit 1
       fi
 
@@ -48,13 +48,13 @@ preInstall:
 
         userPolicies=$(aws iam list-user-policies --user-name $username 2>&1)
 
-        if [ "$(echo "$userPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+        if [ "$(echo "$userPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
           return 1
         fi
 
         attachedUserPolicies=$(aws iam list-attached-user-policies --user-name $username 2>&1)
 
-        if [ "$(echo "$attachedUserPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+        if [ "$(echo "$attachedUserPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
           return 1
         fi
 
@@ -70,37 +70,37 @@ preInstall:
         for i in $listOfGroups; do
           groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
 
-          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
             return 1
           fi
 
           attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
 
-          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
             return 1
           fi
 
-          if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ]; then
+          if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq 1 ]; then
             return 0
           fi
 
           groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
 
-          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
             return 1
           fi
 
           attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
 
-          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
             return 1
           fi
 
-          if [ "$(echo "$groupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$groupPolicies" | grep AdministratorAccess | wc -l)" -eq 1 ] ; then
             return 0
           fi
 
-          if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq 1 ] ; then
             return 0
           fi
         done
@@ -108,7 +108,7 @@ preInstall:
         return 1
       }
 
-      if [ "$(isUserAdmin $callerIdentity)" -eq "1" ]; then
+      if [ "$(isUserAdmin $callerIdentity)" -eq 1 ]; then
         exit 1
       fi
 
@@ -161,7 +161,7 @@ install:
 
           getRole=$(aws iam get-role --role-name $roleName 2>&1)
 
-          if [ "$(echo "$getRole" | grep "^An error occurred (NoSuchEntity)*" | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$getRole" | grep "^An error occurred (NoSuchEntity)*" | wc -l)" -eq 1 ] ; then
               echo "$createRole" >&2
               exit 1
           fi
@@ -195,19 +195,19 @@ install:
           printf "\nDeploying CloudFormation template, this may take a few minutes...\n"
           deploy=$(aws cloudformation deploy --template-file /tmp/MetricStreams_CloudFormation.yml --stack-name NewRelic-Metric-Stream --parameter-overrides NewRelicLicenseKey={{.NEW_RELIC_LICENSE_KEY}} --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
-          if [ "$(echo "$deploy" | grep "^An error occurred (AlreadyExistsException)*" | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$deploy" | grep "^An error occurred (AlreadyExistsException)*" | wc -l)" -eq 1 ] ; then
               echo "CloudFormation stack already exists"
               rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
           fi
 
-          if [ "$(echo "$deploy" | grep "^An error occurred (InvalidChangeSetStatus)*" | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$deploy" | grep "^An error occurred (InvalidChangeSetStatus)*" | wc -l)" -eq 1 ] ; then
               echo "CloudFormation stack is already being deployed"
               rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
           fi
 
-          if [ "$(echo "$deploy" | grep "*CREATE_IN_PROGRESS*" | wc -l)" -eq "1" ] ; then
+          if [ "$(echo "$deploy" | grep "*CREATE_IN_PROGRESS*" | wc -l)" -eq 1 ] ; then
               echo "CloudFormation stack is already being deployed"
               rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
@@ -222,7 +222,15 @@ install:
 
           query=$(echo { \"query\": \"mutation { cloudLinkAccount\(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, accounts: { aws: { name: \\\"$accountName\\\", arn: \\\"$arn\\\", metricCollectionMode: PUSH}}\) { linkedAccounts { id name authLabel createdAt updatedAt } } }\" })
 
-          curlQuery=$(echo $query | curl https://api.newrelic.com/graphql \
+          NEW_RELIC_API_URL='https://api.newrelic.com/graphql'
+
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL='https://staging-api.newrelic.com/graphql'
+          elif [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL='https://api.eu.newrelic.com/graphql'
+          fi
+
+          curlQuery=$(echo $query | curl $NEW_RELIC_API_URL \
           -H 'Content-Type: application/json' \
           -H 'API-Key: {{.NEW_RELIC_API_KEY}}' \
           -d @- 2>&1)
