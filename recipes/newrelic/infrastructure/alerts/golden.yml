@@ -21,6 +21,30 @@ preInstall:
       - High Application Response Time
       - Low Application Throughput
       This policy can be modified under Alerts & AI\Policies.
+  requireAtDiscovery: |
+      # recipe per account base, will skip if already installed 
+      NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+
+      if [ $(echo $NEW_RELIC_REGION | grep -i staging | wc -l) -gt 0 ]; then
+        NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+      fi
+      if [ $(echo $NEW_RELIC_REGION | grep -i eu | wc -l) -gt 0 ]; then
+        NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+      fi
+      
+      POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+          -H "Api-Key:$NEW_RELIC_API_KEY" \
+          -L -H 'Content-Type: application/json' \
+          -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
+      )
+      
+      POLICY_ID=$(echo $POLICY_RESULT | grep -o '{"id":"[0-9]\+","name":"Golden Signals"}' | cut -d "," -f1 | cut -d ":" -f2)
+      POLICY_ID=$(sed -e 's/^"//' -e 's/"$//' <<<"$POLICY_ID")
+
+      if [[ -n "$POLICY_ID" ]] && [ $POLICY_ID -gt 0 ] ; then
+        echo "Golden Signals already installed on this account, skipped"
+        exit 1
+      fi
 
 install:
   version: "3"
@@ -41,7 +65,6 @@ install:
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
             NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
           fi
-
 
           while true; do
             POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
