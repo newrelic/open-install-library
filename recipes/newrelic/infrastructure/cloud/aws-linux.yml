@@ -43,68 +43,80 @@ preInstall:
         exit 1
       fi
 
-      username=$(echo "$callerIdentity" | sed -ne 's/.*"Arn": ".*\/\(.*\)".*/\1/p')
+      function isUserAdmin {
+        username=$(echo "$1" | sed -ne 's/.*"Arn": ".*\/\(.*\)".*/\1/p')
 
-      userPolicies=$(aws iam list-user-policies --user-name $username 2>&1)
+        userPolicies=$(aws iam list-user-policies --user-name $username 2>&1)
 
-      if [ "$(echo "$userPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+        if [ "$(echo "$userPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          return 1
+        fi
+
+        attachedUserPolicies=$(aws iam list-attached-user-policies --user-name $username 2>&1)
+
+        if [ "$(echo "$attachedUserPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+          return 1
+        fi
+
+        if [ "$(echo "$attachedUserPolicies" | grep AdministratorAccess | wc -l)" ]; then
+          return 0
+        fi
+
+        groups=$(aws iam list-groups-for-user --user-name $username 2>&1)
+
+        # For each group in groups
+        listOfGroups=$(echo "$groups" | sed -n 's/.*:group\/\(.*\)",.*/\1/p')
+
+        for i in $listOfGroups; do
+          groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
+
+          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+            return 1
+          fi
+
+          attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
+
+          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+            return 1
+          fi
+
+          if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ]; then
+            return 0
+          fi
+
+          groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
+
+          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+            return 1
+          fi
+
+          attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
+
+          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+            return 1
+          fi
+
+          if [ "$(echo "$groupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
+            return 0
+          fi
+
+          if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
+            return 0
+          fi
+        done
+
+        return 1
+      }
+
+      if [ "$(isUserAdmin $callerIdentity)" -eq "1" ]; then
         exit 1
       fi
 
-      attachedUserPolicies=$(aws iam list-attached-user-policies --user-name $username 2>&1)
+      deployed=$(aws cloudformation describe-stacks --stack-name NewRelic-Metric-Stream 2>&1 | grep "^An error occurred (ValidationError)*" | wc -l)
 
-      if [ "$(echo "$attachedUserPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
+      if [ "$deployed" -eq "0" ] ; then
         exit 1
       fi
-
-      if [ "$(echo "$attachedUserPolicies" | grep AdministratorAccess | wc -l)" ]; then
-        exit 0
-      fi
-
-      groups=$(aws iam list-groups-for-user --user-name $username 2>&1)
-
-      # For each group in groups
-      listOfGroups=$(echo "$groups" | sed -n 's/.*:group\/\(.*\)",.*/\1/p')
-
-      for i in $listOfGroups; do
-        groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
-
-        if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
-          exit 1
-        fi
-
-        attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
-
-        if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
-          exit 1
-        fi
-
-        if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" ]; then
-          exit 0
-        fi
-
-        groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
-
-        if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
-          exit 1
-        fi
-
-        attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
-
-        if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq "1" ] ; then
-          exit 1
-        fi
-
-        if [ "$(echo "$groupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
-          exit 0
-        fi
-
-        if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq "1" ] ; then
-          exit 0
-        fi
-      done
-
-      exit 1
   info: |2
       Amazon integrations let you monitor your AWS data in several New Relic features.
 
@@ -122,13 +134,6 @@ install:
         - |
           # Constants
           roleName="NewRelicInfrastructure-Integrations"
-
-          deployed=$(aws cloudformation describe-stacks --stack-name NewRelic-Metric-Stream 2>&1 | grep "^An error occurred (ValidationError)*" | wc -l)
-
-          if [ "$deployed" -eq "0" ] ; then
-            echo "AWS Integration is already deployed"
-            exit 0
-          fi
 
           policy=$(cat <<EOT
           {
@@ -192,16 +197,19 @@ install:
 
           if [ "$(echo "$deploy" | grep "^An error occurred (AlreadyExistsException)*" | wc -l)" -eq "1" ] ; then
               echo "CloudFormation stack already exists"
+              rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
           fi
 
           if [ "$(echo "$deploy" | grep "^An error occurred (InvalidChangeSetStatus)*" | wc -l)" -eq "1" ] ; then
               echo "CloudFormation stack is already being deployed"
+              rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
           fi
 
           if [ "$(echo "$deploy" | grep "*CREATE_IN_PROGRESS*" | wc -l)" -eq "1" ] ; then
               echo "CloudFormation stack is already being deployed"
+              rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
           fi
 
