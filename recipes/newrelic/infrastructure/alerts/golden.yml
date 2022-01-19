@@ -21,6 +21,34 @@ preInstall:
       - High Application Response Time
       - Low Application Throughput
       This policy can be modified under Alerts & AI\Policies.
+  requireAtDiscovery: |
+      if [[ "$NR_CLI_SHOW_GOLDEN_OPTION" == "true" ]] ; then exit 0; fi 
+
+      # recipe per account base, will skip if already installed 
+      NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+
+      if [ $(echo $NEW_RELIC_REGION | grep -i staging | wc -l) -gt 0 ]; then
+        NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+      fi
+      if [ $(echo $NEW_RELIC_REGION | grep -i eu | wc -l) -gt 0 ]; then
+        NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+      fi
+      
+      POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+          -H "Api-Key:$NEW_RELIC_API_KEY" \
+          -L -H 'Content-Type: application/json' \
+          -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
+      )
+      
+      POLICY_ID=$(echo $POLICY_RESULT | grep -o '{"id":"[0-9]\+","name":"Golden Signals"}' | cut -d "," -f1 | cut -d ":" -f2)
+      POLICY_ID=$(sed -e 's/^"//' -e 's/"$//' <<<"$POLICY_ID")
+
+      if [[ -n "$POLICY_ID" ]] && [ $POLICY_ID -gt 0 ] ; then
+        echo "Golden Signals already installed on this account, skipped"
+        exit 1
+      fi
+      
+      exit 0
 
 install:
   version: "3"
@@ -250,12 +278,12 @@ install:
           NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
           if [ "$NEW_RELIC_ASSUME_YES" != "true" ]  && [ "$NEW_RELIC_EMAIL_CONTINUE" == "" ]; then
             while :; do
-              echo -n "Would you like to be notified on your registered email address "$USER_EMAIL" when this alert triggers Y/N (default: Y)? "
+              echo -n "Would you like to be notified on your registered email address "$USER_EMAIL" when this alert triggers Y/N (default: N)? "
               read answer
               echo ""
               NEW_RELIC_EMAIL_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
               if [[ -z "$NEW_RELIC_EMAIL_CONTINUE" ]]; then
-                NEW_RELIC_EMAIL_CONTINUE="Y"
+                NEW_RELIC_EMAIL_CONTINUE="N"
               fi
               if [[ "$NEW_RELIC_EMAIL_CONTINUE" == "N" ]]; then
                 break
