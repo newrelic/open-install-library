@@ -65,6 +65,7 @@ install:
     default:
       cmds:
         - task: assert_infra
+        - task: assert_pre_req
         - task: input_assert
           vars:
             MAX_RETRIES: 3
@@ -78,6 +79,24 @@ install:
             echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
             exit 1
           fi
+
+    assert_pre_req:
+      cmds:
+        - |
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="date:41 sha256sum:42 base64:43 head:44"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo -e "{{.RED}}This installation requires '${tool}' to be installed.{{.NOCOLOR}}" >> /dev/stderr
+              exit ${code}
+            fi
+          done
 
     input_assert:
       cmds:

@@ -1,0 +1,64 @@
+name: rabbitmq-open-source-integration
+displayName: RabbitMQ Open Source Integration
+description: New Relic install recipe for default RabbitMQ Open Source on-host integration (via Infra-Agent)
+repository: https://github.com/newrelic/nri-rabbitmqi
+
+installTargets:
+  - type: host
+    os: windows
+    kernelArch: x86_64
+
+# keyword convention for dealing with search terms that could land someone on this instrumentation project
+keywords:
+  - Infrastructure
+  - Integration
+  - rabbitmq
+
+processMatch:
+  - erlsrv\.exe
+
+preInstall:
+  requireAtDiscovery: |
+    powershell -command '
+    try{
+      if (Get-Service "rabbitmq" -ErrorAction SilentlyContinue) {
+          exit 132
+      }
+      
+      $rabbitMQMgmtUrl = "http://localhost:15672/"
+      $response=Invoke-WebRequest -UseBasicParsing -Method Get -TimeoutSec 10 -Uri $rabbitMQmgmtUrl
+      $okStatusCode = $response.statuscode -ieq "200"
+      $foundRabbitMQMgmt = $response -match "rabbitmq" -ieq "True"
+      
+      if($okStatusCode -and $foundRabbitMQMgmt){
+        exit 132
+      }
+    }
+    catch {}
+    exit 1
+    '
+  info: |2
+      To capture data from the RabbitMQ integration, you'll first need to meet these prerequisites:
+      - RabbitMQ version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/rabbitmq-monitoring-integration#comp-req)
+      - RabbitMQ Management Plugin is configured
+      - RabbitMQ command line tool, rabbitmqctl, is in the PATH of the root use.
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: setup
+
+    setup:
+      cmds:
+        - |
+          exit 131
+
+postInstall:
+  info: |2
+      ??  The RabbitMQ configuration file can be found in /etc/newrelic-infra/integrations.d/rabbitmq-config.yml
+      Edit this file to make changes or configure advanced features for this integration. See the docs for options:
+      https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/rabbitmq-monitoring-integration#config

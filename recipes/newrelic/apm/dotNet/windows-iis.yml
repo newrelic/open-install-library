@@ -256,6 +256,37 @@ install:
             $child.SetAttribute("excludeNewrelicHeader", "false")
             $xdoc.configuration.AppendChild($child) | Out-Null
           }
+          if ("$env:HTTPS_PROXY") {
+            $uri = ""
+            try {
+              $uri = [System.Uri]::new("$env:HTTPS_PROXY")
+            }
+            catch { }
+            if ($uri) {
+              $proxy = $xdoc.GetElementsByTagName("proxy")[0]
+              if ($proxy) {
+                $xdoc.configuration.service.RemoveChild($proxy) | Out-Null
+              }
+              $child = $xdoc.CreateElement("proxy", "urn:newrelic-config")
+              $child.SetAttribute("host", $uri.Host)
+              $child.SetAttribute("port", $uri.Port)
+              if ($uri.PathAndQuery -and $uri.PathAndQuery -ne "/" ) {
+                $child.SetAttribute("uriPath", $uri.PathAndQuery)
+              }
+              if ($uri.UserInfo) {
+                $parts = $uri.UserInfo.Split(":")
+                if ($parts.Length -ge 1) {
+                  $child.SetAttribute("user", $parts[0])
+                }
+                if ($parts.Length -ge 2) {
+                  $password = $uri.UserInfo.Substring($uri.UserInfo.IndexOf(":")+1)
+                  $child.SetAttribute("password", $password);
+                }
+              }
+              $xdoc.configuration.service.AppendChild($child) | Out-Null
+            }
+          }
+
           $xdoc.Save($configPath)
           '
         - echo "New Relic .NET Agent configured"

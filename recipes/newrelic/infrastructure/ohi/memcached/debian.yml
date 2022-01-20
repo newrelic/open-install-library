@@ -37,21 +37,6 @@ logMatch:
 # installed is successfully sending data to New Relic
 validationNrql: "SELECT count(*) from MemcachedSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
-# Prompts for input from the user. These variables then become
-# available to go-task in the form of {{.VAR_NAME}}
-inputVars:
-  - name: "NR_CLI_DB_USERNAME"
-    prompt: "SASL Username (if applicable)"
-  - name: "NR_CLI_DB_PASSWORD"
-    prompt: "SASL Password (if applicable)"
-    secret: true
-  - name: "NR_CLI_HOST"
-    prompt: "Memcached Hostname (default: localhost)"
-    default: "localhost"
-  - name: "NR_CLI_PORT"
-    prompt: "Memcached Port (default: 11211)"
-    default: 11211
-
 preInstall:
   info: |2
       To capture data from the Memcached integration, you'll first need to meet these prerequisites:
@@ -87,43 +72,80 @@ install:
           # Get latest definitions and skip any failure because of deprecation
           sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
         - |
-          sudo apt-get install nri-memcached -y
+          sudo apt-get install nri-memcached -y > /dev/null
         - |
           if [ -f /etc/newrelic-infra/integrations.d/memcached-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/memcached-config.yml;
           fi
         - |
-          if [ -z {{.NR_CLI_DB_USERNAME}} ] && [ -z {{.NR_CLI_DB_PASSWORD}} ]; then
-            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
+          
+          # try get values from env
+          NR_CLI_DB_USERNAME={{.NR_CLI_DB_USERNAME}}
+          NR_CLI_DB_PASSWORD={{.NR_CLI_DB_PASSWORD}}
+          NR_CLI_HOST={{.NR_CLI_HOST}}
+          NR_CLI_PORT={{.NR_CLI_PORT}}
+
+          # Set default values for variables
+          NR_CLI_HOST=${NR_CLI_HOST:-localhost}
+          NR_CLI_PORT=${NR_CLI_PORT:-11211}
+          MAX_RETRIES=3
+          TRIES=0 
+          CAN_CONNECT=$(curl $NR_CLI_HOST:$NR_CLI_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+
+          while [[ $TRIES -lt $MAX_RETRIES  && $CAN_CONNECT == "7" ]]; do
+            printf "\nPlease enter the port number for your Memcached instance: "
+            read -r NR_CLI_PORT
+            ((TRIES++))
+
+            CAN_CONNECT=$(curl $NR_CLI_HOST:$NR_CLI_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+
+            if [ $CAN_CONNECT == "7" ]; then
+              printf "\n\nUnable to connect your Memcached instance using provided port.\n" >&2
+              if [ ! $TRIES -lt $MAX_RETRIES ]; then exit 7; fi
+              echo "Please try again"
+            else
+              break
+            fi
+          done
+          
+          printf "\nPlease enter the username for your Memcached instance (default: none): "
+          read -r NR_CLI_DB_USERNAME
+          printf "Please enter the password for your Memcached instance (default: none): "
+          stty -echo
+          read -r NR_CLI_DB_PASSWORD
+          stty echo
+
+          if [ -z $NR_CLI_DB_USERNAME ] && [ -z $NR_CLI_DB_PASSWORD ]; then
+            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<EOT
           integrations:
             - name: nri-memcached
               env:
                 # Hostname of the memcached instance.
                 # Defaults to localhost.
-                HOST: {{.NR_CLI_HOST}}
+                HOST: $NR_CLI_HOST
                 # Port memcached is running on.
                 # Defaults to 11211
-                PORT: {{.NR_CLI_PORT}}
+                PORT: $NR_CLI_PORT
               inventory_source: config/memcached
               interval: 15
           EOT
           else
-            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<"EOT"
+            sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<EOT
           integrations:
             - name: nri-memcached
               env:
                 # Hostname of the memcached instance.
                 # Defaults to localhost.
-                HOST: {{.NR_CLI_HOST}}
+                HOST: $NR_CLI_HOST
                 # Port memcached is running on.
                 # Defaults to 11211
-                PORT: {{.NR_CLI_PORT}}
+                PORT: $NR_CLI_PORT
                 # Memcached SASL username. Only required if
                 # authentication is enabled.
-                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                USERNAME: $NR_CLI_DB_USERNAME
                 # Memcached SASL password. Only required if
                 # authentication is enabled.
-                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                PASSWORD: $NR_CLI_DB_PASSWORD
               inventory_source: config/memcached
               interval: 15
           EOT

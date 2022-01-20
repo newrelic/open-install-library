@@ -95,12 +95,14 @@ install:
     setup:
       cmds:
         - |
+          NR_CLI_SKIP_LOGS={{.NR_CLI_SKIP_LOGS}}
           target_log_files=()
           target_discovered_log_files=()
           source_log_files=("/var/log/alternatives.log")
           source_log_files+=("/var/log/cloud-init.log")
           source_log_files+=("/var/log/auth.log")
           source_log_files+=("/var/log/dpkg.log")
+          source_log_files+=("/var/log/syslog")
           source_log_files+=("/var/log/messages")
           source_log_files+=("/var/log/secure")
           source_log_files+=("/var/log/yum.log")
@@ -127,38 +129,10 @@ install:
           if [ $file_exist -gt 0 ]; then
             target_log_files+=("/var/lib/docker/containers/*/*.log")
           fi
-
-          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
-          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            if [ ${#target_log_files[@]} -gt 0 ]; then
-              while :; do
-                echo "The log files below have been detected:"
-                for log_file in "${target_log_files[@]}"
-                do
-                  echo "  "$log_file
-                done
-                for log_file in "${target_discovered_log_files[@]}"
-                do
-                  echo "  "$log_file
-                done
-                echo -n "Would you like to tail those log files to New Relic Y/N (default: Y)? "
-                read answer
-                echo ""
-                NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
-                if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
-                  NEW_RELIC_CONTINUE="Y"
-                fi
-                if [ "$NEW_RELIC_CONTINUE" == "N" ] ||  [ "$NEW_RELIC_CONTINUE" == "n" ]; then
-                  target_log_files=()
-                  target_discovered_log_files=()
-                  break
-                fi
-                if [ "$NEW_RELIC_CONTINUE" == "Y" ] ||  [ "$NEW_RELIC_CONTINUE" == "y" ]; then
-                  break
-                fi
-                echo -e "Please type Y or N only."
-              done
-            fi
+          
+          if [[ "$NR_CLI_SKIP_LOGS" == "true" ]] ; then
+            target_log_files=()
+            target_discovered_log_files=()
           fi
 
           target_log_files+=({{.NEW_RELIC_CLI_LOG_FILE_PATH}})
