@@ -9,7 +9,7 @@ A collection of recipes designed to support the automated installation and setup
 * [Kubernetes Testing](./kubernetes.md)
 * [Manual Testing](../test/manual/readme.MD)
 * [Install Error Codes](./error-codes.md)
-* [Uninstalling Recipes](./uninstall/README.MD)
+* [Uninstalling Recipes](./uninstall/)
 
 ## Contributing Recipes
 
