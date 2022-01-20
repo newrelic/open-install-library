@@ -9,6 +9,7 @@ A collection of recipes designed to support the automated installation and setup
 * [Kubernetes Testing](./kubernetes.md)
 * [Manual Testing](../test/manual/readme.MD)
 * [Install Error Codes](./error-codes.md)
+* [Uninstalling Recipes](./uninstall/README.MD)
 
 ## Contributing Recipes
 
@@ -23,7 +24,7 @@ Recipes are written in YAML and must adhere to our [recipe spec](./recipe-spec/r
 
 * MUST include a `default` task for the newrelic-cli to use as an entry point
 * Use `silent: true` to omit output at the taskfile level
-  
+
   ```bash
   install:
     version: "3"
@@ -52,7 +53,7 @@ Recipes are written in YAML and must adhere to our [recipe spec](./recipe-spec/r
     setup:
       label: "Installing nginx integration..."
   ```
-  
+
 * Accept variables using `inputVars` (see [Common Variables](#configuration-variables))
 * Idempotence (see [Idempotence](#idempotence))
 
@@ -101,7 +102,7 @@ The `newrelic-cli` injects at runtime of a go-task the following variables:
 
 * `{{.NEW_RELIC_LICENSE_KEY}}` populated by the key associated with the profile run with the CLI
 * Input Variables - recipes can use `inputVars` to prompt the user to enter variables needed in the recipe.
-  
+
   ```bash
   # Prompts for input from the user. These variables then become
   # available to go-task in the form of {{.VAR_NAME}}
