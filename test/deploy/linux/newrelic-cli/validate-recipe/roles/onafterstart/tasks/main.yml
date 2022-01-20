@@ -40,24 +40,24 @@
     nrql_query: "{{ nrql_query | replace('CONTAINERID', docker_output.stdout) }}"
 
 
-- name: Set default newrelic api url
+- name: Set default newrelic api validation url
   set_fact:
-    newrelic_api_url: "api.newrelic.com"
-  when: newrelic_api_url is undefined and (newrelic_region|upper) != "EU"
+    newrelic_api_validation_url: "api.newrelic.com"
+  when: newrelic_api_validation_url is undefined
 
-- name: Override eu newrelic api url
+- name: Override eu newrelic api validation url
   set_fact:
-    newrelic_api_url: "api.eu.newrelic.com"
-  when: newrelic_api_url is undefined and (newrelic_region|upper) == "EU" 
+    newrelic_api_validation_url: "api.eu.newrelic.com"
+  when: (newrelic_region|upper) == "EU"
 
 
 - name: Ensure https api url
   set_fact:
-    newrelic_api_url: "https://{{ newrelic_api_url }}"
-  when: not newrelic_api_url | regex_search('^https', ignorecase=True)
+    newrelic_api_validation_url: "https://{{ newrelic_api_validation_url }}"
+  when: not newrelic_api_validation_url | regex_search('^https', ignorecase=True)
 
 - debug:
-    msg: "Using newrelic_api_url:{{ newrelic_api_url }}"
+    msg: "Using newrelic_api_validation_url:{{ newrelic_api_validation_url }}"
 
 - block:
     - name: Create payload
@@ -72,7 +72,7 @@
         src: gql-query.source.gpl
         dest: "{{ playbook_dir }}/gql-query.json"
     - name: Run NRQL via nerdgraph
-      shell: "curl -sX POST '{{ newrelic_api_url }}/graphql' \
+      shell: "curl -sX POST '{{ newrelic_api_validation_url }}/graphql' \
       -H 'API-Key: {{ newrelic_personal_api_key }}' \
       -L -H 'Content-Type: application/json' \
       -d @{{ playbook_dir }}/gql-query.json"
