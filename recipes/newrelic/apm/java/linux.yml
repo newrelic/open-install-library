@@ -33,6 +33,7 @@ logMatch:
 
 processMatch:
   - java.*org.apache.catalina.startup.Bootstrap
+  - java.*\/opt\/wildfly\/jboss-modules\.jar
 
 preInstall:
   requireAtDiscovery: |
@@ -69,9 +70,14 @@ successLinkConfig:
   filter: '"`tags.language` = ''java''"'
 
 install:
-
   version: "3"
   silent: true
+
+  vars:
+    IS_TOMCAT:
+      sh: ps aux | grep 'org.apache.catalina.startup.Bootstrap' | grep -v grep | wc -l
+    IS_JBOSS:
+      sh: ps aux | grep '\-jar \/opt\/wildfly\/jboss-modules.jar' | grep -v grep | wc -l
 
   tasks:
     default:
@@ -163,6 +169,17 @@ install:
           sudo chmod 755 /etc/newrelic-java/install/.pids
           sudo touch /etc/newrelic-java/install/.docker_pids
           sudo chmod 755 /etc/newrelic-java/install/.docker_pids
+
+          # make some kind of struct we can reference when needed
+          # and have a list of these structs
+          # maybe basic tomcat:<tomcat-pattern>
+          declare -A SERVER_TYPES
+          if [ {{.IS_TOMCAT}} -gt 0 ]; then
+            echo "Detected {{.IS_TOMCAT}} Tomcat instances"
+          fi
+          if [ {{.IS_JBOSS}} -gt 0 ]; then
+            echo "Detected {{.IS_JBOSS}} JBoss instances"
+          fi
 
           # collect any docker processIds
           isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
