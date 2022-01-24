@@ -26,36 +26,39 @@ preInstall:
       fi
 
       if [ ! -f ~/.aws/credentials ]; then
-        exit 1
+        echo "The AWS user has not been configured" >&2
+        exit 132
       fi
 
       if [ ! -f ~/.aws/config ]; then
-        exit 1
+        echo "The AWS default region has not been configured" >&2
+        exit 132
       fi
 
       if ! command -v aws &> /dev/null; then
-        exit 1
+        echo "The AWS-cli could not be found" >&2
+        exit 132
       fi
 
       callerIdentity=$(aws sts get-caller-identity 2>&1)
 
-      if [ "$(echo "$callerIdentity" | grep AccessDenied | wc -l)" -eq 1 ] ; then
-        exit 1
+      if [ "$(echo "$callerIdentity" | grep AccessDenied | wc -l)" -eq 1 ]; then
+        echo "The configured AWS user does not have an attached AdministratorAccess policy" >&2
+        exit 132
       fi
 
-      function isUserAdmin {
+      function assertUserIsAdmin {
         username=$(echo "$1" | sed -ne 's/.*"Arn": ".*\/\(.*\)".*/\1/p')
 
         attachedUserPolicies=$(aws iam list-attached-user-policies --user-name $username 2>&1)
 
-        if [ "$(echo "$attachedUserPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
-          false
-          return
+        if [ "$(echo "$attachedUserPolicies" | grep AccessDenied | wc -l)" -eq 1 ]; then
+          echo "The configured AWS user does not have an attached AdministratorAccess policy" >&2
+          return 132
         fi
 
         if [ "$(echo "$attachedUserPolicies" | grep AdministratorAccess | wc -l)" ]; then
-          true
-          return
+          return 0
         fi
 
         groups=$(aws iam list-groups-for-user --user-name $username 2>&1)
@@ -66,56 +69,30 @@ preInstall:
         for i in $listOfGroups; do
           groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
 
-          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
-            false
-            return
+          if [ "$(echo "$groupPolicies" | grep AdministratorAccess | wc -l)" -eq 1 ]; then
+            return 0
           fi
 
           attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
-
-          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
-            false
-            return
-          fi
 
           if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq 1 ]; then
-            true
-            return
-          fi
-
-          groupPolicies=$(aws iam list-group-policies --group-name $i 2>&1)
-
-          if [ "$(echo "$groupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
-            false
-            return
-          fi
-
-          attachedGroupPolicies=$(aws iam list-attached-group-policies --group-name $i 2>&1)
-
-          if [ "$(echo "$attachedGroupPolicies" | grep AccessDenied | wc -l)" -eq 1 ] ; then
-            false
-            return
-          fi
-
-          if [ "$(echo "$groupPolicies" | grep AdministratorAccess | wc -l)" -eq 1 ] ; then
-            true
-            return
-          fi
-
-          if [ "$(echo "$attachedGroupPolicies" | grep AdministratorAccess | wc -l)" -eq 1 ] ; then
-            true
-            return
+            return 0
           fi
         done
 
-        false
+        echo "The configured AWS user does not have an attached AdministratorAccess policy" >&2
+        return 132
       }
 
-      isUserAdmin "$callerIdentity"
+      # The assertUserIsAdmin function will return a non-zero exit code
+      # if the caller does not have an AdministratorAccess policy
+      # in order to terminate the script early
+      assertUserIsAdmin "$callerIdentity"
 
       deployed=$(aws cloudformation describe-stacks --stack-name NewRelic-Metric-Stream 2>&1 | grep "^An error occurred (ValidationError)*" | wc -l)
 
-      if [ "$deployed" -eq "0" ] ; then
+      if [ "$deployed" -eq 0 ]; then
+        echo "The NewRelic-Metric-Stream CloudformationStack is already deployed" >&2
         exit 1
       fi
   info: |2
@@ -191,19 +168,19 @@ install:
           printf "\nDeploying CloudFormation template, this may take a few minutes...\n"
           deploy=$(aws cloudformation deploy --template-file /tmp/MetricStreams_CloudFormation.yml --stack-name NewRelic-Metric-Stream --parameter-overrides NewRelicLicenseKey={{.NEW_RELIC_LICENSE_KEY}} --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
-          if [ "$(echo "$deploy" | grep "^An error occurred (AlreadyExistsException)*" | wc -l)" -eq 1 ] ; then
+          if [ "$(echo "$deploy" | grep "^An error occurred (AlreadyExistsException)*" | wc -l)" -eq 1 ]; then
               echo "CloudFormation stack already exists"
               rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
           fi
 
-          if [ "$(echo "$deploy" | grep "^An error occurred (InvalidChangeSetStatus)*" | wc -l)" -eq 1 ] ; then
+          if [ "$(echo "$deploy" | grep "^An error occurred (InvalidChangeSetStatus)*" | wc -l)" -eq 1 ]; then
               echo "CloudFormation stack is already being deployed"
               rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
           fi
 
-          if [ "$(echo "$deploy" | grep "*CREATE_IN_PROGRESS*" | wc -l)" -eq 1 ] ; then
+          if [ "$(echo "$deploy" | grep "*CREATE_IN_PROGRESS*" | wc -l)" -eq 1 ]; then
               echo "CloudFormation stack is already being deployed"
               rm /tmp/MetricStreams_CloudFormation.yml
               exit 0
