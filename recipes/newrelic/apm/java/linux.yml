@@ -385,15 +385,15 @@ install:
 
             # tomcat:<match-pattern>
             # jboss:<jboss-match-pattern>
-            # pattern='org.apache.catalina.startup.Bootstrap'
-            pattern='/opt\/wildfly\/jboss-modules\.jar'
+            tomcatPattern='org.apache.catalina.startup.Bootstrap'
+            jbossPattern='/opt\/wildfly\/jboss-modules\.jar'
             for javaPid in $(sudo cat /etc/newrelic-java/install/.last_detected_pids); do
               # check if we should ignore, either from previous failure or previous successful attachment
               ignoredPid=$(cat /etc/newrelic-java/install/.ignored_pids | grep $javaPid | grep -v grep | wc -l)
 
               if [[ $ignoredPid -eq 0 ]]; then
                 INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${javaPid})
-                isMatchingPattern=$(echo $INTROSPECTION_DATA | grep $pattern | grep -v grep | wc -l)
+                isMatchingPattern=$(echo $INTROSPECTION_DATA | grep "$tomcatPattern\|$jbossPattern"  | grep -v grep | wc -l)
                 if [[ $isMatchingPattern -gt 0 ]]; then
                   if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $javaPid | grep -v grep | wc -l) -gt 0 ]]; then
                     containerId=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $javaPid | sed -n -e "s|$javaPid, ||p")
