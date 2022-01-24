@@ -33,6 +33,7 @@ logMatch:
 
 processMatch:
   - java.*org.apache.catalina.startup.Bootstrap
+  - java.*\/opt.*\/wildfly.*\/jboss-modules\.jar
 
 preInstall:
   requireAtDiscovery: |
@@ -69,7 +70,6 @@ successLinkConfig:
   filter: '"`tags.language` = ''java''"'
 
 install:
-
   version: "3"
   silent: true
 
@@ -89,15 +89,15 @@ install:
           YELLOW='\033[0;33m'
           NOCOLOR='\033[0m'
           echo -e "${YELLOW}
-          ================================================================================================
-          =                                                                                              =
-          =                                           Warning                                            =
-          =                                                                                              =
-          =         This installation will periodically check for new Tomcat processes to monitor.       =
-          =    Any new Tomcat processes started after this installation will report data to New Relic.   =
-          =                                                                                              =
-          =                                                                                              =
-          ================================================================================================
+          ===================================================================================
+          =                                                                                 =   
+          =                                     Warning                                     =
+          =                                                                                 =    
+          =      This installation will detect new java application server processes        =   
+          =        and will automatically start reporting data to New Relic                 =      
+          =                                                                                 =   
+          =                                                                                 =   
+          =================================================================================== 
           ${NOCOLOR}"
           echo "
           If you prefer to instrument your Java application differently then check out our other installation options:
@@ -163,6 +163,14 @@ install:
           sudo chmod 755 /etc/newrelic-java/install/.pids
           sudo touch /etc/newrelic-java/install/.docker_pids
           sudo chmod 755 /etc/newrelic-java/install/.docker_pids
+          sudo touch /etc/newrelic-java/install/.non_docker_pids
+          sudo chmod 755 /etc/newrelic-java/install/.non_docker_pids
+
+          TOMCAT_PATTERN='org.apache.catalina.startup.Bootstrap'
+          defaultTomcatAppName="Tomcat"
+
+          JBOSS_PATTERN='\/opt.*wildfly.*\/.*jboss-modules.jar'
+          defaultJbossAppName="Wildfly"
 
           # collect any docker processIds
           isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
@@ -171,33 +179,56 @@ install:
             if [ $isContainerRunning -gt 0 ]; then
               for CONTAINER in $(sudo docker ps -q);
               do
-                sudo docker top $CONTAINER | awk '{print $2}' | sed '1d' >> /etc/newrelic-java/install/.docker_pids
+                sudo docker top $CONTAINER | awk '{print $2} {print $3}' | sed '1,2d' >> /etc/newrelic-java/install/.docker_pids
               done
               sudo sort -o /etc/newrelic-java/install/.docker_pids /etc/newrelic-java/install/.docker_pids
             fi
           fi
 
-          # get java processes not in docker, use this to prompt for user input
+          # get all java processes, then determine which (if any) are running outside of docker
           sudo nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" >> /etc/newrelic-java/install/.pids
           sudo sort -o /etc/newrelic-java/install/.pids /etc/newrelic-java/install/.pids
+          sudo comm -23 /etc/newrelic-java/install/.pids /etc/newrelic-java/install/.docker_pids >> /etc/newrelic-java/install/.non_docker_pids
 
-          # set here to replace in script as a default
-          defaultAppName='Tomcat'
-          nonDockerPids=$(sudo comm -3 /etc/newrelic-java/install/.pids /etc/newrelic-java/install/.docker_pids | wc -l)
-          if [ $nonDockerPids -gt 0 ]; then
-            if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-              echo -n "Enter app name for non-containerized Tomcat instances (default: '$defaultAppName'): "
-              read -r answer
-              if [[ -n $answer ]]; then
-                defaultAppName=$answer
+          if [[ ! -z /etc/newrelic-java/install/.non_docker_pids ]]; then
+            defaultJbossSetByUser="false"
+            defaultTomcatSetByUser="false"
+
+            for pid in $(cat /etc/newrelic-java/install/.non_docker_pids); do
+              introspectionData=$(sudo nri-lsi-java -introspect ${pid})
+              isMatchingTomcat=$(echo $introspectionData | grep "$TOMCAT_PATTERN" | grep -v grep | wc -l)
+              isMatchingJboss=$(echo $introspectionData | grep "$JBOSS_PATTERN" | grep -v grep | wc -l)
+              if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+                if [[ $isMatchingJboss -gt 0  && "$defaultJbossSetByUser" != "true" ]]; then
+                  echo -n "Enter app name for non-containerized Jboss instances (default: '$defaultJbossAppName'): "
+                  read -r answer
+                  if [[ -n $answer ]]; then
+                    defaultJbossAppName=$answer
+                    defaultJbossSetByUser="true"
+                  fi
+                elif [[ $isMatchingTomcat -gt 0  && "$defaultTomcatSetByUser" != "true" ]]; then
+                  echo -n "Enter app name for non-containerized Tomcat instances (default: '$defaultTomcatAppName'): "
+                  read -r answer
+                  if [[ -n $answer ]]; then
+                    defaultTomcatAppName=$answer
+                    defaultTomcatSetByUser="true"
+                  fi
+                fi
               fi
-            fi
+            done
           fi
+
           sudo rm -f /etc/newrelic-java/install/.pids
           sudo rm -f /etc/newrelic-java/install/.docker_pids
+          sudo rm -f /etc/newrelic-java/install/.non_docker_pids
+
+
 
           tee -a /etc/newrelic-java/dynamic-attach.sh > /dev/null << "EOT"
           #!/bin/bash
+          TOMCAT_PATTERN='org.apache.catalina.startup.Bootstrap'
+          JBOSS_PATTERN='\/opt.*wildfly.*\/.*jboss-modules.jar'
+
           build_stdout_json() {
             message=$1
             cat << EOF
@@ -242,19 +273,30 @@ install:
 
           attach_to_pid() {
             javaPid=$1
+            appServerType=$2
             license={{.NEW_RELIC_LICENSE_KEY}}
             region={{.NEW_RELIC_REGION}}
-            appName=DEFAULT_APP_NAME
 
-            echo $(build_stdout_json "Attaching agent to Tomcat process with PID $javaPid...")
+            defaultTomcatAppName=DEFAULT_TOMCAT_APP_NAME
+            defaultJbossAppName=DEFAULT_JBOSS_APP_NAME
+            
+            appServerEchoName="Tomcat"
+            appName=$defaultTomcatAppName
+            
+            if [[ "$appServerType" == "JBOSS" ]]; then
+              appServerEchoName="JBoss"
+              appName=$defaultJbossAppName
+            fi
+
+            echo $(build_stdout_json "Attaching agent to $appServerEchoName process with PID $javaPid...")
             deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
             attachOutput=$(sudo nri-lsi-java -apm $javaPid -appName $appName -license $license -region $region | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
             if [[ $attachOutput -gt 0 ]]; then
-              echo $(build_stdout_json "Attaching agent to Tomcat process with PID $javaPid..complete!")
+              echo $(build_stdout_json "Attaching agent to $appServerEchoName process with PID $javaPid..complete!")
               create_deployment_marker $javaPid $appName $deploymentTimestamp
             else
-              echo $(build_stdout_json "Attaching agent to Tomcat process with PID $javaPid...failed!")
+              echo $(build_stdout_json "Attaching agent to $appServerEchoName process with PID $javaPid...failed!")
             fi
 
             return 0
@@ -266,10 +308,10 @@ install:
             license={{.NEW_RELIC_LICENSE_KEY}}
             region={{.NEW_RELIC_REGION}}
             local dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $containerId | tr -d '/')
-            local dockerExec="sudo docker exec ${containerId} sh -c"
+            local dockerExec="sudo docker exec -u root ${containerId} sh -c"
 
-            echo $(build_stdout_json "Running Tomcat process detected in container '$dockerAppName' ($containerId)")
-            yumInstalled=$(sudo docker exec $containerId sh -c "which yum 2>&1 || true")
+            echo $(build_stdout_json "Running java process detected in container '$dockerAppName' ($containerId)")
+            yumInstalled=$(eval "$dockerExec" "which yum 2>&1 || true")
             if [[ $yumInstalled ]]; then
               eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/nullCOMMAND_QUOTE"
               eval "$dockerExec" "COMMAND_QUOTEyum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || trueCOMMAND_QUOTE"
@@ -277,16 +319,26 @@ install:
               eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/nullCOMMAND_QUOTE"
               eval "$dockerExec" "COMMAND_QUOTEapt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || trueCOMMAND_QUOTE"
             fi
-            echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...")
-            deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
-            attachOutput=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $regionCOMMAND_QUOTE" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
-            if [[ $attachOutput -gt 0 ]]; then
-              echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
-              create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
-            else
-              echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
-            fi
+            echo $(build_stdout_json "Detecting java pid in '$dockerAppName'...")
+            javaPidsInContainer=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -listCOMMAND_QUOTE" | tr "," "\n" | tr -d "[ " | tr -d " ]" )
+            for pidInContainer in $javaPidsInContainer; do
+              introspectionData=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -introspect ${pidInContainer}COMMAND_QUOTE")
+              matchesSupportedAppServer=$(echo $introspectionData | grep "$TOMCAT_PATTERN\|$JBOSS_PATTERN" | grep -v grep | wc -l)
+
+              if [[ $matchesSupportedAppServer -gt 0 ]]; then
+                deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                userId=$(eval "$dockerExec" "COMMAND_QUOTEps auxCOMMAND_QUOTE" | awk '{ print $2" " $1}' | grep "^$pidInContainer " | awk '{ print $2 }')
+                echo $(build_stdout_json "Attaching agent to application server with pid $pidInContainer owned by $userId in '$dockerAppName'...")
+                successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
+                attachOutput=$(sudo docker exec -u $userId ${containerId} sh -c "nri-lsi-java -apm $pidInContainer -appName $dockerAppName -license $license -region $region" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
+                if [[ $attachOutput -gt 0 ]]; then
+                  echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...complete!")
+                  create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
+                else
+                  echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...failed!")
+                fi
+              fi
+            done
 
             return 0
           }
@@ -301,7 +353,7 @@ install:
               sudo touch /etc/newrelic-java/install/.docker_pids
               sudo chmod 777 /etc/newrelic-java/install/.docker_pids
               for container in $(sudo docker ps -q); do
-                sudo docker top $container | awk '{print $2}' | sed '1d' >>/etc/newrelic-java/install/.docker_pids
+                sudo docker top $container | awk '{print $2} {print $3}' | sed '1,2d' >>/etc/newrelic-java/install/.docker_pids
               done
               sudo sort -o /etc/newrelic-java/install/.docker_pids /etc/newrelic-java/install/.docker_pids
             fi
@@ -335,10 +387,12 @@ install:
               sudo rm -f /etc/newrelic-java/install/.ignored_pids
               sudo touch /etc/newrelic-java/install/.ignored_pids
               sudo chmod -R 755 /etc/newrelic-java/install/.ignored_pids
+
               # Reset timestamp for next cleanup
               sudo rm -f /etc/newrelic-java/install/.ignored_created_time
               sudo touch /etc/newrelic-java/install/.ignored_created_time
               sudo chmod -R 755 /etc/newrelic-java/install/.ignored_created_time
+
               # Keep current timestamp to know when to purge next
               echo "$currentTime" >>/etc/newrelic-java/install/.ignored_created_time
             fi
@@ -365,24 +419,44 @@ install:
             capturePidsRunningInDocker
             captureAllJavaPids
 
-            pattern='org.apache.catalina.startup.Bootstrap'
             for javaPid in $(sudo cat /etc/newrelic-java/install/.last_detected_pids); do
               # check if we should ignore, either from previous failure or previous successful attachment
               ignoredPid=$(cat /etc/newrelic-java/install/.ignored_pids | grep $javaPid | grep -v grep | wc -l)
 
               if [[ $ignoredPid -eq 0 ]]; then
-                INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${javaPid})
-                isMatchingPattern=$(echo $INTROSPECTION_DATA | grep $pattern | grep -v grep | wc -l)
-                if [[ $isMatchingPattern -gt 0 ]]; then
+                introspectionData=$(sudo nri-lsi-java -introspect ${javaPid})
+                isMatchingTomcat=$(echo $introspectionData | grep "$TOMCAT_PATTERN" | grep -v grep | wc -l)
+                isMatchingJboss=$(echo $introspectionData | grep "$JBOSS_PATTERN" | grep -v grep | wc -l)
+
+                if [[ $isMatchingTomcat -gt 0 || $isMatchingJboss -gt 0  ]]; then
                   if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $javaPid | grep -v grep | wc -l) -gt 0 ]]; then
-                    containerId=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $javaPid | sed -n -e "s|$javaPid, ||p")
-                    if [[ $containerId ]]; then
-                      attach_to_containerized_pid $javaPid $containerId
-                    else
+                    # containerized app server
+                    # look at all containerIds, find which containerId owns the process
+                    for containerId in $(sudo docker ps -q); do
+                      containerIdOwningProcess=$(docker inspect $containerId --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $javaPid | sed -n -e "s|$javaPid, ||p")
+                      if [[ -z $containerIdOwningProcess ]]; then
+                        # if containerId is blank, try to find the owning container using the java process->parentPID relationship from `docker top`
+                        containerParentPid=$(sudo docker top $containerId | awk '{ print $2"::"$3 }' | grep "$javaPid::" | grep -v grep | sed -n -e "s/$javaPid:://p")
+                        containerIdOwningProcess=$(sudo docker inspect $containerId --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $containerParentPid | sed -n -e "s|$containerParentPid, ||p")
+                      fi
+                      # proceed once we determing which container owns process
+                      if [[ ! -z $containerIdOwningProcess ]]; then
+                        break;
+                      fi
+                    done
+
+                    if [[ -z  $containerIdOwningProcess ]]; then
                       echo $(build_stdout_json "Skipping instrumentation of process id $javaPid: could not determine owning container")
+                    else
+                      attach_to_containerized_pid $javaPid $containerIdOwningProcess
                     fi
                   else
-                    attach_to_pid $javaPid
+                    # non-containerized app server
+                    if [[ $isMatchingTomcat -gt 0 ]]; then
+                      attach_to_pid $javaPid TOMCAT
+                    else
+                      attach_to_pid $javaPid JBOSS
+                    fi
                   fi
                 fi
 
@@ -406,7 +480,8 @@ install:
           EOT
 
           sudo sed -i 's/COMMAND_QUOTE/\\"/g' /etc/newrelic-java/dynamic-attach.sh
-          sudo sed -i "s/DEFAULT_APP_NAME/$defaultAppName/g" /etc/newrelic-java/dynamic-attach.sh
+          sudo sed -i "s/DEFAULT_TOMCAT_APP_NAME/$defaultTomcatAppName/g" /etc/newrelic-java/dynamic-attach.sh
+          sudo sed -i "s/DEFAULT_JBOSS_APP_NAME/$defaultJbossAppName/g" /etc/newrelic-java/dynamic-attach.sh
 
           NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
