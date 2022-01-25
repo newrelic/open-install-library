@@ -1,0 +1,72 @@
+name: Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      config_name:
+        required: true
+        type: string
+      path:
+        required: true
+        type: string
+      is_eu:
+        required: true
+        type: boolean
+    secrets:
+      GIT_DEPLOYER_CANADA_AWS_PEM:
+        description: 'The pem key to manage the AWS resources'
+        required: true
+        type: string
+      GIT_DEPLOYER_DOCKER_USER_CONFIG:
+        description: 'The deployer user config content'
+        required: false
+        type: string
+      GIT_DEPLOYER_DOCKER_USER_CONFIG_EU:
+        description: 'The deployer user config content for EU'
+        required: false
+        type: string
+
+jobs:
+  validate-all:
+    name: Validate All
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+
+      - name: Write AWS Certificate to File
+        env:
+          AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+        run: |
+          mkdir -p configs
+          rm -f configs/gitdeployerCanada.pem
+          echo "$AWS_PEM" > configs/gitdeployerCanada.pem
+          sudo chmod 400 configs/gitdeployerCanada.pem
+
+      - name: Write Test Definition File JSON to file
+        if: ${{ inputs.is_eu }} == false
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+        run: |
+          echo "$USER_JSON" > configs/${{ inputs.config_name }}
+
+      - name: Write Test Definition File JSON to file EU
+        if: ${{ inputs.is_eu }}
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+        run: |
+          echo "$USER_JSON" > configs/${{ inputs.config_name }}
+
+      - name: Pull Deployer image
+        run: |
+          docker pull ghcr.io/newrelic/deployer:latest
+          docker images ghcr.io/newrelic/deployer:latest
+
+      - name: Cleanup all resources
+        if: always()
+        id: cleanupResources
+        run: |
+          docker run -i\
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/${{ inputs.config_name }} -d {{ inputs.path }} -s 20 -m teardown -i
