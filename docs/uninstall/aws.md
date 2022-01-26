@@ -6,7 +6,7 @@ Unlink your AWS account from New Relic:
 - https://one.newrelic.com > Infrastructure > AWS > Unlink this account
 
 Delete the NewRelic-Metric-Stream stack found in CloudFormation:
-- https://us-east-2.console.aws.amazon.com/cloudformation/home
+- https://console.aws.amazon.com/cloudformation/home
 
 Delete the IAM Role:
 - https://console.aws.amazon.com/iam/home#/roles/NewRelicInfrastructure-Integrations
