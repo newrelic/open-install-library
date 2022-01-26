@@ -1,23 +1,28 @@
 name: Cleanup
 
 on:
-  workflow_dispatch:
-    inputs:
-      config_name:
-        required: true
-        type: string
-      path:
-        required: true
-        type: string
-      is_eu:
-        required: true
-        type: boolean
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
 
 jobs:
+  env:
+    workflow_run_id: ${{ context.payload.workflow_run.id }}
+    config_name: gitusdkr${{ context.payload.workflow_run.id }}.json
+    path: test/definitions/smoke
+    is_eu: false
   clean-all:
     name: Cleaner
     runs-on: ubuntu-latest
     steps:
+      - name: Debug run_id
+        run: |
+          echo "Debugging env vars here"
+          echo "workflow_run_id:"$workflow_run_id
+          echo "config_name:"$config_name
+          echo "path":$path
+          echo "is_eu:"$is_eu
+
       - name: Checkout Repo
         uses: actions/checkout@v2
 
@@ -31,18 +36,18 @@ jobs:
           sudo chmod 400 configs/gitdeployerCanada.pem
 
       - name: Write Test Definition File JSON to file
-        if: ${{ github.event.inputs.is_eu }} == false
+        if: $is_eu == false
         env:
-          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
         run: |
-          echo "$USER_JSON" > configs/${{ github.event.inputs.config_name }}
+          echo "$USER_JSON" > configs/$config_name
 
       - name: Write Test Definition File JSON to file EU
-        if: ${{ github.event.inputs.is_eu }}
+        if: $is_eu
         env:
           USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
         run: |
-          echo "$USER_JSON" > configs/${{ github.event.inputs.config_name }}
+          echo "$USER_JSON" > configs/$config_name
 
       - name: Pull Deployer image
         run: |
@@ -54,4 +59,4 @@ jobs:
           docker run -i\
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-            --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/${{ github.event.inputs.config_name }} -d ${{ github.event.inputs.path }} -s 20 -m teardown
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/$config_name -d $path -s 20 -m teardown
