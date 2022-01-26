@@ -116,7 +116,10 @@ install:
           # Constants
           roleName="NewRelicInfrastructure-Integrations"
 
-          policy=$(cat <<EOT
+          getRole=$(aws iam get-role --role-name $roleName 2>&1)
+
+          if [ "$(echo "$getRole" | grep NoSuchEntity | wc -l)" -eq 1 ]; then
+              policy=$(cat <<EOT
           {
               "Version": "2012-10-17",
               "Statement": [
@@ -136,13 +139,13 @@ install:
               ]
           }
           EOT
-          )
+              )
 
-          createRole=$(aws iam create-role --role-name $roleName --assume-role-policy-document file://<(echo $policy) 2>&1)
+              createRole=$(aws iam create-role --role-name $roleName --assume-role-policy-document file://<(echo $policy) 2>&1)
 
-          aws iam attach-role-policy --role-name $roleName --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
+              aws iam attach-role-policy --role-name $roleName --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
 
-          policy=$(cat <<EOT
+              policy=$(cat <<EOT
           {
               "Version": "2012-10-17",
               "Statement": [
@@ -156,9 +159,10 @@ install:
               ]
           }
           EOT
-          )
+              )
 
-          aws iam put-role-policy --role-name $roleName --policy-name NewRelicBudget --policy-document file://<(echo $policy)
+              aws iam put-role-policy --role-name $roleName --policy-name NewRelicBudget --policy-document file://<(echo $policy)
+          fi
 
           callerIdentity=$(aws sts get-caller-identity 2>&1)
 
