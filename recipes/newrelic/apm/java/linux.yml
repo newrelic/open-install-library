@@ -303,10 +303,10 @@ install:
             license={{.NEW_RELIC_LICENSE_KEY}}
             region={{.NEW_RELIC_REGION}}
             local dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $containerId | tr -d '/')
-            local dockerExec="sudo docker exec ${containerId} sh -c"
+            local dockerExec="sudo docker exec ${containerId} -u root sh -c"
 
             echo $(build_stdout_json "Running Tomcat process detected in container '$dockerAppName' ($containerId)")
-            yumInstalled=$(sudo docker exec $containerId sh -c "which yum 2>&1 || true")
+            yumInstalled=$(eval "$dockerExec" "which yum 2>&1 || true")
             if [[ $yumInstalled ]]; then
               eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/nullCOMMAND_QUOTE"
               eval "$dockerExec" "COMMAND_QUOTEyum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || trueCOMMAND_QUOTE"
@@ -417,6 +417,11 @@ install:
                 if [[ $isMatchingTomcatPattern -gt 0 || $isMatchingJbossPattern -gt 0  ]]; then
                   if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $javaPid | grep -v grep | wc -l) -gt 0 ]]; then
                     containerId=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $javaPid | sed -n -e "s|$javaPid, ||p")
+                    #if [[ -z $containerId ]]; then
+                    # fun command to tie child (lsi detected java pid) to parentpid (docker container main pid)
+                    # sudo docker ps -q | xargs sudo docker top | awk '{ print $2"::"$3 }' | grep '$javaPid::' | grep -v grep | sed -n -e 's/$javaPid:://p'
+                    #fi
+                    # if container id is blank, try to find the owning container using the process->parentPID relationship from `docker top`
                     if [[ $containerId ]]; then
                       attach_to_containerized_pid $javaPid $containerId
                     else
