@@ -227,6 +227,9 @@ install:
 
           tee -a /etc/newrelic-java/dynamic-attach.sh > /dev/null << "EOT"
           #!/bin/bash
+          TOMCAT_PATTERN='org.apache.catalina.startup.Bootstrap'
+          JBOSS_PATTERN='\/opt\/.*jboss-modules.jar'
+
           build_stdout_json() {
             message=$1
             cat << EOF
@@ -300,8 +303,6 @@ install:
           attach_to_containerized_pid() {
             javaPid=$1
             containerId=$2
-            useJavaPid=$3
-
             license={{.NEW_RELIC_LICENSE_KEY}}
             region={{.NEW_RELIC_REGION}}
             local dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $containerId | tr -d '/')
@@ -316,16 +317,26 @@ install:
               eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/nullCOMMAND_QUOTE"
               eval "$dockerExec" "COMMAND_QUOTEapt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || trueCOMMAND_QUOTE"
             fi
-            echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...")
-            deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
-            attachOutput=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -apm 1 -appName $dockerAppName -license $license -region $regionCOMMAND_QUOTE" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
-            if [[ $attachOutput -gt 0 ]]; then
-              echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...complete!")
-              create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
-            else
-              echo $(build_stdout_json "Attaching agent to Tomcat process in '$dockerAppName'...failed!")
-            fi
+            echo $(build_stdout_json "Detecting java pid in '$dockerAppName'...")
+            javaPidsInContainer=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -listCOMMAND_QUOTE" | tr "," "\n" | tr -d "[ " | tr -d " ])
+            for $pidInContainer in javaPidsInContainer; do
+              introspectionData=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -introspect ${pidInContainer}COMMAND_QUOTE")
+              matchesSupportedAppServer=$(echo $introspectionData | grep "$TOMCAT_PATTERN|$JBOSS_PATTERN" | grep -v grep | wc -l)
+
+              if [[ $matchesSupportedAppServer -gt 0 ]]; then
+                # may need to iterate over list and really target our app server
+                echo $(build_stdout_json "Attaching agent to application server with pid $pidInContainer in '$dockerAppName'...")
+                deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
+                attachOutput=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -apm $pidInContainer -appName $dockerAppName -license $license -region $regionCOMMAND_QUOTE" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
+                if [[ $attachOutput -gt 0 ]]; then
+                  echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...complete!")
+                  create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
+                else
+                  echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...failed!")
+                fi
+              fi
+            done
 
             return 0
           }
@@ -404,39 +415,34 @@ install:
             capturePidsRunningInDocker
             captureAllJavaPids
 
-            tomcatPattern='org.apache.catalina.startup.Bootstrap'
-            jbossPattern='\/opt\/.*jboss-modules.jar'
-
             for javaPid in $(sudo cat /etc/newrelic-java/install/.last_detected_pids); do
               # check if we should ignore, either from previous failure or previous successful attachment
               ignoredPid=$(cat /etc/newrelic-java/install/.ignored_pids | grep $javaPid | grep -v grep | wc -l)
 
               if [[ $ignoredPid -eq 0 ]]; then
                 INTROSPECTION_DATA=$(sudo nri-lsi-java -introspect ${javaPid})
-                isMatchingTomcatPattern=$(echo $INTROSPECTION_DATA | grep "$tomcatPattern" | grep -v grep | wc -l)
-                isMatchingJbossPattern=$(echo $INTROSPECTION_DATA | grep "$jbossPattern" | grep -v grep | wc -l)
+                isMatchingTomcat=$(echo $INTROSPECTION_DATA | grep "$TOMCAT_PATTERN" | grep -v grep | wc -l)
+                isMatchingJboss=$(echo $INTROSPECTION_DATA | grep "$JBOSS_PATTERN" | grep -v grep | wc -l)
 
-                if [[ $isMatchingTomcatPattern -gt 0 || $isMatchingJbossPattern -gt 0  ]]; then
+                if [[ $isMatchingTomcat -gt 0 || $isMatchingJboss -gt 0  ]]; then
                   if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $javaPid | grep -v grep | wc -l) -gt 0 ]]; then
                     #containerized app server
-                    useJavaPid=false
                     containerId=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $javaPid | sed -n -e "s|$javaPid, ||p")
 
                     if [[ -z $containerId ]]; then
                       # if container id is blank, try to find the owning container using the process->parentPID relationship from `docker top`
                       containerPid=$(sudo docker ps -q | xargs sudo docker top | awk '{ print $2"::"$3 }' | grep '$javaPid::' | grep -v grep | sed -n -e 's/$javaPid:://p')
                       containerId=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $containerPid | sed -n -e "s|$containerPid, ||p")
-                      useJavaPid=true
                     fi
 
                     if [[ -z  $containerId ]]; then
                       echo $(build_stdout_json "Skipping instrumentation of process id $javaPid: could not determine owning container")
                     else
-                      attach_to_containerized_pid $javaPid $containerId $useJavaPid
+                      attach_to_containerized_pid $javaPid $containerId
                     fi
                   else
                     #non-containerized app server
-                    if [[ $isMatchingTomcatPattern -gt 0 ]]; then
+                    if [[ $isMatchingTOMCAT_PATTERN -gt 0 ]]; then
                       attach_to_pid $javaPid TOMCAT
                     else
                       attach_to_pid $javaPid JBOSS
