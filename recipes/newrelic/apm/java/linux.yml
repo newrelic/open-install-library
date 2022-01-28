@@ -300,6 +300,8 @@ install:
           attach_to_containerized_pid() {
             javaPid=$1
             containerId=$2
+            useJavaPid=$3
+
             license={{.NEW_RELIC_LICENSE_KEY}}
             region={{.NEW_RELIC_REGION}}
             local dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $containerId | tr -d '/')
@@ -416,18 +418,24 @@ install:
 
                 if [[ $isMatchingTomcatPattern -gt 0 || $isMatchingJbossPattern -gt 0  ]]; then
                   if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $javaPid | grep -v grep | wc -l) -gt 0 ]]; then
+                    #containerized app server
+                    useJavaPid=false
                     containerId=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $javaPid | sed -n -e "s|$javaPid, ||p")
-                    #if [[ -z $containerId ]]; then
-                    # fun command to tie child (lsi detected java pid) to parentpid (docker container main pid)
-                    # sudo docker ps -q | xargs sudo docker top | awk '{ print $2"::"$3 }' | grep '$javaPid::' | grep -v grep | sed -n -e 's/$javaPid:://p'
-                    #fi
-                    # if container id is blank, try to find the owning container using the process->parentPID relationship from `docker top`
-                    if [[ $containerId ]]; then
-                      attach_to_containerized_pid $javaPid $containerId
-                    else
+
+                    if [[ -z $containerId ]]; then
+                      # if container id is blank, try to find the owning container using the process->parentPID relationship from `docker top`
+                      containerPid=$(sudo docker ps -q | xargs sudo docker top | awk '{ print $2"::"$3 }' | grep '$javaPid::' | grep -v grep | sed -n -e 's/$javaPid:://p')
+                      containerId=$(sudo docker ps -q | xargs sudo docker inspect --format '{{"{{"}}.State.Pid{{"}}"}}, {{"{{"}}.ID{{"}}"}}' | grep $containerPid | sed -n -e "s|$containerPid, ||p")
+                      useJavaPid=true
+                    fi
+
+                    if [[ -z  $containerId ]]; then
                       echo $(build_stdout_json "Skipping instrumentation of process id $javaPid: could not determine owning container")
+                    else
+                      attach_to_containerized_pid $javaPid $containerId $useJavaPid
                     fi
                   else
+                    #non-containerized app server
                     if [[ $isMatchingTomcatPattern -gt 0 ]]; then
                       attach_to_pid $javaPid TOMCAT
                     else
