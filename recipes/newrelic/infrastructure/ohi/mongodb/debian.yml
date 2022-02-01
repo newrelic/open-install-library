@@ -88,6 +88,13 @@ preInstall:
       Use the following commands to create a new user, and assign clusterMonitor and listCollections roles to the user:
       > db.createUser({ user: "username", pwd: "password", roles: [ "clusterMonitor", "listCollections" ]})
 
+  requireAtDiscovery: |
+    MONGODB_EXISTS=$(mongo --eval 'db.runCommand({ connectionStatus: 1 })' | grep "ok" | wc -l)
+    if [ $MONGODB_EXISTS -eq 0 ]; then
+      exit 132
+    fi
+    exit 0
+
 install:
   version: "3"
   silent: true
@@ -106,12 +113,6 @@ install:
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
             echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
             exit 1
-          fi
-        - |
-          MONGODB_EXISTS=$(mongo --eval 'db.runCommand({ connectionStatus: 1 })' | grep "ok" | wc -l)
-          if [ $MONGODB_EXISTS -eq 0 ]; then
-            echo "[Error]: cannot establish connection to mongodb. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >&2
-            exit 2
           fi
         - |
           if [ {{.NR_CLI_SSL}} == false ]; then
