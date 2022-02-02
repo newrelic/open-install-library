@@ -85,7 +85,6 @@ jobs:
       # 2) Use javascript action / yq to pull the test definition file from the recipe yaml
       - name: Get Test Definition Files
         id: get-test-definition-files
-        if: env.RECIPES != '' || env.TEST_DEFINITIONS != ''
         uses: actions/github-script@v3
         with:
           script: |
@@ -107,24 +106,24 @@ jobs:
 
             var outputTestFiles = []
 
-            if (env.TEST_DEFINITIONS != '') {
+            if (process.env.TEST_DEFINITIONS != '') {
               // Get incoming added/updated test definitions files
-              const testDefinitionFiles = process.env.TEST_DEFINITIONS ? process.env.TEST_DEFINITIONS.split(' ') : null
+              const testDefinitionFiles = process.env.TEST_DEFINITIONS ? process.env.TEST_DEFINITIONS.split(' ') : []
               console.log(`Detected Test Definitions Files: ${JSON.stringify(testDefinitionFiles, null, 2)}`)
 
               testDefinitionFiles.forEach(testDefinitionFile => {
-                if (!outputTestFiles.includes(testDefinitionFile) {
+                if (!outputTestFiles.includes(testDefinitionFile)) {
                   outputTestFiles.push(testDefinitionFile)
                 }
               })
             }
 
-            if (env.RECIPES != '') {
+            if (process.env.RECIPES != '') {
               // Get incoming added/updated recipe files
-              const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
+              const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : []
               console.log(`Detected Recipe Files: ${JSON.stringify(recipeFiles, null, 2)}`)
 
-              if (recipeFiles) {
+              if (recipeFiles.length) {
                 // Get all deploy config files
                 const deployConfigs = await getFiles('test/definitions');
                 console.log("All deployConfigs:", deployConfigs);
@@ -152,19 +151,19 @@ jobs:
                 }, []);
                 console.log('testDefinitionFilesToRun:', testDefinitionFilesToRun);
 
-                const testDefinitionFiles = testDefinitionFilesToRun.map(testDefinitionFile => {
-                  return { testDefinitionFile }
-                });
-
-                testDefinitionFiles.forEach(testDefinitionFile => {
-                  if (!outputTestFiles.includes(testDefinitionFile) {
+                testDefinitionFilesToRun.forEach(testDefinitionFile => {
+                  if (!outputTestFiles.includes(testDefinitionFile)) {
                     outputTestFiles.push(testDefinitionFile)
                   }
                 })
               }
             }
+
+            const outputTestFilesMap = outputTestFiles.map(testDefinitionFile => {
+              return { testDefinitionFile }
+            })
             const output = {
-              "include": outputTestFiles
+              "include": outputTestFilesMap
             }
             console.log("Output: ", output);
             return output;
