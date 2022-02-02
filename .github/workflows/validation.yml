@@ -65,7 +65,6 @@ jobs:
         id: getfile
         run: |
           RECIPES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "recipes" || true)
-
           if [ -z "$RECIPES" ]; then
             echo "No recipe files detected."
           else
@@ -74,10 +73,19 @@ jobs:
             echo "EOF" >> $GITHUB_ENV
           fi
 
+          TEST_DEFINITIONS=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "test/definitions" || true)
+          if [ -z "$TEST_DEFINITIONS" ]; then
+            echo "No test definitions files detected."
+          else
+            echo "TEST_DEFINITIONS<<EOF" >> $GITHUB_ENV
+            echo $TEST_DEFINITIONS >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
+
       # 2) Use javascript action / yq to pull the test definition file from the recipe yaml
       - name: Get Test Definition Files
         id: get-test-definition-files
-        if: env.RECIPES != ''
+        if: env.RECIPES != '' || env.TEST_DEFINITIONS != ''
         uses: actions/github-script@v3
         with:
           script: |
@@ -97,49 +105,69 @@ jobs:
               return Array.prototype.concat(...files);
             }
 
-            // Get incoming added/updated recipe files
-            const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
-            console.log(`Detected Recipe Files: ${JSON.stringify(recipeFiles, null, 2)}`)
+            var outputTestFiles = []
 
-            if (recipeFiles) {
-              // Get all deploy config files
-              const deployConfigs = await getFiles('test/definitions');
-              console.log("All deployConfigs:", deployConfigs);
+            if (env.TEST_DEFINITIONS != '') {
+              // Get incoming added/updated test definitions files
+              const testDefinitionFiles = process.env.TEST_DEFINITIONS ? process.env.TEST_DEFINITIONS.split(' ') : null
+              console.log(`Detected Test Definitions Files: ${JSON.stringify(testDefinitionFiles, null, 2)}`)
 
-              // Build up list of Deploy Configs to run based on recipes that have changed
-              const testDefinitionFilesToRun = deployConfigs.reduce((p, c) => {
-                const contents = require(`${process.env.GITHUB_WORKSPACE}/${c}`);
-
-                var recipes = []
-                if (contents.instrumentations && contents.instrumentations.resources) {
-                  contents.instrumentations.resources.forEach(resource => {
-                    if (resource.params && resource.params.recipe_content_url) {
-                      recipes = recipes.concat(resource.params.recipe_content_url);
-                    }
-                  });
+              testDefinitionFiles.forEach(testDefinitionFile => {
+                if (!outputTestFiles.includes(testDefinitionFile) {
+                  outputTestFiles.push(testDefinitionFile)
                 }
-
-                // returns list of matched recipes from the deploy config file
-                const matchedRecipes = recipes.filter(
-                  (r) => recipeFiles.filter((rf) => r.includes(rf)).length > 0
-                );
-
-                // Add the current deploy config file to our output if there were matches 
-                return matchedRecipes.length > 0 ? [`${c}`, ...p] : p;
-              }, []);
-              console.log('testDefinitionFilesToRun:', testDefinitionFilesToRun);
-
-              const matrixIncludes = testDefinitionFilesToRun.map(testDefinitionFile => {
-                return { testDefinitionFile }
-              });
-
-              const output = {
-                "include": matrixIncludes
-              }
-              console.log("Output: ", output);
-              return output;
+              })
             }
-            return null;
+
+            if (env.RECIPES != '') {
+              // Get incoming added/updated recipe files
+              const recipeFiles = process.env.RECIPES ? process.env.RECIPES.split(' ') : null
+              console.log(`Detected Recipe Files: ${JSON.stringify(recipeFiles, null, 2)}`)
+
+              if (recipeFiles) {
+                // Get all deploy config files
+                const deployConfigs = await getFiles('test/definitions');
+                console.log("All deployConfigs:", deployConfigs);
+
+                // Build up list of Deploy Configs to run based on recipes that have changed
+                const testDefinitionFilesToRun = deployConfigs.reduce((p, c) => {
+                  const contents = require(`${process.env.GITHUB_WORKSPACE}/${c}`);
+
+                  var recipes = []
+                  if (contents.instrumentations && contents.instrumentations.resources) {
+                    contents.instrumentations.resources.forEach(resource => {
+                      if (resource.params && resource.params.recipe_content_url) {
+                        recipes = recipes.concat(resource.params.recipe_content_url);
+                      }
+                    });
+                  }
+
+                  // returns list of matched recipes from the deploy config file
+                  const matchedRecipes = recipes.filter(
+                    (r) => recipeFiles.filter((rf) => r.includes(rf)).length > 0
+                  );
+
+                  // Add the current deploy config file to our output if there were matches 
+                  return matchedRecipes.length > 0 ? [`${c}`, ...p] : p;
+                }, []);
+                console.log('testDefinitionFilesToRun:', testDefinitionFilesToRun);
+
+                const testDefinitionFiles = testDefinitionFilesToRun.map(testDefinitionFile => {
+                  return { testDefinitionFile }
+                });
+
+                testDefinitionFiles.forEach(testDefinitionFile => {
+                  if (!outputTestFiles.includes(testDefinitionFile) {
+                    outputTestFiles.push(testDefinitionFile)
+                  }
+                })
+              }
+            }
+            const output = {
+              "include": outputTestFiles
+            }
+            console.log("Output: ", output);
+            return output;
 
   # need to put checks in place in case matrix isn't set
   test-deploy-recipe:
