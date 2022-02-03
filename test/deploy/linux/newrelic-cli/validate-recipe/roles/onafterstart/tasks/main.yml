@@ -30,7 +30,7 @@
 
 - name: Lookup container name
   when: containerized == true
-  shell: "docker ps -qa"
+  shell: "docker ps -q | head -n 1"
   become: yes
   register: docker_output
 
@@ -41,21 +41,26 @@
 
 - name: Set default newrelic api url
   set_fact:
-    newrelic_api_url: "api.newrelic.com"
-  when: newrelic_api_url is undefined and (newrelic_region|upper) != "EU"
+    newrelic_api_url_to_use: "api.newrelic.com"
+  when: newrelic_api_url is undefined
 
-- name: Override eu newrelic api url
+- name: Override for non Staging and US regions
   set_fact:
-    newrelic_api_url: "api.eu.newrelic.com"
-  when: newrelic_api_url is undefined and (newrelic_region|upper) == "EU"
+    newrelic_api_url_to_use: "{{ newrelic_api_url_to_use | replace('api.newrelic', 'api.'+(newrelic_region|lower)+'.newrelic') }}"
+  when: newrelic_api_url_to_use is defined and newrelic_region is defined and (newrelic_region|upper) != "STAGING" and (newrelic_region|upper) != "US"
+
+- name: Use specified URL if exist
+  set_fact:
+    newrelic_api_url_to_use: "{{ newrelic_api_url }}"
+  when: newrelic_api_url is defined
 
 - name: Ensure https api url
   set_fact:
-    newrelic_api_url: "https://{{ newrelic_api_url }}"
-  when: not newrelic_api_url | regex_search('^https', ignorecase=True)
+    newrelic_api_url_to_use: "https://{{ newrelic_api_url_to_use }}"
+  when: not newrelic_api_url_to_use | regex_search('^https', ignorecase=True)
 
 - debug:
-    msg: "Using newrelic_api_url:{{ newrelic_api_url }}"
+    msg: "Using newrelic_api_url_to_use:{{ newrelic_api_url_to_use }}"
 
 - block:
     - name: Create payload
@@ -70,13 +75,13 @@
         src: gql-query.source.gpl
         dest: "{{ playbook_dir }}/gql-query.json"
     - name: Run NRQL via nerdgraph
-      shell: "curl -sX POST '{{ newrelic_api_url }}/graphql' \
+      shell: "curl -sX POST '{{ newrelic_api_url_to_use }}/graphql' \
       -H 'API-Key: {{ newrelic_personal_api_key }}' \
       -L -H 'Content-Type: application/json' \
       -d @{{ playbook_dir }}/gql-query.json"
       register: output
-      retries: 20
-      delay: 15
+      retries: 25
+      delay: 30
       until: output is not failed and (output.stdout | from_json | json_query('data.actor.account.nrql.results[0].count') | int > 0)
   delegate_to: localhost
 

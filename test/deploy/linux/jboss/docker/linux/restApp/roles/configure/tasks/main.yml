@@ -1,0 +1,35 @@
+---
+
+- name: purge python-pip
+  shell: apt-get purge --auto-remove python-pip
+  become: yes
+
+- name: apt-get update
+  shell: apt-get update
+  become: yes
+  ignore_errors: true
+
+- name: install pip
+  shell: apt-get -y install python3-pip
+  become: yes
+
+- name: install docker-py
+  shell: pip install docker-py
+  become: yes
+
+- name: Upload war to host
+  synchronize: src=. dest=/home/{{ ansible_user }}
+  become: yes
+
+- name: Build JBoss Image
+  docker_image: >
+    name=spring-boot-rest
+    tag=wildfly
+    path=/home/{{ ansible_user }}
+    state=present
+  become: yes
+
+# NOTE: context root of deployed app is name of artifact i.e. http://localhost:<service_port>/spring-boot-rest
+- name: Run JBoss Docker container
+  shell: "docker run -d -p {{ service_port }}:8080 spring-boot-rest:wildfly /opt/jboss/wildfly/bin/standalone.sh -b 0.0.0.0"
+  become: yes
