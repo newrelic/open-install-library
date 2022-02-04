@@ -1,0 +1,69 @@
+---
+- debug:
+    msg: Installing Docker using detected package manager...
+
+########################################
+# RHEL support for Docker installation
+########################################
+- block:
+  - name: RHEL - install Docker 
+    package:
+      name: docker
+      update_cache: yes
+      state: present
+  
+  - name: RHEL - Start docker service
+    shell: "service docker start"
+  
+  - name: RHEL - Granting permissions to docker from ec2-user
+    shell: "usermod -a -G docker ec2-user"
+
+  - name: RHEL - Flush user/group permissions change
+    meta: reset_connection
+
+  - name: RHEL - Verify docker service is ready
+    shell: docker info
+    register: output
+    retries: 20
+    delay: 15
+    until: output is not failed    
+  
+  when: ansible_pkg_mgr == 'yum'
+  become: true
+
+
+########################################
+# Debian support for Docker installation
+########################################
+- block:
+  - name: debian - installing Docker prereqs
+    package:
+      name: 
+        - ca-certificates
+        - curl
+        - gnupg
+        - lsb-release      
+      update_cache: yes
+      state: present
+  
+  - name: debian - adding Docker GPG keyring
+    apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+  
+  - name: debian - add docker apt repo
+    apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        update_cache: yes
+
+  - name: debian - install docker
+    package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+  when: ansible_pkg_mgr == 'apt'
+  become: yes
