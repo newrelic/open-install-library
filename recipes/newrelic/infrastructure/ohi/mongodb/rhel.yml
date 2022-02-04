@@ -36,31 +36,6 @@ validationNrql: "SELECT count(*) from MongoDatabaseSample where hostname like '{
 successLinkConfig:
   type: EXPLORER
 
-inputVars:
-  - name: "NR_CLI_DB_USERNAME"
-    prompt: "MongoDB Username"
-  - name: "NR_CLI_DB_PASSWORD"
-    prompt: "MongoDB Password"
-    secret: true
-  - name: "NR_CLI_DB_CLUSTERNAME"
-    prompt: "MongoDB Cluster Name"
-  - name: "NR_CLI_DB_AUTH"
-    prompt: "MongoDB Auth Source (default: admin)"
-    default: "admin"
-  - name: "NR_CLI_DB_HOSTNAME"
-    prompt: "MongoDB Hostname (default: localhost)"
-    default: "localhost"
-  - name: "NR_CLI_DB_PORT"
-    prompt: "MongoDB Port (default: 27017)"
-    default: 27017
-  - name: "NR_CLI_SSL"
-    prompt: "Use SSL to connect? (false/true)"
-    default: false
-  - name: "NR_CLI_CLIENT_CERT_FILE"
-    prompt: "Client Certificate file (if applicable)"
-  - name: "NR_CLI_CERT_AUTH_FILE"
-    prompt: "Certificate Authority file (if applicable)"
-
 preInstall:
   info: |2
       To capture data from the MongoDB integration, you'll first need to meet these prerequisites:
@@ -89,132 +64,20 @@ preInstall:
     if [ $MONGODB_EXISTS -eq 0 ]; then
       exit 132
     fi
-    exit 0
+    exit 1
 
 install:
   version: "3"
   silent: true
-
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
         - task: setup
-        - task: restart
-
-    assert_pre_req:
-      cmds:
-        - |
-          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
-          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
-            exit 1
-          fi
-        - |
-          if [ {{.NR_CLI_SSL}} == false ]; then
-            IS_DATABASE_VALID=$(mongo --username {{.NR_CLI_DB_USERNAME}} --password {{.NR_CLI_DB_PASSWORD}} --authenticationDatabase {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --eval "db.adminCommand( { listDatabases: 1 } )" | grep "ok" | wc -l)
-            if [ $IS_DATABASE_VALID -eq 0 ]; then
-              echo "[Error]: The provided database name is not accessible with the provided username and password. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >&2
-              exit 3
-            fi
-          fi
-        - |
-          if [ {{.NR_CLI_SSL}} == true ]; then
-            if [ ! -f {{.NR_CLI_CLIENT_CERT_FILE}} ]; then
-              echo "[Error]: SSL is true but no client certificate file exist at '{{.NR_CLI_CLIENT_CERT_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >&2
-              exit 11
-            fi
-            if [ ! -f {{.NR_CLI_CERT_AUTH_FILE}} ]; then
-              echo "[Error]: Trust certificate is true but no certificate authority file exist at '{{.NR_CLI_CERT_AUTH_FILE}}'. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mongodb-monitoring-integration#config for more info." >&2
-              exit 13
-            fi
-          fi
 
     setup:
-      label: "Installing MongoDB integration..."
       cmds:
         - |
-          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
-          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-        - |
-          sudo yum install nri-mongodb -y
-        - |
-          if [ -f /etc/newrelic-infra/integrations.d/mongodb-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/mongodb-config.yml;
-          fi
-        - |
-          if [ {{.NR_CLI_SSL}} == true ]; then
-            sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
-          integrations:
-            - name: nri-mongodb
-              env:
-                # The mongos to connect to
-                HOST: {{.NR_CLI_DB_HOSTNAME}}
-                # The port the mongos is running on
-                PORT: {{.NR_CLI_DB_PORT}}
-                # The username of the user created to monitor the cluster.
-                # This user should exist on the cluster as a whole as well
-                # as on each of the individual mongods.
-                USERNAME: {{.NR_CLI_DB_USERNAME}}
-                # The password for the monitoring user
-                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
-                # The database on which the monitoring user is stored
-                AUTH_SOURCE: {{.NR_CLI_DB_AUTH}}
-                # A user-defined cluster name. Required.
-                CLUSTER_NAME: {{.NR_CLI_DB_CLUSTERNAME}}
-                # Connect using SSL
-                SSL: true
-                # Path to the CA certs file
-                SSL_CA_CERTS: {{.NR_CLI_CERT_AUTH_FILE}}
-                # Client Certificate to present to the server (optional)
-                PEM_KEY_FILE: {{.NR_CLI_CLIENT_CERT_FILE}}
-              inventory_source: config/mongodb
-              interval: 15
-          EOT
-          else
-            sudo tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<"EOT"
-          integrations:
-            - name: nri-mongodb
-              env:
-                # The mongos to connect to
-                HOST: {{.NR_CLI_DB_HOSTNAME}}
-                # The port the mongos is running on
-                PORT: {{.NR_CLI_DB_PORT}}
-                # The username of the user created to monitor the cluster.
-                # This user should exist on the cluster as a whole as well
-                # as on each of the individual mongods.
-                USERNAME: {{.NR_CLI_DB_USERNAME}}
-                # The password for the monitoring user
-                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
-                # The database on which the monitoring user is stored
-                AUTH_SOURCE: {{.NR_CLI_DB_AUTH}}
-                # A user-defined cluster name. Required.
-                CLUSTER_NAME: {{.NR_CLI_DB_CLUSTERNAME}}
-                # Connect using SSL
-                SSL: false
-              inventory_source: config/mongodb
-              interval: 15
-          EOT
-          fi
-
-    restart:
-      cmds:
-        - |
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            sudo systemctl restart newrelic-infra
-          else 
-            if [ {{.IS_INITCTL}} -gt 0 ]; then
-              sudo initctl restart newrelic-infra
-            else
-              sudo /etc/init.d/newrelic-infra restart
-            fi
-          fi
-      vars:
-        IS_SYSTEMCTL:
-          sh: command -v systemctl | wc -l
-        IS_INITCTL:
-          sh: command -v initctl | wc -l
+          exit 131
 
 postInstall:
   info: |2
