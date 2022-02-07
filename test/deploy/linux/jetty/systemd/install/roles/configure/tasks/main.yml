@@ -1,0 +1,97 @@
+---
+- debug:
+    msg: Install Systemd Jetty
+
+- name: Install Java for debian 
+  package:
+    name: ["default-jdk"]
+    update_cache: yes
+    state: latest
+  become: true
+  when: ansible_pkg_mgr == 'apt'
+
+- name: Install Java for RHEL
+  package:
+    name: ["java"]
+    update_cache: yes
+    state: latest
+  become: true
+  when: ansible_pkg_mgr == 'yum'
+
+- name: Download Jetty package
+  shell: wget https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-distribution/9.4.17.v20190418/jetty-distribution-9.4.17.v20190418.tar.gz 
+  become: true
+
+- name: Unpack Jetty
+  shell: tar -zxvf jetty-distribution-9.4.17.v20190418.tar.gz
+  become: true
+
+- name: Move Jetty to opt
+  shell: mv jetty-distribution-9.4.17.v20190418 /opt/jetty
+  become: true
+
+- name: Create jetty user
+  shell: useradd -m jetty
+  become: true
+
+- name: Change ownership of jetty install to jetty user
+  shell: chown -R jetty:jetty /opt/jetty/
+  become: true
+
+- name: Create and change ownership of jetty pid
+  shell: | 
+    mkdir /var/run/jetty
+    chown -R jetty:jetty /var/run/jetty
+  become: true  
+
+- name: Create symbolic link for Jetty
+  shell: ln -s /opt/jetty/bin/jetty.sh /etc/init.d/jetty
+  become: true
+
+
+# chkconfig alternative for Debian
+- block:
+  - name: Install sysv-rc-conf for Debian
+    package:
+        name: ["sysv-rc-conf"]
+        update_cache: yes
+        state: latest    
+
+  - name: Enable jetty to start on boot
+    shell: sysv-rc-conf --level S jetty on
+   
+  when: ansible_pkg_mgr == 'apt'
+  become: true
+
+# chkconfig is RHEL-specific
+- name: Add to server startup for RHEL
+  shell: chkconfig --add jetty
+  become: true
+  when: ansible_pkg_mgr == 'yum'
+
+- name: Create jetty dir for deployed webapps
+  shell: mkdir /opt/jetty/my_base/
+  become: true
+
+- name: Enable connector to allow deployments
+  shell: |
+    cd /opt/jetty/my_base/
+    java -jar /opt/jetty/start.jar --add-to-start=http,deploy
+  become: true
+
+- name: Allow users to write deployments
+  shell: chown -R jetty:jetty /opt/jetty/my_base/
+  become: true
+
+- name: Export jetty envars
+  shell: |
+    echo 'JETTY_HOME=/opt/jetty
+    JETTY_BASE=/opt/jetty/my_base
+    JETTY_USER=jetty
+    JETTY_PORT=8080
+    JETTY_HOST=192.168.1.10' >> /etc/default/jetty
+  become: true
+    
+- name: Start Jetty
+  shell: service jetty start
+  become: true
