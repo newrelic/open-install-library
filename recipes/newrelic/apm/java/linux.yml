@@ -34,6 +34,7 @@ logMatch:
 processMatch:
   - java.*org.apache.catalina.startup.Bootstrap
   - java.*\/opt.*\/wildfly.*\/jboss-modules\.jar
+  - java.*\/opt.*jetty.*\/.*start.jar
 
 preInstall:
   requireAtDiscovery: |
@@ -172,6 +173,9 @@ install:
           JBOSS_PATTERN='\/opt.*wildfly.*\/.*jboss-modules.jar'
           defaultJbossAppName="Wildfly"
 
+          JETTY_PATTERN='\/opt.*jetty.*\/.*start.jar'
+          defaultJettyAppName="Jetty"
+
           # collect any docker processIds
           isDockerRunning=$(sudo ps aux | grep docker | grep -v grep | wc -l)
           if [ $isDockerRunning -gt 0 ]; then
@@ -193,11 +197,13 @@ install:
           if [[ ! -z /etc/newrelic-java/install/.non_docker_pids ]]; then
             defaultJbossSetByUser="false"
             defaultTomcatSetByUser="false"
+            defaultJettySetByUser="false"
 
             for pid in $(cat /etc/newrelic-java/install/.non_docker_pids); do
               introspectionData=$(sudo nri-lsi-java -introspect ${pid})
               isMatchingTomcat=$(echo $introspectionData | grep "$TOMCAT_PATTERN" | grep -v grep | wc -l)
               isMatchingJboss=$(echo $introspectionData | grep "$JBOSS_PATTERN" | grep -v grep | wc -l)
+              isMatchingJetty=$(echo $introspectionData | grep "$JETTY_PATTERN" | grep -v grep | wc -l)
               if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
                 if [[ $isMatchingJboss -gt 0  && "$defaultJbossSetByUser" != "true" ]]; then
                   echo -n "Enter app name for non-containerized Jboss instances (default: '$defaultJbossAppName'): "
@@ -213,6 +219,13 @@ install:
                     defaultTomcatAppName=$answer
                     defaultTomcatSetByUser="true"
                   fi
+                elif [[ $isMatchingJetty -gt 0 && "defaultJettySetByUser" != "true" ]]; then
+                  echo -n "Enter app name for non-containerized Jetty instances (default: '$defaultJettyAppName'): "
+                  read -r answer
+                  if [[ -n $answer ]]; then
+                    defaultJettyAppName=$answer
+                    defaultJettySetByUser="true"
+                  fi                
                 fi
               fi
             done
@@ -228,6 +241,7 @@ install:
           #!/bin/bash
           TOMCAT_PATTERN='org.apache.catalina.startup.Bootstrap'
           JBOSS_PATTERN='\/opt.*wildfly.*\/.*jboss-modules.jar'
+          JETTY_PATTERN='\/opt.*jetty.*\/.*start.jar'
 
           build_stdout_json() {
             message=$1
@@ -279,6 +293,7 @@ install:
 
             defaultTomcatAppName=DEFAULT_TOMCAT_APP_NAME
             defaultJbossAppName=DEFAULT_JBOSS_APP_NAME
+            defaultJettyAppName=DEFAULT_JETTY_APP_NAME
             
             appServerEchoName="Tomcat"
             appName=$defaultTomcatAppName
@@ -286,6 +301,9 @@ install:
             if [[ "$appServerType" == "JBOSS" ]]; then
               appServerEchoName="JBoss"
               appName=$defaultJbossAppName
+            elif [[ "$appServerType" == "JETTY" ]]; then
+              appServerEchoName="Jetty"
+              appName=$defaultJettyAppName
             fi
 
             echo $(build_stdout_json "Attaching agent to $appServerEchoName process with PID $javaPid...")
@@ -427,6 +445,7 @@ install:
                 introspectionData=$(sudo nri-lsi-java -introspect ${javaPid})
                 isMatchingTomcat=$(echo $introspectionData | grep "$TOMCAT_PATTERN" | grep -v grep | wc -l)
                 isMatchingJboss=$(echo $introspectionData | grep "$JBOSS_PATTERN" | grep -v grep | wc -l)
+                isMatchingJetty=$(echo $introspectionData | grep "$JETTY_PATTERN" | grep -v grep | wc -l)
 
                 if [[ $isMatchingTomcat -gt 0 || $isMatchingJboss -gt 0  ]]; then
                   if [[ -f /etc/newrelic-java/install/.docker_pids && $(cat /etc/newrelic-java/install/.docker_pids | grep $javaPid | grep -v grep | wc -l) -gt 0 ]]; then
@@ -452,10 +471,12 @@ install:
                     fi
                   else
                     # non-containerized app server
-                    if [[ $isMatchingTomcat -gt 0 ]]; then
-                      attach_to_pid $javaPid TOMCAT
-                    else
+                    if [[ $isMatchingJboss -gt 0 ]]; then
                       attach_to_pid $javaPid JBOSS
+                    elif [[ $isMatchingJetty -gt 0 ]]; then
+                      attach_to_pid $javaPid JETTY
+                    else
+                      attach_to_pid $javaPid TOMCAT                  
                     fi
                   fi
                 fi
@@ -482,6 +503,7 @@ install:
           sudo sed -i 's/COMMAND_QUOTE/\\"/g' /etc/newrelic-java/dynamic-attach.sh
           sudo sed -i "s/DEFAULT_TOMCAT_APP_NAME/$defaultTomcatAppName/g" /etc/newrelic-java/dynamic-attach.sh
           sudo sed -i "s/DEFAULT_JBOSS_APP_NAME/$defaultJbossAppName/g" /etc/newrelic-java/dynamic-attach.sh
+          sudo sed -i "s/DEFAULT_JETTY_APP_NAME/$defaultJettyAppName/g" /etc/newrelic-java/dynamic-attach.sh
 
           NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
