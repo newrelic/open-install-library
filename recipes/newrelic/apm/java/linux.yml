@@ -75,6 +75,10 @@ install:
   version: "3"
   silent: true
 
+  vars:
+    HOST_WORKING_DIR:
+      sh: pwd
+
   tasks:
     default:
       cmds:
@@ -322,42 +326,105 @@ install:
           }
 
           attach_to_containerized_pid() {
-            javaPid=$1
-            containerId=$2
             license={{.NEW_RELIC_LICENSE_KEY}}
             region={{.NEW_RELIC_REGION}}
-            local dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $containerId | tr -d '/')
-            local dockerExec="sudo docker exec -u root ${containerId} sh -c"
-
+            javaPid=$1
+            containerId=$2         
+            local yumNotAvailable=$(sudo docker exec $containerId yum | grep 'not found' | grep -v grep | wc -l)
+            local aptNotAvailable=$(sudo docker exec $containerId apt | grep 'not found' | grep -v grep | wc -l)           
+            local dockerAppName=$(sudo docker inspect --format '{{"{{"}}.Name{{"}}"}}' $containerId | tr -d '/')            
+            
             echo $(build_stdout_json "Running java process detected in container '$dockerAppName' ($containerId)")
-            yumInstalled=$(eval "$dockerExec" "which yum 2>&1 || true")
-            if [[ $yumInstalled ]]; then
-              eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/nullCOMMAND_QUOTE"
-              eval "$dockerExec" "COMMAND_QUOTEyum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || trueCOMMAND_QUOTE"
-            else
-              eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/nullCOMMAND_QUOTE"
-              eval "$dockerExec" "COMMAND_QUOTEapt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || trueCOMMAND_QUOTE"
-            fi
-            echo $(build_stdout_json "Detecting java pid in '$dockerAppName'...")
-            javaPidsInContainer=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -listCOMMAND_QUOTE" | tr "," "\n" | tr -d "[ " | tr -d " ]" )
-            for pidInContainer in $javaPidsInContainer; do
-              introspectionData=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -introspect ${pidInContainer}COMMAND_QUOTE")
-              matchesSupportedAppServer=$(echo $introspectionData | grep "$TOMCAT_PATTERN\|$JBOSS_PATTERN" | grep -v grep | wc -l)
+            
+            ## Attaching to a distroless docker container
+            ## we copy over all of the files from the introspector package we already installed on the host
+            ## the explicitly flag the container with `.nri-configured` - can probably use a file we're moving/using to get the same value
+            ## we only want to do this once per container, it adds a couple minutes to the initial attachment
 
-              if [[ $matchesSupportedAppServer -gt 0 ]]; then
-                deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-                userId=$(eval "$dockerExec" "COMMAND_QUOTEps auxCOMMAND_QUOTE" | awk '{ print $2" " $1}' | grep "^$pidInContainer " | awk '{ print $2 }')
-                echo $(build_stdout_json "Attaching agent to application server with pid $pidInContainer owned by $userId in '$dockerAppName'...")
-                successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
-                attachOutput=$(sudo docker exec -u $userId ${containerId} sh -c "nri-lsi-java -apm $pidInContainer -appName $dockerAppName -license $license -region $region" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
-                if [[ $attachOutput -gt 0 ]]; then
-                  echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...complete!")
-                  create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
-                else
-                  echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...failed!")
+            if [[ $yumNotAvailable -gt 0 && $aptNotAvailable -gt 0 ]]; then              
+              # must copy over the package install
+              introspectorInstalled=$(sudo docker exec -u root $containerId [ -f .nri-configured ] && echo 1 )                         
+              if [[ $introspectorInstalled -eq 0 ]]; then
+                if [ -f /tmp/introspector-files.txt ]; then
+                  sudo rm /tmp/introspector-files.txt
                 fi
+                sudo touch /tmp/introspector-files.txt
+                sudo chmod 777 /tmp/introspector-files.txt
+                
+                isDockerHostRhel=$(which yum 2>&1 || true)
+                if [[ -n "$isDockerHostRhel" ]]; then
+                  sudo rpm -qlp {{.HOST_WORKING_DIR}}/nri-introspector-java_x86_64.rpm >> /tmp/introspector-files.txt
+                else
+                  sudo dpkg -c {{.HOST_WORKING_DIR}}/nri-introspector-java_amd64.deb | awk '{ print $6 }' >> /tmp/introspector-files.txt
+                  sudo sed -i 's/^\.//' /tmp/introspector-files.txt 
+                fi
+                
+                for filename in $(cat /tmp/introspector-files.txt); do 
+                  sudo docker exec -u root $containerId mkdir -p $(dirname $filename)
+                  sudo docker cp -L $filename $containerId:$filename
+                  sudo docker exec -u root $containerId chmod 777 $filename
+                done
+
+                sudo docker exec -u root $containerId touch .nri-configured  
+                sudo rm /tmp/introspector-files.txt     
               fi
-            done
+
+              echo $(build_stdout_json "Detecting java pid in '$dockerAppName'...")
+              javaPidsInContainer=$(sudo docker exec $containerId nri-lsi-java -list | tr "," "\n" | tr -d "[ " | tr -d " ]" )
+              for pidInContainer in $javaPidsInContainer; do
+                introspectionData=$(sudo docker exec $containerId nri-lsi-java -introspect $pidInContainer)
+                matchesSupportedAppServer=$(echo $introspectionData | grep "$TOMCAT_PATTERN\|$JBOSS_PATTERN\|$JETTY_PATTERN" | grep -v grep | wc -l)
+
+                if [[ $matchesSupportedAppServer -gt 0 ]]; then
+                  deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")                
+                  echo $(build_stdout_json "Attaching agent to application server with pid $pidInContainer in '$dockerAppName'...")
+                  successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
+                  attachOutput=$(sudo docker exec $containerId nri-lsi-java -apm $pidInContainer -appName $dockerAppName -license $license -region $region | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
+                  if [[ $attachOutput -gt 0 ]]; then
+                    echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...complete!")
+                    create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
+                  else
+                    echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...failed!")
+                  fi
+                fi
+              done
+
+
+          
+            ## attaching to a docker container as we have been doing
+            ## duplicated ATM, will refactor once there is a consensus on the 'docker distroless copy' approach  
+            else
+              # container has package manager
+              local dockerExec="sudo docker exec -u root ${containerId} sh -c"
+              yumInstalled=$(eval "$dockerExec" "which yum 2>&1 || true")
+              if [[ $yumInstalled ]]; then
+                eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_x86_64.rpm > /dev/nullCOMMAND_QUOTE"
+                eval "$dockerExec" "COMMAND_QUOTEyum install -y -q nri-introspector-java_x86_64.rpm > /dev/null || trueCOMMAND_QUOTE"
+              else
+                eval "$dockerExec" "COMMAND_QUOTEcurl -s -O https://download.newrelic.com/install/java/introspector/latest/nri-introspector-java_amd64.deb > /dev/nullCOMMAND_QUOTE"
+                eval "$dockerExec" "COMMAND_QUOTEapt-get install -y -qq ./nri-introspector-java_amd64.deb > /dev/null || trueCOMMAND_QUOTE"
+              fi
+              echo $(build_stdout_json "Detecting java pid in '$dockerAppName'...")
+              javaPidsInContainer=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -listCOMMAND_QUOTE" | tr "," "\n" | tr -d "[ " | tr -d " ]" )
+              for pidInContainer in $javaPidsInContainer; do
+                introspectionData=$(eval "$dockerExec" "COMMAND_QUOTEnri-lsi-java -introspect ${pidInContainer}COMMAND_QUOTE")
+                matchesSupportedAppServer=$(echo $introspectionData | grep "$TOMCAT_PATTERN\|$JBOSS_PATTERN" | grep -v grep | wc -l)
+
+                if [[ $matchesSupportedAppServer -gt 0 ]]; then
+                  deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                  userId=$(eval "$dockerExec" "COMMAND_QUOTEps auxCOMMAND_QUOTE" | awk '{ print $2" " $1}' | grep "^$pidInContainer " | awk '{ print $2 }')
+                  echo $(build_stdout_json "Attaching agent to application server with pid $pidInContainer owned by $userId in '$dockerAppName'...")
+                  successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
+                  attachOutput=$(sudo docker exec -u $userId ${containerId} sh -c "nri-lsi-java -apm $pidInContainer -appName $dockerAppName -license $license -region $region" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
+                  if [[ $attachOutput -gt 0 ]]; then
+                    echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...complete!")
+                    create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
+                  else
+                    echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...failed!")
+                  fi
+                fi
+              done
+            fi  
 
             return 0
           }
