@@ -345,36 +345,37 @@ install:
             echo "Using kubectl to install the Kubernetes integration"
             echo ""
 
-            URL="https://k8s-config-generator.service.newrelic.com/generate?"
-            URL="${URL}global.cluster=${NR_CLI_CLUSTERNAME}"
-            URL="${URL}&global.namespace=${NR_CLI_NAMESPACE}"
-            URL="${URL}&newrelic-infrastructure.privileged=${NR_CLI_PRIVILEGED}"
-            URL="${URL}&global.lowDataMode=${NR_CLI_LOW_DATA_MODE}"
-            URL="${URL}&ksm.enabled=${NR_CLI_KSM}"
-            URL="${URL}&prometheus.enabled=${NR_CLI_PROMETHEUS}"
-            URL="${URL}&kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
-            URL="${URL}&logging.enabled=${NR_CLI_LOGGING}"
-            URL="${URL}&global.licenseKey=${NEW_RELIC_LICENSE_KEY}"
+            URL="https://k8s-config-generator.service.newrelic.com/generate"
+            BODY="{\"global.cluster\":\"${NR_CLI_CLUSTERNAME}\""
+            BODY="${BODY},\"global.namespace\":\"${NR_CLI_NAMESPACE}\""
+            BODY="${BODY},\"newrelic-infrastructure.privileged\":\"${NR_CLI_PRIVILEGED}\""
+            BODY="${BODY},\"global.lowDataMode\":\"${NR_CLI_LOW_DATA_MODE}\""
+            BODY="${BODY},\"ksm.enabled\":\"${NR_CLI_KSM}\""
+            BODY="${BODY},\"prometheus.enabled\":\"${NR_CLI_PROMETHEUS}\""
+            BODY="${BODY},\"kubeEvents.enabled\":\"${NR_CLI_KUBE_EVENTS}\""
+            BODY="${BODY},\"logging.enabled\":\"${NR_CLI_LOGGING}\""
+            BODY="${BODY},\"global.licenseKey\":\"${NEW_RELIC_LICENSE_KEY}\""
             if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
-              URL="${URL}&global.nrStaging=true"
+              BODY="${BODY},\"global.nrStaging\":true"
             fi
             if [[ "${NR_CLI_NEWRELIC_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" ]]; then
-              URL="${URL}&newrelic-pixie.enabled=true"
-              URL="${URL}&newrelic-pixie.apiKey=${NR_CLI_PIXIE_API_KEY}"
+              BODY="${BODY},\"newrelic-pixie.enabled\":true"
+              BODY="${BODY},\"newrelic-pixie.apiKey\":\"${NR_CLI_PIXIE_API_KEY}\""
               if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
-                URL="${URL}&pixie-chart.enabled=true"
-                URL="${URL}&pixie-chart.deployKey=${NR_CLI_PIXIE_DEPLOY_KEY}"
-                URL="${URL}&pixie-chart.clusterName=$NR_CLI_CLUSTERNAME"
+                BODY="${BODY},\"pixie-chart.enabled\":true"
+                BODY="${BODY},\"pixie-chart.deployKey\":\"${NR_CLI_PIXIE_DEPLOY_KEY}\""
+                BODY="${BODY},\"pixie-chart.clusterName\":\"${NR_CLI_CLUSTERNAME}\""
                 if [[ "${OLM_INSTALLED}" == "true" ]]; then
-                  URL="${URL}&pixie-chart.deployOLM=false"
+                  BODY="${BODY},\"pixie-chart.deployOLM\":false"
                 fi
                 if [[ ! -z "${NR_CLI_PIXIE_ADDRESS}" ]]; then
-                  URL="${URL}&pixie-chart.cloudAddr=${NR_CLI_PIXIE_ADDRESS}"
-                  URL="${URL}&pixie-chart.cloudUpdateAddr=${NR_CLI_PIXIE_ADDRESS}"
+                  BODY="${BODY},\"pixie-chart.cloudAddr\":\"${NR_CLI_PIXIE_ADDRESS}\""
+                  BODY="${BODY},\"pixie-chart.cloudUpdateAddr\":\"${NR_CLI_PIXIE_ADDRESS}\""
                 fi
               fi
             fi
-            curl -s "${URL}" > newrelic-k8s.yml
+            BODY="${BODY}}"
+            curl -s -H "Content-Type: application/json" -d "${BODY}" "${URL}" > newrelic-k8s.yml
             $SUDO $KUBECTL apply -f newrelic-k8s.yml
           fi
 
