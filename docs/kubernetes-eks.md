@@ -37,7 +37,7 @@ The CloudFormation UI should be prefilled to load this existing template from an
 
 ### Default EKS node group configuration
 
-* For `Instance type` select `t3a.small`
+* For `Instance type` select `t3.small`
 * For `Number of nodes` use `4`
 * For `Maximum number of nodes` use `5`
 
