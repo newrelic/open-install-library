@@ -40,12 +40,6 @@ preInstall:
       echo "microsoft Windows Subsystem for Linux for infra detected, unsupported" >&2
       exit 131
     fi
-    SLES_VERSION=$(awk -F= '/VERSION_ID/ {print $2}' /etc/os-release)
-    IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/zypp/sles/$SLES_VERSION/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
-    if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-      echo "there is no newrelic infrastructure agent available for the distribution '$SLES_VERSION'." >&2
-      exit 131
-    fi
     exit 0
 
 install:
@@ -102,6 +96,15 @@ install:
             echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >&2
             exit 15
           fi
+        - |
+          IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
+          if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
+            echo "there is no newrelic infrastructure agent available for the distribution '{{.SLES_VERSION}}'." >&2
+            exit 131
+          fi
+      vars:
+        SLES_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
     cleanup:
       cmds:

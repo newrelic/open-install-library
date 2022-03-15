@@ -39,26 +39,6 @@ preInstall:
       echo "microsoft Windows Subsystem for Linux for infra detected, unsupported" >&2
       exit 131
     fi
-    DEBIAN_CODENAME=$(awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release)
-    if [ -n "$DEBIAN_CODENAME" ]; then
-      IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt/dists/$DEBIAN_CODENAME/InRelease | grep " 2[0-9][0-9] " | wc -l)
-      if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-        echo "there is no newrelic infrastructure agent available for the distribution with codename '$DEBIAN_CODENAME'." >&2
-        exit 131
-      fi
-    else
-      DEBIAN_VERSION_CODENAME=$(cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g')
-      if [ -n "$DEBIAN_VERSION_CODENAME" ]; then
-        IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt/dists/$DEBIAN_VERSION_CODENAME/InRelease | grep " 2[0-9][0-9] " | wc -l)
-        if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-          echo "there is no newrelic infrastructure agent available for the distribution with version codename '$DEBIAN_VERSION_CODENAME'." >&2
-          exit 131
-        fi
-      else
-        echo "there is no newrelic infrastructure agent available for the distribution, no version codename was found." >&2
-        exit 131
-      fi
-    fi
     exit 0
 
 install:
@@ -120,6 +100,30 @@ install:
             echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >&2
             exit 15
           fi
+        - |
+          if [ -n "{{.DEBIAN_CODENAME}}" ]; then
+            IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt/dists/{{.DEBIAN_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
+            if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
+              echo "there is no newrelic infrastructure agent available for the distribution with codename '{{.DEBIAN_CODENAME}}'." >&2
+              exit 131
+            fi
+          else
+            if [ -n "{{.DEBIAN_VERSION_CODENAME}}" ]; then
+              IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt/dists/{{.DEBIAN_VERSION_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
+              if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
+                echo "there is no newrelic infrastructure agent available for the distribution with version codename '{{.DEBIAN_VERSION_CODENAME}}'." >&2
+                exit 131
+              fi
+            else
+              echo "there is no newrelic infrastructure agent available for the distribution, no version codename was found." >&2
+              exit 131
+            fi
+          fi
+      vars:
+        DEBIAN_CODENAME:
+          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
+        DEBIAN_VERSION_CODENAME:
+          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
 
     cleanup:
       cmds:
