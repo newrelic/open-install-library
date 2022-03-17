@@ -19,12 +19,14 @@ processMatch: []
 
 preInstall:
   requireAtDiscovery: |
-      # IDMSv1
+      # IMDSv1
       code1=$(curl --connect-timeout 2 --max-time 2 -I http://169.254.169.254/latest/meta-data/instance-id -w %{response_code} -so '/dev/null')
-      # IDMSv2
-      code2=$(curl -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 100" --connect-timeout 2 --max-time 2 -I "http://169.254.169.254/latest/api/token" -w %{response_code} -so '/dev/null')
-      if [["$code1" != "200"]] && [["$code2" != "200"]]; then
-        exit 1
+      if [["$code1" != "200"]]; then
+        # IMDSv2
+        code2=$(curl -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 100" --connect-timeout 2 --max-time 2 -I "http://169.254.169.254/latest/api/token" -w %{response_code} -so '/dev/null')
+        if [["$code2" != "200"]]; then
+          exit 1
+        fi
       fi
 
       if [ ! -f ~/.aws/credentials ]; then
