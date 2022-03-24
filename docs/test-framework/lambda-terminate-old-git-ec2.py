@@ -1,5 +1,3 @@
-# This is a Cron lambda to catch any Ec2 instances from the automated tests and terminate them if they are older than 1 day
-
 import json
 import boto3
 from datetime import datetime, timedelta, timezone
@@ -17,17 +15,22 @@ def lambda_handler(event, context):
             'Name': 'key-name',
             'Values': [keypair_name]
         },
+        {
+            'Name': 'instance-state-name',
+            'Values': ['running']
+        },
     ])
-    if response['Reservations']:
-        if len(response['Reservations']) > 0:
-            for reservation in response['Reservations']:
+    if 'Reservations' in response and response['Reservations'] and len(response['Reservations']) > 0:
+        for reservation in response['Reservations']:
+            if 'Instances' in reservation:
                 for instance in reservation['Instances']:
-                    if len(instance['Tags']) > 0:
+                    if 'Tags' in instance and len(instance['Tags']) > 0:
                         for element in instance['Tags']:
-                            if element['Key'] == 'Name':
+                            if 'Key' in element and element['Key'] == 'Name':
                                 instance_name = element['Value']
                                 launch_time = instance['LaunchTime']
                                 instance_id = instance['InstanceId']
+                                print('Working on name:' +instance_name +' instance_id:' +instance_id +' launch_time:' +launch_time.strftime('%m/%d/%Y'))
                                 if instance_name.startswith(prefix_match):
                                     time_between = datetime.now(timezone.utc) - launch_time
                                     if time_between.days> 1:
