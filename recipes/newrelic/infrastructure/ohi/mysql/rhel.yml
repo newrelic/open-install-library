@@ -175,10 +175,20 @@ install:
           sudo sed -i 's/NR_CLI_DB_PASSWORD/'$NR_CLI_DB_PASSWORD'/g' /tmp/sql-create-user.sql
 
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
+            TRIES=0
             printf "The MySql root password is required to create the new user, please enter it below when prompted\n"
-            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
-            echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
-            SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
+            
+            SQL_OUTPUT_ERROR=1
+            while [ $TRIES -lt {{.MAX_RETRIES}} ] && [ $SQL_OUTPUT_ERROR -gt 0 ] ; 
+            do
+              if [ $TRIES -gt 0 ]; then printf "\nPlease try again\n"; fi
+              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
+              echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+              SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
+              ((TRIES++))
+            done
+              
+            # if failed after max retries
             if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
               printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPerhaps the MySql root DB password is incorrect.\nPlease either re-run the installation with the correct root DB password, or follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n\n" >&2
               sudo cat /tmp/sql-create-user.sql

@@ -42,15 +42,17 @@ successLinkConfig:
   type: EXPLORER
 
 preInstall:
+  requireAtDiscovery: |
+      isMysqlInstalled=$(sudo which mysql 2>&1 || true)
+      if [[ -n "$isMysqlInstalled" ]]; then
+        exit 0
+      fi
+      exit 1
   info: |2
-      To capture data from the MySQL integration, you'll first need to meet these prerequisites:
-      - MySQL version requirement (see https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#req)
-      - User with select and replication permissions
-      To create a new user, use these commands as reference (Note: username,
-      password, and similar user-specific values must be replaced):
-      > sudo mysql -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'YOUR_SELECTED_PASSWORD' WITH MAX_USER_CONNECTIONS 5;"
-      > sudo mysql -e "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';"
-      > sudo mysql -e "GRANT SELECT ON *.* TO 'newrelic'@'localhost';"
+      To capture data from the MySQL integration, we need to create a new MySql user with specific permissions (REPLICATION, SELECT).
+      The installation will create a strong randomly generated password for that new user.
+      This installation may prompt for your MySql root user password in order to create this new user.
+      More information regarding the prerequisites can be found at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#req
 
 install:
   version: "3"
@@ -60,6 +62,7 @@ install:
     default:
       cmds:
         - task: assert_infra
+        - task: assert_pre_req
         - task: input_assert
           vars:
             MAX_RETRIES: 3
@@ -74,6 +77,24 @@ install:
             echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
             exit 1
           fi
+    
+    assert_pre_req:
+      cmds:
+        - |
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="date:41 sha256sum:42 base64:43 head:44"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo -e "{{.RED}}This installation requires '${tool}' to be installed.{{.NOCOLOR}}" >> /dev/stderr
+              exit ${code}
+            fi
+          done
 
     input_assert:
       cmds:
@@ -90,96 +111,106 @@ install:
           # Set Defaults
           NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-localhost}
           NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
+          NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-newrelic}
+          if [[ "$NR_CLI_DB_PASSWORD" == "" ]]; then
+            NR_CLI_DB_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
+          fi
 
-          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-              printf "\nMySQL Hostname (default: localhost): "
-              read -r NR_CLI_DB_HOSTNAME
-              NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-localhost}
-              printf "MySQL port (default: 3306): "
-              read -r NR_CLI_DB_PORT
-              NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
-              ((TRIES++))
-              CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
-              CAN_CONNECT=${CAN_CONNECT:-0}
+          # Check to see if default port works, or prompt if non-interactive
+          CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+          CAN_CONNECT=${CAN_CONNECT:-0}
+          if [[ "$CAN_CONNECT" == "6" ]] || [[ "$CAN_CONNECT" == "7" ]] ; then
+            if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+              TRIES=0
+              while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+                printf "MySQL port (default: 3306): "
+                read -r NR_CLI_DB_PORT
+                NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
+                ((TRIES++))
+                CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+                CAN_CONNECT=${CAN_CONNECT:-0}
 
-              if [ $CAN_CONNECT == "6" ]; then
-                printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 6; fi
-                echo "Please try again"
-              elif [ $CAN_CONNECT == "7" ]; then
-                printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
-                echo "Please try again"
-              else
-                break
+                if [ $CAN_CONNECT == "6" ]; then
+                  printf "\n[Error]: Provided host ($NR_CLI_DB_HOSTNAME) cannot be reached.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
+                  exit 131;
+                fi
+                if [ $CAN_CONNECT == "7" ]; then
+                  printf "\n[Error]: Connections to port ($NR_CLI_DB_PORT) are being refused.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
+                  if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
+                  echo "Please try again"
+                else
+                  break
               fi
             done
+            else
+              printf "\nThe connections for the MySql instance using the port ($NR_CLI_DB_PORT) are being refused.\nPlease re-run this installation and enter a valid port for the MySql instance when prompted.\n" >&2
+              exit 131;
+            fi
           fi
 
-          TRIES=0
-          EXPECTED_SELECT_REPLICATION=$(echo 'SELECT, REPLICATION')
-          EXPECTED_ALL_PRIVILEGES=$(echo 'ALL PRIVILEGES')
+          # Create new user with needed permissions, delete any previous user if exists
+          if [ -f /tmp/sql-create-user.sql ]; then
+            sudo rm -f /tmp/sql-create-user.sql
+          fi
+          sudo tee -a /tmp/sql-create-user.sql > /dev/null <<"EOT"
+          DROP USER IF EXISTS 'NR_CLI_DB_USERNAME'@'localhost';
+          CREATE USER 'NR_CLI_DB_USERNAME'@'localhost' IDENTIFIED BY 'NR_CLI_DB_PASSWORD';
+          GRANT REPLICATION CLIENT ON *.* TO 'NR_CLI_DB_USERNAME'@'localhost';
+          GRANT SELECT ON *.* TO 'NR_CLI_DB_USERNAME'@'localhost';
+          EOT
+          sudo sed -i 's/NR_CLI_DB_USERNAME/'$NR_CLI_DB_USERNAME'/g' /tmp/sql-create-user.sql
+          sudo sed -i 's/NR_CLI_DB_PASSWORD/'$NR_CLI_DB_PASSWORD'/g' /tmp/sql-create-user.sql
 
-          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-              printf "MySQL Username: "
-              read -r NR_CLI_DB_USERNAME
-              printf "MySQL Password: "
-              stty -echo
-              read -r NR_CLI_DB_PASSWORD
-              stty echo
+          if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
++           TRIES=0
+            printf "The MySql root password is required to create the new user, please enter it below when prompted\n"
+            
+            SQL_OUTPUT_ERROR=1
+            while [ $TRIES -lt {{.MAX_RETRIES}} ] && [ $SQL_OUTPUT_ERROR -gt 0 ] ; 
+            do
+              if [ $TRIES -gt 0 ]; then printf "\nPlease try again\n"; fi
+              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
+              echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+              SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
               ((TRIES++))
-              if [ "$NR_CLI_DB_USERNAME" == "" ] || [ "$NR_CLI_DB_PASSWORD" == "" ]; then
-                printf "\n[Error]: Please provide a valid Username and Password. Fields cannot be blank.\n" >&2
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 4; else continue; fi
-                echo "Please try again"
-                continue
-              fi
-              CHECK_USER=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SELECT USER FROM mysql.user" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep $NR_CLI_DB_USERNAME | awk '{print $1}')
-              if [ "$CHECK_USER" == "$NR_CLI_DB_USERNAME" ]; then
-                CHECK_DB=$(mysql -u$NR_CLI_DB_USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_PASSWORD -e "SHOW GRANTS FOR CURRENT_USER" 2>&1 | grep -v "mysql: [Warning] Using a password on the command line interface can be insecure." | grep "GRANT" | awk '{print $2, $3}')
-                if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -gt 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -gt 0 ]; then
-                  break
-                fi
-              fi
-              if [ "$CHECK_USER" != "$NR_CLI_DB_USERNAME" ]; then
-                printf "\n[Error]: Provided credentials have no access to mysql. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
-                echo "Please try again"
-              fi
-              if [ $(echo $CHECK_DB | grep "$EXPECTED_SELECT_REPLICATION" | wc -l) -eq 0 ] || [ $(echo $CHECK_DB | grep "$EXPECTED_ALL_PRIVILEGES" | wc -l) -eq 0 ]; then
-                printf "\n[Error]: Provided user does not have the minimum permissions. See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration#config for more info.\n" >&2
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; fi
-                echo "Please try again"
-              fi
-          done
-          fi
+            done
 
-          if [ "$NR_CLI_DB_USERNAME" == "" ]; then
-            EXIT130=" - NR_CLI_DB_USERNAME=<mysql_username>\n"
-          fi
-          if [ "$NR_CLI_DB_PASSWORD" == "" ]; then
-            EXIT130="$EXIT130 - NR_CLI_DB_PASSWORD=<mysql_password>\n"
-          fi
-
-          if [ "$EXIT130" != "" ]; then
-            printf "You did not provide all the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
-            exit 130
+            if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
+              printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPerhaps the MySql root DB password is incorrect.\nPlease either re-run the installation with the correct root DB password, or follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n\n" >&2
+              sudo cat /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-create-user.sql
+              printf "\n"
+              echo -e "detail:"$EXEC_OUTPUT
+              printf "\n"
+              exit 131
+            fi
           else
-            printf "\n[OK] All checks passed. Installing MySQL Integration...\n\n"
+            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT < /tmp/sql-create-user.sql 2>&1)
+            echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+            SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
+            if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
+              printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPlease follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n\n" >&2
+              sudo cat /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-create-user.sql
+              printf "\n"
+              echo -e "detail:"$EXEC_OUTPUT
+              printf "\n"
+              exit 131
+            fi
           fi
+          sudo rm -f /tmp/sql-create-user.sql
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-          sudo zypper -n ref -r newrelic-infra
-          sudo zypper -n install nri-mysql
+          # Get latest definitions and skip any failure because of deprecation
+          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+          sudo apt-get install nri-mysql -y
           if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
           fi
 
-          sudo touch /etc/newrelic-infra/integrations.d/mysql-config.yml;
-          sudo tee -a /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<EOT
+          sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
+          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<EOT
           integrations:
             - name: nri-mysql
               env:
