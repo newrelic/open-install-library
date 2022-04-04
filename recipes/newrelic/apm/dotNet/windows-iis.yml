@@ -246,16 +246,6 @@ install:
           if ("{{.NEW_RELIC_REGION}}" -like "STAGING") {
             $xdoc.configuration.service.SetAttribute("host", "staging-collector.newrelic.com")
           }
-          if ($xdoc.GetElementsByTagName("distributedTracing")[0]) {
-            $xdoc.configuration.distributedTracing.SetAttribute("enabled", "true")
-            $xdoc.configuration.distributedTracing.SetAttribute("excludeNewrelicHeader", "false")
-          }
-          else {
-            $child = $xdoc.CreateElement("distributedTracing", "urn:newrelic-config")
-            $child.SetAttribute("enabled", "true")
-            $child.SetAttribute("excludeNewrelicHeader", "false")
-            $xdoc.configuration.AppendChild($child) | Out-Null
-          }
           if ("$env:HTTPS_PROXY") {
             $uri = ""
             try {
@@ -285,6 +275,26 @@ install:
               }
               $xdoc.configuration.service.AppendChild($child) | Out-Null
             }
+          }
+
+          if ($xdoc.GetElementsByTagName("applicationLogging")[0]) {
+            $xdoc.configuration.applicationLogging.SetAttribute("enabled", "true")
+            if ($xdoc.GetElementsByTagName("forwarding")[0]) {
+              $xdoc.configuration.applicationLogging.forwarding.SetAttribute("enabled", "true")
+            }
+            else {
+              $child = $xdoc.CreateElement("forwarding", "urn:newrelic-config")
+              $child.SetAttribute("enabled", "true")
+              $xdoc.configuration.applicationLogging.AppendChild($child) | Out-Null
+            }
+          }
+          else {
+            $child = $xdoc.CreateElement("applicationLogging", "urn:newrelic-config")
+            $child.SetAttribute("enabled", "true")
+            $xdoc.configuration.AppendChild($child) | Out-Null
+            $child = $xdoc.CreateElement("forwarding", "urn:newrelic-config")
+            $child.SetAttribute("enabled", "true")
+            $xdoc.configuration.applicationLogging.AppendChild($child) | Out-Null
           }
 
           $xdoc.Save($configPath)
