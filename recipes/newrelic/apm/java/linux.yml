@@ -23,14 +23,6 @@ keywords:
   - Apm
   - java
 
-logMatch:
-  - name: tomcat-versioned-catalina
-    file: /opt/tomcat/*tomcat*/logs/catalina.out
-  - name: tomcat-catalina-opt
-    file: /opt/*tomcat*/logs/catalina.out
-  - name: tomcat-catalina-var
-    file: /var/log/*tomcat*/catalina.out
-
 processMatch:
   - java.*org.apache.catalina.startup.Bootstrap
   - java.*\/opt.*\/wildfly.*\/jboss-modules\.jar
@@ -310,7 +302,7 @@ install:
             echo $(build_stdout_json "Attaching agent to $appServerEchoName process with PID $javaPid...")
             deploymentTimestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
-            attachOutput=$(sudo nri-lsi-java -apm $javaPid -appName $appName -license $license -region $region | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
+            attachOutput=$(sudo NEW_RELIC_APPLICATION_LOGGING_FORWARDING_ENABLED=true nri-lsi-java -apm $javaPid -appName $appName -license $license -region $region | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
             if [[ $attachOutput -gt 0 ]]; then
               echo $(build_stdout_json "Attaching agent to $appServerEchoName process with PID $javaPid..complete!")
               create_deployment_marker $javaPid $appName $deploymentTimestamp
@@ -349,7 +341,7 @@ install:
                 userId=$(eval "$dockerExec" "COMMAND_QUOTEps auxCOMMAND_QUOTE" | awk '{ print $2" " $1}' | grep "^$pidInContainer " | awk '{ print $2 }')
                 echo $(build_stdout_json "Attaching agent to application server with pid $pidInContainer owned by $userId in '$dockerAppName'...")
                 successfulAttachGrepPattern='\"level\":\"INFO\",\"label\":\"Url\"'
-                attachOutput=$(sudo docker exec -u $userId ${containerId} sh -c "nri-lsi-java -apm $pidInContainer -appName $dockerAppName -license $license -region $region" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
+                attachOutput=$(sudo docker exec -u $userId ${containerId} sh -c "NEW_RELIC_APPLICATION_LOGGING_FORWARDING_ENABLED=true nri-lsi-java -apm $pidInContainer -appName $dockerAppName -license $license -region $region" | grep ${successfulAttachGrepPattern} | grep -v grep  | wc -l)
                 if [[ $attachOutput -gt 0 ]]; then
                   echo $(build_stdout_json "Attaching agent to application server in '$dockerAppName'...complete!")
                   create_deployment_marker $javaPid $dockerAppName $deploymentTimestamp
