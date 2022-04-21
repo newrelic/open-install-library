@@ -41,19 +41,19 @@ preInstall:
       # Not a host that can manage kubernetes
       exit 10
     fi
-    
-    K8S_CONFIG_CONTEXTS=$($SUDO $KUBECTL config get-contexts 2>/dev/null | grep -v grep | wc -l)
+
+    K8S_CONFIG_CONTEXTS=$($SUDO $KUBECTL config get-contexts 2>/dev/null --no-headers | wc -l | xargs)
     if [[ $K8S_CONFIG_CONTEXTS -lt 2 ]]; then
       # No kubectl contexts
       exit 45
     fi
 
     ACTIVE_CLUSTER_PATTERN='kind.*NodeList'
-    VERIFY_ACTIVE_CLUSTER=$($SUDO $KUBECTL cluster-info dump pod-running-timeout 2 all-namespaces true 2>/dev/null | grep ${ACTIVE_CLUSTER_PATTERN} | grep -v grep | wc -l)
+    VERIFY_ACTIVE_CLUSTER=$($SUDO $KUBECTL cluster-info dump pod-running-timeout 2 all-namespaces true 2>/dev/null | grep ${ACTIVE_CLUSTER_PATTERN} | wc -l | xargs)
     if [[ $VERIFY_ACTIVE_CLUSTER -eq 0 ]]; then
       # No running clusters detected on host
       exit 45
-    fi    
+    fi
 
 
 install:
@@ -192,13 +192,24 @@ install:
             fi
           fi
 
+          PIXIE_MEM=0
           # Check if the nodes have sufficient memory
           if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
             MEMORY=$($SUDO $KUBECTL get nodes -o jsonpath='{.items[0].status.capacity.memory}' | sed 's/Ki$//')
-            if [[ "$MEMORY" -lt 7950912 ]]; then
-              echo "Pixie requires nodes with 8 Gb of memory or more, got ${MEMORY}." >&2
+            if [[ "$MEMORY" -lt 3906250 ]]; then
+              echo "Pixie requires nodes with 4 Gb of memory or more, got ${MEMORY} Ki." >&2
               echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
               PIXIE_SUPPORTED=false
+            elif [[ "$MEMORY" -ge 3906250 ]] && [[ "$MEMORY" -lt 7812500 ]]; then
+            	echo "Detected ${MEMORY} Ki.." >&2
+              echo -e "\033[0;31mSetting Pixie memory limit to 1Gi.\033[0m" >&2
+              PIXIE_MEM="1Gi"
+              PIXIE_SUPPORTED=true
+            elif [[ "$MEMORY" -ge 7812500 ]]; then
+              echo "Detected ${MEMORY} Ki.." >&2
+              echo -e "\033[0;31mSetting Pixie memory limit to 2Gi.\033[0m" >&2
+              PIXIE_MEM="2Gi"
+              PIXIE_SUPPORTED=true
             fi
           fi
 
@@ -348,6 +359,7 @@ install:
                 ARGS="${ARGS} --set pixie-chart.enabled=true"
                 ARGS="${ARGS} --set pixie-chart.deployKey=${NR_CLI_PIXIE_DEPLOY_KEY}"
                 ARGS="${ARGS} --set pixie-chart.clusterName=${NR_CLI_CLUSTERNAME}"
+                ARGS="${ARGS} --set pixie-chart.pemMemoryLimit=${PIXIE_MEM}"
                 if [[ "${OLM_INSTALLED}" == "true" ]]; then
                   ARGS="${ARGS} --set pixie-chart.deployOLM=false"
                 fi
@@ -389,6 +401,7 @@ install:
                 BODY="${BODY},\"pixie-chart.enabled\":true"
                 BODY="${BODY},\"pixie-chart.deployKey\":\"${NR_CLI_PIXIE_DEPLOY_KEY}\""
                 BODY="${BODY},\"pixie-chart.clusterName\":\"${NR_CLI_CLUSTERNAME}\""
+                BODY="${BODY},\"pixie-chart.pemMemoryLimit\":\"${PIXIE_MEM}\""
                 if [[ "${OLM_INSTALLED}" == "true" ]]; then
                   BODY="${BODY},\"pixie-chart.deployOLM\":false"
                 fi
