@@ -12,6 +12,12 @@ dependencies:
 installTargets:
   - type: host
     os: linux
+    platform: "debian"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+  - type: host
+    os: linux
     platform: "amazon"
     platformVersion: "2"
   - type: host
@@ -92,8 +98,6 @@ install:
       cmds:
         - task: assert_infra
         - task: input_assert
-          vars:
-            MAX_RETRIES: 3
         - task: restart
 
     assert_infra:
@@ -149,11 +153,22 @@ install:
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-          sudo yum install nri-nginx -y -q
+
+          # Get latest definitions and skip any failure because of deprecation
+          isYumInstalled=$(which yum 2>&1 || true)
+
+          if [[ -n "$isYumInstalled" ]]; then
+            # rhel
+            sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+            sudo yum install nri-nginx -y -q
+          else
+            # debian
+            sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+            sudo apt-get install nri-nginx -y
+          fi
 
           if [ -f /etc/newrelic-infra/integrations.d/nginx-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/nginx-config.yml
+            sudo rm /etc/newrelic-infra/integrations.d/nginx-config.yml;
           fi
           sudo touch /etc/newrelic-infra/integrations.d/nginx-config.yml;
           sudo tee -a /etc/newrelic-infra/integrations.d/nginx-config.yml > /dev/null <<EOT
