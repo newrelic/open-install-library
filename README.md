@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/newrelic/open-install-library/blob/master/LICENSE)
 [![Release](https://img.shields.io/github/v/release/newrelic/open-install-library?sort=semver)](https://github.com/newrelic/open-install-library/releases/latest)
 
-A collection of recipies designed to support the automated installation and setup of New Relic products and integrations.
+A collection of recipes designed to support the automated installation and setup of New Relic products and integrations.
 
 ## Mission
 
@@ -50,7 +50,7 @@ New Relic hosts and moderates an online forum where customers can interact with 
 
 ## Contributing
 
-We encourage your contributions to improve [project name]! Keep in mind when you submit your pull request, you'll need to sign the CLA via the click-through using CLA-Assistant. You only have to sign the CLA one time per project.
+We encourage your contributions to improve [Open Install Library](https://github.com/newrelic/open-install-library)! Keep in mind when you submit your pull request, you'll need to sign the CLA via the click-through using CLA-Assistant. You only have to sign the CLA one time per project.
 If you have any questions, or to execute our corporate CLA, required if your contribution is on behalf of a company,  please drop us an email at opensource@newrelic.com.
 
 ## License
