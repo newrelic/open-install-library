@@ -53,8 +53,8 @@ install:
   silent: true
 
   variables:
-    SUDO:
-      sh: $([[ -z "$SUDO_USER" && $(whoami) = "root" ]] && echo "" || echo "sudo") # Allows root, non-sudo installs
+    IS_ROOT_OR_SUDO:
+      sh: $([[ ! -z "$SUDO_USER" || $(whoami) = "root" ]] && echo "true" || echo "false") # Assert root or sudo user
 
   tasks:
     default:
@@ -66,6 +66,11 @@ install:
 
     assert_pre_req:
       cmds:
+        - |
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+            echo "This newrelic install must be run under sudo" >&2
+            exit 3
+          fi
         - |
           # Map of tool names to the associated error code
           required_tools_and_error_codes="grep:10 sed:11 tee:14 touch:15"
@@ -85,17 +90,17 @@ install:
     init:
       cmds:
         - |
-          $SUDO mkdir -p "/etc/newrelic-infra/logging.d"
+          mkdir -p "/etc/newrelic-infra/logging.d"
         - |
           if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
-            $SUDO rm /etc/newrelic-infra/logging.d/logging.yml;
+            rm /etc/newrelic-infra/logging.d/logging.yml;
           fi
-          $SUDO touch /etc/newrelic-infra/logging.d/logging.yml;
+          touch /etc/newrelic-infra/logging.d/logging.yml;
         - |
           if [ -f /etc/newrelic-infra/logging.d/discovered.yml ]; then
-            $SUDO rm /etc/newrelic-infra/logging.d/discovered.yml;
+            rm /etc/newrelic-infra/logging.d/discovered.yml;
           fi
-          $SUDO touch /etc/newrelic-infra/logging.d/discovered.yml;
+          touch /etc/newrelic-infra/logging.d/discovered.yml;
 
     setup:
       cmds:
@@ -130,7 +135,7 @@ install:
             done
           fi
 
-          file_exist=$($SUDO find /var/lib/docker/containers -name "*.log" 2>1 | wc -l)
+          file_exist=$(find /var/lib/docker/containers -name "*.log" 2>1 | wc -l)
           if [ $file_exist -gt 0 ]; then
             target_log_files+=("/var/lib/docker/containers/*/*.log")
           fi
@@ -142,40 +147,40 @@ install:
 
           target_log_files+=({{.NEW_RELIC_CLI_LOG_FILE_PATH}})
 
-          echo "logs:" | $SUDO tee /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+          echo "logs:" | tee /etc/newrelic-infra/logging.d/logging.yml > /dev/null
           for log_file in "${target_log_files[@]}"
           do
             if [ "$log_file" == "/var/lib/docker/containers/*/*.log" ]; then
-              echo -e "  - name: containers\n    file: /var/lib/docker/containers/*/*.log" | $SUDO tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              echo -e "  - name: containers\n    file: /var/lib/docker/containers/*/*.log" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
             else
               NAME=$(basename $log_file)
-              echo -e "  - name: $NAME" | $SUDO tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
-              echo -e "    file: $log_file" | $SUDO tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              echo -e "  - name: $NAME" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              echo -e "    file: $log_file" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
               if [[ "$NAME" == "newrelic-cli.log" ]]; then
-                echo -e "    attributes:\n      newrelic-cli: true" | $SUDO tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                echo -e "    attributes:\n      newrelic-cli: true" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
               fi
             fi
           done
 
           if [ ${#target_discovered_log_files[@]} -gt 0 ]; then
-            echo "logs:" | $SUDO tee /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+            echo "logs:" | tee /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
 
             # index is incremented to facilitate dynamic name values for each discovered log file path
             index=0
             for filePath in $(echo -n $discoveredLogFiles | sed "s/,/ /g"); do
 
-              echo -e "  - name: configured-logs-$index" | $SUDO tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
-              echo -e "    file: $filePath" | $SUDO tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+              echo -e "  - name: configured-logs-$index" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+              echo -e "    file: $filePath" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
 
               if [[ $filePath == *"nginx/error"* ]]; then
-                echo -e "    attributes:\n      logtype: nginx-error" | $SUDO tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+                echo -e "    attributes:\n      logtype: nginx-error" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
               fi
               if [[ $filePath == *"nginx/access"* ]]; then
-                echo -e "    attributes:\n      logtype: nginx" | $SUDO tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+                echo -e "    attributes:\n      logtype: nginx" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
               fi
 
               if [[ $filePath == *"mysql/error"* ]]; then
-                echo -e "    attributes:\n      logtype: mysql-error" | $SUDO tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+                echo -e "    attributes:\n      logtype: mysql-error" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
               fi
 
               index=$((index+1))
@@ -188,9 +193,9 @@ install:
         - |
           sleep 10
         - |
-          echo "Log configuration:" | $SUDO tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
-          $SUDO cat /etc/newrelic-infra/logging.d/logging.yml | $SUDO tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
-          echo "Log installation completed" | $SUDO tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+          echo "Log configuration:" | tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+          cat /etc/newrelic-infra/logging.d/logging.yml | tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+          echo "Log installation completed" | tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
 
 postInstall:
   info: |2

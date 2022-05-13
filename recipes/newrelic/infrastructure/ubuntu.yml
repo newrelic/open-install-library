@@ -31,7 +31,6 @@ validationUrl: "http://localhost:18003/v1/status/entity"
 
 preInstall:
   requireAtDiscovery: |  
-      SUDO=$([[ -z "$SUDO_USER" && $(whoami) = "root" ]] && echo "" || echo "sudo")
       IS_DOCKER_CONTAINER_CGROUP=$(grep 'docker\|lxc' /proc/1/cgroup | wc -l)
       if [ $IS_DOCKER_CONTAINER_CGROUP -gt 0 ] ; then
         echo "docker detected with cgroup, unsupported" >&2
@@ -46,7 +45,7 @@ preInstall:
         echo "docker detected with .dockerenv, unsupported" >&2
         exit 131
       fi
-      IS_WSL_CONTAINER=$($SUDO grep -i 'Microsoft' /proc/version | wc -l)
+      IS_WSL_CONTAINER=$(grep -i 'Microsoft' /proc/version | wc -l)
       if [ $IS_WSL_CONTAINER -gt 0 ] ; then
         echo "microsoft Windows Subsystem for Linux for infra detected, unsupported" >&2
         exit 131
@@ -58,8 +57,8 @@ install:
   silent: true
 
   variables:
-    SUDO:
-      sh: $([[ -z "$SUDO_USER" && $(whoami) = "root" ]] && echo "" || echo "sudo") # Allows root, non-sudo installs
+    IS_ROOT_OR_SUDO:
+      sh: $([[ ! -z "$SUDO_USER" || $(whoami) = "root" ]] && echo "true" || echo "false") # Assert root or sudo user
 
   tasks:
     default:
@@ -81,9 +80,7 @@ install:
     assert_pre_req:
       cmds:
         - |
-          ROOT_USERNAME=root
-          USERNAME=$(whoami)
-          if [ -z "$SUDO_USER" ] && [ "${USERNAME}" != ${ROOT_USERNAME} ]; then
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
             echo "This newrelic install must be run under sudo" >&2
             exit 3
           fi
@@ -136,44 +133,44 @@ install:
     cleanup:
       cmds:
         - |
-          $SUDO rm -rf /var/db/newrelic-infra/data
+          rm -rf /var/db/newrelic-infra/data
 
     setup_license:
       cmds:
         - |
           if [ -f /etc/newrelic-infra.yml ]; then
-            $SUDO sed -i "/^staging/d" /etc/newrelic-infra.yml
-            $SUDO sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
-            $SUDO sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
-            $SUDO sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
-            $SUDO sed -i "/^license_key/d" /etc/newrelic-infra.yml
+            sed -i "/^staging/d" /etc/newrelic-infra.yml
+            sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
+            sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
+            sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
+            sed -i "/^license_key/d" /etc/newrelic-infra.yml
 
           else
-            $SUDO touch /etc/newrelic-infra.yml
+            touch /etc/newrelic-infra.yml
           fi
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-            $SUDO echo 'staging: true' >> /etc/newrelic-infra.yml
+            echo 'staging: true' >> /etc/newrelic-infra.yml
           fi
 
-          $SUDO echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
-          $SUDO echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
-          $SUDO echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
-          $SUDO echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
+          echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
+          echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
+          echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
+          echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
 
     setup_proxy:
       cmds:
         - |
           if [ ! -z "$HTTPS_PROXY" ]; then
-            $SUDO sed -i "/^proxy/d" /etc/newrelic-infra.yml
-            $SUDO echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
+            sed -i "/^proxy/d" /etc/newrelic-infra.yml
+            echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
 
     update_apt:
       cmds:
         - |
           # Get latest definitions and skip any failure because of deprecation
-          $SUDO apt-get -o Acquire::Check-Valid-Until=false update -yq
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
       silent: true
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
@@ -182,7 +179,7 @@ install:
       cmds:
         - |
           if [ {{.HAS_GPG}} -eq 0 ] ; then
-            $SUDO apt-get install gnupg2 -y
+            apt-get install gnupg2 -y
           fi
       vars:
         HAS_GPG:
@@ -191,18 +188,18 @@ install:
     add_gpg_key:
       cmds:
         - |
-          $SUDO curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/gpg/newrelic-infra.gpg | $SUDO apt-key add -
+          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/gpg/newrelic-infra.gpg | apt-key add -
       silent: true
 
     add_nr_source:
       cmds:
         - |
           ARCH="amd64"
-          IS_ARM=$($SUDO uname -m | grep -i 'aarch64' | wc -l)
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
           if [ $IS_ARM -gt 0 ] ; then
             ARCH="arm64"
           fi
-          printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | $SUDO tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+          printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
       vars:
         DEBIAN_CODENAME:
           sh: awk -F= '/DISTRIB_CODENAME/ {print $2}' /etc/lsb-release
@@ -212,26 +209,26 @@ install:
       cmds:
         - |
           # Get latest definitions and skip any failure because of deprecation
-          $SUDO apt-get -o Acquire::Check-Valid-Until=false update -yq
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
 
     install_infra:
       cmds:
         - |
-          $SUDO apt-get install newrelic-infra -y -qq
+          apt-get install newrelic-infra -y -qq
       silent: true
 
     restart:
       cmds:
         - |
           if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            $SUDO systemctl restart newrelic-infra
+            systemctl restart newrelic-infra
           else 
             if [ {{.IS_INITCTL}} -gt 0 ]; then
-              $SUDO initctl restart newrelic-infra
+              initctl restart newrelic-infra
             else
-              $SUDO /etc/init.d/newrelic-infra restart
+              /etc/init.d/newrelic-infra restart
             fi
           fi
       vars:
@@ -245,7 +242,7 @@ install:
         - |
           # Ensure agent has enough time to start
           sleep 10
-          IS_INFRA_INSTALLED=$($SUDO ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          IS_INFRA_INSTALLED=$(ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
             echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 31
