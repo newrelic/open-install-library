@@ -82,6 +82,7 @@ install:
 
           NR_CLI_PIXIE="{{.NR_CLI_PIXIE}}"
           NR_CLI_NEWRELIC_PIXIE="{{.NR_CLI_NEWRELIC_PIXIE}}"
+          NR_CLI_NEWRELIC_PIXIE_INSTALLED="{{.NR_CLI_NEWRELIC_PIXIE_INSTALLED}}"
           NR_CLI_PIXIE_API_KEY="{{.NR_CLI_PIXIE_API_KEY}}"
           NR_CLI_PIXIE_DEPLOY_KEY="{{.NR_CLI_PIXIE_DEPLOY_KEY}}"
           NR_CLI_PIXIE_ADDRESS="{{.NR_CLI_PIXIE_ADDRESS}}"
@@ -277,7 +278,7 @@ install:
               echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
             fi
 
-            if $SUDO $KUBECTL get crd operators.operators.coreos.com 1>/dev/null 2>&1; then
+            if $SUDO $KUBECTL get namespace olm 1>/dev/null 2>&1; then
               OLM_INSTALLED=true
             fi
           fi
@@ -317,6 +318,27 @@ install:
           rm nr-check-privileged.yaml
           fi
 
+          if [[ "$NR_CLI_NEWRELIC_PIXIE_INSTALLED" == "true" ]]; then
+            if ! NR_CLI_PIXIE_API_KEY=$(px api-key create -s -d 'New Relic integration' 2>&1 | tail -n 1); then
+              echo "Failed to create Pixie API key using px CLI." >&2
+              echo $NR_CLI_PIXIE_API_KEY >&2
+              echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+              PIXIE_SUPPORTED=false
+            fi
+            if ! NR_CLI_PIXIE_ENDPOINT=$(px get cluster --cloud-addr 2>&1 | tail -n 1); then
+              echo "Failed to get Pixie cloud address using px CLI." >&2
+              echo $NR_CLI_PIXIE_ENDPOINT >&2
+              echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+              PIXIE_SUPPORTED=false
+            fi
+            if ! NR_CLI_PIXIE_CLUSTER_ID=$(px get cluster --id 2>&1 | tail -n 1); then
+              echo "Failed to get Pixie cluster id using px CLI." >&2
+              echo $NR_CLI_PIXIE_CLUSTER_ID >&2
+              echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+              PIXIE_SUPPORTED=false
+            fi
+          fi
+
           # Deploy the integration
           if $SUDO which helm 1>/dev/null 2>&1; then
             echo ""
@@ -345,7 +367,10 @@ install:
             if [[ "${NR_CLI_NEWRELIC_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" ]]; then
               ARGS="${ARGS} --set newrelic-pixie.enabled=true"
               ARGS="${ARGS} --set newrelic-pixie.apiKey=${NR_CLI_PIXIE_API_KEY}"
-              if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
+              if [[ "${NR_CLI_NEWRELIC_PIXIE_INSTALLED}" == "true" ]]; then
+                ARGS="${ARGS} --set newrelic-pixie.endpoint=${NR_CLI_PIXIE_ENDPOINT}"
+                ARGS="${ARGS} --set newrelic-pixie.clusterId=${NR_CLI_PIXIE_CLUSTER_ID}"
+              elif [[ "${NR_CLI_PIXIE}" == "true" ]]; then
                 ARGS="${ARGS} --set pixie-chart.enabled=true"
                 ARGS="${ARGS} --set pixie-chart.deployKey=${NR_CLI_PIXIE_DEPLOY_KEY}"
                 ARGS="${ARGS} --set pixie-chart.clusterName=${NR_CLI_CLUSTERNAME}"
@@ -387,7 +412,10 @@ install:
             if [[ "${NR_CLI_NEWRELIC_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" ]]; then
               BODY="${BODY},\"newrelic-pixie.enabled\":true"
               BODY="${BODY},\"newrelic-pixie.apiKey\":\"${NR_CLI_PIXIE_API_KEY}\""
-              if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
+              if [[ "${NR_CLI_NEWRELIC_PIXIE_INSTALLED}" == "true" ]]; then
+                BODY="${BODY},\"newrelic-pixie.endpoint\":\"${NR_CLI_PIXIE_ENDPOINT}\""
+                BODY="${BODY},\"newrelic-pixie.clusterId\":\"${NR_CLI_PIXIE_CLUSTER_ID}\""
+              elif [[ "${NR_CLI_PIXIE}" == "true" ]]; then
                 BODY="${BODY},\"pixie-chart.enabled\":true"
                 BODY="${BODY},\"pixie-chart.deployKey\":\"${NR_CLI_PIXIE_DEPLOY_KEY}\""
                 BODY="${BODY},\"pixie-chart.clusterName\":\"${NR_CLI_CLUSTERNAME}\""
