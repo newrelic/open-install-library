@@ -101,22 +101,22 @@ install:
               exit 1
             fi
 
-            # determine which config file we need to add the include into (or maybe not if it's including all the *.conf files)
+            # determine which config file we need to add the include into
             config_location=$(sudo nginx -V 2>&1 | grep -ozP "conf-path=((/*[a-z]*\.*)*)" | cut -d "=" -f 2-)
             config_directory=$(dirname $config_location)
 
             # include our newrelic.conf file in the existing config's server block
             cd $config_directory
-            cp $config_location $config_location.back
-            sudo awk -F "~" '/server ?{.*$/ {if(count++ == 0)$0=$0"\n        # Load configuration files for the New Relic required config. \n        include /etc/nginx/newrelic.d/newrelic.conf;\n"} 1' $config_location.back | sudo tee $config_location > /dev/null
+            sudo cp $config_location $config_location.back
+            sudo awk -v config_directory=$config_directory -F "~" '/server ?{.*$/ {if(count++ == 0)$0=$0"\n        # Load configuration files for the New Relic required config. \n        include " config_directory "/newrelic.d/newrelic.conf;\n"} 1' $config_location.back | sudo tee $config_location > /dev/null
             sudo rm $config_location.back
 
             # create newrelic.conf file with our new default status block
             sudo mkdir newrelic.d -p
-            sudo printf "location = /status {\n      stub_status;\n      allow 127.0.0.1;    # only allow requests from localhost\n      deny all;           # deny all other hosts  \n}\n" > newrelic.d/newrelic.conf
+            sudo bash -c 'printf "location = /status {\n      stub_status;\n      allow 127.0.0.1;    # only allow requests from localhost\n      deny all;           # deny all other hosts  \n}\n" > newrelic.d/newrelic.conf'
 
             # reload nginx and check again for the stub location
-            sudo nginx -s reload
+            sudo systemctl restart nginx
             stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
             if [ "$stub_location" == "" ]; then
               exit 1
