@@ -43,7 +43,7 @@ preInstall:
         echo "docker detected with .dockerenv, unsupported" >&2
         exit 131
       fi
-      IS_WSL_CONTAINER=$(sudo grep -i 'Microsoft' /proc/version | wc -l)
+      IS_WSL_CONTAINER=$(grep -i 'Microsoft' /proc/version | wc -l)
       if [ $IS_WSL_CONTAINER -gt 0 ] ; then
         echo "microsoft Windows Subsystem for Linux for infra detected, unsupported" >&2
         exit 131
@@ -69,9 +69,9 @@ install:
     assert_pre_req:
       cmds:
         - |
-          # verify running with sudo
-          if [ -z "$SUDO_USER" ]; then
-            echo "This newrelic install must be run under sudo" >&2
+          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER"] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
             exit 3
           fi
         - |
@@ -114,38 +114,39 @@ install:
     cleanup:
       cmds:
         - |
-          sudo rm -rf /var/db/newrelic-infra/data
+          rm -rf /var/db/newrelic-infra/data
 
     setup_license:
       cmds:
         - |
           if [ -f /etc/newrelic-infra.yml ]; then
-            sudo sed -i "/^staging/d" /etc/newrelic-infra.yml
-            sudo sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
-            sudo sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
-            sudo sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
-            sudo sed -i "/^license_key/d" /etc/newrelic-infra.yml
-            sudo sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
-            sudo sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
+            sed -i "/^staging/d" /etc/newrelic-infra.yml
+            sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
+            sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
+            sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
+            sed -i "/^license_key/d" /etc/newrelic-infra.yml
+            sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
+            sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
           else
-            sudo touch /etc/newrelic-infra.yml
+            touch /etc/newrelic-infra.yml
           fi
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-            sudo echo 'staging: true' >> /etc/newrelic-infra.yml
+            echo 'staging: true' >> /etc/newrelic-infra.yml
           fi
-          sudo echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
-          sudo echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
-          sudo echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
-          sudo echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
-          sudo echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
+          echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
+          echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
+          echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
+          echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
+          echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml          
+
 
     setup_proxy:
       cmds:
         - |
           if [ ! -z "$HTTPS_PROXY" ]; then
-            sudo sed -i "/^proxy/d" /etc/newrelic-infra.yml
-            sudo echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
+            sed -i "/^proxy/d" /etc/newrelic-infra.yml
+            echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
 
     install_infra:
@@ -158,21 +159,21 @@ install:
             echo "newrelic infrastructure agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
-          sudo curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
-          sudo yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-          sudo yum -y -q install newrelic-infra
+          curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+          yum -y -q install newrelic-infra
       silent: true
 
     restart:
       cmds:
         - |
           if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            sudo systemctl restart newrelic-infra
+            systemctl restart newrelic-infra
           else 
             if [ {{.IS_INITCTL}} -gt 0 ]; then
-              sudo initctl restart newrelic-infra
+              initctl restart newrelic-infra
             else
-              sudo /etc/init.d/newrelic-infra restart
+              /etc/init.d/newrelic-infra restart
             fi
           fi
       vars:
@@ -186,7 +187,7 @@ install:
         - |
           # Ensure agent has enough time to start
           sleep 10
-          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          IS_INFRA_INSTALLED=$(ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
             echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 31
