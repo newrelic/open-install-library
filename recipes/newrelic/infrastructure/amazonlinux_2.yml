@@ -12,13 +12,18 @@ installTargets:
     platform: amazon
     platformFamily: rhel
     platformVersion: "2"
-
+  - type: host
+    os: linux
+    platform: amazon
+    platformFamily: rhel
+    platformVersion: "2022"
 
 keywords:
   - Infrastructure
   - Agent
   - Amazon Linux 2
   - Linux2
+  - Amazon Linux 2022
 
 processMatch: []
 
@@ -110,6 +115,17 @@ install:
             echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >&2
             exit 15
           fi
+        - |
+          IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/amazonlinux/{{.AMAZON_LINUX_VERSION}}/{{.ARCH}}/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
+          if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
+            echo "there is no newrelic infrastructure agent available for the distribution Amazon Linux '{{.AMAZON_LINUX_VERSION}}'." >&2
+            exit 131
+          fi
+      vars:
+        AMAZON_LINUX_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+        ARCH:
+          sh: arch
 
     cleanup:
       cmds:
@@ -153,7 +169,7 @@ install:
       cmds:
         - |
           ARCH=$(uname -m)
-          REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/amazonlinux/2/$ARCH/newrelic-infra.repo")
+          REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/amazonlinux/{{.AMAZON_LINUX_VERSION}}/$ARCH/newrelic-infra.repo")
           IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
             echo "newrelic infrastructure agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
@@ -162,6 +178,9 @@ install:
           curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
           yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
           yum -y -q install newrelic-infra
+      vars:
+        AMAZON_LINUX_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
       silent: true
 
     restart:
