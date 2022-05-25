@@ -58,25 +58,36 @@ preInstall:
       - See https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/nginx-monitoring-integration#config for more info.
 
   requireAtDiscovery: |
-    # extract NGINX status url
-    stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
-    if [ "$stub_location" == "" ]; then
+    # determine whether NGINX status url setting is enabled
+    stub_status_enabled=$(nginx -V 2>&1 | grep -o "with-http_stub_status_module")
+    if [ "$stub_status_enabled" == "" ]; then
       exit 1
     fi
 
-    curledPorts=""
+    # check for stub. if yes, continue
+    stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
+    if [ "$stub_location" == "" ]; then
+      # if no existing sub location is found, check for server block in the configuration. if no block, exit as detected
+      config_location=$(sudo nginx -V 2>&1 | grep -ozP "conf-path=((/*[a-z]*\.*)*)" | cut -d "=" -f 2-)
+      server_config_block=$(cat $config_location | grep "^[^#] *s*erver\s*{" )
+      if [ "$server_config_block" == "" ]; then
+        exit 132
+      else
+        # server block was found but had no sub status configured. continue to install
+        exit 0
+      fi
+    fi
 
+    curledPorts=""
     # split on lines
     IFS=$'\n'
     portlines=$(sudo nginx -Tq | grep listen)
     for line in $portlines; do
-      # we chech the line is not commented
+      # we check the line is not commented
       if ! echo $line | grep -aoPq "#"; then
         port=$(echo $line | grep -aoP "\d+")
-
         # we set this port variable with the surrounded by the hash symbol so we can distinct 20 from 200
         currentPort="#{$port}#"
-
         # then we check if it doesn't exist on our curledPorts var
         if ! echo $curledPorts | grep -qw "$currentPort"; then
           code=$(curl -I "http://127.0.0.1:${port}${stub_location}" -w %{response_code} -so '/dev/null')
@@ -88,7 +99,8 @@ preInstall:
         fi
     done
 
-    exit 1
+    # status stub detected but inaccessible/doesn't allow localhost to connect to it
+    exit 132
 
 install:
   version: "3"
@@ -113,27 +125,73 @@ install:
       cmds:
         - |
           stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
+          if [ "$stub_location" == "" ]; then
+              echo -n "An nginx status stub location is required to proceed. Add default status location of /status? Y/N (default: Y)? "
+              read answer
+              echo ""
+              NEW_RELIC_CONTINUE=$(echo "${answer^^}" | cut -c1-1)
+              if [[ -z "$NEW_RELIC_CONTINUE" ]]; then
+                  NEW_RELIC_CONTINUE="Y"
+              fi
+              if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
+                  echo "Exiting the installation code 130"
+                  exit 130
+              fi
+
+              # determine which config file we need to add the include into
+              config_location=$(sudo nginx -V 2>&1 | grep -ozP "conf-path=((/*[a-z]*\.*)*)" | cut -d "=" -f 2-)
+              config_directory=$(dirname $config_location)
+
+              # include our newrelic.conf file in the existing config's server block
+              cd $config_directory
+              sudo cp $config_location $config_location.back
+              sudo awk -v config_directory=$config_directory -F "~" '/server ?{.*$/ {if(count++ == 0)$0=$0"\n        # Load configuration files for the New Relic required config. \n        include " config_directory "/newrelic.d/newrelic.conf;\n"} 1' $config_location.back | sudo tee $config_location >/dev/null
+              sudo rm $config_location.back
+
+              # create newrelic.conf file with our new default status block
+              sudo mkdir newrelic.d -p
+              sudo bash -c 'printf "location = /status {\n      stub_status;\n      allow 127.0.0.1;    # only allow requests from localhost\n      deny all;           # deny all other hosts  \n}\n" > newrelic.d/newrelic.conf'
+
+              # reload nginx and check again for the stub location
+              sudo nginx -s reload
+              stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
+              if [ "$stub_location" == "" ]; then
+                  printf "\n[Error] Ensure your NGINX configuration matches the requirements for New Relic monitoring. \nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/nginx/nginx-integration/#enable-instance for more information. \n Failed to add status stub location to nginx configuration. \n" >&2
+                  exit 1
+              fi
+          fi
 
           port=""
           curledPorts=""
-          sudo nginx -T | grep listen | while read -r line ; do
-            # we chech the line is not commented
-            if ! echo $line | grep -aoPq "#"; then
-              port=$(echo $line | grep -aoP "\d+")
-
-              # we set this port variable with the surrounded by the hash symbol so we can distinct 20 from 200
-              currentPort="#{$port}#"
-
-              # then we check if it doesn't exist on our curledPorts var
-              if ! echo $curledPorts | grep -qw "$currentPort"; then
-                code=$(curl -I "http://127.0.0.1:${port}${stub_location}" -w %{response_code} -so '/dev/null')
-                if [ $code == "200" ]; then
-                  break
-                fi
-                curledPorts+=${currentPort}
+          statusStubOK=false
+          # set it again just in case it was just added
+          stub_location=$(sudo nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)")
+          while read -r line; do
+              # we check the line is not commented
+              if ! echo $line | grep -aoPq "#"; then
+                  port=$(echo $line | grep -aoP "\d+")
+                  # we set this port variable with the surrounded by the hash symbol so we can distinct 20 from 200
+                  currentPort="#{$port}#"
+                  # then we check if it doesn't exist on our curledPorts var
+                  if ! echo $curledPorts | grep -qw "$currentPort"; then
+                    # sleep for one second to allow the status stub time to start up
+                    sleep 1
+                    code=$(curl -I "http://127.0.0.1:${port}${stub_location}" -w %{response_code} -so '/dev/null')
+                    if [ $code == "200" ]; then
+                      statusStubOK=true
+                      break
+                    fi
+                    curledPorts+=${currentPort}
+                  fi
               fi
-            fi
-          done
+          done < <(sudo nginx -T | grep listen)
+
+          # exit if the status stub location port is not in our curledPorts var
+          if [ "$statusStubOK" = false ]; then
+              printf "\n[Error] Ensure your NGINX configuration matches the requirements for New Relic monitoring. \nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/nginx/nginx-integration/#enable-instance for more information. \n Failed to access status stub on localhost. \n" >&2
+              exit 9
+          fi
+
 
           # Set Defaults
           NR_CLI_STUB_STATUS_URL="http://127.0.0.1:${port}${stub_location}"
