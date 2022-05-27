@@ -1,6 +1,6 @@
 # Guided Install
 
-We’ve made it simple to set up our Java APM guided installation flow, so you can instrument java applications and start analyzing your telemetry data in 5 minutes - no instrumentation expertise required.​
+We’ve made it simple to set up our Java APM using New Relic's Guided Installation flow, so you can instrument java applications and start analyzing your telemetry data in 5 minutes - no instrumentation expertise required.​
 
 ## Supported Environments
 The guided install will automatically instrument the following app/web servers running on Linux platforms, both on-host and running in Docker containers
