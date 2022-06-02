@@ -39,9 +39,9 @@ preInstall:
           -L -H 'Content-Type: application/json' \
           -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
       )
-      
-      POLICY_ID=$(echo $POLICY_RESULT | grep -o '{"id":"[0-9]\+","name":"Golden Signals"}' | cut -d "," -f1 | cut -d ":" -f2)
-      POLICY_ID=$(sed -e 's/^"//' -e 's/"$//' <<<"$POLICY_ID")
+
+      POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.policiesSearch.policies[] | select(.name=="Golden Signals") | .id')
+      POLICY_ID=$([[ $POLICY_ID =~ 'null' ]] && echo 0 || echo "${POLICY_ID//\"/""}")
 
       if [[ -n "$POLICY_ID" ]] && [ $POLICY_ID -gt 0 ] ; then
         echo "Golden Signals already installed on this account, skipped"
