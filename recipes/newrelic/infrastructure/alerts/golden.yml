@@ -70,49 +70,6 @@ install:
             NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
           fi
 
-          POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
-              -L -H 'Content-Type: application/json' \
-              -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
-          )
-          POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.policiesSearch.policies[] | select(.name=="{{.ALERT_POLICY_NAME}}") | .id)')
-          POLICY_ID=$([[ $POLICY_ID =~ 'null' ]] && echo 0 || echo "${POLICY_ID//\"/""}")
-          if [ -n "$POLICY_ID" ] && [ $POLICY_ID -gt 0 ] ; then
-            return 0
-          fi
-
-          # Check if all required conditions exist under another policy with a different name to not create an empty 'Golden Signals' policy
-          if [ -f /tmp/conditionsSearch.json ]; then
-            sudo rm -f /tmp/conditionsSearch.json
-          fi
-          sudo tee -a /tmp/conditionsSearch.json > /dev/null <<"EOT"
-          {
-            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {nrqlConditionsSearch {totalCount nrqlConditions { description name id enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } nrql { query } policyId runbookUrl type violationTimeLimitSeconds ... on AlertsNrqlBaselineCondition { id name nrql { query } baselineDirection description enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } policyId runbookUrl type violationTimeLimitSeconds } } } } } } }"
-          }
-          EOT
-          CONDITIONS_LOOKUP_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
-              -L -H 'Content-Type: application/json' \
-              -d @/tmp/conditionsSearch.json
-          )
-          if [ -f /tmp/conditionsSearch.json ]; then
-            sudo rm -f /tmp/conditionsSearch.json
-          fi
-
-          HIGH_CPU_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id)')
-          HIGH_CPU_CONDITION_ID=$([[ $HIGH_CPU_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${HIGH_CPU_CONDITION_ID//\"/""}")
-          HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id)')
-          HIGH_ERROR_CONDITION_ID=$([[ $HIGH_ERROR_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${HIGH_ERROR_CONDITION_ID//\"/""}")
-          HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id)')
-          HIGH_RESPONSE_CONDITION_ID=$([[ $HIGH_RESPONSE_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${HIGH_RESPONSE_CONDITION_ID//\"/""}")
-          LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id)')
-          LOW_THROUGHPUT_CONDITION_ID=$([[ $LOW_THROUGHPUT_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${LOW_THROUGHPUT_CONDITION_ID//\"/""}")
-
-          if [[ $HIGH_CPU_CONDITION_ID -gt 0 && $HIGH_ERROR_CONDITION_ID -gt 0 && $HIGH_RESPONSE_CONDITION_ID -gt 0 && $LOW_THROUGHPUT_CONDITION_ID ]]; then
-            echo 'All Golden Alerts Conditions are already set up'
-            exit 0
-          fi
-
           echo 'Creating alert policy {{.ALERT_POLICY_NAME}}...'
           if [ -f /tmp/policy.json ]; then
             sudo rm -f /tmp/policy.json
@@ -141,42 +98,14 @@ install:
             exit 10
           fi
 
-          if [ -f /tmp/conditionsSearch.json ]; then
-            sudo rm -f /tmp/conditionsSearch.json
-          fi
-          sudo tee -a /tmp/conditionsSearch.json > /dev/null <<"EOT"
-          {
-            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {alerts {nrqlConditionsSearch {totalCount nrqlConditions { description name id enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } nrql { query } policyId runbookUrl type violationTimeLimitSeconds ... on AlertsNrqlBaselineCondition { id name nrql { query } baselineDirection description enabled expiration { closeViolationsOnExpiration expirationDuration openViolationOnExpiration } policyId runbookUrl type violationTimeLimitSeconds } } } } } } }"
-          }
-          EOT
-          CONDITIONS_LOOKUP_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
-              -L -H 'Content-Type: application/json' \
-              -d @/tmp/conditionsSearch.json
-          )
-          if [ -f /tmp/conditionsSearch.json ]; then
-            sudo rm -f /tmp/conditionsSearch.json
-          fi
-
-
-          HIGH_CPU_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_CPU_CONDITION_NAME}}") | .id)')
-          HIGH_CPU_CONDITION_ID=$([[ $HIGH_CPU_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${HIGH_CPU_CONDITION_ID//\"/""}")
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
-          if [ -n "$HIGH_CPU_CONDITION_ID" ] && [ $HIGH_CPU_CONDITION_ID -gt 0 ] ; then
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
-          {
-            "query": "mutation {alertsNrqlConditionStaticUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 85 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 valueFunction: SINGLE_VALUE }) { id name } }"
-          }
-          EOT
-          else
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
           {
             "query": "mutation {alertsNrqlConditionStaticCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 85 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 valueFunction: SINGLE_VALUE }) { id name } }"
           }
           EOT
-          fi
           sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
           sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_CPU_CONDITION_NAME}}\"\"/g" /tmp/condition.json
           sudo sed -i "s/CONDITION_ID/\"\"$HIGH_CPU_CONDITION_ID\"\"/g" /tmp/condition.json
@@ -193,25 +122,14 @@ install:
           fi
           echo 'done'
 
-
-          HIGH_ERROR_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_ERROR_RATE_NAME}}") | .id)')
-          HIGH_ERROR_CONDITION_ID=$([[ $HIGH_ERROR_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${HIGH_ERROR_CONDITION_ID//\"/""}")
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
-          if [ -n "$HIGH_ERROR_CONDITION_ID" ] && [ $HIGH_ERROR_CONDITION_ID -gt 0 ] ; then
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
-          {
-            "query": "mutation {alertsNrqlConditionBaselineUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
-          }
-          EOT
-          else
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
           {
             "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
           }
           EOT
-          fi
           sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
           sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_ERROR_RATE_NAME}}\"\"/g" /tmp/condition.json
           sudo sed -i "s/CONDITION_ID/\"\"$HIGH_ERROR_CONDITION_ID\"\"/g" /tmp/condition.json
@@ -229,24 +147,14 @@ install:
           echo 'done'
 
 
-          HIGH_RESPONSE_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_HIGH_RESPONSE_TIME_NAME}}") | .id)')
-          HIGH_RESPONSE_CONDITION_ID=$([[ $HIGH_RESPONSE_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${HIGH_RESPONSE_CONDITION_ID//\"/""}")
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
-          if [ -n "$HIGH_RESPONSE_CONDITION_ID" ] && [ $HIGH_RESPONSE_CONDITION_ID -gt 0 ] ; then
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
-          {
-            "query": "mutation {alertsNrqlConditionBaselineUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
-          }
-          EOT
-          else
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
           {
             "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
           }
           EOT
-          fi
           sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
           sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_RESPONSE_TIME_NAME}}\"\"/g" /tmp/condition.json
           sudo sed -i "s/CONDITION_ID/\"\"$HIGH_RESPONSE_CONDITION_ID\"\"/g" /tmp/condition.json
@@ -264,24 +172,11 @@ install:
           echo 'done'
 
 
-          LOW_THROUGHPUT_CONDITION_ID=$(echo $CONDITIONS_LOOKUP_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.nrqlConditionsSearch.nrqlConditions[] | select(.name=="{{.ALERT_LOW_THROUGHPUT_NAME}}") | .id)')
-          LOW_THROUGHPUT_CONDITION_ID=$([[ $LOW_THROUGHPUT_CONDITION_ID =~ 'null' ]] && echo 0 || echo "${LOW_THROUGHPUT_CONDITION_ID//\"/""}")
-          if [ -f /tmp/condition.json ]; then
-            sudo rm -f /tmp/condition.json
-          fi
-          if [ -n "$LOW_THROUGHPUT_CONDITION_ID" ] && [ $LOW_THROUGHPUT_CONDITION_ID -gt 0 ] ; then
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
-          {
-            "query": "mutation {alertsNrqlConditionBaselineUpdate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, id: CONDITION_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: LOWER_ONLY expiration: { closeViolationsOnExpiration: true expirationDuration: 600 openViolationOnExpiration: true } }) { id name } }"
-          }
-          EOT
-          else
-            sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
+          sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
           {
             "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: LOWER_ONLY expiration: { closeViolationsOnExpiration: true expirationDuration: 600 openViolationOnExpiration: true } }) { id name } }"
           }
           EOT
-          fi
           sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
           sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_LOW_THROUGHPUT_NAME}}\"\"/g" /tmp/condition.json
           sudo sed -i "s/CONDITION_ID/\"\"$LOW_THROUGHPUT_CONDITION_ID\"\"/g" /tmp/condition.json
