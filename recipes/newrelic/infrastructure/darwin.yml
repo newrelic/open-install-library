@@ -45,9 +45,8 @@ install:
     assert_pre_req:
       cmds:
         - |
-          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER"] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
-          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
-            echo "recipe needs to be run with sudo. Please re-run the installation with sudo or root." >&2
+          if [ -z "$SUDO_USER" ] ; then
+            echo "recipe needs to be run with sudo. Please re-run the installation with sudo." >&2
             exit 7
           fi
         - |
@@ -90,7 +89,7 @@ install:
             done
             echo -e "{{.ARROW}}Installing brew...{{.GRAY}}"
             echo ""
-            BREW_INSTALL_SUCCESS=$(/bin/bash -c 'curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | bash > /dev/null 2>&1; echo $?')
+            BREW_INSTALL_SUCCESS=$(sudo -i -u $SUDO_USER /bin/bash -c 'curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | bash > /dev/null 2>&1; echo $?')
             if [ "$BREW_INSTALL_SUCCESS" -gt 0 ]; then
               echo "brew install failed. Try to install it manually following instructions in https://brew.sh and re-run the installation."
               exit 16
@@ -106,7 +105,7 @@ install:
     cleanup:
       cmds:
         - |
-          rm -rf "/usr/local/var/db/newrelic-infra/data"
+          sudo rm -rf "/usr/local/var/db/newrelic-infra/data"
 
     setup_license:
       cmds:
@@ -135,26 +134,26 @@ install:
       cmds:
         - |
           if [ ! -z "$HTTPS_PROXY" ]; then
-            sed -i.bak "/^proxy/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
-            echo 'proxy: {{.HTTPS_PROXY}}' >> "{{.CONFIG_FILE}}"
+            sudo sed -i.bak "/^proxy/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
+            sudo echo 'proxy: {{.HTTPS_PROXY}}' >> "{{.CONFIG_FILE}}"
           fi
 
     install_infra:
       cmds:
         - |
-          brew install newrelic-infra-agent -q
+          sudo -i -u $SUDO_USER brew install newrelic-infra-agent -q
 
     restart:
       cmds:
         - |
-          brew services restart newrelic-infra-agent
+          sudo -i -u $SUDO_USER brew services restart newrelic-infra-agent
 
     assert_agent_started:
       cmds:
         - |
           # Ensure agent has enough time to start
           sleep 10
-          IS_INFRA_INSTALLED=$(ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
           if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
             echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 31
