@@ -266,57 +266,62 @@ install:
             if [ -z $full_process_name ]; then
               continue
             fi
-            priv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $1}')
 
-            pid=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | head -n1 | awk '{print $2}')
-            # Use the pid to find the systemctl service name
-            service_name=$(systemctl status $pid | head -n1 | awk '{print $2}')
-            # Check systemctl found a .service
-            if [[ ! $service_name =~ '.service' ]]
-            then
-              echo -e "{{.RED}}Found service-process \"${full_process_name}\" but failed to find associated systemctl service{{.NOCOLOR}}"
-              continue
-            fi
-            # Remove .service from the end of the service name
-            service_name=${service_name%".service"}
+            process_details=$(ps uxf | egrep $full_process_name | grep -v grep | grep -v yml | awk '{print $1 "~" $2}')
 
-            # Check that service name is somewhat expected
-            if [[ ! $service_name =~ 'php.*fpm' ]] && \
-               [[ ! $service_name =~ 'apache' ]] && \
-               [[ ! $service_name =~ 'httpd' ]] && \
-               [[ ! $service_name =~ 'nginx' ]]
-            then
-              echo -e "{{.RED}}Found systemctl service \"${service_name}\" that was assumed to be a php service ${PROCESS}, but the name suggests otherwise{{.NOCOLOR}}"
-              continue
-            fi
+            for process_info in $process_details
+            do
+              IFS='~' read -r priv_user pid <<< "$process_info"
 
-            echo -e "{{.WHITE}}Found service: {{.CYAN}}$service_name{{.NOCOLOR}}"
-
-            nonpriv_user=
-            if [ -n "${priv_user}" ]; then
-              nonpriv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
-            fi
-            if [ -n "${service_name}" ]; then
-              if [ -z "${nonpriv_user}" ]; then
-                nonpriv_user=$current_user
+              # Use the pid to find the systemctl service name
+              service_name=$(systemctl status $pid | head -n1 | awk '{print $2}')
+              # Check systemctl found a .service
+              if [[ ! $service_name =~ '.service' ]]
+              then
+                echo -e "{{.RED}}Found service-process \"${full_process_name}\" but failed to find associated systemctl service{{.NOCOLOR}}"
+                continue
               fi
-              #
-              # Output all processes to be restarted to a file with the following format:
-              # service_name privileged_user
-              # When the process is restarted, it will be used with the associated
-              # privileged user.
-              #
-              echo "$service_name $priv_user" >> {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
-              #
-              # Save all non-privileged users associated with detected processes.
-              # When initiating the transaction, it will ONLY be used with
-              # the first associated non-privileged user because due the reasoning above
-              # that the installation logic adheres to, between FPM and Apache,
-              # FPM will be the one to use and `newrelic-install.sh` only
-              # installs the `newrelic.ini` in one web location.
-              #
-              echo "$nonpriv_user" >> {{.TMP_INSTALL_DIR}}/nonpriv_users.txt
-            fi
+              # Remove .service from the end of the service name
+              service_name=${service_name%".service"}
+
+              # Check that service name is somewhat expected
+              if [[ ! $service_name =~ 'php.*fpm' ]] && \
+                [[ ! $service_name =~ 'apache' ]] && \
+                [[ ! $service_name =~ 'httpd' ]] && \
+                [[ ! $service_name =~ 'nginx' ]]
+              then
+                echo -e "{{.RED}}Found systemctl service \"${service_name}\" that was assumed to be a php service ${PROCESS}, but the name suggests otherwise{{.NOCOLOR}}"
+                continue
+              fi
+
+              echo -e "{{.WHITE}}Found service: {{.CYAN}}$service_name{{.NOCOLOR}}"
+
+              nonpriv_user=
+              if [ -n "${priv_user}" ]; then
+                nonpriv_user=$(ps auxf | egrep $full_process_name | grep -v grep | grep -v yml | grep -v $priv_user | head -n1 | awk '{print $1}')
+              fi
+              if [ -n "${service_name}" ]; then
+                if [ -z "${nonpriv_user}" ]; then
+                  nonpriv_user=$current_user
+                fi
+                #
+                # Output all processes to be restarted to a file with the following format:
+                # service_name privileged_user
+                # When the process is restarted, it will be used with the associated
+                # privileged user.
+                #
+                echo "$service_name~$priv_user" >> {{.TMP_INSTALL_DIR}}/processes_to_restart.txt
+                #
+                # Save all non-privileged users associated with detected processes.
+                # When initiating the transaction, it will ONLY be used with
+                # the first associated non-privileged user because due the reasoning above
+                # that the installation logic adheres to, between FPM and Apache,
+                # FPM will be the one to use and `newrelic-install.sh` only
+                # installs the `newrelic.ini` in one web location.
+                #
+                echo "$nonpriv_user" >> {{.TMP_INSTALL_DIR}}/nonpriv_users.txt
+              fi
+            done
           done
 
     add_gnupg2_if_required:
@@ -523,20 +528,39 @@ install:
           #
           # Case: php-fpm/apache or php-fpm/nginx, only php-fpm needs to be restarted.
           # Case: apache only or nginx only, they respective service needs to be restarted.
-          # This means only restart the first process in processes_to_restart.txt.
+          # Case: Multiple versions of php-fpm installed - all instances need to be restarted
+          # This means only restart the php-fpm instances or the first process in processes_to_restart.txt.
           #
           if [ "{{.NR_PHP_RESTART}}" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
             cd {{.TMP_INSTALL_DIR}}
-            read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
-            echo -e "{{.YELLOW}}Restarting $process as privileged user $user_name{{.GRAY}}"
-            sudo -u $user_name service $process restart
+            was_php_fpm=false
+            for service_info in $(cat {{.TMP_INSTALL_DIR}}/processes_to_restart.txt)
+            do
+              IFS='~' read -r process user_name <<< "$service_info"
+              if [[ $service_name =~ 'php.*fpm' ]]; then
+                was_php_fpm=true
+              elif [[ "$was_php_fpm" == true ]]; then
+                break
+              fi
+              echo -e "{{.YELLOW}}Restarting $process as privileged user $user_name{{.GRAY}}"
+              sudo -u $user_name service $process restart
+            done
             echo -e "{{.WHITE}}Sleeping for 10 seconds to give process time to recover.{{.GRAY}}"
             sleep 10
           else
             if [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
               cd {{.TMP_INSTALL_DIR}}
-              read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
-              echo -e "{{.RED}}Please restart $process as privileged user $user_name for instrumentation to be enabled.{{.NOCOLOR}}"
+              was_php_fpm=false
+              for service_info in $(cat {{.TMP_INSTALL_DIR}}/processes_to_restart.txt)
+              do
+                IFS='~' read -r process user_name <<< "$service_info"
+                if [[ $service_name =~ 'php.*fpm' ]]; then
+                  was_php_fpm=true
+                elif [[ "$was_php_fpm" == true ]]; then
+                  break
+                fi
+                echo -e "{{.RED}}Please restart $process as privileged user $user_name for instrumentation to be enabled.{{.NOCOLOR}}"
+              done
             else
               echo -e "{{.RED}}You will need to restart your PHP web server in order for web instrumentation to be enabled.{{.NOCOLORi}}"
             fi
