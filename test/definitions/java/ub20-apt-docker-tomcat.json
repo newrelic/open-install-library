@@ -1,0 +1,59 @@
+{
+  "global_tags": {
+    "owning_team": "OpenSource",
+    "Environment": "development",
+    "Department": "Product",
+    "Product": "Virtuoso"
+  },
+  "resources": [{
+    "id": "1",
+    "provider": "aws",
+    "type": "ec2",
+    "size": "t3.micro",
+    "ami_name": "ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-????????.1",
+    "user_name": "ubuntu"
+  }],
+  "services": [
+    {
+      "id": "docker",
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/linux/docker/install/roles",
+      "port": 9999,
+      "destinations": ["1"]
+    },
+    {
+      "id": "tomcat",
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/linux/tomcat/docker/debian/noApp/roles",
+      "port": 9090,
+      "destinations": ["1"]
+    }
+  ],
+  "instrumentations": {
+    "resources": [
+      {
+        "id": "tomcat",
+        "resource_ids": [
+          "1"
+        ],
+        "provider": "newrelic",
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/newrelic-cli/install-recipe/roles",
+        "params": {
+          "recipe_content_url": "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infrastructure/ubuntu.yml,https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/apm/java/linux.yml",
+          "validate_output": "New Relic installation complete"
+        }
+      },
+      {
+        "id": "recipeValidation",
+        "resource_ids": [ "1" ],
+        "provider": "newrelic",
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/newrelic-cli/validate-recipe/roles",
+        "params": {
+          "nrql_query": "Select count(*) from ApplicationAgentContext where agent.language='java' and host='CONTAINERID' since 5 minutes ago"
+        }
+      }
+    ]
+  }
+}

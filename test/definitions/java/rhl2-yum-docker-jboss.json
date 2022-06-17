@@ -1,0 +1,66 @@
+{
+  "global_tags": {
+    "owning_team": "OpenSource",
+    "Environment": "development",
+    "Department": "Product",
+    "Product": "Virtuoso"
+  },
+  "resources": [{
+    "id": "dockerjboss",
+    "display_name": "AwsLinux2InfraJavaInstallHost",
+    "provider": "aws",
+    "type": "ec2",
+    "size": "t2.micro",
+    "ami_name": "amazonlinux-2-base*",
+    "user_name": "ec2-user"
+  }],
+  "services": [
+    {
+      "id": "docker",
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/linux/docker/install/roles",
+      "port": 9999,
+      "destinations": [
+        "dockerjboss"
+      ]
+    },
+    {
+      "id": "jboss",
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/linux/jboss/docker/install/roles",
+      "port": 9090,
+      "destinations": [
+        "dockerjboss"
+      ]
+    }
+  ],
+  "instrumentations": {
+    "resources": [
+      {
+        "id": "jbossRecipe",
+        "resource_ids": [
+          "dockerjboss"
+        ],
+        "provider": "newrelic",
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/newrelic-cli/install-recipe/roles",
+        "params": {
+          "recipe_content_url": "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infrastructure/awslinux.yml,https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/apm/java/linux.yml",
+          "validate_output": "New Relic installation complete"
+        }
+      },
+      {
+        "id": "recipeValidation",
+        "resource_ids": [
+          "dockerjboss"
+        ],
+        "provider": "newrelic",
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/newrelic-cli/validate-recipe/roles",
+        "params": {
+          "nrql_query": "Select count(*) from ApplicationAgentContext where agent.language='java' and host like '%CONTAINERID%' since 15 minutes ago"
+        }
+      }
+    ]
+  }
+}
