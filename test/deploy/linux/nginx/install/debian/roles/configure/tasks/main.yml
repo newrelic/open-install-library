@@ -12,6 +12,11 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
+- name: Set default inaccessible_status_stub (default false)
+  set_fact:
+    inaccessible_status_stub: "false"
+  when: inaccessible_status_stub is undefined
+
 - name: Get latest packages info
   shell: "apt update"
   become: true
@@ -37,6 +42,20 @@
   - name: Export NR_CLI_STUB_STATUS_URL
     shell: "echo export NR_CLI_STUB_STATUS_URL=http://127.0.0.1/status >> ~/.bashrc"
   when: create_env_var|bool
+
+- block:
+  - name: Configure nginx status stub to location not accessible via localhost
+    blockinfile:
+      path: /etc/nginx/sites-enabled/default
+      insertafter: "^server {"
+      marker: "# {mark} Deny access to status stub, even for localhost"
+      block: |
+          location = /status {
+              stub_status;
+              deny all;
+          }
+    become: yes
+  when: inaccessible_status_stub|bool
 
 - name: Restart nginx
   shell: "systemctl restart nginx"

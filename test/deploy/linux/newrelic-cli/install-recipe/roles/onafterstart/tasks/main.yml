@@ -131,6 +131,21 @@
   when: command_should_fail == True
 
 - block:
+  - name: Run recipe, expect failure
+    shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} --debug"
+    async: 600
+    register: output
+    become: true
+    ignore_errors: true
+  - fail:
+      msg: "The recipe installed when it was expected to fail:{{ output.stderr }}"
+    when: output is not failed
+  - fail:
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stderr }}"
+    when: validate_output is defined and output.stderr is not search(validate_output)
+  when: command_should_fail == True
+
+- block:
   - name: Run recipe, expect success
     shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }}"
     register: output
