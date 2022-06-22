@@ -62,6 +62,13 @@
 - debug:
     msg: "Using newrelic_api_url_to_use:{{ newrelic_api_url_to_use }}"
 
+- name: Install curl
+  package:
+    name: curl
+    update_cache: yes
+    state: latest
+  become: true
+
 - block:
     - name: Create payload
       template:
@@ -75,14 +82,10 @@
         src: gql-query.source.gpl
         dest: "{{ playbook_dir }}/gql-query.json"
     - name: Run NRQL via nerdgraph
-      uri:
-        method: POST
-        url: "{{ newrelic_api_url_to_use }}/graphql"
-        body: "{{ lookup('file','{{playbook_dir}}/gql-query.json') }}"
-        body_format: json
-        headers:
-          API-Key: '{{ newrelic_personal_api_key }}'
-          Content-Type : 'application/json'
+      shell: "curl -sX POST '{{ newrelic_api_url }}/graphql' \
+      -H 'API-Key: {{ newrelic_personal_api_key }}' \
+      -L -H 'Content-Type: application/json' \
+      -d @{{ playbook_dir }}/gql-query.json"
       register: output
       retries: 25
       delay: 30
