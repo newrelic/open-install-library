@@ -9,7 +9,11 @@ jobs:
   limit_main_pr:
     runs-on: ubuntu-latest
     steps:
-      - uses: LukBukkit/action-pr-limits@v1.1.2
-        with:
-          denylist: |
-            \:
+      # 1) Check for all incoming changes to files under `recipes` directory
+      - name: Ensure no fork repo
+        run: |
+          IS_REMOTE=$(echo ${{ github.event.pull_request.base.ref }} | grep ":" | wc -l)
+          if [ $IS_REMOTE -gt 0 ] ; then
+            echo "PR should be created from a branch on the source repo, not from a fork, so the E2E tests can run"
+            exit 1
+          fi
