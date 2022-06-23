@@ -8,6 +8,9 @@
 
 A collection of recipes designed to support the automated installation and setup of New Relic products and integrations.
 
+
+
+
 ## Mission
 
 Deliver a consistent user experience, open source ecosystem, and platform services that allow any engineer in the world:
