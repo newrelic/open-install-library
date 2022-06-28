@@ -14,6 +14,10 @@ jobs:
     outputs:
       matrix: ${{ steps.get-test-definition-files.outputs.result }}
     steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
       - name: Get Test Definition Files
         id: get-test-definition-files
         uses: actions/github-script@v3
@@ -35,9 +39,9 @@ jobs:
               return Array.prototype.concat(...files);
             }
 
-            const deployConfigs = await getFiles('test/definitions');
+            const testDefinitions = await getFiles('test/definitions');
 
-            const outputTestFilesMap = outputTestFiles.map(testDefinitionFile => {
+            const outputTestFilesMap = testDefinitions.map(testDefinitionFile => {
               return { testDefinitionFile }
             })
             const output = {
@@ -53,7 +57,6 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
-      max-parallel: 20
       fail-fast: false
     env:
       MATRIX: ${{ toJSON(matrix) }}
@@ -83,12 +86,11 @@ jobs:
 
       - name: Run deployer
         id: deployerRun
-        continue-on-error: true
         run: |
-          set +e
+          set -e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
           echo $testDefinitionFile
-          docker run \
+          docker run -i\
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
@@ -126,7 +128,7 @@ jobs:
               icon_emoji: ":octocat:",
               attachments: [{
                 color: ${{
-                  needs.validate-all.result == 'success'
+                  needs.test-deploy-recipe.result == 'success'
                 }} === true ? '#43cc11' : '#e05d44',
                 blocks: [
                   {
@@ -175,7 +177,7 @@ jobs:
                       type: "mrkdwn",
                       text: [
                         "*Result:*",
-                        `• ${ ${{ needs.validate-all.result == 'success' }} === true ? '✅' : '❌' } Non-regression testing of all recipes: ${{ needs.validate-all.result }}`
+                        `• ${ ${{ needs.test-deploy-recipe.result == 'success' }} === true ? '✅' : '❌' } Non-regression testing of all recipes: ${{ needs.validate-all.result }}`
                       ].join('\n')
                     }
                   },
