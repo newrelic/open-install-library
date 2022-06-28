@@ -8,9 +8,55 @@ on:
     branches: main
 
 jobs:
-  validate-all:
-    name: Validate All
+  get-test-definition-files:
+    name: Get Test Definition Files
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.get-test-definition-files.outputs.result }}
+    steps:
+      - name: Get Test Definition Files
+        id: get-test-definition-files
+        uses: actions/github-script@v3
+        with:
+          script: |
+            const fs = require('fs');
+            const fsp = fs.promises;
+            const path = require('path');
+
+            // readdir recursive directory search
+            const { resolve } = path;
+            const { readdir } = fsp;
+            async function getFiles(dir) {
+              const dirents = await readdir(dir, { withFileTypes: true });
+              const files = await Promise.all(dirents.map((dirent) => {
+                const res = path.join(dir, dirent.name);
+                return dirent.isDirectory() ? getFiles(res) : res;
+              }));
+              return Array.prototype.concat(...files);
+            }
+
+            const deployConfigs = await getFiles('test/definitions');
+
+            const outputTestFilesMap = outputTestFiles.map(testDefinitionFile => {
+              return { testDefinitionFile }
+            })
+            const output = {
+              "include": outputTestFilesMap
+            }
+            console.log(output);
+            return output;
+
+  test-deploy-recipe:
+    name: Test Recipe
+    needs: [get-test-definition-files]
+    if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] }} # Avoids empty matrix validation error
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
+      max-parallel: 20
+      fail-fast: false
+    env:
+      MATRIX: ${{ toJSON(matrix) }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
@@ -35,16 +81,37 @@ jobs:
           docker pull ghcr.io/newrelic/deployer:latest
           docker images ghcr.io/newrelic/deployer:latest
 
-      - name: Run deployer and cleanup
+      - name: Run deployer
+        id: deployerRun
+        continue-on-error: true
         run: |
-          docker run -i\
+          set +e
+          testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
+          echo $testDefinitionFile
+          docker run \
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-            --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/gitusdkr${{ github.run_id }}.json -d test/definitions/ -s 20 -m deploy -l debug
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
+          echo ::set-output name=exit_status::$?
+      - name: Teardown any previous deployment
+        if: always()
+        id: cleanupResources
+        continue-on-error: true
+        run: |
+          testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
+          echo $testDefinitionFile
+          docker run \
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -t
+
+      - name: Report any error
+        if: steps.deployerRun.outputs.exit_status != 0
+        run: exit 1
 
   slack-notify:
     runs-on: ubuntu-latest
-    needs: [validate-all]
+    needs: [test-deploy-recipe]
     if: always()
     steps:
       - name: Build Result Slack Notification
