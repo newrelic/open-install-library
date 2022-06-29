@@ -106,31 +106,51 @@
   shell: "echo export NEW_RELIC_EMAIL_CONTINUE=N >> ~/.bashrc"
 
 - block:
-  - name: Run install, expect failure
-    shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}}"
-    async: 600
-    register: output
-    become: true
-    ignore_errors: true
-  - fail:
-      msg: "The CLI installed when it was expected to fail:{{ output.stderr }}"
-    when: output is not failed
-  - fail:
-      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stderr }}"
-    when: validate_output is defined and output.stderr is not search(validate_output)
+    - name: Run install, expect failure
+      shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}}"
+      async: 600
+      register: output
+      become: true
+      ignore_errors: true
+    - fail:
+        msg: "The CLI installed when it was expected to fail:{{ output.stderr }}"
+      when: output is not failed
+    - fail:
+        msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stderr }}"
+      when: validate_output is defined and output.stderr is not search(validate_output)
+    - name: Echo stdout
+      shell: echo "{{ output.stdout }}"
+      register: output_stdout
+    - debug:
+        var: output_stdout.stdout_lines
+    - name: Echo stderr
+      shell: echo "{{ output.stderr }}"
+      register: output_stderr
+    - debug:
+        var: output_stderr.stdout_lines
   when: command_should_fail == True
 
 - block:
-  - name: Run install, expect success
-    shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}}"
-    async: 600
-    register: output
-    become: true
-    ignore_errors: true
-  - fail:
-      msg: "The CLI failed to install when it was expected to succeed:{{ output.stdout }}"
-    when: output is failed
-  - fail:
-      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stdout }}"
-    when: validate_output is defined and output.stdout is not search(validate_output)
+    - name: Run install, expect success
+      shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install {{newrelic_cli_option}}"
+      async: 600
+      register: output
+      become: true
+      ignore_errors: true
+    - fail:
+        msg: "The CLI failed to install when it was expected to succeed:{{ output.stdout }}"
+      when: output is failed
+    - fail:
+        msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stdout }}"
+      when: validate_output is defined and output.stdout is not search(validate_output)
+    - name: Echo stdout
+      shell: echo "{{ output.stdout }}"
+      register: output_stdout
+    - debug:
+        var: output_stdout.stdout_lines
+    - name: Echo stderr
+      shell: echo "{{ output.stderr }}"
+      register: output_stderr
+    - debug:
+        var: output_stderr.stdout_lines
   when: command_should_fail == False
