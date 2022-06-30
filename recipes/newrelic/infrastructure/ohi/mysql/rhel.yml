@@ -177,13 +177,18 @@ install:
 
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             TRIES=0
-            printf "The MySql root password is required to create the new user, please enter it below when prompted\n"
+            printf "MySQL username and password is required to create New Relic user, please enter it below when prompted\n"
             SQL_OUTPUT_ERROR=1
 
             while [ $TRIES -lt {{.MAX_RETRIES}} ] && [ $SQL_OUTPUT_ERROR -gt 0 ] ;
             do
               if [ $TRIES -gt 0 ]; then printf "\nPlease try again\n"; fi
-              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
+
+              printf "\nPlease enter your username for MySQL (default: root): "
+              read -r USERNAME
+              USERNAME=${USERNAME:-root}
+
+              EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
               ((TRIES++))
@@ -231,7 +236,7 @@ install:
                 HOSTNAME: $NR_CLI_DB_HOSTNAME
                 PORT: $NR_CLI_DB_PORT
                 USERNAME: $NR_CLI_DB_USERNAME
-                PASSWORD: $NR_CLI_DB_PASSWORD
+                PASSWORD: '$NR_CLI_DB_PASSWORD'
                 DATABASE:
                 EXTENDED_METRICS: true
                 EXTENDED_INNODB_METRICS: true
