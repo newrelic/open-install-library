@@ -20,6 +20,7 @@ installTargets:
   - type: host
     os: linux
     platform: "centos"
+    platformVersion: "((7|8)\\.?.*)"
 
 # keyword convention for dealing with search terms that could land someone on this instrumentation project
 keywords:
@@ -36,6 +37,9 @@ processMatch:
 logMatch:
   - name: redis
     file: /var/log/redis/redis.log
+    attributes:
+      logtype: redis
+
 
 # NRQL the newrelic-cli will use to validate the agent/integration this recipe
 # installed is successfully sending data to New Relic
@@ -99,14 +103,14 @@ install:
                 read -r NR_CLI_PORT
                 NR_CLI_PORT=${NR_CLI_PORT:-6379}
                 ((TRIES++))
-                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 2; else continue; fi
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
                 echo "Please try again"
               fi
 
               if [ $(echo $CLI_RESPONSE | grep "NOAUTH" | wc -l) -gt 0 ] ; then
                 TRIES=0
                 while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-                  printf "Redis Password: "
+                  printf "Redis Password(usually found in redis.conf requirepass field): "
                   stty -echo
                   read -r NR_CLI_PASSWORD
                   stty echo
@@ -116,7 +120,7 @@ install:
                   CLI_RESPONSE=$(redis-cli -h "$NR_CLI_HOSTNAME" -p "$NR_CLI_PORT" -a "$NR_CLI_PASSWORD" PING 2>&1)
                   if [ $(echo $CLI_RESPONSE | grep "PONG" | wc -l) -eq 0 ] ; then
                     printf "\n[Error]: Could not authenticate on Redis server. Check password.\nSee https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/redis-monitoring-integration/#config for more info.\n" >&2
-                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 3; else continue; fi
+                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
                     echo "Please try again"
                   fi
                   break
@@ -157,7 +161,7 @@ install:
                 HOSTNAME: $NR_CLI_HOSTNAME
                 PORT: $NR_CLI_PORT
                 KEYS: $NR_CLI_KEYS
-                PASSWORD: $NR_CLI_PASSWORD
+                PASSWORD: '$NR_CLI_PASSWORD'
                 CONFIG_INVENTORY: true
                 KEYS_LIMIT: 30
 
@@ -180,7 +184,7 @@ install:
                 INVENTORY: true
                 HOSTNAME: $NR_CLI_HOSTNAME
                 PORT: $NR_CLI_PORT
-                PASSWORD: $NR_CLI_PASSWORd
+                PASSWORD: '$NR_CLI_PASSWORD'
 
                 # New users should leave this property as 'true', to identify the
                 # monitored entities as 'remote'. Setting this property to 'false' (the
