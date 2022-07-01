@@ -352,7 +352,6 @@ install:
                   echo "Helm not found."
                   echo "Reverting to kubectl install."
                   echo ""
-                  KUBECTL_INSTALL=true
 
           elif ! $SUDO helm version -c --short | grep v3 1> /dev/null 2>&1
           then
@@ -361,7 +360,6 @@ install:
                   helm version -c --short
                   echo "Reverting to kubectl install."
                   echo ""
-                  KUBECTL_INSTALL=true
           fi
 
           # Deploy the integration
@@ -370,6 +368,8 @@ install:
             echo ""
             echo "Using helm to install the Kubernetes integration"
             echo ""
+
+            KUBECTL_INSTALL=false
 
             $SUDO helm repo add newrelic https://helm-charts.newrelic.com
             $SUDO helm repo update
@@ -416,6 +416,8 @@ install:
             echo ""
             echo "Using kubectl to install the Kubernetes integration"
             echo ""
+
+            KUBECTL_INSTALL=true
 
             # Select k8s-config-generator service environment
             if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
@@ -495,7 +497,8 @@ install:
             sleep 2
           done
 
-          # Set the color variable
+
+          # Set the color variables for post install message
           green='\033[0;32m'
           clear='\033[0m'
 
@@ -503,16 +506,15 @@ install:
           echo ""
           echo "--------------------------"
           echo ""
-          echo "The Kubernetes Integration deployment is complete. You can check the progress by running:"
-          echo ""
-          echo "     kubectl get pods -o wide -n ${NR_CLI_NAMESPACE}"
-          echo ""
 
           if $KUBECTL_INSTALL; then
-            printf "** Store the generated ${green}$HOME/newrelic-k8s.yml${clear} file in a safe location in order to upgrade or remove the integration. **"
-            echo ""
+            printf "** Store the generated ${green}$HOME/newrelic-k8s.yml${clear} file in a safe location in order to upgrade or remove the integration. **\n"
           fi
 
+          echo ""
+          echo "You can check the status of the New Relic pods by running:"
+          echo ""
+          printf "     ${green}kubectl get pods -o wide -n ${NR_CLI_NAMESPACE}${clear}\n"
           echo ""
           echo "--------------------------"
           echo ""
