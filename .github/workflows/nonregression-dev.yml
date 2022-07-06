@@ -54,30 +54,29 @@ jobs:
             const path = require('path');
 
             // readdir recursive directory search
-            const { resolve } = path;
             const { readdir } = fsp;
             async function getFiles(dir) {
-              const dirents = await readdir(dir, { withFileTypes: true });
-              const files = await Promise.all(dirents.map((dirent) => {
-                const res = path.join(dir, dirent.name);
-                return dirent.isDirectory() ? getFiles(res) : res;
-              }));
-              return Array.prototype.concat(...files);
+                const dirents = await readdir(dir, { withFileTypes: true });
+                const files = await Promise.all(dirents.map((dirent) => {
+                    const res = path.join(dir, dirent.name);
+                    return dirent.isDirectory() ? getFiles(res) : res;
+                }));
+                return Array.prototype.concat(...files);
             }
-
-            const testDefinitions = await getFiles('test/definitions');
+            const definitionsDir = 'test/definitions'
+            const testDefinitions = await getFiles(definitionsDir);
 
             const outputTestFilesMap = testDefinitions.map(testDefinitionFile => {
-              return { testDefinitionFile }
+                return { testDefinitionFile, 'testDisplayName': testDefinitionFile.replace(`${definitionsDir}/`, '') }
             })
             const output = {
-              "include": outputTestFilesMap
+                "include": outputTestFilesMap
             }
             console.log(output);
             return output;
 
   test-deploy-recipe:
-    name: ${{ matrix.testDefinitionFile }}
+    name: ${{ matrix.testDisplayName }}
     needs: [get-test-definition-files]
     if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] }} # Avoids empty matrix validation error
     runs-on: ubuntu-latest
