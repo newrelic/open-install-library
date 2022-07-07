@@ -93,6 +93,8 @@ install:
           SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
           KUBECTL=$($SUDO which kubectl 2>/dev/null || echo '/usr/local/bin/kubectl')
 
+          KUBECTL_YAML_DIR=/tmp
+
           # Check the required tools
           if ! which curl 1>/dev/null 2>&1 ; then
             echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
@@ -467,14 +469,23 @@ install:
             fi
 
             BODY="${BODY}}"
-            curl -s -H "Content-Type: application/json" -d "${BODY}" "${URL}" > ~/newrelic-k8s.yml
+            curl -s -H "Content-Type: application/json" -d "${BODY}" "${URL}" > $KUBECTL_YAML_DIR/newrelic-k8s.yml
 
             if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
               $SUDO $KUBECTL apply -f https://raw.githubusercontent.com/pixie-io/pixie/main/k8s/operator/helm/crds/olm_crd.yaml
               $SUDO $KUBECTL apply -f https://raw.githubusercontent.com/pixie-io/pixie/main/k8s/operator/crd/base/px.dev_viziers.yaml
             fi
 
-            $SUDO $KUBECTL apply -f ~/newrelic-k8s.yml
+            # Clean up old nri-metadata-injection jobs if they exist
+            if $SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers | grep metadata-injection-admission | wc -l | xargs > 0; then
+              echo "Cleaning up old nri-metadata-injection jobs..."
+              for j in $($SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers | grep metadata-injection-admission | awk '{print $1}')
+              do
+                $SUDO $KUBECTL delete job $j -n ${NR_CLI_NAMESPACE}
+              done
+            fi
+
+            $SUDO $KUBECTL apply -f $KUBECTL_YAML_DIR/newrelic-k8s.yml
           fi
 
           # Check for 'nrk8s-kubelet-node-scraper' pod presence first, otherwise default to former pod name 'nrk8s-kubelet'
@@ -508,7 +519,7 @@ install:
           echo ""
 
           if $KUBECTL_INSTALL; then
-            printf "** Store the generated ${green}$HOME/newrelic-k8s.yml${clear} file in a safe location in order to upgrade or remove the integration. **\n"
+            printf "** Store the generated ${green}$KUBECTL_YAML_DIR/newrelic-k8s.yml${clear} file in a safe location in order to upgrade or remove the integration. **\n"
           fi
 
           echo ""
