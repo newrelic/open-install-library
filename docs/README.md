@@ -73,6 +73,19 @@ Typical field names:
 * `platform` specifies additional information about the operating system. Typical values can be `debian`, `amazon` or `centos`... This field is typically not used for `windows` OS
 * `platformVersion` specifies additional information about the version of the operating system. Typical values can be `14.04` for a ubuntu/linux OS for example.
 
+#### Recipe Metadata tracking
+
+A recipe can pass a collection of key/value pairs to be tracked at the recipe level. The newrelic-cli will pass those values to the Nerdgraph api when creating recipe events using the `Metadata` field. All keys added will be prefixed in the schema with `metadata_`.
+
+For example, here is a linux bash snippet to write 2 key/value pairs:
+
+```bash
+  echo '{"Metadata":{"key1":"abc123","key2":"def456"}}' | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+```
+
+The data will be written in the `VirtuosoInstallRecipe` with `metadata_key1` and a value of `abc123` and `metadata_key2` with a value of `def456`
+
+
 #### keywords
 
 This is a collection of string that can be anything that relates to what the recipe is about.
