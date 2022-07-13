@@ -1,5 +1,5 @@
 name: rabbitmq-open-source-integration
-displayName: RabbitMQ Integration
+displayName: RabbitMQ Open Source Integration
 description: New Relic install recipe for default RabbitMQ Open Source on-host integration (via Infra-Agent)
 repository: https://github.com/newrelic/nri-rabbitmq
 
@@ -30,6 +30,33 @@ logMatch:
 
 validationNrql: "SELECT count(*) from RabbitmqVhostSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
+inputVars:
+  - name: "NR_CLI_DB_USERNAME"
+    prompt: "RabbitMQ Username"
+  - name: "NR_CLI_DB_PASSWORD"
+    prompt: "RabbitMQ Password"
+  - name: "NR_CLI_PORT"
+    prompt: "RabbitMQ Management Plugin Port (default: 15672)"
+    default: 15672
+  - name: "NR_CLI_HOSTNAME"
+    prompt: "RabbitMQ Hostname (default: localhost)"
+    default: "localhost"
+  - name: "NR_CLI_RABBIT_CONFIG_PATH"
+    prompt: "RabbitMQ Configuration File Path"
+    default: /etc/rabbitmq/rabbitmq.conf
+  - name: "NR_CLI_QUEUES"
+    prompt: 'Queue Names to Collect (expected: ["myQueue1", "myQueue2"])'
+  - name: "NR_CLI_EXCHANGES"
+    prompt: 'Exchange Names to Collect (expected: ["myExchange1", "myExchange2"])'
+  - name: NR_CLI_VHOSTS
+    prompt: 'Vhost Names to Collect (expected: ["myVhost1", "myVhost2"]'
+  - name: "NR_CLI_SSL"
+    prompt: "Use SSL to connect? (true/false)"
+  - name: "NR_CLI_API_CA_BUNDLE_DIR"
+    prompt: "SSL Certificate Directory (if applicable)"
+  - name: "NR_CLI_API_CA_BUNDLE_FILE"
+    prompt: "SSL Certificate File (if applicable)"
+
 preInstall:
   info: |2
       To capture data from the RabbitMQ integration, you'll first need to meet these prerequisites:
@@ -37,11 +64,15 @@ preInstall:
       - RabbitMQ Management Plugin is configured
       - RabbitMQ command line tool, rabbitmqctl, is in the PATH of the root user
   requireAtDiscovery: |
-    PLUGIN_EXIST=$(sudo cat /etc/rabbitmq/enabled_plugins | grep "rabbitmq_management" | wc -l)
-    if [ $PLUGIN_EXIST -eq 0 ]; then
+    MGMT_PLUGIN_EXIST=$(sudo cat /etc/rabbitmq/enabled_plugins | grep "rabbitmq_management" | wc -l)
+    if [ $MGMT_PLUGIN_EXIST -eq 0 ]; then
       exit 132
+    RABBITMQ_CTL_EXIST=$("$PATH" == ?(*:)"rabbitmqctl"?(:*))
+    if [ $RABBITMQ_CTL_EXIST -eq 0 ]; then
+      exit 1
     fi
-    exit 1
+    # exit unsupported to keep this recipe from triggering currently
+    exit 132
 
 install:
   version: "3"
@@ -49,12 +80,95 @@ install:
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: setup
+        - task: restart
 
-    setup:
+    assert_pre_req:
       cmds:
         - |
-          exit 131
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
+            exit 1
+          fi
+
+    setup:
+      label: "Installing RabbitMQ integration..."
+      cmds:
+        - |
+          sudo mkdir -p "/etc/newrelic-infra/integrations.d"
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
+        - |
+          sudo apt-get install nri-rabbitmq -y
+        - |
+          if [ -f /etc/newrelic-infra/integrations.d/rabbitmq-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/rabbitmq-config.yml;
+          fi
+        - |
+          if [ {{.NR_CLI_SSL}} == false ]; then
+            sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
+          integrations:
+            - name: nri-rabbitmq
+              env:
+                HOSTNAME: {{.NR_CLI_HOSTNAME}}
+                PORT: {{.NR_CLI_PORT}}
+                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                USE_SSL: {{.NR_CLI_SSL}}
+                CONFIG_PATH: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                QUEUES: '{{.NR_CLI_QUEUES}}'
+                QUEUES_REGEXES:
+                EXCHANGES: '{{.NR_CLI_EXCHANGES}}'
+                EXCHANGES_REGEXES:
+                VHOSTS: '{{.NR_CLI_VHOSTS}}'
+                VHOSTS_REGEXES:
+              inventory_source: config/rabbitmq
+              interval: 15
+          EOT
+          else
+            sudo tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
+          integrations:
+            - name: nri-rabbitmq
+              env:
+                HOSTNAME: {{.NR_CLI_HOSTNAME}}
+                PORT: {{.NR_CLI_PORT}}
+                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                CA_BUNDLE_DIR: {{.NR_CLI_API_CA_BUNDLE_DIR}}
+                CA_BUNDLE_FILE: {{.NR_CLI_API_CA_BUNDLE_FILE}}
+                USE_SSL: {{.NR_CLI_SSL}}
+                CONFIG_PATH: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                QUEUES: '{{.NR_CLI_QUEUES}}'
+                QUEUES_REGEXES:
+                EXCHANGES: '{{.NR_CLI_EXCHANGES}}'
+                EXCHANGES_REGEXES:
+                VHOSTS: '{{.NR_CLI_VHOSTS}}'
+                VHOSTS_REGEXES:
+              inventory_source: config/rabbitmq
+              interval: 15
+          EOT
+          fi
+
+    restart:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
 
 postInstall:
   info: |2
