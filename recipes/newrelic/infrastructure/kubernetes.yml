@@ -93,6 +93,7 @@ install:
           SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
           KUBECTL=$($SUDO which kubectl 2>/dev/null || echo '/usr/local/bin/kubectl')
 
+          # Output dir for newrelic-k8s.yml file
           KUBECTL_YAML_DIR=/tmp
 
           # Check the required tools
@@ -345,7 +346,6 @@ install:
             fi
           fi
 
-
           # Check for the presence of Helm.
           # If Helm 3 is not found, revert to kubectl based install.
           if ! $SUDO which helm 1>/dev/null 2>&1
@@ -359,7 +359,6 @@ install:
           then
                   echo ""
                   echo "Helm 3 not found.  You are using an unsupported version of helm."
-                  helm version -c --short
                   echo "Reverting to kubectl install."
                   echo ""
           fi
@@ -372,9 +371,6 @@ install:
             echo ""
 
             KUBECTL_INSTALL=false
-
-            HELM_VERSION=$(helm version -c --short)
-            echo "{\"Metadata\":{\"helmVersion\":\"${HELM_VERSION}\"}}" | tee -a ${NR_CLI_OUTPUT} > /dev/null
 
             $SUDO helm repo add newrelic https://helm-charts.newrelic.com
             $SUDO helm repo update
@@ -414,6 +410,15 @@ install:
                   ARGS="${ARGS} --set pixie-chart.cloudUpdateAddr=${NR_CLI_PIXIE_ADDRESS}"
                 fi
               fi
+            fi
+
+            # Adding a quick test to ensure we don't expose any keys in case non-compatible versions of sed are used
+            QUICKTEST=$(echo 0 | sed 's/[[:digit:]]/1/')
+
+            # Add helm upgrade command as metadata.  Keys are obfuscated.
+            if [ $QUICKTEST -eq 1 ]; then
+              CLEANED_ARGS=$(echo $ARGS | sed 's/licenseKey=[[:alnum:]]\{40\}/licenseKey=XXXXX/g' | sed 's/deployKey=[[:graph:]]\{43\}/deployKey=XXXXX/g' | sed 's/apiKey=[[:graph:]]\{43\}/apiKey=XXXXX/g')
+              echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommand\":\"$SUDO helm upgrade $CLEANED_ARGS\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
             fi
 
             $SUDO helm upgrade $ARGS
@@ -480,9 +485,9 @@ install:
             fi
 
             # Clean up old nri-metadata-injection jobs if they exist
-            if $SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers | grep metadata-injection-admission | wc -l | xargs > 0; then
+            if [[ $($SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers 2> /dev/null | grep metadata-injection-admission | wc -l | xargs) -gt 0 ]]; then
               echo "Cleaning up old nri-metadata-injection jobs..."
-              for j in $($SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers | grep metadata-injection-admission | awk '{print $1}')
+              for j in $($SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers 2> /dev/null | grep metadata-injection-admission | awk '{print $1}')
               do
                 $SUDO $KUBECTL delete job $j -n ${NR_CLI_NAMESPACE}
               done
