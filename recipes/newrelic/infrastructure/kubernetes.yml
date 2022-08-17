@@ -413,12 +413,12 @@ install:
             fi
 
             # Adding a quick test to ensure we don't expose any keys in case non-compatible versions of sed are used
-            QUICKTEST=$(echo 0 | sed 's/[[:digit:]]/1/')
+            SEDTEST=$(echo 0 | sed -E 's/[a-zA-Z0-9\-]/1/')
 
             # Add helm upgrade command as metadata.  Keys are obfuscated.
-            if [ $QUICKTEST -eq 1 ]; then
-              CLEANED_ARGS=$(echo $ARGS | sed 's/licenseKey=[[:alnum:]]\{40\}/licenseKey=XXXXX/g' | sed 's/deployKey=[[:graph:]]\{43\}/deployKey=XXXXX/g' | sed 's/apiKey=[[:graph:]]\{43\}/apiKey=XXXXX/g')
-              echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommand\":\"$SUDO helm upgrade $CLEANED_ARGS\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+            if [[ $SEDTEST -eq 1 ]]; then
+              CLEANED_ARGS=$(echo $ARGS | sed -E 's/licenseKey=[a-zA-Z0-9\-]+ ?/licenseKey=XXXXX /g' | sed -E 's/deployKey=[a-zA-Z0-9\-]+ ?/deployKey=XXXXX /g' | sed -E 's/apiKey=[a-zA-Z0-9\-]+ ?/apiKey=XXXXX /g')
+              echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommand\":\"$SUDO helm upgrade $CLEANED_ARGS\"}}" > {{.NR_CLI_OUTPUT}}
             fi
 
             $SUDO helm upgrade $ARGS
