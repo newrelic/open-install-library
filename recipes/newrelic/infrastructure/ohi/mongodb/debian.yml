@@ -1,6 +1,5 @@
 # Visit our schema definition for additional information on this file format
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
-
 name: mongodb-open-source-integration
 displayName: MongoDB Integration
 description: New Relic install recipe for default MongoDB Open Source on-host integration (via Infra-Agent)
@@ -16,7 +15,6 @@ installTargets:
   - type: host
     os: linux
     platform: "ubuntu"
-
 # keyword convention for dealing with search terms that could land someone on this instrumentation project
 keywords:
   - Infrastructure
@@ -49,9 +47,6 @@ preInstall:
       listCollections roles to the new user.
       Note: username, password, and similar user-specific values must be replaced.
 
-      In the MongoDB shell run the following command
-      > rs.initiate()
-
       Switch to the admin database
       > use admin
 
@@ -62,24 +57,382 @@ preInstall:
       > db.createUser({ user: "username", pwd: "password", roles: [ "clusterMonitor", "listCollections" ]})
 
   requireAtDiscovery: |
-    MONGODB_EXISTS=$(mongo --eval 'db.runCommand({ connectionStatus: 1 })' | grep "ok" | wc -l)
-    if [ $MONGODB_EXISTS -eq 0 ]; then
+    IS_MONGO_SHELL_INSTALLED=$(which mongo | wc -l)
+    if [ $IS_MONGO_SHELL_INSTALLED -eq 0 ]; then
+      echo "Mongo shell is required to run the newrelic install" 
       exit 132
     fi
-    exit 1
 
 install:
   version: "3"
   silent: true
+
+  env:
+    NEW_RELIC_ASSUME_YES: '{{.NEW_RELIC_ASSUME_YES}}'
+    NR_CLI_DB_HOSTNAME: '{{.NR_CLI_DB_HOSTNAME | default "localhost"}}'
+    NR_CLI_DB_PORT: '{{.NR_CLI_DB_PORT | default "27017"}}'
+    NR_CLI_DB_USERNAME: '{{.NR_CLI_DB_USERNAME | default "newrelic"}}'
+    NR_CLI_DB_PASSWORD:
+      sh: if [ -z {{.NR_CLI_DB_PASSWORD}} ]; then echo -n $(date +%s | sha256sum | base64 | head -c 16)oO0; else echo {{.NR_CLI_DB_PASSWORD}}; fi
+    NR_CLI_DB_CLUSTERNAME: '{{.NR_CLI_DB_CLUSTERNAME | default "mongocluster"}}'
+    NR_CLI_DB_AUTH: '{{.NR_CLI_DB_AUTH | default "admin"}}'
+    NR_CLI_SSL: '{{.NR_CLI_SSL}}'
+    NR_CLI_CLIENT_CERT_FILE: '{{.NR_CLI_CLIENT_CERT_FILE}}'
+    NR_CLI_CERT_AUTH_FILE: '{{.NR_CLI_CERT_AUTH_FILE}}'
+
   tasks:
     default:
       cmds:
-        - task: setup
+        - task: assert_pre_req
+        - task: setup_no_auth
+        - task: setup_auth_scram
+          vars:
+            MAX_RETRIES: 3
+        - task: setup_auth_ssl
+          vars:
+            MAX_RETRIES: 3
+        - task: restart
+        - task: cleanup
 
-    setup:
+    assert_pre_req:
       cmds:
         - |
-          exit 131
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
+            exit 1
+          fi
+        - |
+          # Map of tool names to the associated error code
+          REQUIRED_TOOLS_AND_ERROR_CODES="date:41 sha256sum:42 base64:43 head:44"
+
+          for tuple in $REQUIRED_TOOLS_AND_ERROR_CODES; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo -e "{{.RED}}This installation requires '${tool}' to be installed.{{.NOCOLOR}}" >> /dev/stderr
+              exit ${code}
+            fi
+          done
+
+    setup_no_auth:
+      cmds:
+        - |
+          mkdir -p "/etc/newrelic-infra/integrations.d"
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
+          apt-get install nri-mongodb -y
+
+          # Mongodb config file for New Relic Agent
+          tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<-EOT
+          integrations:
+            - name: nri-mongodb
+              env:
+                # The mongo server to connect to
+                HOST: {{.NR_CLI_DB_HOSTNAME}}
+                # The port mongo is running on
+                PORT: {{.NR_CLI_DB_PORT}}
+                # The username created to monitor the cluster.
+                # This user should exist on the cluster as a whole as well
+                # as on each of the individual mongod instances.
+                USERNAME: {{.NR_CLI_DB_USERNAME}}
+                # The password for the monitoring user
+                PASSWORD: '{{.NR_CLI_DB_PASSWORD}}'
+                # The database on which the monitoring user is stored
+                AUTH_SOURCE: {{.NR_CLI_DB_AUTH}}
+                # A user-defined cluster name. Required.
+                CLUSTER_NAME: {{.NR_CLI_DB_CLUSTERNAME}}
+                # Connect using SSL
+                SSL: false
+              inventory_source: config/mongodb
+              interval: 15
+          EOT
+
+          # Mongo role/user requirements
+          tee /tmp/mongo-role.js > /dev/null <<-EOT
+            use admin
+            db.createRole({ role: "listCollections", privileges: [{ resource: { db: "", collection: "" }, actions: [ "listCollections" ] }], roles: [] })
+          EOT
+
+          tee /tmp/mongo-user.js > /dev/null <<-EOT
+            use admin
+            db.createUser({ user: "{{.NR_CLI_DB_USERNAME}}", pwd: "{{.NR_CLI_DB_PASSWORD}}", roles: [ "clusterMonitor", "listCollections" ] })
+          EOT
+
+          # Check open mongodb and check/configure requirements
+          CAN_CONNECT=$(mongo --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --eval 'db.adminCommand( { listDatabases: 1 } )' \
+                      | grep -e '\"ok\" : 1' | wc -l)
+
+          if [ $CAN_CONNECT -gt 0 ]; then
+            MONGO_MONITORING_ROLE_EXISTS=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} \
+                                        --eval 'db.getRole("listCollections")' | grep -e '\"role\" : \"listCollections\"' | wc -l)
+
+            if [ $MONGO_MONITORING_ROLE_EXISTS -gt 0 ]; then
+              echo "Required role already present"
+            else
+              SETUP_ROLE=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} < /tmp/mongo-role.js \
+                         | grep -e '\"role\" : \"listCollections\"' | wc -l)
+
+              if [ $SETUP_ROLE -gt 0 ]; then
+                echo "Required role created"
+              else
+                echo "Could not create required role on {{.NR_CLI_DB_HOSTNAME}}:{{.NR_CLI_DB_PORT}}, database {{.NR_CLI_DB_AUTH}}"
+                exit 131
+              fi
+            fi
+
+            MONGO_MONITORING_USER_EXISTS=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} \
+                                        --eval "db.getUser('{{.NR_CLI_DB_USERNAME}}')" \
+                                        | grep -e "\"_id\" : \"{{.NR_CLI_DB_AUTH}}\.{{.NR_CLI_DB_USERNAME}}\"" | wc -l)
+
+            if [ $MONGO_MONITORING_USER_EXISTS -gt 0 ]; then
+              echo "Required user already present, attempting to update its password"
+
+              USER_UPDATE_FAILED=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} \
+                                --eval "db.changeUserPassword('{{.NR_CLI_DB_USERNAME}}', '{{.NR_CLI_DB_PASSWORD}}')" \
+                                | grep -i "Error: Updating user failed" | wc -l)
+
+              if [ $USER_UPDATE_FAILED -gt 0 ]; then
+                echo "Could not update password for {{.NR_CLI_DB_USERNAME}}"
+                exit 131
+              fi
+            else 
+              SETUP_MONGO_MONITORING_USER=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} < /tmp/mongo-user.js \
+                                         | grep -i "Successfully added user" | wc -l)
+
+              if [ $SETUP_MONGO_MONITORING_USER -gt 0 ]; then
+                echo "Required user created"
+              else
+                echo "Could not create required user on {{.NR_CLI_DB_HOSTNAME}}:{{.NR_CLI_DB_PORT}}, database {{.NR_CLI_DB_AUTH}}"
+                exit 131
+              fi
+            fi
+
+            # let other tasks know this one was successful
+            touch /tmp/mongo_ok
+          fi
+
+    setup_auth_scram:
+      cmds:
+        - |
+          # If previous no-auth setup task was successful, skip this one
+          if [ -f /tmp/mongo_ok ]; then
+            exit 0
+          fi
+
+          if [ ${NEW_RELIC_ASSUME_YES,,} == "true" ]; then
+            exit 131
+          fi
+
+          echo ""
+          read -r -p "Using regular SCRAM Username/Password authentication to connect to MongoDB? (Y/N) " USING_SCRAM
+
+          if [[ ${USING_SCRAM,,} =~ "^(y|ye|yes)$" ]]; then
+            # SCRAM Use Case
+            TRIES=0
+            echo -e "\nPlease provide MongoDB SCRAM credentials"
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              ((TRIES++))
+              read -r -p "MongoDB Username? " MONGO_USERNAME
+              stty -echo  # To securely read password; 'read -s $VAR' showed 'illegal -s option' when tried
+              read -r -p "MongoDB Password? " MONGO_PASSWORD
+              stty echo
+              echo ""
+              read -r -p "MongoDB Port? (Default 27017) " MONGO_PORT
+              MONGO_PORT=${MONGO_PORT:-27017}
+
+              CAN_CONNECT=$(mongo --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --username $MONGO_USERNAME \
+                          --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} --eval "db.adminCommand( { listDatabases: 1 } )" \
+                          | grep -e '\"ok\" : 1' | wc -l)
+
+              if [ $CAN_CONNECT -eq 0 ]; then
+                echo "Could not connect to {{.NR_CLI_DB_HOSTNAME}}:{{.NR_CLI_DB_PORT}}, db {{.NR_CLI_DB_AUTH}}"
+              else
+                echo "Connected!"           
+                break
+              fi
+            done
+
+            if [ $TRIES -eq {{.MAX_RETRIES}} ]; then
+              echo "Max connection attempts reached"
+              exit 131
+            else
+              MONGO_MONITORING_ROLE_EXISTS=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONG_PORT --username $MONGO_USERNAME \
+                                           --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} --eval 'db.getRole("listCollections")' \
+                                           | grep -e '\"role\" : "listCollections"' | wc -l)
+              
+              if [ $MONGO_MONITORING_ROLE_EXISTS -gt 0 ]; then
+                echo "Required role already present"
+              else
+                SETUP_ROLE=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONGO_PORT --username $MONGO_USERNAME \
+                           --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} < /tmp/mongo-role.js \
+                           | grep -e '\"role\" : \"listCollections\"' | wc -l)
+
+                if [ $SETUP_ROLE -gt 0 ]; then
+                  echo "Required role created"
+                fi
+              fi
+
+              MONGO_MONITORING_USER_EXISTS=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONGO_PORT --username $MONGO_USERNAME \
+                                           --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} --eval "db.getUser('{{.NR_CLI_DB_USERNAME}}')" \
+                                           | grep -e "\"_id\" : \"{{.NR_CLI_DB_AUTH}}\.{{.NR_CLI_DB_USERNAME}}\"" | wc -l)
+
+              if [ $MONGO_MONITORING_USER_EXISTS -gt 0 ]; then
+                echo "Required user already present, attempting to update its password"
+
+                USER_UPDATE_FAILED=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONGO_PORT --username $MONGO_USERNAME \
+                                   --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} \
+                                   --eval "db.changeUserPassword('{{.NR_CLI_DB_USERNAME}}', '{{.NR_CLI_DB_PASSWORD}}')" \
+                                   | grep -i "Error: Updating user failed" | wc -l)
+
+                if [ $USER_UPDATE_FAILED -gt 0 ]; then
+                  echo "Could not update password for {{.NR_CLI_DB_USERNAME}}"
+                  exit 131
+                fi
+              else 
+                SETUP_MONGO_MONITORING_USER=$(mongo {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONGO_PORT --username $MONGO_USERNAME \
+                                           --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} < /tmp/mongo-user.js \
+                                           | grep -i "Successfully added user" | wc -l)
+
+                if [ $SETUP_MONGO_MONITORING_USER -gt 0 ]; then
+                  echo "Required user created"
+                else
+                  echo "Could not create required role/user on {{.NR_CLI_DB_HOSTNAME}}:$MONGO_PORT, db {{.NR_CLI_DB_AUTH}}"
+                  exit 131
+                fi
+              fi
+
+              tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<-EOT
+              integrations:
+                - name: nri-mongodb
+                  env:
+                    # The mongo server to connect to
+                    HOST: {{.NR_CLI_DB_HOSTNAME}}
+                    # The port mongo is running on
+                    PORT: $MONGO_PORT
+                    # The username of the user created to monitor the cluster.
+                    # This user should exist on the cluster as a whole as well
+                    # as on each of the individual mongodb instances.
+                    USERNAME: {{.NR_CLI_DB_USERNAME}}
+                    # The password for the monitoring user
+                    PASSWORD: '{{.NR_CLI_DB_PASSWORD}}'
+                    # The database on which the monitoring user is stored
+                    AUTH_SOURCE: {{.NR_CLI_DB_AUTH}}
+                    # A user-defined cluster name. Required.
+                    CLUSTER_NAME: {{.NR_CLI_DB_CLUSTERNAME}}
+                    # Connect using SSL
+                    SSL: false
+                  inventory_source: config/mongodb
+                  interval: 15
+          EOT
+              # Let other tasks know this one was successful
+              touch /tmp/mongo_scram_ok
+            fi
+          fi
+
+    setup_auth_ssl:
+      cmds:
+        - |
+          # If previous no-auth setup task was successful, skip this one
+          if [ -f /tmp/mongo_ok ] || [ -f /tmp/mongo_scram_ok ]; then
+            exit 0
+          fi
+
+          if [ ${NEW_RELIC_ASSUME_YES,,} == "true" ]; then
+            exit 131
+          fi
+
+          read -r -p "Using SSL/TLS authentication to connect to MongoDB? (Y/N) " USING_SSL
+
+          if [[ ${USING_SSL,,} =~ "^(y|ye|yes)$" ]]; then
+            # SSL/TLS Use Case
+            TRIES=0
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              ((TRIES++))
+              read -r -p "Localhost's Certificate Hostname? " HOST
+              HOST=${HOST:-localhost}
+              read -r -p "Port? (Default 27017) " PORT 
+              PORT=${PORT:-27017}
+              read -r -p "SSL CA Certificate Path? " CA_CERT_PATH
+              read -r -p "Client Certificate PEM file Path? " CLIENT_CERT_PATH
+
+              if [[ -z $HOST || -z $NR_CLI_DB_PORT || -z $CA_CERT_PATH || -z $CLIENT_CERT_PATH ]]; then
+                echo "Please provide all the required certificate information"
+              else
+                CAN_CONNECT=$(mongo --ssl --host $HOST:$PORT --sslPEMKeyFile $CLIENT_CERT_PATH --sslCAFile $CA_CERT_PATH \
+                           --eval "db.runCommand({ connectionStatus: 1 })" | grep -e '\"ok\" : 1' | wc -l)
+
+                if [ $CAN_CONNECT -gt 0 ]; then
+                  echo "Connected!"
+                  break
+                fi
+              fi
+            done
+
+            if [ $TRIES -eq {{.MAX_RETRIES}} ]; then
+              echo "Max connection attempts reached"
+              exit 131
+            else
+              # SSL-based integration setup: Re-write mongodb-config.yml to include SSL-related fields
+              tee /etc/newrelic-infra/integrations.d/mongodb-config.yml > /dev/null <<-EOT
+              integrations:
+                - name: nri-mongodb
+                  env:
+                    # The mongo server to connect to
+                    HOST: $HOST
+                    # The port mongo is running on
+                    PORT: $PORT
+                    # The database on which the monitoring user is stored
+                    AUTH_SOURCE: {{.NR_CLI_DB_AUTH}}
+                    # A user-defined cluster name. Required.
+                    CLUSTER_NAME: {{.NR_CLI_DB_CLUSTERNAME}}
+                    # Connect using SSL
+                    SSL: true
+                    # Path to the CA certs file
+                    SSL_CA_CERTS: $CA_CERT_PATH
+                    # Client Certificate to present to the server (optional)
+                    PEM_KEY_FILE: $CLIENT_CERT_PATH
+                  inventory_source: config/mongodb
+                  interval: 15
+          EOT
+            fi
+          fi
+
+    restart:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            sudo systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              sudo initctl restart newrelic-infra
+            else
+              sudo /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
+
+    cleanup:
+      cmds:
+        - |
+          if [ -f /tmp/mongo-role.js ]; then
+            rm -f /tmp/mongo-role.js 
+          fi
+          if [ -f /tmp/mongo-user.js ]; then
+            rm -f /tmp/mongo-user.js 
+          fi
+          if [ -f /tmp/mongo_ok ]; then
+            rm -f /tmp/mongo_ok
+          fi
+          if [ -f /tmp/mongo_scram_ok ]; then
+            rm -f /tmp/mongo_scram_ok
+          fi
 
 postInstall:
   info: |2
