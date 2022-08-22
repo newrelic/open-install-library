@@ -1,5 +1,7 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 name: rabbitmq-open-source-integration
-displayName: RabbitMQ Integration
+displayName: RabbitMQ Open Source Integration
 description: New Relic install recipe for default RabbitMQ Open Source on-host integration (via Infra-Agent)
 repository: https://github.com/newrelic/nri-rabbitmq
 
@@ -19,14 +21,16 @@ keywords:
   - Infrastructure
   - Integration
   - rabbitmq
-# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
 
+# CLI runs process detection; this is used to filter recipes that are appropriate for matched processes
 processMatch:
   - rabbitmq
+
 # Matches partial list of the Log forwarding parameters
+# https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
 logMatch:
   - name: Logs
-    file: /var/log/rabbitmq/rabbit.log
+    file: /var/log/rabbitmq/*.log
 
 validationNrql: "SELECT count(*) from RabbitmqVhostSample where hostname like '{{.HOSTNAME}}%' FACET entityGuid SINCE 10 minutes ago"
 
@@ -37,24 +41,153 @@ preInstall:
       - RabbitMQ Management Plugin is configured
       - RabbitMQ command line tool, rabbitmqctl, is in the PATH of the root user
   requireAtDiscovery: |
-    PLUGIN_EXIST=$(sudo cat /etc/rabbitmq/enabled_plugins | grep "rabbitmq_management" | wc -l)
-    if [ $PLUGIN_EXIST -eq 0 ]; then
+    MGMT_PLUGIN_PRESENT=$(sudo cat /etc/rabbitmq/enabled_plugins | grep "rabbitmq_management" | wc -l)
+    RABBITMQCTL_IN_USER_PATH=$([[ $(which rabbitmqctl 2>/dev/null | wc -l) -eq 1 ]] && echo "YES" || echo "NO")
+    RABBITMQCTL_IN_DEFAULT_PATH=$([[ $(find /usr/sbin -name rabbitmqctl 2>/dev/null | wc -l) -eq 1 ]] && echo "YES" || echo "NO")
+    if [[ "$MGMT_PLUGIN_PRESENT" -eq 0 || ( $RABBITMQCTL_IN_USER_PATH == "NO" && $RABBITMQCTL_IN_DEFAULT_PATH == "NO" ) ]]; then
       exit 132
     fi
-    exit 1
 
 install:
   version: "3"
   silent: true
+
+  env:
+    NEW_RELIC_ASSUME_YES: '{{.NEW_RELIC_ASSUME_YES}}'
+    NR_CLI_USERNAME: '{{.NR_CLI_USERNAME | default "newrelic"}}'
+    NR_CLI_PASSWORD:
+      sh: if [ -z {{.NR_CLI_PASSWORD}} ]; then echo -n $(date +%s | sha256sum | base64 | head -c 16)oO0; else echo {{.NR_CLI_PASSWORD}}; fi
+    NR_CLI_PORT: '{{.NR_CLI_DB_PORT | default "15672"}}'
+    NR_CLI_HOSTNAME: '{{.NR_CLI_HOSTNAME | default "localhost"}}'
+    NR_CLI_RABBIT_CONFIG_PATH: '{{.NR_CLI_RABBIT_CONFIG_PATH | default "/etc/rabbitmq/rabbitmq.conf"}}'
+    NR_CLI_QUEUES: 
+      sh: if [ -z {{.NR_CLI_QUEUES}} ]; then echo "'[\"\"]'"; else echo {{.NR_CLI_QUEUES}}; fi
+    NR_CLI_QUEUES_REGEXES: 
+      sh: if [ -z {{.NR_CLI_QUEUES_REGEXES}} ]; then echo "'[\".*\"]'"; else echo {{.NR_CLI_QUEUES_REGEXES}}; fi
+    NR_CLI_EXCHANGES: 
+    NR_CLI_EXCHANGES_REGEXES: 
+      sh: if [ -z {{.NR_CLI_EXCHANGES_REGEXES}} ]; then echo "'[\".*\"]'"; else echo {{.NR_CLI_EXCHANGES_REGEXES}}; fi
+    NR_CLI_VHOSTS: 
+    NR_CLI_VHOSTS_REGEXES: 
+      sh: if [ -z {{.NR_CLI_VHOSTS_REGEXES}} ]; then echo "'[\".*\"]'"; else echo {{.NR_CLI_VHOSTS_REGEXES}}; fi
+    NR_CLI_SSL: '{{.NR_CLI_SSL | default "false"}}'
+    NR_CLI_API_CA_BUNDLE_DIR:
+    NR_CLI_API_CA_BUNDLE_FILE:
+
   tasks:
     default:
       cmds:
+        - task: assert_pre_req
         - task: setup
+        - task: restart
 
-    setup:
+    assert_pre_req:
       cmds:
         - |
-          exit 131
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
+            exit 1
+          fi
+
+    setup:
+      label: "Installing RabbitMQ integration..."
+      cmds:
+        - |
+          mkdir -p "/etc/newrelic-infra/integrations.d"
+
+          # Get latest definitions and skip any failure because of deprecation
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
+          apt-get install nri-rabbitmq -y
+
+          if [ -f /etc/newrelic-infra/integrations.d/rabbitmq-config.yml ]; then
+            rm /etc/newrelic-infra/integrations.d/rabbitmq-config.yml;
+          fi
+
+          # Find rabbitmqctl
+          RABBITMQCTL_IN_USER_PATH=$(which rabbitmqctl 2>/dev/null)
+          RABBITMQCTL_IN_DEFAULT_PATH=$(find /usr/sbin -name rabbitmqctl 2>/dev/null)
+          if [[ ! -z "$RABBITMQCTL_IN_USER_PATH" ]]; then
+            RABBITMQCTL=rabbitmqctl
+          elif [[ -z "$RABBITMQCTL_IN_USER_PATH" && ( ! -z "$RABBITMQCTL_IN_DEFAULT_PATH" && "$RABBITMQCTL_IN_DEFAULT_PATH" == "/usr/sbin/rabbitmqctl" ) ]]; then
+            RABBITMQCTL=/usr/sbin/rabbitmqctl
+          else
+            echo "Could not find rabbitmqctl cli"
+            exit 131
+          fi
+
+          # Create/update rabbitmq user, assign monitoring permissions
+          USER_EXISTS=$($RABBITMQCTL list_users | grep {{.NR_CLI_USERNAME}} | wc -l)
+          if [ "$USER_EXISTS" -eq 1 ]; then
+            $RABBITMQCTL change_password {{.NR_CLI_USERNAME}} {{.NR_CLI_PASSWORD}}
+          else
+            $RABBITMQCTL add_user {{.NR_CLI_USERNAME}} {{.NR_CLI_PASSWORD}}
+          fi
+          $RABBITMQCTL set_user_tags {{.NR_CLI_USERNAME}} monitoring
+
+          # Get rabbitmq components to monitor from user
+
+          if [ {{.NR_CLI_SSL}} == false ]; then
+            tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<-EOT
+            integrations:
+              - name: nri-rabbitmq
+                env:
+                  HOSTNAME: {{.NR_CLI_HOSTNAME}}
+                  PORT: {{.NR_CLI_PORT}}
+                  USERNAME: {{.NR_CLI_USERNAME}}
+                  PASSWORD: '{{.NR_CLI_PASSWORD}}'
+                  USE_SSL: {{.NR_CLI_SSL}}
+                  CONFIG_PATH: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                  QUEUES: {{.NR_CLI_QUEUES}}
+                  QUEUES_REGEXES: {{.NR_CLI_QUEUES_REGEXES}}
+                  EXCHANGES: {{.NR_CLI_EXCHANGES}}
+                  EXCHANGES_REGEXES: {{.NR_CLI_EXCHANGES_REGEXES}}
+                  VHOSTS: {{.NR_CLI_VHOSTS}}
+                  VHOSTS_REGEXES: {{.NR_CLI_VHOSTS_REGEXES}}
+                inventory_source: config/rabbitmq
+                interval: 15
+          EOT
+          else
+            tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
+            integrations:
+              - name: nri-rabbitmq
+                env:
+                  HOSTNAME: {{.NR_CLI_HOSTNAME}}
+                  PORT: {{.NR_CLI_PORT}}
+                  USERNAME: {{.NR_CLI_USERNAME}}
+                  PASSWORD: '{{.NR_CLI_PASSWORD}}'
+                  CA_BUNDLE_DIR: {{.NR_CLI_API_CA_BUNDLE_DIR}}
+                  CA_BUNDLE_FILE: {{.NR_CLI_API_CA_BUNDLE_FILE}}
+                  USE_SSL: {{.NR_CLI_SSL}}
+                  CONFIG_PATH: {{.NR_CLI_RABBIT_CONFIG_PATH}}
+                  QUEUES: {{.NR_CLI_QUEUES}}
+                  QUEUES_REGEXES: {{.NR_CLI_QUEUES_REGEXES}}
+                  EXCHANGES: {{.NR_CLI_EXCHANGES}}
+                  EXCHANGES_REGEXES: {{.NR_CLI_EXCHANGES_REGEXES}}
+                  VHOSTS: {{.NR_CLI_VHOSTS}}
+                  VHOSTS_REGEXES: {{.NR_CLI_VHOSTS_REGEXES}}
+                inventory_source: config/rabbitmq
+                interval: 15
+          EOT
+          fi
+
+    restart:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              initctl restart newrelic-infra
+            else
+              /etc/init.d/newrelic-infra restart
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
 
 postInstall:
   info: |2
