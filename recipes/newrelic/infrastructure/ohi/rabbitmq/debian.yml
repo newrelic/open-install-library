@@ -44,9 +44,10 @@ preInstall:
     MGMT_PLUGIN_PRESENT=$(sudo cat /etc/rabbitmq/enabled_plugins | grep "rabbitmq_management" | wc -l)
     RABBITMQCTL_IN_USER_PATH=$([[ $(which rabbitmqctl 2>/dev/null | wc -l) -eq 1 ]] && echo "YES" || echo "NO")
     RABBITMQCTL_IN_DEFAULT_PATH=$([[ $(find /usr/sbin -name rabbitmqctl 2>/dev/null | wc -l) -eq 1 ]] && echo "YES" || echo "NO")
-    if [[ "$MGMT_PLUGIN_PRESENT" -eq 0 || ( $RABBITMQCTL_IN_USER_PATH == "NO" && $RABBITMQCTL_IN_DEFAULT_PATH == "NO" ) ]]; then
+    if [[ "$MGMT_PLUGIN_PRESENT" -eq 0 || ( "$RABBITMQCTL_IN_USER_PATH" == "NO" && "$RABBITMQCTL_IN_DEFAULT_PATH" == "NO" ) ]]; then
       exit 132
     fi
+    exit 0 # Success, requirements met.
 
 install:
   version: "3"
@@ -124,8 +125,11 @@ install:
             $RABBITMQCTL add_user {{.NR_CLI_USERNAME}} {{.NR_CLI_PASSWORD}}
           fi
           $RABBITMQCTL set_user_tags {{.NR_CLI_USERNAME}} monitoring
-
-          # Get rabbitmq components to monitor from user
+          
+          # Setup read permissions on default vhost
+          $RABBITMQCTL set_permissions -p / {{.NR_CLI_USERNAME}} "" "" ".*" 
+          # Setup read permissions on default topic exchange on default vhost
+          $RABBITMQCTL set_topic_permissions -p / {{.NR_CLI_USERNAME}} "(AMQP default)" "" ".*"
 
           if [ {{.NR_CLI_SSL}} == false ]; then
             tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<-EOT
