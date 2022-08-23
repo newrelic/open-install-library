@@ -79,6 +79,7 @@ install:
     default:
       cmds:
         - task: assert_pre_req
+        - task: update_apt
         - task: setup
         - task: restart
 
@@ -91,14 +92,20 @@ install:
             exit 1
           fi
 
+    update_apt:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
+      silent: true
+      # Ignored errors returned by 'apt-get' if it fails to update any of its sources
+      ignore_error: true
+
     setup:
       label: "Installing RabbitMQ integration..."
       cmds:
         - |
           mkdir -p "/etc/newrelic-infra/integrations.d"
-
-          # Get latest definitions and skip any failure because of deprecation
-          apt-get -o Acquire::Check-Valid-Until=false update -yq
           apt-get install nri-rabbitmq -y
 
           if [ -f /etc/newrelic-infra/integrations.d/rabbitmq-config.yml ]; then
