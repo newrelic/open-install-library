@@ -42,7 +42,7 @@ For this case, please do the following:
 4. Open again MongoDB's config file `/etc/mongod.conf` and add these 2 lines:
     ```sh
     security:
-    authorization: enabled
+      authorization: enabled
     ```
 5. Restart mongodb with `sudo systemctl restart mongod` (or similar command) and run the MongoDB integration install.
 6. The recipe will prompt if using SCRAM credentials to authenticate. Please, answer 'Y' and follow the prompts. Provide the credentials created in step 3.
@@ -57,8 +57,8 @@ This scenario is a little more difficult to test as it requires creating the CA 
 
 The steps on those links are summarized as follows:
 
-1. In your MongoDB server, create a `ca` folder for example: `/home/admin/ca`
-2. Copy/save the .cnf files mentioned in the MongoDB documentation links above to the folder created in step 1
+1. In your MongoDB server, create a `ca` folder for example: `/home/admin/ca`.
+2. Copy/save the .cnf files mentioned in the MongoDB documentation links above to the folder created in step 1.
 3. Open the `openssl-test-server.cnf` and go to the `alt-names` section of that file to update the DNS/IP details of your MongoDB server/instance. For example:
     ```sh
     ...
