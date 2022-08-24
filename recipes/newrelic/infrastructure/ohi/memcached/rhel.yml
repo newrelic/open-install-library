@@ -46,10 +46,15 @@ install:
   version: "3"
   silent: true
 
+  env:
+    NR_CLI_DB_HOSTNAME: '{{.NR_CLI_DB_HOSTNAME | default "localhost"}}'
+    NR_CLI_DB_PORT: '{{.NR_CLI_DB_PORT | default "11211"}}'
+
   tasks:
     default:
       cmds:
         - task: assert_pre_req
+        - task: update_yum
         - task: setup
         - task: restart
 
@@ -62,66 +67,41 @@ install:
             exit 1
           fi
 
+    update_yum:
+      cmds:
+        - |
+          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+      silent: true
+      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+      ignore_error: true
+
     setup:
       label: "Installing Memcached integration..."
       cmds:
         - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
-          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-        - |
           sudo yum install nri-memcached -y > /dev/null
-        - |
-          if [ -f /etc/newrelic-infra/integrations.d/memcached-config.yml ]; then
-            sudo rm /etc/newrelic-infra/integrations.d/memcached-config.yml;
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]] ; then
+            printf "\nPlease enter the port number Memcached is running on (default:11211): "
+            read -r NR_CLI_DB_PORT
+            NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-11211}
+            printf "\nPlease enter Memcached SASL username. Only required if authentication is enabled. (default none): "
+            read -r NR_CLI_DB_USERNAME
+            printf "\nPlease enter Memcached SASL password. Only required if authentication is enabled. (default none): "
+            stty -echo
+            read -r NR_CLI_DB_PASSWORD
+            stty echo
           fi
-        - |
-        
-          # try get values from env
-          NR_CLI_DB_USERNAME={{.NR_CLI_DB_USERNAME}}
-          NR_CLI_DB_PASSWORD={{.NR_CLI_DB_PASSWORD}}
-          NR_CLI_HOST={{.NR_CLI_HOST}}
-          NR_CLI_PORT={{.NR_CLI_PORT}}
 
-          # Set default values for variables
-          NR_CLI_HOST=${NR_CLI_HOST:-localhost}
-          NR_CLI_PORT=${NR_CLI_PORT:-11211}
-          MAX_RETRIES=3
-          TRIES=0 
-          CAN_CONNECT=$(curl $NR_CLI_HOST:$NR_CLI_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
-          
-          while [[ $TRIES -lt $MAX_RETRIES && $CAN_CONNECT == "7" ]]; do
-            printf "\nPlease enter the port number for your Memcached instance: "
-            read -r NR_CLI_PORT
-            ((TRIES++))
-
-            CAN_CONNECT=$(curl $NR_CLI_HOST:$NR_CLI_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
-
-            if [ $CAN_CONNECT == "7" ]; then
-              printf "\n\nUnable to connect your Memcached instance using provided port.\n" >&2
-              if [ ! $TRIES -lt $MAX_RETRIES ]; then exit 7; fi
-              echo "Please try again"
-            fi
-          done
-          
-          printf "\nPlease enter the username for your Memcached instance (default: none): "
-          read -r NR_CLI_DB_USERNAME
-          printf "Please enter the password for your Memcached instance (default: none): "
-          stty -echo
-          read -r NR_CLI_DB_PASSWORD
-          stty echo
-          
           if [ -z $NR_CLI_DB_USERNAME ] && [ -z $NR_CLI_DB_PASSWORD ]; then
             sudo tee /etc/newrelic-infra/integrations.d/memcached-config.yml > /dev/null <<EOT
           integrations:
             - name: nri-memcached
               env:
-                # Hostname of the memcached instance.
-                # Defaults to localhost.
-                HOST: $NR_CLI_HOSTNAME
-                # Port memcached is running on.
-                # Defaults to 11211
-                PORT: $NR_CLI_PORT
+                HOST: {{.NR_CLI_DB_HOSTNAME}}
+                PORT: $NR_CLI_DB_PORT
               inventory_source: config/memcached
               interval: 15
           EOT
@@ -130,18 +110,12 @@ install:
           integrations:
             - name: nri-memcached
               env:
-                # Hostname of the memcached instance.
-                # Defaults to localhost.
-                HOST: $NR_CLI_HOSTNAME
-                # Port memcached is running on.
-                # Defaults to 11211
-                PORT: $NR_CLI_PORT
-                # Memcached SASL username. Only required if
-                # authentication is enabled.
+                HOST: {{.NR_CLI_DB_HOSTNAME}}
+                PORT: $NR_CLI_DB_PORT
                 USERNAME: $NR_CLI_DB_USERNAME
                 # Memcached SASL password. Only required if
                 # authentication is enabled.
-                PASSWORD: $NR_CLI_DB_PASSWORD
+                PASSWORD: '$NR_CLI_DB_PASSWORD'
               inventory_source: config/memcached
               interval: 15
           EOT
