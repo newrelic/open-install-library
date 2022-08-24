@@ -50,6 +50,7 @@ install:
       cmds:
         - task: assert_infra
         - task: assert_pre_req
+        - task: update_apt
         - task: input_assert
           vars:
             MAX_RETRIES: 3
@@ -80,6 +81,15 @@ install:
               exit ${code}
             fi
           done
+
+    update_apt:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
+      silent: true
+      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+      ignore_error: true
 
     input_assert:
       cmds:
@@ -194,7 +204,6 @@ install:
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
           # Get latest definitions and skip any failure because of deprecation
-          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
           sudo apt-get install nri-postgresql -y
           if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
