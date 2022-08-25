@@ -84,6 +84,7 @@ install:
     default:
       cmds:
         - task: assert_pre_req
+        - task: update_apt
         - task: setup_no_auth
         - task: setup_auth_scram
           vars:
@@ -118,11 +119,19 @@ install:
             fi
           done
 
+    update_apt:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
+      silent: true
+      # Ignored errors returned by 'apt-get' if it fails to update any of its sources
+      ignore_error: true
+
     setup_no_auth:
       cmds:
         - |
           mkdir -p "/etc/newrelic-infra/integrations.d"
-          apt-get -o Acquire::Check-Valid-Until=false update -yq
           apt-get install nri-mongodb -y
 
           # Mongodb config file for New Relic Agent
