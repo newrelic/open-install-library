@@ -59,9 +59,9 @@ install:
 
   env:
     NEW_RELIC_ASSUME_YES: '{{.NEW_RELIC_ASSUME_YES}}'
-    NR_CLI_USERNAME: '{{.NR_CLI_USERNAME | default "newrelic"}}'
-    NR_CLI_PASSWORD:
-      sh: if [ -z {{.NR_CLI_PASSWORD}} ]; then echo -n $(date +%s | sha256sum | base64 | head -c 16)oO0; else echo {{.NR_CLI_PASSWORD}}; fi
+    NR_CLI_DB_USERNAME: '{{.NR_CLI_DB_USERNAME | default "newrelic"}}'
+    NR_CLI_DB_PASSWORD:
+      sh: if [ -z {{.NR_CLI_DB_PASSWORD}} ]; then echo -n $(date +%s | sha256sum | base64 | head -c 16)oO0; else echo {{.NR_CLI_DB_PASSWORD}}; fi
     NR_CLI_PORT: '{{.NR_CLI_DB_PORT | default "15672"}}'
     NR_CLI_HOSTNAME: '{{.NR_CLI_HOSTNAME | default "localhost"}}'
     NR_CLI_RABBIT_CONFIG_PATH: '{{.NR_CLI_RABBIT_CONFIG_PATH | default "/etc/rabbitmq/rabbitmq.conf"}}'
@@ -76,8 +76,8 @@ install:
     NR_CLI_VHOSTS_REGEXES: 
       sh: if [ -z {{.NR_CLI_VHOSTS_REGEXES}} ]; then echo "'[\".*\"]'"; else echo {{.NR_CLI_VHOSTS_REGEXES}}; fi
     NR_CLI_SSL: '{{.NR_CLI_SSL | default "false"}}'
-    NR_CLI_API_CA_BUNDLE_DIR:
-    NR_CLI_API_CA_BUNDLE_FILE:
+    NR_CLI_API_CA_BUNDLE_DIR: '{{.NR_CLI_API_CA_BUNDLE_DIR}}'
+    NR_CLI_API_CA_BUNDLE_FILE: '{{.NR_CLI_API_CA_BUNDLE_FILE}}'
 
   tasks:
     default:
@@ -119,18 +119,18 @@ install:
           fi
 
           # Create/update rabbitmq user, assign monitoring permissions
-          USER_EXISTS=$($RABBITMQCTL list_users | grep {{.NR_CLI_USERNAME}} | wc -l)
+          USER_EXISTS=$($RABBITMQCTL list_users | grep {{.NR_CLI_DB_USERNAME}} | wc -l)
           if [ "$USER_EXISTS" -eq 1 ]; then
-            $RABBITMQCTL change_password {{.NR_CLI_USERNAME}} {{.NR_CLI_PASSWORD}}
+            $RABBITMQCTL change_password {{.NR_CLI_DB_USERNAME}} {{.NR_CLI_DB_PASSWORD}}
           else
-            $RABBITMQCTL add_user {{.NR_CLI_USERNAME}} {{.NR_CLI_PASSWORD}}
+            $RABBITMQCTL add_user {{.NR_CLI_DB_USERNAME}} {{.NR_CLI_DB_PASSWORD}}
           fi
-          $RABBITMQCTL set_user_tags {{.NR_CLI_USERNAME}} monitoring
+          $RABBITMQCTL set_user_tags {{.NR_CLI_DB_USERNAME}} monitoring
           
           # Setup read permissions on default vhost
-          $RABBITMQCTL set_permissions -p / {{.NR_CLI_USERNAME}} "" "" ".*" 
+          $RABBITMQCTL set_permissions -p / {{.NR_CLI_DB_USERNAME}} "" "" ".*" 
           # Setup read permissions on default topic exchange on default vhost
-          $RABBITMQCTL set_topic_permissions -p / {{.NR_CLI_USERNAME}} "(AMQP default)" "" ".*"
+          $RABBITMQCTL set_topic_permissions -p / {{.NR_CLI_DB_USERNAME}} "(AMQP default)" "" ".*"
 
           if [ {{.NR_CLI_SSL}} == false ]; then
             tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<-EOT
@@ -139,8 +139,8 @@ install:
                 env:
                   HOSTNAME: {{.NR_CLI_HOSTNAME}}
                   PORT: {{.NR_CLI_PORT}}
-                  USERNAME: {{.NR_CLI_USERNAME}}
-                  PASSWORD: '{{.NR_CLI_PASSWORD}}'
+                  USERNAME: {{.NR_CLI_DB_USERNAME}}
+                  PASSWORD: '{{.NR_CLI_DB_PASSWORD}}'
                   USE_SSL: {{.NR_CLI_SSL}}
                   CONFIG_PATH: {{.NR_CLI_RABBIT_CONFIG_PATH}}
                   QUEUES: {{.NR_CLI_QUEUES}}
@@ -153,16 +153,22 @@ install:
                 interval: 15
           EOT
           else
+            if [ -z {{.NR_CLI_API_CA_BUNDLE_DIR}} ]; then
+              read -rp "CA Bundle Dir? " CA_BUNDLE_DIR
+            fi
+            if [ -z {{.NR_CLI_API_CA_BUNDLE_FILE}} ]; then
+              read -rp "CA Bundle File? " CA_BUNDLE_FILE
+            fi
             tee -a /etc/newrelic-infra/integrations.d/rabbitmq-config.yml > /dev/null <<"EOT"
             integrations:
               - name: nri-rabbitmq
                 env:
                   HOSTNAME: {{.NR_CLI_HOSTNAME}}
                   PORT: {{.NR_CLI_PORT}}
-                  USERNAME: {{.NR_CLI_USERNAME}}
-                  PASSWORD: '{{.NR_CLI_PASSWORD}}'
-                  CA_BUNDLE_DIR: {{.NR_CLI_API_CA_BUNDLE_DIR}}
-                  CA_BUNDLE_FILE: {{.NR_CLI_API_CA_BUNDLE_FILE}}
+                  USERNAME: {{.NR_CLI_DB_USERNAME}}
+                  PASSWORD: '{{.NR_CLI_DB_PASSWORD}}'
+                  CA_BUNDLE_DIR: {{or .NR_CLI_API_CA_BUNDLE_DIR "$CA_BUNDLE_DIR"}}
+                  CA_BUNDLE_FILE: {{or .NR_CLI_API_CA_BUNDLE_FILE "$CA_BUNDLE_FILE"}}
                   USE_SSL: {{.NR_CLI_SSL}}
                   CONFIG_PATH: {{.NR_CLI_RABBIT_CONFIG_PATH}}
                   QUEUES: {{.NR_CLI_QUEUES}}
