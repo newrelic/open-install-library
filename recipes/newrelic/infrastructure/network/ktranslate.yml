@@ -1,6 +1,10 @@
 # Visit our schema definition for additional information on this file format.
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
+# Expected Variables:
+#   CIDRS - comma-separated list of cidr ranges
+#   DEFAULT_COMMUNITIES - comma-separated list of community strings
+
 name: ktranslate-installer
 displayName: Ktranslate agent integration
 description: New Relic install recipe for the ktranslate network agent
@@ -60,26 +64,20 @@ install:
   tasks:
     default:
       cmds:
-        # - task: assert_pre_req
-        # - task: cleanup
-        - task: setup_env
+        - task: assert_pre_req
         - task: setup_packagecloud_repository
         - task: install_ktranslate
+        - task: setup_env
+        - task: configure_snmp_base
         - task: restart
         - task: assert_agent_started
         - task: assert_agent_status_ok
-
-        # - task: add_nr_source
-        # - task: update_apt_nr_source
-        # - task: install_infra
-        # - task: restart
-        # - task: assert_agent_started
-        # - task: assert_agent_status_ok
+        - task: post_install_message
 
     assert_pre_req:
       cmds:
         - |
-          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER"] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
+          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
           if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
             echo "This newrelic install must be run under sudo or root" >&2
             exit 3
@@ -150,6 +148,18 @@ install:
   #     - |
   #       rm -rf /var/db/newrelic-infra/data
 
+    setup_packagecloud_repository:
+      cmds:
+        - |
+          curl -s https://packagecloud.io/install/repositories/kentik/ktranslate/script.deb.sh | sudo bash > /dev/null
+      silent: true
+
+    install_ktranslate:
+      cmds:
+        - |
+          sudo apt-get install ktranslate -y > /dev/null
+      slient: true
+
     setup_env:
       cmds:
         - |
@@ -172,19 +182,93 @@ install:
 
           echo 'NR_ACCOUNT_ID="{{.NEW_RELIC_ACCOUNT_ID}}"' >> /etc/default/ktranslate.env
           echo 'NEW_RELIC_API_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/default/ktranslate.env
-          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -metalisten=127.0.0.1:8089 -metrics=jchf -tee_logs=true -service_name=snmp nr1.snmp"' >> /etc/default/ktranslate.env
+          # echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -metalisten=127.0.0.1:8089 -metrics=jchf -tee_logs=true -service_name=snmp nr1.snmp"' >> /etc/default/ktranslate.env
+          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yml -metalisten=127.0.0.1:8089 -metrics=jchf -tee_logs=true -service_name=snmp -snmp_discovery_on_start=true -snmp_discovery_min=60 nr1.snmp"' >> /etc/default/ktranslate.env
 
-    setup_packagecloud_repository:
+          chown ktranslate:ktranslate /etc/default/ktranslate.env
+    configure_snmp_base:
       cmds:
         - |
-          curl -s https://packagecloud.io/install/repositories/kentik/ktranslate/script.deb.sh | sudo bash > /dev/null
-      silent: true
+          if [ -f /etc/ktranslate/snmp-base.yml ]; then
+            sudo rm /etc/ktranslate/snmp-base.yml;
+          fi
 
-    install_ktranslate:
-      cmds:
-        - |
-          sudo apt-get install ktranslate -y > /dev/null
-      slient: true
+          # save current IFS for later
+          OLD_IFS=$IFS
+          IFS=","
+
+          echo "devices:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "trap:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  listen: 127.0.0.1:1620" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "discovery:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  cidrs:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+
+          # Cidrs from input
+          read -r CIDRS <<< $CIDRS
+          for i in "${CIDRS[@]}"; do
+            echo "  - $i" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          done
+
+          echo "  ignore_list: []" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  debug: false" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  ports:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  - 161" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  default_communities:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+
+          # Communities from input
+          read -r DEFAULT_COMMUNITIES <<< $DEFAULT_COMMUNITIES
+          for i in "${DEFAULT_COMMUNITIES[@]}"; do
+            echo "  - $i" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          done
+
+          echo "  default_v3: null" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  add_devices: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  add_mibs: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  threads: 4" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  replace_devices: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  check_all_ips: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "global:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  poll_time_sec: 300" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  mib_profile_dir: /etc/ktranslate/profiles" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  mibs_enabled:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  - IF-MIB" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  timeout_ms: 3000" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          echo "  retries: 0" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+
+          # reset IFS
+          IFS=$OLD_IFS
+
+          # ktranslate must be owner so the ktranslate service can write new configs
+          chown ktranslate:ktranslate /etc/ktranslate/snmp-base.yml
+
+          # sudo tee /etc/newrelic-infra/integrations.d/redis-config.yml > /dev/null <<EOT
+          # devices:
+          # trap:
+          #   listen: 127.0.0.1:1620
+          # discovery:
+          #   cidrs:
+          #   - 10.10.0.0/24
+          #   ignore_list: []
+          #   debug: false
+          #   ports:
+          #   - 161
+          #   default_communities:
+          #   - public
+          #   default_v3: null
+          #   add_devices: true
+          #   add_mibs: true
+          #   threads: 4
+          #   replace_devices: true
+          #   check_all_ips: true
+          # global:
+          #   poll_time_sec: 300
+          #   mib_profile_dir: /etc/ktranslate/profiles
+          #   mibs_enabled:
+          #   - IF-MIB
+          #   timeout_ms: 3000
+          #   retries: 0
+          # EOT
+
 
     restart:
       cmds:
@@ -220,23 +304,25 @@ install:
         - |
           MAX_RETRIES=30
           TRIES=0
-          echo "Running agent status check attempt..."
+          echo ""
+          echo "  Running agent status check attempt..."
+
           # wait for status endpoint to be ready
           while [ $TRIES -lt $MAX_RETRIES ]; do
             ((TRIES++))
             statusCheckOutput=$(curl 127.0.0.1:8089/healthcheck -s | /home/ubuntu/newrelic utils jq '.success')
             if [ "$statusCheckOutput" == "true" ]; then
-              echo "Agent status check ok."
+              echo "  Agent status check ok."
               break
             else
               if [ "$statusCheckOutput" == "" ]; then
                 if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
-                  echo "ktranslate status endpoint not available" >&2
+                  echo "  ktranslate status endpoint not available" >&2
                   exit 32
                 fi
               else
                 if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
-                  echo "ktranslate status check not healthy: $statusCheckOutput" >&2
+                  echo "  ktranslate status check not healthy: $statusCheckOutput" >&2
                   exit 33
                 fi
               fi
@@ -244,6 +330,27 @@ install:
 
             sleep 2
           done
+
+    post_install_message:
+      cmds:
+        - |
+          # Set the color variables for post install message
+          green='\033[0;32m'
+          clear='\033[0m'
+
+          # Show post install message
+          echo ""
+          echo "  ------------------------"
+          echo ""
+
+          printf "  ** The ktranslate configuration file can be found in ${green}/etc/ktranslate/snmp-base.yml${clear}. We recommend backing this file up periodically. **\n"
+
+          echo ""
+          echo "  Edit this file to make changes or configure advanced features for the agent. See the docs for options:"
+          echo "  https://docs.newrelic.com/docs/network-performance-monitoring/advanced/advanced-config"
+          echo ""
+          echo "  ------------------------"
+          echo ""
 
 postInstall:
   info: |2
