@@ -15,8 +15,7 @@ The [infrastructure monitoring agent](https://docs.newrelic.com/docs/infrastruct
 
 
 ## Installation
-- **perform the guided install (details to come)**
-- **naming your application (details to come)**
+- Use Guided Install while on NR1 - Add Data
 
 ## Updating previous installations
 
