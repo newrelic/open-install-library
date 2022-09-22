@@ -9,7 +9,6 @@ repository: https://github.com/newrelic/infrastructure-agent
 installTargets:
   - type: host
     os: darwin
-    kernelArch: x86_64
 
 keywords:
   - Infrastructure
@@ -26,8 +25,19 @@ install:
   silent: true
 
   vars:
-    CONFIG_FILE: "/usr/local/etc/newrelic-infra/newrelic-infra.yml"
-    CONFIG_FILE_DIR: "/usr/local/etc/newrelic-infra"
+    # Variables prefixed with VN_ as they are parsed in alphabetical order, and they have dependencies
+    # HOMEBREW_PREFIX is different in intel/amd:
+    # intel: /usr/local
+    # amd: /opt/homebrew
+    V1_HOMEBREW_INSTALL_DIR:
+      sh: |
+        if [ $( sudo -i -u $SUDO_USER which brew ) ];then
+          sudo -i -u $SUDO_USER brew config | grep HOMEBREW_PREFIX | awk '{print $2}'
+        fi
+    V2_CONFIG_FILE:
+      sh: echo {{.V1_HOMEBREW_INSTALL_DIR}}/etc/newrelic-infra/newrelic-infra.yml
+    V2_CONFIG_FILE_DIR:
+      sh: echo {{.V1_HOMEBREW_INSTALL_DIR}}/etc/newrelic-infra
     ARROW: '\033[0;36m===> \033[0;97m'
 
   tasks:
@@ -68,6 +78,14 @@ install:
             exit 15
           fi
         - |
+          # This check is temporary until the one below that offers to install brew is fixed. Currently it gets stuck
+          # and it doesn't show the message to offer to install brew
+          IS_BREW_INSTALLED=$(which brew | wc -l)
+          if [ $IS_BREW_INSTALLED -eq 0 ] ; then
+            echo "brew is required to run the newrelic install. Please install brew and re-run the installation." >&2
+            exit 131
+          fi
+        - |
           IS_BREW_INSTALLED=$(which brew | wc -l)
           if [ $IS_BREW_INSTALLED -eq 0 ] ; then
             while :; do
@@ -105,37 +123,37 @@ install:
     cleanup:
       cmds:
         - |
-          sudo rm -rf "/usr/local/var/db/newrelic-infra/data"
+          sudo rm -rf "{{.V1_HOMEBREW_INSTALL_DIR}}/var/db/newrelic-infra/data"
 
     setup_license:
       cmds:
         - |
-          if [ -f "{{.CONFIG_FILE}}" ]; then
-            sed -i.bak "/^staging/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
-            sed -i.bak "/^enable_process_metrics/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
-            sed -i.bak "/^status_server_enabled/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
-            sed -i.bak "/^status_server_port/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
-            sed -i.bak "/^license_key/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
-            sed -i.bak "/^metrics_process_sample_rate/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
+          if [ -f "{{.V2_CONFIG_FILE}}" ]; then
+            sed -i.bak "/^staging/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
+            sed -i.bak "/^enable_process_metrics/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
+            sed -i.bak "/^status_server_enabled/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
+            sed -i.bak "/^status_server_port/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
+            sed -i.bak "/^license_key/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
+            sed -i.bak "/^metrics_process_sample_rate/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
           else
-            mkdir -p "{{.CONFIG_FILE_DIR}}"
-            touch "{{.CONFIG_FILE}}"
+            mkdir -p "{{.V2_CONFIG_FILE_DIR}}"
+            touch "{{.V2_CONFIG_FILE}}"
           fi
         - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-            echo 'staging: true' >> "{{.CONFIG_FILE}}"
+            echo 'staging: true' >> "{{.V2_CONFIG_FILE}}"
           fi
-          echo 'enable_process_metrics: true' >> "{{.CONFIG_FILE}}"
-          echo 'status_server_enabled: true' >> "{{.CONFIG_FILE}}"
-          echo 'status_server_port: 18003' >> "{{.CONFIG_FILE}}"
-          echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> "{{.CONFIG_FILE}}"
+          echo 'enable_process_metrics: true' >> "{{.V2_CONFIG_FILE}}"
+          echo 'status_server_enabled: true' >> "{{.V2_CONFIG_FILE}}"
+          echo 'status_server_port: 18003' >> "{{.V2_CONFIG_FILE}}"
+          echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> "{{.V2_CONFIG_FILE}}"
 
     setup_proxy:
       cmds:
         - |
           if [ ! -z "$HTTPS_PROXY" ]; then
-            sudo sed -i.bak "/^proxy/d" "{{.CONFIG_FILE}}" && rm "{{.CONFIG_FILE}}".bak
-            sudo echo 'proxy: {{.HTTPS_PROXY}}' >> "{{.CONFIG_FILE}}"
+            sudo sed -i.bak "/^proxy/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
+            sudo echo 'proxy: {{.HTTPS_PROXY}}' >> "{{.V2_CONFIG_FILE}}"
           fi
 
     install_infra:
@@ -191,7 +209,7 @@ install:
 
 postInstall:
   info: |2
-      ⚙️  The Infrastructure Agent configuration file can be found in /usr/local/etc/newrelic-infra/newrelic-infra.yml
+      ⚙️  The Infrastructure Agent configuration file can be found in {{.V1_HOMEBREW_INSTALL_DIR}}/etc/newrelic-infra/newrelic-infra.yml
       Edit this file to make changes or configure advanced features for the agent. See the docs for options:
       https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
       
