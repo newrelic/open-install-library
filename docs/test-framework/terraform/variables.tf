@@ -7,7 +7,7 @@ variable "region" {
 }
 
 variable "instance" {
-  default = "t3..micro"
+  default = "t3.micro"
 }
 
 variable "public_key" {
