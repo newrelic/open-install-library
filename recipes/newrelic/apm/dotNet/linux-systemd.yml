@@ -27,37 +27,17 @@ preInstall:
     # Checking both debian and rpm based distros together
     
     set +e # disable fail on error
-    
-    dpkg -l dotnet-runtime* >/dev/null 2>&1
-    DPKG_DOTNET=$?
-    
-    dpkg -l aspnetcore-runtime* >/dev/null 2>&1
-    DPKG_ASPNETCORE=$?
 
-    dpkg -l dotnet-sdk* >/dev/null 2>&1
-    DPKG_DOTNET_SDK=$?
-    
-    yum -q list installed dotnet-runtime* >/dev/null 2>&1
-    YUM_DOTNET=$?
-    
-    yum -q list installed aspnetcore-runtime* >/dev/null 2>&1
-    YUM_ASPNETCORE=$?
+    DPKG_DOTNET=$(dpkg -l dotnet-runtime* aspnetcore-runtime* dotnet-sdk* 2>/dev/null | grep -E 'dotnet-runtime.*|aspnetcore-runtime.*|dotnet-sdk.*' | wc -l)
+    YUM_DOTNET=$(sudo yum -q list installed dotnet-runtime* aspnetcore-runtime* dotnet-sdk* 2>/dev/null | grep -E 'dotnet-runtime.*|aspnetcore-runtime.*|dotnet-sdk.*' | wc -l)
 
-    yum -q list installed dotnet-sdk* >/dev/null 2>&1
-    YUM_DOTNET_SDK=$?
-    
     set -e # enable fail on error
 
     # if any are false, .NET is installed
-    if [[ $DPKG_DOTNET -ne 0 \
-      && $DPKG_ASPNETCORE -ne 0 \
-      && $DPKG_DOTNET_SDK -ne 0 \
-      && $YUM_DOTNET -ne 0 \
-      && $YUM_ASPNETCORE -ne 0 \
-      && $YUM_DOTNET_SDK -ne 0 ]]
+    if [[ $DPKG_DOTNET -eq 0 && $YUM_DOTNET -eq 0  ]]
     then
-      # no cleanup since we didn't create any artifacts
-      exit 3
+        # no cleanup since we didn't create any artifacts
+        exit 3
     fi
 
     # .NET is installed, get .NET introspector tooling
