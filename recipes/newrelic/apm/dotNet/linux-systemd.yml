@@ -22,7 +22,25 @@ processMatch: []
 
 preInstall:
   requireAtDiscovery: |
-    # Get .NET introspector tooling
+    # Check if .NET is installed
+    # There are three packages for .NET: dotnet-runtime, aspnetcore-runtime and dotnet-sdk
+    # Checking both debian and rpm based distros together
+    
+    set +e # disable fail on error
+
+    DPKG_DOTNET=$(dpkg -l dotnet-runtime* aspnetcore-runtime* dotnet-sdk* 2>/dev/null | grep -E 'dotnet-runtime.*|aspnetcore-runtime.*|dotnet-sdk.*' | wc -l)
+    YUM_DOTNET=$(sudo yum -q list installed dotnet-runtime* aspnetcore-runtime* dotnet-sdk* 2>/dev/null | grep -E 'dotnet-runtime.*|aspnetcore-runtime.*|dotnet-sdk.*' | wc -l)
+
+    set -e # enable fail on error
+
+    # if any are false, .NET is installed
+    if [[ $DPKG_DOTNET -eq 0 && $YUM_DOTNET -eq 0  ]]
+    then
+        # no cleanup since we didn't create any artifacts
+        exit 3
+    fi
+
+    # .NET is installed, get .NET introspector tooling
     TMP_DIR=$(mktemp -dq /tmp/newrelic.XXXXXX)
     curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
     zcat ${TMP_DIR}/dotnet-is-linux-x64.gz > ${TMP_DIR}/nri-lsi-dotnet
