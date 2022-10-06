@@ -226,6 +226,9 @@ install:
       cmds:
         - |
           powershell -command '
+            Function isInfraRunning { 
+              (Get-Service newrelic-infra -ErrorAction SilentlyContinue | Select-Object Status).Status -eq "Running" 
+            }
             $maxRetries = 150
             $tries = 0
             while ($tries -lt $maxRetries) {
@@ -240,11 +243,19 @@ install:
               }
               if ($statusCheckOutput -ieq "") {
                 if ($tries -eq $maxRetries) {
+                  if (isInfraRunning) {
+                    Write-Host "detected newrelic-infra service running"
+                    break
+                  }
                   Write-Host -ForegroundColor Red "infra-agent status endpoint not available";
                   exit 32;
                 }
               } else {
                 if ($tries -eq $maxRetries) {
+                  if (isInfraRunning) {
+                    Write-Host "detected newrelic-infra service running"
+                    break
+                  }
                   Write-Host -ForegroundColor Red "infra-agent status check not healthy: $statusCheckOutput";
                   exit 33;
                 }
