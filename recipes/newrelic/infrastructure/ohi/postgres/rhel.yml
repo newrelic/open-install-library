@@ -134,21 +134,15 @@ install:
                 echo "Please try again"
               fi
             done
-          else 
-            if [[ "$CAN_CONNECT" == "7" ]]; then 
+          else
+            if [[ "$CAN_CONNECT" == "7" ]]; then
               printf "\n\nUnable to connect your PostgreSQL instance using provided port.\n" >&2
-              exit 7 
+              exit 7
             fi
           fi
-          
-          TRIES=0
-          
-          # the while statement prompt user for postgresql password if required
-          # user will have 3 chances to enter correct password
-          while [[ $TRIES -lt {{.MAX_RETRIES}} ]]; do
-            # try to generate user base on default credentials
-            if [ "$NR_CLI_DB_USERNAME" == "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" == "$GEN_PASSWORD" ]; then
-              sql=$(cat <<EOT
+
+          # Script to insert required default NR user
+          sql=$(cat <<EOT
           DO
           \$do\$
           BEGIN
@@ -164,21 +158,50 @@ install:
 
           EOT
           )
-              sudo -u postgres psql -t -A -c "${sql}" > /dev/null 2>&1 || true
-              sudo rm -f .nr_script.sql > /dev/null 2>&1
-            fi
 
+          # Run the default creation script if no env override is passed in
+          if [ "$NR_CLI_DB_USERNAME" == "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" == "$GEN_PASSWORD" ]; then
+            sudo -u postgres psql -t -A -c "${sql}" > /dev/null 2>&1 || true
+            sudo rm -f .nr_script.sql > /dev/null 2>&1
+          fi
+
+          # Check if we can connect using NR user
+          IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
+          IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
+
+          # If it's automatic install, fail here if unable to connect using defaut/env account
+          if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
+            if [[ $IS_DATABASE_VALID -le "0" ]]; then
+              echo "Could not create required user $NR_CLI_DB_USERNAME on $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT, database $NR_CLI_DATABASE"
+              exit 130
+            fi
+          fi
+
+          # 2. If assume no, then we can prompt for 3 times
+          TRIES=0
+          echo -e "\nPlease provide Postgres credentials to connect"
+          # the while statement prompt user for postgresql password if required
+          # user will have 3 chances to enter correct password
+          while [[ $TRIES -lt {{.MAX_RETRIES}} ]]; do
+            ((TRIES++))
+            read -r -p "Postgres Username? " POSTGRES_USERNAME
+            stty -echo  # To securely read password; 'read -s $VAR' showed 'illegal -s option' when tried
+            read -r -p "Postgres Password? " POSTGRES_PASSWORD
+            stty echo
+            echo ""
+
+            sudo PGPASSWORD=$POSTGRES_PASSWORD -u $POSTGRES_USERNAME psql -t -A -c "${sql}" > /dev/null 2>&1 || true
+            sudo rm -f .nr_script.sql > /dev/null 2>&1
             IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
             IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
-          
+
             if [[ $IS_DATABASE_VALID -gt "0" ]]; then 
               break
             else
-              printf "\n\nUnable to create the required newrelic user.  PostgreSQL account password is required.  Please try again.\n\n" >&3
-              ((TRIES++))
+              printf "\n\nUnable to create the required newrelic user.  PostgreSQL account information is required.  Please try again.\n\n" >&3
             fi
           done
-          
+
           # if still unable to connect exit out
           if [[ $IS_DATABASE_VALID -eq "0" ]]; then
             exit 130
