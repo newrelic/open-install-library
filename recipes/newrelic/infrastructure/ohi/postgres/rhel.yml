@@ -159,8 +159,11 @@ install:
           EOT
           )
 
-          # Run the default creation script if no env override is passed in
-          if [ "$NR_CLI_DB_USERNAME" == "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" == "$GEN_PASSWORD" ]; then
+          # if credentials are pased in, try it
+          if [ -n "$POSTGRES_USERNAME" ]; then
+            sudo PGPASSWORD=$POSTGRES_PASSWORD -u $POSTGRES_USERNAME psql -t -A -c "${sql}" > /dev/null 2>&1 || true
+            sudo rm -f .nr_script.sql > /dev/null 2>&1
+          elif [ "$NR_CLI_DB_USERNAME" == "newrelic" ] && [ "$NR_CLI_DB_PASSWORD" == "$GEN_PASSWORD" ]; then
             sudo -u postgres psql -t -A -c "${sql}" > /dev/null 2>&1 || true
             sudo rm -f .nr_script.sql > /dev/null 2>&1
           fi
@@ -177,30 +180,32 @@ install:
             fi
           fi
 
-          # 2. If assume no, then we can prompt for 3 times
-          TRIES=0
-          echo -e "\nPlease provide Postgres credentials to connect"
-          # the while statement prompt user for postgresql password if required
-          # user will have 3 chances to enter correct password
-          while [[ $TRIES -lt {{.MAX_RETRIES}} ]]; do
-            ((TRIES++))
-            read -r -p "Postgres Username? " POSTGRES_USERNAME
-            stty -echo  # To securely read password; 'read -s $VAR' showed 'illegal -s option' when tried
-            read -r -p "Postgres Password? " POSTGRES_PASSWORD
-            stty echo
-            echo ""
+          if [[ $IS_DATABASE_VALID -le "0" ]]; then
+            TRIES=0
+            echo -e "\nPlease provide Postgres credentials to connect"
+            # the while statement prompt user for postgresql password if required
+            # user will have 3 chances to enter correct password
+            while [[ $TRIES -lt {{.MAX_RETRIES}} ]]; do
+              ((TRIES++))
+              read -r -p "Postgres Username (Default postgres)? " POSTGRES_USERNAME
+              POSTGRES_USERNAME=${POSTGRES_USERNAME:-postgres}
+              stty -echo  # To securely read password; 'read -s $VAR' showed 'illegal -s option' when tried
+              read -r -p "Postgres Password? " POSTGRES_PASSWORD
+              stty echo
+              echo ""
 
-            sudo PGPASSWORD=$POSTGRES_PASSWORD -u $POSTGRES_USERNAME psql -t -A -c "${sql}" > /dev/null 2>&1 || true
-            sudo rm -f .nr_script.sql > /dev/null 2>&1
-            IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
-            IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
+              sudo PGPASSWORD=$POSTGRES_PASSWORD -u $POSTGRES_USERNAME psql -t -A -c "${sql}" > /dev/null 2>&1 || true
+              sudo rm -f .nr_script.sql > /dev/null 2>&1
+              IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
+              IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
 
-            if [[ $IS_DATABASE_VALID -gt "0" ]]; then 
-              break
-            else
-              printf "\n\nUnable to create the required newrelic user.  PostgreSQL account information is required.  Please try again.\n\n" >&3
-            fi
-          done
+              if [[ $IS_DATABASE_VALID -gt "0" ]]; then 
+                break
+              else
+                printf "\n\nUnable to create the required newrelic user.  PostgreSQL account information is required.  Please try again.\n\n" >&3
+              fi
+            done
+          fi
 
           # if still unable to connect exit out
           if [[ $IS_DATABASE_VALID -eq "0" ]]; then
