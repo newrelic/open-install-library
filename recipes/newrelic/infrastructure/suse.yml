@@ -64,7 +64,6 @@ install:
         - task: setup_proxy
         - task: install_infra
         - task: restart
-        - task: assert_agent_started
         - task: assert_agent_status_ok
 
     assert_pre_req:
@@ -171,11 +170,11 @@ install:
             exit 131
           fi
           curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
-        - curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/gpg/newrelic-infra.gpg > newrelic-infra.gpg
-        - rpm --import newrelic-infra.gpg
+        - curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
+        - rpm --import newrelic_rpm_key_current.gpg
         - zypper -n --quiet ref -r newrelic-infra
         - zypper -n --quiet install newrelic-infra
-        - rm newrelic-infra.gpg
+        - rm newrelic_rpm_key_current.gpg
       vars:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
@@ -199,21 +198,10 @@ install:
         IS_INITCTL:
           sh: command -v initctl | wc -l
 
-    assert_agent_started:
-      cmds:
-        - |
-          # Ensure agent has enough time to start
-          sleep 10
-          IS_INFRA_INSTALLED=$(ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
-          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
-            exit 31
-          fi
-
     assert_agent_status_ok:
       cmds:
         - |
-          MAX_RETRIES=30
+          MAX_RETRIES=150
           TRIES=0
           echo "Running agent status check attempt..."
           # wait for status endpoint to be ready

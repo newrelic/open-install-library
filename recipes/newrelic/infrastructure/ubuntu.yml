@@ -71,7 +71,6 @@ install:
         - task: update_apt_nr_source
         - task: install_infra
         - task: restart
-        - task: assert_agent_started
         - task: assert_agent_status_ok
 
     assert_pre_req:
@@ -170,7 +169,7 @@ install:
       cmds:
         - |
           # Get latest definitions and skip any failure because of deprecation
-          apt-get -o Acquire::Check-Valid-Until=false update -yq
+          apt-get -o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false update -yq
       silent: true
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
@@ -179,7 +178,7 @@ install:
       cmds:
         - |
           if [ {{.HAS_GPG}} -eq 0 ] ; then
-            apt-get install gnupg2 -y
+            apt-get -o DPkg::Lock::Timeout=60 install gnupg2 -y
           fi
       vars:
         HAS_GPG:
@@ -188,7 +187,7 @@ install:
     add_gpg_key:
       cmds:
         - |
-          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/gpg/newrelic-infra.gpg | apt-key add -
+          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | apt-key add -
       silent: true
 
     add_nr_source:
@@ -209,14 +208,14 @@ install:
       cmds:
         - |
           # Get latest definitions and skip any failure because of deprecation
-          apt-get -o Acquire::Check-Valid-Until=false update -yq
+          apt-get -o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false update -yq
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
 
     install_infra:
       cmds:
         - |
-          apt-get install newrelic-infra -y -qq
+          apt-get -o DPkg::Lock::Timeout=60 install newrelic-infra -y -qq
       silent: true
 
     restart:
@@ -237,21 +236,10 @@ install:
         IS_INITCTL:
           sh: command -v initctl | wc -l
 
-    assert_agent_started:
-      cmds:
-        - |
-          # Ensure agent has enough time to start
-          sleep 10
-          IS_INFRA_INSTALLED=$(ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
-          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
-            exit 31
-          fi
-
     assert_agent_status_ok:
       cmds:
         - |
-          MAX_RETRIES=30
+          MAX_RETRIES=150
           TRIES=0
           echo "Running agent status check attempt..."
           # wait for status endpoint to be ready

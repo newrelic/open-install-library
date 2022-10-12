@@ -42,11 +42,11 @@ install:
       cmds:
         - task: assert_required_permissions
         - task: assert_required_powershell
+        - task: collect_meta
         - task: remove_any_previous
         - task: download_infra
         - task: install_infra
         - task: start_infra
-        - task: assert_agent_started
         - task: assert_agent_status_ok
 
     assert_required_permissions:
@@ -55,6 +55,7 @@ install:
           powershell -command '
           $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
           $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
 
           if(-not ($isAdmin))
           {
@@ -221,17 +222,11 @@ install:
         - powershell -command 'net start newrelic-infra'
         - echo "New Relic infrastructure agent for Windows installed and started"
 
-    assert_agent_started:
-      cmds:
-        - |
-          # Ensure agent has enough time to start
-          powershell -command 'Start-Sleep -s 10; $output = Get-Service "newrelic-infra"; if ( -not ($output -like "*newrelic-infra*") ) { Write-Error "The infrastructure agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic."; Exit 31; }'
-
     assert_agent_status_ok:
       cmds:
         - |
           powershell -command '
-            $maxRetries = 30
+            $maxRetries = 150
             $tries = 0
             while ($tries -lt $maxRetries) {
               $tries += 1
@@ -256,6 +251,24 @@ install:
               }
               Start-Sleep -s 2
             }
+          '
+
+    collect_meta:
+      silent: true
+      ignore_error: true
+      cmds:
+        - |
+          powershell -command '
+          $version = (Get-WmiObject -class Win32_OperatingSystem).Caption
+          $metadata = @"
+          {
+            "Metadata": 
+            {
+                "version": "$version"
+            }
+          } 
+          "@
+          $metadata | Set-Content {{.NR_CLI_OUTPUT}}
           '
 
 postInstall:

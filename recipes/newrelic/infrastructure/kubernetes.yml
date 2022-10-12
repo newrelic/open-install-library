@@ -93,6 +93,7 @@ install:
           SUDO=$(test ! -z "$SUDO_USER" && echo "sudo -u $SUDO_USER" || echo "")
           KUBECTL=$($SUDO which kubectl 2>/dev/null || echo '/usr/local/bin/kubectl')
 
+          # Output dir for newrelic-k8s.yml file
           KUBECTL_YAML_DIR=/tmp
 
           # Check the required tools
@@ -345,7 +346,6 @@ install:
             fi
           fi
 
-
           # Check for the presence of Helm.
           # If Helm 3 is not found, revert to kubectl based install.
           if ! $SUDO which helm 1>/dev/null 2>&1
@@ -359,7 +359,6 @@ install:
           then
                   echo ""
                   echo "Helm 3 not found.  You are using an unsupported version of helm."
-                  helm version -c --short
                   echo "Reverting to kubectl install."
                   echo ""
           fi
@@ -411,6 +410,15 @@ install:
                   ARGS="${ARGS} --set pixie-chart.cloudUpdateAddr=${NR_CLI_PIXIE_ADDRESS}"
                 fi
               fi
+            fi
+
+            # Adding a quick test to ensure we don't expose any keys in case non-compatible versions of sed are used
+            SEDTEST=$(echo 0 | sed -E 's/[a-zA-Z0-9\-]/1/')
+
+            # Add helm upgrade command as metadata.  Keys are obfuscated.
+            if [[ $SEDTEST -eq 1 ]]; then
+              CLEANED_ARGS=$(echo $ARGS | sed -E 's/licenseKey=[a-zA-Z0-9\-]+/licenseKey=XXXXX/g' | sed -E 's/deployKey=[a-zA-Z0-9\-]+/deployKey=XXXXX/g' | sed -E 's/apiKey=[a-zA-Z0-9\-]+/apiKey=XXXXX/g')
+              echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommand\":\"$SUDO helm upgrade $CLEANED_ARGS\"}}" > {{.NR_CLI_OUTPUT}}
             fi
 
             $SUDO helm upgrade $ARGS
@@ -477,9 +485,9 @@ install:
             fi
 
             # Clean up old nri-metadata-injection jobs if they exist
-            if $SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers | grep metadata-injection-admission | wc -l | xargs > 0; then
+            if [[ $($SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers 2> /dev/null | grep metadata-injection-admission | wc -l | xargs) -gt 0 ]]; then
               echo "Cleaning up old nri-metadata-injection jobs..."
-              for j in $($SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers | grep metadata-injection-admission | awk '{print $1}')
+              for j in $($SUDO $KUBECTL get jobs -n ${NR_CLI_NAMESPACE} --no-headers 2> /dev/null | grep metadata-injection-admission | awk '{print $1}')
               do
                 $SUDO $KUBECTL delete job $j -n ${NR_CLI_NAMESPACE}
               done

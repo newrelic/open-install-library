@@ -10,9 +10,11 @@ installTargets:
   - type: application
     os: linux
     platform: "debian"
+    kernelArch: x86_64
   - type: application
     os: linux
     platform: "ubuntu"
+    kernelArch: x86_64
 
 keywords:
   - Apm
@@ -20,8 +22,6 @@ keywords:
   - fpm
 
 processMatch:
-  # several possible configurations we can match on:
-  # - older apache and no php-fpm (process named httpd)
   # - newer apache and no php-fpm (process named apache2)
   # - nginx and php-fpm (process named php-fpm)
   # in the preInstall we will check if php is installed and further filter down the possible scenarios
@@ -136,8 +136,12 @@ install:
         - task: create_shared
         - task: clean_slate
         - task: detect_services
+        - task: update_apt
         - task: add_gnupg2_if_required
-        - task: install_deb
+        - task: add_nr_source
+        - task: add_gpg_key
+        - task: update_apt_nr_source
+        - task: install_php
         - task: install_tarball
         - task: configure
         - task: restart_services
@@ -319,15 +323,21 @@ install:
             fi
           done
 
+    update_apt:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
+      silent: true
+      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+      ignore_error: true
+
     add_gnupg2_if_required:
       cmds:
         - |
+          # Check if gnupg is already installed, and if not, install it.
           if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
-            #
-            # Check if gnupg is already installed, and if not, install it.
-            #
             if [ {{.HAS_GPG}} -eq 0 ] ; then
-              sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
               sudo apt-get install gnupg2 -y
             fi
           fi
@@ -336,6 +346,33 @@ install:
           sh: command -v gpg | wc -l
         DEBIAN_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+
+    add_nr_source:
+      cmds:
+        - |
+          echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
+      silent: true
+
+    add_gpg_key:
+      cmds:
+        - |
+          curl -s https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
+      silent: true
+
+    update_apt_nr_source:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+          apt-get -o Acquire::Check-Valid-Until=false update -yq
+      ignore_error: true
+
+    install_php:
+      cmds:
+        - |
+          echo -e "{{.ARROW}}Installing New Relic PHP Agent package{{.GRAY}}"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
+      silent: true
 
     install_tarball:
       cmds:
@@ -371,15 +408,6 @@ install:
           echo -e "{{.WHITE}}Running PHP Agent installer{{.GRAY}}"
           NR_INSTALL_USE_CP_NOT_LN=1 NR_INSTALL_SILENT=true NR_INSTALL_KEY="{{.NEW_RELIC_LICENSE_KEY}}" ./newrelic-install install
           popd > /dev/null
-
-    install_deb:
-      cmds:
-        - |
-          echo -e "{{.ARROW}}Installing New Relic PHP Agent package{{.GRAY}}"
-          echo 'deb http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list
-          curl -s https://download.newrelic.com/548C16BF.gpg | sudo apt-key add -
-          sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install newrelic-php5 -y -qq
 
     configure:
       cmds:
