@@ -3,9 +3,23 @@
 
 # Expected Variables:
 #   CIDRS - comma-separated list of cidr ranges
-#   DEFAULT_COMMUNITIES - comma-separated list of community strings
+#   POLL_TIME_SEC - numeric value indicating default global poll time
+#   SNMP_DISCOVERY_MIN - numeric value indicating default discovery interval
+#
+# Variables based on SNMP version:
+#   SNMP v1 / v2c:
+#     DEFAULT_COMMUNITIES - comma-separated list of community strings
+#   SNMP v3:
+#     USER_NAME
+#     AUTHENTICATION_PROTOCOL
+#     PRIVACY_PROTOCOL
+#     Optional Vars:
+#       AUTHENTICATION_PASSPHRASE
+#       PRIVACY_PASSPHRASE
+#       CONTEXT_ENGINE_ID
+#       CONTEXT_NAME
 
-name: ktranslate-installer
+name: ktranslate-snmp-installer
 displayName: Ktranslate agent integration
 description: New Relic install recipe for the ktranslate network agent
 repository: https://github.com/kentik/ktranslate
@@ -36,26 +50,23 @@ preInstall:
     The ktranslate installer will use the package manager for your system (rpm/deb)
 
   requireAtDiscovery: |
-      IS_DOCKER_CONTAINER_CGROUP=$(grep 'docker\|lxc' /proc/1/cgroup | wc -l)
-      if [ $IS_DOCKER_CONTAINER_CGROUP -gt 0 ] ; then
-        echo "docker detected with cgroup, unsupported" >&2
-        exit 131
-      fi
-      IS_DOCKER_CONTAINER_ENVIRON=$(grep container=lxc /proc/1/environ | wc -l)
-      if [ $IS_DOCKER_CONTAINER_ENVIRON -gt 0 ] ; then
-        echo "docker detected with environ, unsupported" >&2
-        exit 131
-      fi
-      if [[ -f /.dockerenv ]] ; then
-        echo "docker detected with .dockerenv, unsupported" >&2
-        exit 131
-      fi
-      IS_WSL_CONTAINER=$(grep -i 'Microsoft' /proc/version | wc -l)
-      if [ $IS_WSL_CONTAINER -gt 0 ] ; then
-        echo "microsoft Windows Subsystem for Linux for infra detected, unsupported" >&2
-        exit 131
-      fi
-      exit 0
+    # Check required input variables - this effectively removes the ktranslate install from the
+    # default guided install mode where discovery takes place
+    if [[ -z "${CIDRS}" ]]; then
+      echo "CIDRS env var must be set" >&2
+      exit 47
+    fi
+
+    if [[ -z "${POLL_TIME_SEC}" ]]; then
+      echo "POLL_TIME_SEC env var must be set" >&2
+      exit 47
+    fi
+
+    if [[ -z "${SNMP_DISCOVERY_MIN}" ]]; then
+      echo "SNMP_DISCOVERY_MIN env var must be set" >&2
+      exit 47
+    fi
+    exit 0
 
 install:
   version: "3"
@@ -65,6 +76,7 @@ install:
     default:
       cmds:
         - task: assert_pre_req
+        - task: input_assert
         - task: setup_packagecloud_repository
         - task: install_ktranslate
         - task: setup_env
@@ -83,70 +95,124 @@ install:
             exit 3
           fi
         - |
-          IS_GREP_INSTALLED=$(which grep | wc -l)
-          if [ $IS_GREP_INSTALLED -eq 0 ] ; then
-            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
-            exit 10
+          IS_DOCKER_CONTAINER_CGROUP=$(grep 'docker\|lxc' /proc/1/cgroup | wc -l)
+          if [ $IS_DOCKER_CONTAINER_CGROUP -gt 0 ] ; then
+            echo "docker detected with cgroup, unsupported" >&2
+            exit 131
           fi
         - |
-          IS_SED_INSTALLED=$(which sed | wc -l)
-          if [ $IS_SED_INSTALLED -eq 0 ] ; then
-            echo "sed is required to run the newrelic install. Please install sed and re-run the installation." >&2
-            exit 11
+          IS_DOCKER_CONTAINER_ENVIRON=$(grep container=lxc /proc/1/environ | wc -l)
+          if [ $IS_DOCKER_CONTAINER_ENVIRON -gt 0 ] ; then
+            echo "docker detected with environ, unsupported" >&2
+            exit 131
           fi
         - |
-          IS_AWK_INSTALLED=$(which awk | wc -l)
-          if [ $IS_AWK_INSTALLED -eq 0 ] ; then
-            echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >&2
-            exit 12
+          if [[ -f /.dockerenv ]] ; then
+            echo "docker detected with .dockerenv, unsupported" >&2
+            exit 131
           fi
         - |
-          IS_CAT_INSTALLED=$(which cat | wc -l)
-          if [ $IS_CAT_INSTALLED -eq 0 ] ; then
-            echo "cat is required to run the newrelic install. Please install cat and re-run the installation." >&2
-            exit 13
+          IS_WSL_CONTAINER=$(grep -i 'Microsoft' /proc/version | wc -l)
+          if [ $IS_WSL_CONTAINER -gt 0 ] ; then
+            echo "microsoft Windows Subsystem for Linux detected, unsupported" >&2
+            exit 131
           fi
         - |
-          IS_TEE_INSTALLED=$(which tee | wc -l)
-          if [ $IS_TEE_INSTALLED -eq 0 ] ; then
-            echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >&2
-            exit 14
-          fi
-        - |
-          IS_TOUCH_INSTALLED=$(which touch | wc -l)
-          if [ $IS_TOUCH_INSTALLED -eq 0 ] ; then
-            echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >&2
-            exit 15
-          fi
-        # - |
-        #   if [ -n "{{.DEBIAN_CODENAME}}" ]; then
-        #     IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt/dists/{{.DEBIAN_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
-        #     if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-        #       echo "there is no newrelic infrastructure agent available for the distribution with codename '{{.DEBIAN_CODENAME}}'." >&2
-        #       exit 131
-        #     fi
-        #   else
-        #     if [ -n "{{.DEBIAN_VERSION_CODENAME}}" ]; then
-        #       IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt/dists/{{.DEBIAN_VERSION_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
-        #       if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-        #         echo "there is no newrelic infrastructure agent available for the distribution with version codename '{{.DEBIAN_VERSION_CODENAME}}'." >&2
-        #         exit 131
-        #       fi
-        #     else
-        #       echo "there is no newrelic infrastructure agent available for the distribution, no version codename was found." >&2
-        #       exit 131
-        #     fi
-        #   fi
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:10 sed:11 awk:12 cat:13 tee:14 touch:15"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo -e "{{.RED}}This installation requires '${tool}' to be installed.{{.NOCOLOR}}" >> /dev/stderr
+              exit ${code}
+            fi
+          done
       vars:
         DEBIAN_CODENAME:
           sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
         DEBIAN_VERSION_CODENAME:
           sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
 
-  # cleanup:
-  #   cmds:
-  #     - |
-  #       rm -rf /var/db/newrelic-infra/data
+    input_assert:
+      cmds:
+        - |
+          #  # Check Env Vars
+          # NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          # NR_CLI_DB_PORT="{{.NR_CLI_DB_PORT}}"
+          # NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
+          # NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
+          # NR_CLI_DB_ROOT_PASSWORD="{{.NR_CLI_DB_ROOT_PASSWORD}}"
+
+          # # Set Defaults
+          # # only localhost is supported
+          # NR_CLI_DB_HOSTNAME="localhost"
+          # NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-3306}
+          # NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-newrelic}
+          # if [[ "$NR_CLI_DB_PASSWORD" == "" ]]; then
+          #   NR_CLI_DB_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
+          # fi
+          # NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+
+          # Check Env Vars
+          CIDRS="{{.CIDRS}}"
+          POLL_TIME_SEC="{{.POLL_TIME_SEC}}"
+          SNMP_DISCOVERY_MIN="{{.SNMP_DISCOVERY_MIN}}"
+          DEFAULT_COMMUNITIES="{{.DEFAULT_COMMUNITIES}}"
+          USER_NAME="{{.USER_NAME}}"
+          AUTHENTICATION_PROTOCOL="{{.AUTHENTICATION_PROTOCOL}}"
+          PRIVACY_PROTOCOL="{{.PRIVACY_PROTOCOL}}"
+          # AUTHENTICATION_PASSPHRASE="{{.AUTHENTICATION_PASSPHRASE}}"
+          # PRIVACY_PASSPHRASE="{{.PRIVACY_PASSPHRASE}}"
+          # CONTEXT_ENGINE_ID="{{.CONTEXT_ENGINE_ID}}"
+          # CONTEXT_NAME="{{.CONTEXT_NAME}}"
+
+          # set defaults?
+
+          # Check required input variables
+          if [[ -z "${CIDRS}" ]]; then
+            echo "CIDRS env var must be set" >&2
+            exit 47
+          fi
+
+          if [[ -z "${POLL_TIME_SEC}" ]]; then
+            echo "POLL_TIME_SEC env var must be set" >&2
+            exit 47
+          fi
+          if [[ -z "${SNMP_DISCOVERY_MIN}" ]]; then
+            echo "SNMP_DISCOVERY_MIN env var must be set" >&2
+            exit 47
+          fi
+
+          # SNMP version differences
+          if [[ -z "${DEFAULT_COMMUNITIES}" ]]; then
+            # Check for v1 / v2c - if default_communities is empty and all v3 options are empty,
+            # assume this was SNMP v1/v2c
+            if [[ -z "${USER_NAME}" ]] && [[ -z "${AUTHENTICATION_PROTOCOL}" ]] && [[ -z "${PRIVACY_PROTOCOL}" ]]; then
+              echo "DEFAULT_COMMUNITIES env var must be set for SNMP v1/v2c" >&2
+              exit 47
+            fi
+
+            # At this point, assume SNMP v3 and check required fields
+            if [[ -z "${USER_NAME}" ]]; then
+              echo "USER_NAME env var must be set for SNMP v3" >&2
+              exit 47
+            fi
+            if [[ -z "${AUTHENTICATION_PROTOCOL}" ]]; then
+              echo "AUTHENTICATION_PROTOCOL env var must be set for SNMP v3" >&2
+              exit 47
+            fi
+            if [[ -z "${PRIVACY_PROTOCOL}" ]]; then
+              echo "PRIVACY_PROTOCOL env var must be set for SNMP v3" >&2
+              exit 47
+            fi
+          fi
+
+          # TODO: attempt snmpwalk against cidr input to ensure connectivity
 
     setup_packagecloud_repository:
       cmds:
@@ -163,112 +229,101 @@ install:
     setup_env:
       cmds:
         - |
+          # Remove existing environment config
           if [ -f /etc/default/ktranslate.env ]; then
             sed -i "/^NR_ACCOUNT_ID/d" /etc/default/ktranslate.env
             sed -i "/^NEW_RELIC_API_KEY/d" /etc/default/ktranslate.env
             sed -i "/^NR_REGION/d" /etc/default/ktranslate.env
             sed -i "/^KT_FLAGS/d" /etc/default/ktranslate.env
-
           else
             touch /etc/default/ktranslate.env
           fi
         - |
+          # Add our default config with populated variables
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             echo 'NR_REGION="us_stage"' >> /etc/default/ktranslate.env
-
+          # todo: check for EU/GOV regions
           else
             echo 'NR_REGION="us"' >> /etc/default/ktranslate.env
           fi
 
           echo 'NR_ACCOUNT_ID="{{.NEW_RELIC_ACCOUNT_ID}}"' >> /etc/default/ktranslate.env
           echo 'NEW_RELIC_API_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/default/ktranslate.env
-          # echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -metalisten=127.0.0.1:8089 -metrics=jchf -tee_logs=true -service_name=snmp nr1.snmp"' >> /etc/default/ktranslate.env
-          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yml -metalisten=127.0.0.1:8089 -metrics=jchf -tee_logs=true -service_name=snmp -snmp_discovery_on_start=true -snmp_discovery_min=60 nr1.snmp"' >> /etc/default/ktranslate.env
+          # echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen -metrics=jchf -tee_logs=true -service_name=snmp nr1.snmp"' >> /etc/default/ktranslate.env
+          # TODO: remove metalisten once ktranslate has healthcheck endpoint
+          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen -metrics=jchf -tee_logs=true -service_name=snmp -snmp_discovery_on_start=true -snmp_discovery_min={{.SNMP_DISCOVERY_MIN}} nr1.snmp"' >> /etc/default/ktranslate.env
 
           chown ktranslate:ktranslate /etc/default/ktranslate.env
     configure_snmp_base:
       cmds:
         - |
-          if [ -f /etc/ktranslate/snmp-base.yml ]; then
-            sudo rm /etc/ktranslate/snmp-base.yml;
-          fi
-
           # save current IFS for later
           OLD_IFS=$IFS
           IFS=","
 
-          echo "devices:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "trap:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  listen: 127.0.0.1:1620" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "discovery:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  cidrs:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-
-          # Cidrs from input
-          read -r CIDRS <<< $CIDRS
+          # CIDRS
+          # https://askubuntu.com/a/752451
+          # Use a here string and a command substitution to read the file before any command is run
+          sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.discovery.cidrs)' > /etc/ktranslate/snmp-base.yaml
+          read -ra CIDRS <<< $CIDRS
           for i in "${CIDRS[@]}"; do
-            echo "  - $i" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.cidrs += ["'$i'"]' > /etc/ktranslate/snmp-base.yaml
           done
 
-          echo "  ignore_list: []" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  debug: false" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  ports:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  - 161" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  default_communities:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-
-          # Communities from input
-          read -r DEFAULT_COMMUNITIES <<< $DEFAULT_COMMUNITIES
-          for i in "${DEFAULT_COMMUNITIES[@]}"; do
-            echo "  - $i" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          # POLL_TIME_SEC
+          sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.global.poll_time_sec)' > /etc/ktranslate/snmp-base.yaml
+          read -ra POLL_TIME_SEC <<< $POLL_TIME_SEC
+          for i in "${POLL_TIME_SEC[@]}"; do
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.global.poll_time_sec += "'$i'"' > /etc/ktranslate/snmp-base.yaml
           done
 
-          echo "  default_v3: null" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  add_devices: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  add_mibs: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  threads: 4" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  replace_devices: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  check_all_ips: true" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "global:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  poll_time_sec: 300" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  mib_profile_dir: /etc/ktranslate/profiles" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  mibs_enabled:" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  - IF-MIB" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  timeout_ms: 3000" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
-          echo "  retries: 0" | tee -a /etc/ktranslate/snmp-base.yml > /dev/null
+          # SNMP v1 / v2c
+          if [[ -z "${DEFAULT_COMMUNITIES}" ]]; then
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.discovery.default_communities)' > /etc/ktranslate/snmp-base.yaml
+            read -ra DEFAULT_COMMUNITIES <<< $DEFAULT_COMMUNITIES
+            for i in "${DEFAULT_COMMUNITIES[@]}"; do
+              sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_communities += ["'$i'"]' > /etc/ktranslate/snmp-base.yaml
+            done
+          else
+            # SNMP v3
+            # SNMP_DISCOVERY_MIN="{{.SNMP_DISCOVERY_MIN}}"
+            # USER_NAME="{{.USER_NAME}}"
+            # AUTHENTICATION_PROTOCOL="{{.AUTHENTICATION_PROTOCOL}}"
+            # PRIVACY_PROTOCOL="{{.PRIVACY_PROTOCOL}}"
+            # AUTHENTICATION_PASSPHRASE="{{.AUTHENTICATION_PASSPHRASE}}"
+            # PRIVACY_PASSPHRASE="{{.PRIVACY_PASSPHRASE}}"
+            # CONTEXT_ENGINE_ID="{{.CONTEXT_ENGINE_ID}}"
+            # CONTEXT_NAME="{{.CONTEXT_NAME}}"
+
+            # delete all default_v3 values
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.discovery.default_v3)' > /etc/ktranslate/snmp-base.yaml
+
+            # write all required fields
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.snmp_discovery_min += "'$SNMP_DISCOVERY_MIN'"' > /etc/ktranslate/snmp-base.yaml
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.user_name += "'$USER_NAME'"' > /etc/ktranslate/snmp-base.yaml
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.authentication_protocol += "'$AUTHENTICATION_PROTOCOL'"' > /etc/ktranslate/snmp-base.yaml
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.privacy_protocol += "'$PRIVACY_PROTOCOL'"' > /etc/ktranslate/snmp-base.yaml
+
+            # OPTIONAL FIELDS
+            if [[ -z "${AUTHENTICATION_PASSPHRASE}" ]]; then
+              sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.authentication_passphrase += "'$AUTHENTICATION_PASSPHRASE'"' > /etc/ktranslate/snmp-base.yaml
+            fi
+            if [[ -z "${PRIVACY_PASSPHRASE}" ]]; then
+              sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.privacy_passphrase += "'$PRIVACY_PASSPHRASE'"' > /etc/ktranslate/snmp-base.yaml
+            fi
+            if [[ -z "${CONTEXT_ENGINE_ID}" ]]; then
+              sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.context_engine_id += "'$CONTEXT_ENGINE_ID'"' > /etc/ktranslate/snmp-base.yaml
+            fi
+            if [[ -z "${CONTEXT_NAME}" ]]; then
+              sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.context_name += "'$CONTEXT_NAME'"' > /etc/ktranslate/snmp-base.yaml
+            fi
+          fi
 
           # reset IFS
           IFS=$OLD_IFS
 
           # ktranslate must be owner so the ktranslate service can write new configs
-          chown ktranslate:ktranslate /etc/ktranslate/snmp-base.yml
-
-          # sudo tee /etc/newrelic-infra/integrations.d/redis-config.yml > /dev/null <<EOT
-          # devices:
-          # trap:
-          #   listen: 127.0.0.1:1620
-          # discovery:
-          #   cidrs:
-          #   - 10.10.0.0/24
-          #   ignore_list: []
-          #   debug: false
-          #   ports:
-          #   - 161
-          #   default_communities:
-          #   - public
-          #   default_v3: null
-          #   add_devices: true
-          #   add_mibs: true
-          #   threads: 4
-          #   replace_devices: true
-          #   check_all_ips: true
-          # global:
-          #   poll_time_sec: 300
-          #   mib_profile_dir: /etc/ktranslate/profiles
-          #   mibs_enabled:
-          #   - IF-MIB
-          #   timeout_ms: 3000
-          #   retries: 0
-          # EOT
-
+          chown ktranslate:ktranslate /etc/ktranslate/snmp-base.yaml
 
     restart:
       cmds:
@@ -343,7 +398,7 @@ install:
           echo "  ------------------------"
           echo ""
 
-          printf "  ** The ktranslate configuration file can be found in ${green}/etc/ktranslate/snmp-base.yml${clear}. We recommend backing this file up periodically. **\n"
+          printf "  ** The ktranslate configuration file can be found in ${green}/etc/ktranslate/snmp-base.yaml${clear}. We recommend backing this file up periodically. **\n"
 
           echo ""
           echo "  Edit this file to make changes or configure advanced features for the agent. See the docs for options:"
@@ -354,6 +409,6 @@ install:
 
 postInstall:
   info: |2
-      ⚙️  The ktranslate configuration file can be found in /etc/ktranslate/snmp-base.yml
+      ⚙️  The ktranslate configuration file can be found in /etc/ktranslate/snmp-base.yaml
       Edit this file to make changes or configure advanced features for the agent. See the docs for options:
       https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
