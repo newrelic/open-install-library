@@ -249,43 +249,35 @@ install:
 
           echo 'NR_ACCOUNT_ID="{{.NEW_RELIC_ACCOUNT_ID}}"' >> /etc/default/ktranslate.env
           echo 'NEW_RELIC_API_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/default/ktranslate.env
-          # echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen -metrics=jchf -tee_logs=true -service_name=snmp nr1.snmp"' >> /etc/default/ktranslate.env
+          # echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen=127.0.0.1:8081 -metrics=jchf -tee_logs=true -service_name=snmp nr1.snmp"' >> /etc/default/ktranslate.env
           # TODO: remove metalisten once ktranslate has healthcheck endpoint
-          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen -metrics=jchf -tee_logs=true -service_name=snmp -snmp_discovery_on_start=true -snmp_discovery_min={{.SNMP_DISCOVERY_MIN}} nr1.snmp"' >> /etc/default/ktranslate.env
+          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen=127.0.0.1:8081 -metrics=jchf -tee_logs=true -service_name=snmp -snmp_discovery_on_start=true -snmp_discovery_min={{.SNMP_DISCOVERY_MIN}} nr1.snmp"' >> /etc/default/ktranslate.env
 
           chown ktranslate:ktranslate /etc/default/ktranslate.env
     configure_snmp_base:
       cmds:
         - |
           # save current IFS for later
-          OLD_IFS=$IFS
-          IFS=","
+          # OLD_IFS=$IFS
+          # IFS=","
 
           # CIDRS
           # https://askubuntu.com/a/752451
           # Use a here string and a command substitution to read the file before any command is run
           sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.discovery.cidrs)' > /etc/ktranslate/snmp-base.yaml
-          read -ra CIDRS <<< $CIDRS
-          for i in "${CIDRS[@]}"; do
+          CIDRS_ARR=($(echo $CIDRS | tr ',' "\n"))
+          # read CIDRS_ARR <<< $CIDRS
+          # declare -p CIDRS_ARR
+          for i in "${CIDRS_ARR[@]}"; do
             sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.cidrs += ["'$i'"]' > /etc/ktranslate/snmp-base.yaml
           done
 
           # POLL_TIME_SEC
           sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.global.poll_time_sec)' > /etc/ktranslate/snmp-base.yaml
-          read -ra POLL_TIME_SEC <<< $POLL_TIME_SEC
-          for i in "${POLL_TIME_SEC[@]}"; do
-            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.global.poll_time_sec += "'$i'"' > /etc/ktranslate/snmp-base.yaml
-          done
+          sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.global.poll_time_sec += '$POLL_TIME_SEC'' > /etc/ktranslate/snmp-base.yaml
 
-          # SNMP v1 / v2c
+          # SNMP v3
           if [[ -z "${DEFAULT_COMMUNITIES}" ]]; then
-            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.discovery.default_communities)' > /etc/ktranslate/snmp-base.yaml
-            read -ra DEFAULT_COMMUNITIES <<< $DEFAULT_COMMUNITIES
-            for i in "${DEFAULT_COMMUNITIES[@]}"; do
-              sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_communities += ["'$i'"]' > /etc/ktranslate/snmp-base.yaml
-            done
-          else
-            # SNMP v3
             # SNMP_DISCOVERY_MIN="{{.SNMP_DISCOVERY_MIN}}"
             # USER_NAME="{{.USER_NAME}}"
             # AUTHENTICATION_PROTOCOL="{{.AUTHENTICATION_PROTOCOL}}"
@@ -317,6 +309,15 @@ install:
             if [[ -z "${CONTEXT_NAME}" ]]; then
               sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_v3.context_name += "'$CONTEXT_NAME'"' > /etc/ktranslate/snmp-base.yaml
             fi
+          else
+            # SNMP v1 / v2c
+            sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq 'del(.discovery.default_communities)' > /etc/ktranslate/snmp-base.yaml
+            DEFAULT_COMMUNITIES_ARR=($(echo $DEFAULT_COMMUNITIES | tr ',' "\n"))
+            # read DEFAULT_COMMUNITIES_ARR <<< $DEFAULT_COMMUNITIES
+            # declare -p DEFAULT_COMMUNITIES_ARR
+            for i in "${DEFAULT_COMMUNITIES_ARR[@]}"; do
+              sudo <<<"$(</etc/ktranslate/snmp-base.yaml)" /usr/local/bin/newrelic utils yq '.discovery.default_communities += ["'$i'"]' > /etc/ktranslate/snmp-base.yaml
+            done
           fi
 
           # reset IFS
@@ -365,7 +366,7 @@ install:
           # wait for status endpoint to be ready
           while [ $TRIES -lt $MAX_RETRIES ]; do
             ((TRIES++))
-            statusCheckOutput=$(curl 127.0.0.1:8089/healthcheck -s | /home/ubuntu/newrelic utils jq '.success')
+            statusCheckOutput=$(curl 127.0.0.1:8081/service_info -s | /home/ubuntu/newrelic utils jq '.Sinks | has("new_relic")')
             if [ "$statusCheckOutput" == "true" ]; then
               echo "  Agent status check ok."
               break
