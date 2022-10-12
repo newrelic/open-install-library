@@ -133,11 +133,6 @@ install:
               exit ${code}
             fi
           done
-      vars:
-        DEBIAN_CODENAME:
-          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
-        DEBIAN_VERSION_CODENAME:
-          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
 
     input_assert:
       cmds:
@@ -195,13 +190,21 @@ install:
     setup_packagecloud_repository:
       cmds:
         - |
-          curl -s https://packagecloud.io/install/repositories/kentik/ktranslate/script.deb.sh | sudo bash > /dev/null
+          if [ "{{.PLATFORM_FAMILY" == "debian" ]; then
+            curl -s https://packagecloud.io/install/repositories/kentik/ktranslate/script.deb.sh | sudo bash > /dev/null
+          else
+            curl -s https://packagecloud.io/install/repositories/kentik/ktranslate/script.rpm.sh | sudo bash
+          fi
       silent: true
 
     install_ktranslate:
       cmds:
         - |
-          sudo apt-get install ktranslate -y > /dev/null
+          if [ "{{.PLATFORM_FAMILY" == "debian" ]; then
+            sudo apt-get install ktranslate -y > /dev/null
+          else
+            sudo yum install ktranslate -q -y > /dev/null
+          fi
       slient: true
 
     setup_env:
