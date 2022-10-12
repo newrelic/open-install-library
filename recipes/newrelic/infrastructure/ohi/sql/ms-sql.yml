@@ -133,6 +133,8 @@ install:
             Add-Type -AssemblyName System.Web;
             $NR_CLI_DB_PASSWORD = [System.Web.Security.Membership]::GeneratePassword(20,2).replace("-","");
           }
+          $NR_SQL_USERNAME="$env:NR_CLI_SQL_USERNAME"
+          $NR_SQL_PASSWORD="$env:NR_CLI_SQL_PASSWORD"
 
           $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml";
           # Remove any previous config
@@ -239,7 +241,17 @@ install:
             # Then create new login and user
             if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
             Add-Content -Path $NriSqlFile -Value $SQL -Force 2>&1
-            $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
+             # Try with env if passed in
+            if ($NR_SQL_USERNAME -and $NR_SQL_PASSWORD) {
+               Write-Host "sqlcmd with credentials"
+               $SqlOutput=(sqlcmd -U $NR_SQL_USERNAME -P $NR_SQL_PASSWORD -S $connection -i $NriSqlFile 2>&1)
+            }
+            # Env failed or blank, try with default
+            if ([string]::IsNullOrWhiteSpace($NR_SQL_USERNAME) -or ($SqlOutput.Length -lt 3)){
+               Write-Host "sqlcmd with no credentials"
+               $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
+            }
+
             if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
             try {
               $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
@@ -302,7 +314,7 @@ install:
           }
 
           if ($setupCount -eq 0) {
-            Write-Host "No SQL Server instances were found to instrument"
+            Write-Host "No SQL Server instances instrumented, unable to create the required SQL account, please check your credentials"
             Exit 131
           }
 
