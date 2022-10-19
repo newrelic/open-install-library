@@ -216,6 +216,12 @@ install:
     assert_agent_status_ok:
       cmds:
         - |
+          infra_present(){
+            INFRA_PRESENT=$(ps aux | grep newrelic-infra$ | wc -l)
+            [[ $INFRA_PRESENT -gt 0 ]]
+            return
+          }
+
           MAX_RETRIES=150
           TRIES=0
           echo "Running agent status check attempt..."
@@ -229,11 +235,21 @@ install:
             else
               if [ "$statusCheckOutput" == "" ]; then
                 if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  # Process-based validation attempt
+                  if infra_present; then
+                    echo "detected newrelic-infra process running"
+                    exit 0
+                  fi
                   echo "infra-agent status endpoint not available" >&2
                   exit 32
                 fi
               else
                 if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  # Process-based validation attempt
+                  if infra_present; then
+                    echo "detected newrelic-infra process running"
+                    exit 0
+                  fi
                   echo "infra-agent status check not healthy: $statusCheckOutput" >&2
                   exit 33
                 fi
