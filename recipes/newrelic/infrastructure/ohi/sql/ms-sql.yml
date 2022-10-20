@@ -139,47 +139,6 @@ install:
           $NR_ENABLE_BUFFER_METRICS="$env:NR_CLI_ENABLE_BUFFER_METRICS"
           $NR_ENABLE_DATABASE_RESERVE_METRICS="$env:NR_CLI_ENABLE_RESERVE_METRICS"
 
-          $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml";
-          # Remove any previous config
-          if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
-
-          Add-Content -Path $OhiConfig -Value @"
-          integrations:
-          "@ -Force | Out-Null;
-
-          # Write config function
-          function Write-OhiConfig {
-            param (
-              [Parameter(Mandatory=$true, Position=0)]
-              [string] $InstanceName,
-              [Parameter(Mandatory=$false, Position=1)]
-              [string] $Port
-            )
-
-            Add-Content -Path $OhiConfig -Value "  - name`:` nri-mssql" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "    env`:` " -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      HOSTNAME`:` ${NR_CLI_DB_HOSTNAME}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NR_CLI_DB_USERNAME}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NR_CLI_DB_PASSWORD}`"" -Force | Out-Null;
-
-            if ($NR_ENABLE_BUFFER_METRICS -eq "0") {
-            Add-Content -Path $OhiConfig -Value "      ENABLE_BUFFER_METRICS`:` false" -Force | Out-Null;
-            }
-
-            if ($NR_ENABLE_DATABASE_RESERVE_METRICS -eq "0") {
-            Add-Content -Path $OhiConfig -Value "      ENABLE_DATABASE_RESERVE_METRICS`:` false" -Force | Out-Null;
-            }
-
-            if ([string]::IsNullOrWhiteSpace($Port)) {
-              Add-Content -Path $OhiConfig -Value "      INSTANCE`:` ${InstanceName}" -Force | Out-Null;
-            } else {
-              Add-Content -Path $OhiConfig -Value "      PORT`:` ${Port}" -Force | Out-Null;
-            }
-
-            Add-Content -Path $OhiConfig -Value "    inventory_source`:` config/mssql" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "    interval`:` 15" -Force | Out-Null;
-          }
-
           # Create SQL user function
           function Create-SqlUser {
             param (
@@ -335,6 +294,47 @@ install:
           if ($setupCount -eq 0) {
             Write-Host "No SQL Server instances instrumented, unable to create the required SQL account, please check your credentials"
             Exit 131
+          }
+
+          $OhiConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\integrations.d\\mssql-config.yml";
+          # Remove any previous config
+          if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
+
+          Add-Content -Path $OhiConfig -Value @"
+          integrations:
+          "@ -Force | Out-Null;
+
+          # Write config function
+          function Write-OhiConfig {
+            param (
+              [Parameter(Mandatory=$true, Position=0)]
+              [string] $InstanceName,
+              [Parameter(Mandatory=$false, Position=1)]
+              [string] $Port
+            )
+
+            Add-Content -Path $OhiConfig -Value "  - name`:` nri-mssql" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "    env`:` " -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      HOSTNAME`:` ${NR_CLI_DB_HOSTNAME}" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NR_CLI_DB_USERNAME}" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NR_CLI_DB_PASSWORD}`"" -Force | Out-Null;
+
+            if ($NR_ENABLE_BUFFER_METRICS -eq "0") {
+            Add-Content -Path $OhiConfig -Value "      ENABLE_BUFFER_METRICS`:` false" -Force | Out-Null;
+            }
+
+            if ($NR_ENABLE_DATABASE_RESERVE_METRICS -eq "0") {
+            Add-Content -Path $OhiConfig -Value "      ENABLE_DATABASE_RESERVE_METRICS`:` false" -Force | Out-Null;
+            }
+
+            if ([string]::IsNullOrWhiteSpace($Port)) {
+              Add-Content -Path $OhiConfig -Value "      INSTANCE`:` ${InstanceName}" -Force | Out-Null;
+            } else {
+              Add-Content -Path $OhiConfig -Value "      PORT`:` ${Port}" -Force | Out-Null;
+            }
+
+            Add-Content -Path $OhiConfig -Value "    inventory_source`:` config/mssql" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "    interval`:` 15" -Force | Out-Null;
           }
 
           #Remove previous versions
