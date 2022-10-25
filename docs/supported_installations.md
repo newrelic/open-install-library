@@ -7,7 +7,7 @@ Currently, the following languages are supported by Guided Install:
 * PHP Linux
 * .NET Windows and Linux
 * NodeJS Linux hosted with PM2 only
-* Java Linux, using dynamic attach. Supports docker.
+* Java Linux for Tomcat, JBoss or Jetty. It uses dynamic attach. Supports docker.
 
 The following languages are detected, and not installed at this time:
 
