@@ -4,13 +4,17 @@ A collection of recipes designed to support the automated installation and setup
 
 ## Getting Started
 
-* [Supported Installations](.supported_installations.md)
+* [Supported Installations](./supported_installations.md)
 * [Recipe Spec](./recipe-spec/recipe-spec.md)
 * [Testing Framework](./test-framework/README.md)
 * [Kubernetes Testing](./kubernetes.md)
 * [Manual Testing](../test/manual/readme.MD)
 * [Install Error Codes](./error-codes.md)
 * [Uninstalling Recipes](./uninstall/)
+
+## Supported Installations
+
+To see the details of what Guided Installation supports see the [Supported Installations](./supported_installations.md) documentation.
 
 ## Contributing Recipes
 
