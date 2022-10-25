@@ -4,6 +4,7 @@ A collection of recipes designed to support the automated installation and setup
 
 ## Getting Started
 
+* [Supported Installations](.supported_installations.md)
 * [Recipe Spec](./recipe-spec/recipe-spec.md)
 * [Testing Framework](./test-framework/README.md)
 * [Kubernetes Testing](./kubernetes.md)
@@ -15,51 +16,11 @@ A collection of recipes designed to support the automated installation and setup
 
 Recipes are written in YAML and must adhere to our [recipe spec](./recipe-spec/recipe-spec.md). The basic development workflow is:
 
-* Create the recipe under `recipes/org/<on_host_integration_name>/<installTargetOS>.yml`
-* Create a corresponding [test definition file](https://github.com/newrelic/demo-deployer/tree/main/documentation/deploy_config) under `test/definitions/ohi/linux/<installTargetOS>.yml`, as well as any needed ansible plays under `test/deploy`.
+* Create a branch on this repo (not a clone) so that the E2E tests can run with the PR.
+* Create the recipe under `recipes/org/<domain_name>/<installTargetOS>.yml`
+* Create a corresponding [test definition file](https://github.com/newrelic/demo-deployer/tree/main/documentation/deploy_config) under `test/definitions/<domain_name>/<installTargetOS>.yml`, as well as any needed ansible plays under `test/deploy`.
 * Run the [Deployer locally](test-framework/deployer.md).
 * Open a Pull Request with the new recipe and corresponding test definition files
-
-### Consistency
-
-* MUST include a `default` task for the newrelic-cli to use as an entry point
-* Use `silent: true` to omit output at the taskfile level
-
-  ```bash
-  install:
-    version: "3"
-
-    # Silent mode disables echoing of commands before Task runs it.
-    # https://taskfile.dev/#/usage?id=silent-mode
-    silent: true
-
-    tasks:
-      default:
-      ...
-  ```
-
-* Use `label` to give feedback that the CLI will output
-  ```bash
-  install:
-  version: "3"
-
-  silent: true
-
-  tasks:
-    default:
-      cmds:
-        - task: setup
-
-    setup:
-      label: "Installing nginx integration..."
-  ```
-
-* Accept variables using `inputVars` (see [Common Variables](#configuration-variables))
-* Idempotence (see [Idempotence](#idempotence))
-
-### Linux Recipe Package Support
-
-All OHI Linux recipes must support APT (Debian and Ubuntu), Yum (Amazon Linux, CentOS, RHEL), Zypper ( SLES). For testing, at a minimum include tests for these three package managers for Linux recipes.
 
 
 ### Metadata
@@ -86,13 +47,6 @@ For example, here is a linux bash snippet to write 2 key/value pairs:
 The data will be written in the `VirtuosoInstallRecipe` with `metadata_key1` and a value of `abc123` and `metadata_key2` with a value of `def456`
 
 
-#### keywords
-
-This is a collection of string that can be anything that relates to what the recipe is about.
-Reserved values:
-* `Apm` specifies that this recipe is an Application Performance Monitoring recipe, and should be included in the guided install
-
-
 ### Validation Nrql
 
 The [recipe-spec](./recipe-spec/recipe-spec.md) contains `validationNrql` - this can be used to specify NRQL the CLI and test framework will execute to validate the recipe is successfully sending data to New Relic.
@@ -114,19 +68,9 @@ All recipes can either run in interactive mode where users are prompted for conf
 The `newrelic-cli` injects at runtime of a go-task the following variables:
 
 * `{{.NEW_RELIC_LICENSE_KEY}}` populated by the key associated with the profile run with the CLI
-* Input Variables - recipes can use `inputVars` to prompt the user to enter variables needed in the recipe.
-
-  ```bash
-  # Prompts for input from the user. These variables then become
-  # available to go-task in the form of {{.VAR_NAME}}
-  inputVars:
-    - name: "LOG_FILES"
-      prompt: "Which log files would you like to tail?"
-      default: "/var/log/messages,/var/log/cloud-init.log,/var/log/secure"
-  ```
-
-  More info can be found in the [recipe-spec](./recipe-spec/recipe-spec.md).
 * `{{.HOSTNAME}}` - the hostname of the instance the newrelic-cli is run on. This is the same effective output as running the `hostname` command.
+
+More info can be found in the [recipe-spec](./recipe-spec/recipe-spec.md).
 
 ### Idempotence
 

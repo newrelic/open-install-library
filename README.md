@@ -23,7 +23,12 @@ in 5 minutes or less.
 ```bash
 # Installs the newrelic-cli and invokes the install command
 # Replace <API_KEY> AND <ACCOUNT_ID> with your own
-curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | bash && sudo NEW_RELIC_API_KEY=<API_KEY> NEW_RELIC_ACCOUNT_ID=<ACCOUNT_ID> /usr/local/bin/newrelic install
+curl -Ls https://https://download.newrelic.com/install/newrelic-cli/scripts/install.sh | bash && sudo NEW_RELIC_API_KEY=<API_KEY> NEW_RELIC_ACCOUNT_ID=<ACCOUNT_ID> /usr/local/bin/newrelic install
+```
+
+```PowerShell
+[Net.ServicePointManager]::SecurityProtocol = 'tls12, tls'; 
+(New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/install/newrelic-cli/scripts/install.ps1", "$env:TEMP\install.ps1"); & $env:TEMP\install.ps1; $env:NEW_RELIC_API_KEY='<API_KEY>'; $env:NEW_RELIC_ACCOUNT_ID='<ACCOUNT_ID>'; & 'C:\Program Files\New Relic\New Relic CLI\newrelic.exe' install
 ```
 
 ## Docs
