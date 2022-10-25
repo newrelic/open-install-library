@@ -23,7 +23,10 @@ The following languares are not supported and not detected by Guided Install:
 ## Infrastructure
 
 The installation of the infrastructure agent with Guided Install is supported for Linux, Windows and MacOS.
-In addition, the Logging functionality is also supported and installed with the infrastructure agent installation when installing with Guided Install. However, the Logging capability through the infrastructure agent is supported on a subset of platform and OS, see the supported documentation at https://docs.newrelic.com/docs/logs/forward-logs/forward-your-logs-using-infrastructure-agent/#requirements
+
+
+In addition, the Logging functionality is also supported and installed with the infrastructure agent installation when installing with Guided Install. 
+However, the Logging capability through the infrastructure agent is supported on a subset of platform and OS, see the supported documentation at https://docs.newrelic.com/docs/logs/forward-logs/forward-your-logs-using-infrastructure-agent/#requirements
 
 ### Docker
 
