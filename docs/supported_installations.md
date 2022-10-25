@@ -16,7 +16,7 @@ The following languages are detected, and not installed at this time:
 * NodeJS beside Linux/PM2
 * Java Windows
 
-The following languares are not supported and not detected by Guided Install:
+The following languages are not supported and not detected by Guided Install:
 * Golang
 * C SDK
 
