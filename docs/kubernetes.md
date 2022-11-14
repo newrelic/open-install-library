@@ -33,14 +33,12 @@ kubectl get pods --all-namespaces
 
 ## Deploying SockShop
 
-If desired, you can install a demo application on the cluster using SockShop.
+If desired, you can install a demo application on the cluster using [SockShop](https://github.com/microservices-demo/microservices-demo/tree/master/deploy/kubernetes)
 Note, no traffic is generated with this deployment.
 
 ```
 git clone https://github.com/microservices-demo/microservices-demo.git
-cd microservices-demo/deploy/kubernetes
-kubectl create namespace sock-shop
-kubectl convert -f . | kubectl create -f -
+kubectl create -f microservices-demo/deploy/kubernetes/complete-demo.yaml 
 ```
 
 ## Un-install newrelic instrumentation
@@ -48,3 +46,12 @@ kubectl convert -f . | kubectl create -f -
 Assuming you've deployed newrelic instrumentation using the manifest file, you can un-install the newrelic instrumentation by running the command below (assuming you SSH into the bastion host).
 
 `kubectl delete -f <manifest.yaml>`
+
+## Reset minikube
+
+If you'd like to restart with a fresh new K8s/minikube, you can simply run the delete and start commands below
+
+`minikube delete`
+`minikube start --memory 8192 --cpus 4`
+
+You can then re-create SockShop and install NewRelic on a freshly created cluster.
