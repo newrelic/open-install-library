@@ -39,18 +39,21 @@ preInstall:
 
     if [[ ! -x $KUBECTL ]]; then
       # Not a host that can manage kubernetes
+      echo "{\"Metadata\":{\"InstallationError\":\"Not a host that can manage kubernetes\"}}" | tee -a {{.NR_CLI_OUTPUT}}
       exit 10
     fi
 
     K8S_CONFIG_CONTEXTS=$($SUDO $KUBECTL config get-contexts 2>/dev/null | wc -l | xargs)
     if [[ $K8S_CONFIG_CONTEXTS -lt 2 ]]; then
       # No kubectl contexts
+      echo "{\"Metadata\":{\"InstallationError\":\"No kubectl contexts\"}}" | tee -a {{.NR_CLI_OUTPUT}}
       exit 45
     fi
 
     VERIFY_ACTIVE_CLUSTER=$($SUDO $KUBECTL cluster-info 2>/dev/null | grep 'is running' | wc -l | xargs)
     if [[ $VERIFY_ACTIVE_CLUSTER -eq 0 ]]; then
       # No running clusters detected on host
+      echo "{\"Metadata\":{\"InstallationError\":\"No running clusters detected on host\"}}" | tee -a {{.NR_CLI_OUTPUT}}
       exit 45
     fi
 
@@ -150,7 +153,7 @@ install:
             exit 131
           fi
 
-          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -eq 25 ]]; then
+          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -gt 24 ]]; then
             echo "Installation failed. Kubernetes v1.16 to v1.24 is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
             echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsupported k8s version - found $SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 131
@@ -170,6 +173,7 @@ install:
               fi
               if [[ "$NEW_RELIC_CONTINUE" == "N" ]]; then
                 echo "Exiting the installation"
+                echo "{\"Metadata\":{\"InstallationError\":\"Installation cancelled by user\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
                 exit 130
               fi
               if [[ "$NEW_RELIC_CONTINUE" == "Y" ]]; then
@@ -239,6 +243,7 @@ install:
           if [[ "$NAMESPACE_EXISTS" != "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
             echo "The ${NR_CLI_NAMESPACE} namespace does not exist and you don't have permissions to create a new namespace." >&2
             echo "Use an existing namespace or obtain permissions to create a new namespace." >&2
+            echo "{\"Metadata\":{\"InstallationError\":\"${NR_CLI_NAMESPACE} Namespace does not exist and you don't have permissions to create a new namespace\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 1
           fi
 
@@ -542,6 +547,7 @@ install:
             fi
             if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
               echo "${POD_NAME} pod is not starting" >&2
+              echo "{\"Metadata\":{\"InstallationError\":\"${POD_NAME} pod is not starting\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
               exit 33
             fi
             sleep 2
