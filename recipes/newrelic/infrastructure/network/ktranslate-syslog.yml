@@ -2,7 +2,7 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 # Expected Variables:
-#   SERVICE_NAME - string value indicating syslog install
+#   NR_CLI_SERVICE_NAME - string value indicating syslog install
 
 name: ktranslate-syslog-installer
 displayName: Ktranslate agent integration
@@ -16,6 +16,8 @@ installTargets:
   - type: host
     os: linux
     platformFamily: "rhel"
+
+validationNrql: "SELECT count(*) from Log where instrumentation.name like 'ktranslate-syslog' and message = 'test syslog message via ktranslate' SINCE 5 minutes ago"
 
 keywords:
   - Network
@@ -54,8 +56,8 @@ preInstall:
   requireAtDiscovery: |
     # Check required input variables - this effectively removes the ktranslate install from the
     # default guided install mode where discovery takes place
-    if [[ -z "${SERVICE_NAME}" ]]; then
-      echo "SERVICE_NAME env var must be set" >&2
+    if [[ -z "${NR_CLI_SERVICE_NAME}" ]]; then
+      echo "NR_CLI_SERVICE_NAME env var must be set" >&2
       exit 47
     fi
     exit 0
@@ -74,7 +76,6 @@ install:
         - task: setup_env
         - task: configure_snmp_base
         - task: restart
-        - task: assert_agent_started
         - task: assert_agent_status_ok
         - task: post_install_message
 
@@ -129,11 +130,11 @@ install:
       cmds:
         - |
           # Check Env Vars
-          SERVICE_NAME="{{.SERVICE_NAME}}"
+          NR_CLI_SERVICE_NAME="{{.NR_CLI_SERVICE_NAME}}"
 
           # Check required input variables
-          if [[ -z "${SERVICE_NAME}" ]]; then
-            echo "SERVICE_NAME env var must be set" >&2
+          if [[ -z "${NR_CLI_SERVICE_NAME}" ]]; then
+            echo "NR_CLI_SERVICE_NAME env var must be set" >&2
             exit 47
           fi
 
@@ -180,7 +181,7 @@ install:
 
           echo 'NR_ACCOUNT_ID="{{.NEW_RELIC_ACCOUNT_ID}}"' >> /etc/default/ktranslate.env
           echo 'NEW_RELIC_API_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/default/ktranslate.env
-          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen=127.0.0.1:8081 -metrics=jchf -tee_logs=true -dns=local -service_name={{.SERVICE_NAME}} nr1.syslog"' >> /etc/default/ktranslate.env
+          echo 'KT_FLAGS="-snmp /etc/ktranslate/snmp-base.yaml -listen=127.0.0.1:8081 -metrics=jchf -tee_logs=true -dns=local -service_name={{.NR_CLI_SERVICE_NAME}} -syslog.source=0.0.0.0:514 nr1.syslog"' >> /etc/default/ktranslate.env
 
           # ensure /etc/default/ktranslate.env is owned by ktranslate user
           chown ktranslate:ktranslate /etc/default/ktranslate.env
@@ -191,8 +192,6 @@ install:
     configure_snmp_base:
       cmds:
         - |
-          # TODO: determine if we need to take a CLI arg and move snmp-base from a tmp file to /etc/ktranslate/snmp-base.yaml
-
           # ktranslate must be owner so the ktranslate service can write new configs
           chown ktranslate:ktranslate /etc/ktranslate/snmp-base.yaml
 
@@ -213,17 +212,6 @@ install:
           sh: command -v systemctl | wc -l
         IS_INITCTL:
           sh: command -v initctl | wc -l
-
-    assert_agent_started:
-      cmds:
-        - |
-          # Ensure agent has enough time to start
-          sleep 10
-          IS_KTRANSLATE_INSTALLED=$(ps aux | grep ktranslate-service | wc -l)
-          if [ $IS_KTRANSLATE_INSTALLED -eq 0 ] ; then
-            echo "The ktranslate agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/network-performance-monitoring/setup-performance-monitoring/snmp-performance-monitoring" >&2
-            exit 31
-          fi
 
     assert_agent_status_ok:
       cmds:
