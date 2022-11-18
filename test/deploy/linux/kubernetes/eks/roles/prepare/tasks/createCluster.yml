@@ -1,0 +1,56 @@
+---
+- debug:
+    msg: Creating cluster
+
+# Kubernetes version
+- name: kubernetes version
+  set_fact:
+    kubernetes_version: "1.22"
+  when: kubernetes_version is not defined
+- name: display kubernetes_version
+  debug:
+    msg: "using kubernetes_version {{ kubernetes_version }}"
+
+# Region
+- name: aws region
+  set_fact:
+    aws_region: "us-east-1"
+  when: aws_region is not defined
+- name: display aws region
+  debug:
+    msg: "using region {{ aws_region }}"
+
+# cluster_node_vcpus
+- name: aws cluster_node_vcpus
+  set_fact:
+    cluster_node_vcpus: "2"
+  when: cluster_node_vcpus is not defined
+- name: display cluster_node_vcpus
+  debug:
+    msg: "using cluster_node_vcpus {{ cluster_node_vcpus }}"
+
+# cluster_node_memory
+- name: aws cluster_node_memory
+  set_fact:
+    cluster_node_memory: "8"
+  when: cluster_node_memory is not defined
+- name: display cluster_node_memory
+  debug:
+    msg: "using cluster_node_memory {{ cluster_node_memory }}"
+
+# Tags
+- name: Format tags into a CSV string
+  set_fact:
+    tags_string: "{{ tags_string | default('') }},{{item.key}}={{item.value}}"
+  loop: "{{ (tags|default({}))|dict2items }}"
+  when: tags is defined
+- name: trim tags
+  set_fact:
+    tags_string: "{{ tags_string | regex_replace('^,', '') }}"
+  when: tags_string is defined
+- name: display tags
+  debug:
+    msg: "using tags {{ tags_string }}"
+
+- name: Create cluster
+  shell: "eksctl create cluster --version {{ kubernetes_version }} --name {{ deployment_name }} --region {{ aws_region }} --instance-selector-vcpus {{ cluster_node_vcpus }} --instance-selector-memory {{ cluster_node_memory }} --tags {{ tags_string }}"

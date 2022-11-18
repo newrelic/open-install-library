@@ -1,0 +1,33 @@
+---
+- debug:
+    msg: Installing kubectl
+
+- name: kubectl version
+  shell: "curl -L -s https://dl.k8s.io/release/stable.txt"
+  register: kubectl_version_query
+  when: kubectl_version is not defined
+
+- name: set version
+  set_fact:
+    kubectl_version: "{{ kubectl_version_query.stdout }}"
+  when: kubectl_version is not defined
+
+- name: debug kubectl version
+  debug:
+    msg: "will use kubectl version {{ kubectl_version }}"
+
+- name: download kubectl
+  shell: "curl -LO 'https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl'"
+
+- name: install kubectl
+  shell: "sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl"
+  become: yes
+
+- name: kubectl version
+  shell: "kubectl version --short"
+  register: kubectl_version_final
+  ignore_errors: true
+
+- name: display kubectl version
+  debug:
+    msg: "using kubectl version {{ kubectl_version_final.stdout }}"
