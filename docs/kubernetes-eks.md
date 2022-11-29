@@ -10,7 +10,7 @@ You'll need the following:
 
 ## Manual deployment using demo-deployer and kubectl, eksctl
 
-Using the demo-deployer, run a deployment using the following [deploy config file](../test/manual/definitions/kubernetes/eks-empty.json). Adjust any of the parameter as needed.
+Using the demo-deployer, run a deployment using the following [deploy config file](../test/manual/definitions/kubernetes/eks-empty.json). Adjust any of the parameter as needed. You'll want to have the environment variable NEW_RELIC_TEAM_NAME set with your corresponding team name.
 
 Note, re-running the same deployment is idempotent in the way that subsequent execution will skip over any steps that were previously completed. Likewise for teardown, re-running the same deployment in teardown mode will only terminate the cluster the first time.
 
