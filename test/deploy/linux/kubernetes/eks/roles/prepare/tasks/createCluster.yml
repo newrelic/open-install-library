@@ -1,0 +1,71 @@
+---
+- debug:
+    msg: Creating cluster
+
+# Kubernetes version
+- name: kubernetes version
+  set_fact:
+    kubernetes_version: "1.22"
+  when: kubernetes_version is not defined
+- name: display kubernetes_version
+  debug:
+    msg: "using kubernetes_version {{ kubernetes_version }}"
+
+# Region
+- name: aws region
+  set_fact:
+    aws_region: "us-east-1"
+  when: aws_region is not defined
+- name: display aws region
+  debug:
+    msg: "using region {{ aws_region }}"
+
+# cluster_node_vcpus
+- name: aws cluster_node_vcpus
+  set_fact:
+    cluster_node_vcpus: "2"
+  when: cluster_node_vcpus is not defined
+- name: display cluster_node_vcpus
+  debug:
+    msg: "using cluster_node_vcpus {{ cluster_node_vcpus }}"
+
+# cluster_node_memory
+- name: aws cluster_node_memory
+  set_fact:
+    cluster_node_memory: "8"
+  when: cluster_node_memory is not defined
+- name: display cluster_node_memory
+  debug:
+    msg: "using cluster_node_memory {{ cluster_node_memory }}"
+
+- name: ensure tags are provided
+  fail:
+    msg: "tags should be provided when creating AWS resources. Please add global_tags/owning_team to your deploy config and ensure you use the latest version of the deployer."
+  when: tags is not defined
+
+# Tags
+- name: Format tags into a CSV string key1=value1,key2=value2...
+  set_fact:
+    tags_string: "{{ tags_string | default('') }},{{item.key}}={{item.value}}"
+  loop: "{{ (tags|default({}))|dict2items }}"
+- name: trim tags
+  set_fact:
+    tags_string: "{{ tags_string | regex_replace('^,', '') }}"
+- name: display tags
+  debug:
+    msg: "using tags {{ tags_string }}"
+
+- name: Create cluster
+  shell: "eksctl create cluster --version {{ kubernetes_version }} --name {{ deployment_name }} --region {{ aws_region }} --instance-selector-vcpus {{ cluster_node_vcpus }} --instance-selector-memory {{ cluster_node_memory }} --tags {{ tags_string }}"
+  async: 1800
+  poll: 0
+  register: cluster_task
+
+- name: 'check on async task'
+  async_status:
+    jid: "{{ cluster_task.ansible_job_id }}"
+  register: job_result
+  until: job_result.finished
+  retries: 180
+  delay: 10
+  when: cluster_task.ansible_job_id is defined

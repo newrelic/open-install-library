@@ -1,0 +1,27 @@
+---
+- debug:
+    msg: Installing EKS and tool dependencies
+
+- include_tasks: installGit.yml
+
+# kubectl
+- name: Get kubectl exist
+  shell: kubectl version --short | grep Client | wc -l
+  register: kubectl_exist
+  ignore_errors: true
+- include_tasks: installKubectl.yml
+  when: kubectl_exist.stdout|int == 0
+
+# eksctl
+- name: Get eksctl exist
+  shell: which eksctl | grep eksctl | wc -l
+  register: eksctl_exist
+- include_tasks: installEksctl.yml
+  when: eksctl_exist.stdout|int == 0
+
+- name: Get cluster exist
+  shell: kubectl version --short | grep Server | wc -l
+  register: cluster_exist
+  ignore_errors: true
+- include_tasks: createCluster.yml
+  when: cluster_exist.stdout|int == 0

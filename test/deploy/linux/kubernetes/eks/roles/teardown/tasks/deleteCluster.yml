@@ -1,0 +1,28 @@
+---
+- debug:
+    msg: Deleting cluster
+
+# Region
+- name: aws region
+  set_fact:
+    aws_region: "us-east-1"
+  when: aws_region is not defined
+- name: display aws region
+  debug:
+    msg: "using region {{ aws_region }}"
+
+- name: Delete cluster
+  shell: "eksctl delete cluster --name {{ deployment_name }} --region {{ aws_region }}"
+  async: 1800
+  poll: 0
+  register: cluster_task
+
+- name: 'check on async task'
+  async_status:
+    jid: "{{ cluster_task.ansible_job_id }}"
+  register: job_result
+  until: job_result.finished
+  retries: 180
+  delay: 10
+  when: cluster_task.ansible_job_id is defined
+  
