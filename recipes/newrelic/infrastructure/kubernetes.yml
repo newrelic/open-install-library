@@ -39,18 +39,21 @@ preInstall:
 
     if [[ ! -x $KUBECTL ]]; then
       # Not a host that can manage kubernetes
+      echo "Installation Error - not a host that can manage kubernetes"
       exit 10
     fi
 
     K8S_CONFIG_CONTEXTS=$($SUDO $KUBECTL config get-contexts 2>/dev/null | wc -l | xargs)
     if [[ $K8S_CONFIG_CONTEXTS -lt 2 ]]; then
       # No kubectl contexts
+      echo "Installation Error: No kubectl contexts"
       exit 45
     fi
 
     VERIFY_ACTIVE_CLUSTER=$($SUDO $KUBECTL cluster-info 2>/dev/null | grep 'is running' | wc -l | xargs)
     if [[ $VERIFY_ACTIVE_CLUSTER -eq 0 ]]; then
       # No running clusters detected on host
+      echo "Installation Error: No running clusters detected on host"
       exit 45
     fi
 
@@ -239,6 +242,7 @@ install:
           if [[ "$NAMESPACE_EXISTS" != "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
             echo "The ${NR_CLI_NAMESPACE} namespace does not exist and you don't have permissions to create a new namespace." >&2
             echo "Use an existing namespace or obtain permissions to create a new namespace." >&2
+            echo "{\"Metadata\":{\"InstallationError\":\"${NR_CLI_NAMESPACE} Namespace does not exist and you don't have permissions to create a new namespace\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 1
           fi
 
@@ -526,8 +530,6 @@ install:
             HELM_VERSION="$($SUDO helm version -c --short)"
           fi
 
-          echo "{\"Metadata\":{\"helmVersion\":\"$HELM_VERSION\", \"helmCommand\":\"$HELM_COMMAND\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
-
           # Check for 'nrk8s-kubelet-node-scraper' pod presence first, otherwise default to former pod name 'nrk8s-kubelet'
           POD_NAME=$(test $($SUDO $KUBECTL get pods -o wide -n $NR_CLI_NAMESPACE | grep 'nrk8s-kubelet-node-scraper' | wc -l | sed 's/ //g') -gt 0 && echo 'nrk8s-kubelet-node-scraper' || echo 'nrk8s-kubelet')
 
@@ -543,11 +545,13 @@ install:
             fi
             if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
               echo "${POD_NAME} pod is not starting" >&2
+              echo "{\"Metadata\":{\"InstallationError\":\"${POD_NAME} pod is not starting\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
               exit 33
             fi
             sleep 2
           done
 
+          echo "{\"Metadata\":{\"helmVersion\":\"$HELM_VERSION\", \"helmCommand\":\"$HELM_COMMAND\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
 
           # Set the color variables for post install message
           green='\033[0;32m'
