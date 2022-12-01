@@ -1,0 +1,19 @@
+---
+- debug:
+    msg: Creating autoscaler
+
+- name: Get cluster name
+  shell: "kubectl config current-context | awk -F @ '{print $2}' | awk -F . '{print $1}'"
+  register: cluster_name
+
+- name: Clone autoscaler
+  shell: "git clone https://github.com/kubernetes/autoscaler.git"
+
+- name: Update autoscaler config for cluster
+  ansible.builtin.replace:
+    path: ~/autoscaler/cluster-autoscaler/cloudprovider/aws/examples/cluster-autoscaler-autodiscover.yaml
+    regexp: '<YOUR CLUSTER NAME>'
+    replace: "{{ cluster_name.stdout }}"
+
+- name: Deploy autoscaler
+  shell: "kubectl apply -f autoscaler/cluster-autoscaler/cloudprovider/aws/examples/cluster-autoscaler-autodiscover.yaml"
