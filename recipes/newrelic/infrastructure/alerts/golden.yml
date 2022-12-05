@@ -37,13 +37,12 @@ preInstall:
       POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
           -H "Api-Key:$NEW_RELIC_API_KEY" \
           -L -H 'Content-Type: application/json' \
-          -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch {totalCount policies { name id } } } } } }"}'
+          -d '{"query":"{actor {account(id: '$NEW_RELIC_ACCOUNT_ID') {alerts {policiesSearch(searchCriteria: {name: \"Golden Signals\"}) {totalCount} } } } }"}'
       )
 
-      POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq 'first(.data.actor.account.alerts.policiesSearch.policies[] | select(.name=="Golden Signals") | .id)')
-      POLICY_ID=$([[ $POLICY_ID =~ 'null' ]] && echo 0 || echo "${POLICY_ID//\"/""}")
+      totalCount=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.alerts.policiesSearch.totalCount')
 
-      if [[ -n "$POLICY_ID" ]] && [ $POLICY_ID -gt 0 ] ; then
+      if [ $totalCount -gt 0 ] ; then
         echo "Golden Signals already installed on this account, skipped"
         exit 1
       fi
@@ -86,6 +85,14 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @/tmp/policy.json
           )
+
+          # Check if got error while try to create policy
+          POLICY_RESULT_ERR=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.|select(.errors != null)|.errors[0].message ')
+          if [[ ! -z "$POLICY_RESULT_ERR" ]]; then
+            >&2 echo 'Could not create a new alert policy for {{.ALERT_POLICY_NAME}} got the following error:' "$POLICY_RESULT_ERR"
+            exit 11
+          fi
+
           POLICY_ID=$(echo $POLICY_RESULT | /usr/local/bin/newrelic utils jq '.data.alertsPolicyCreate.id')
           POLICY_ID=$([[ $POLICY_ID =~ 'null' ]] && echo 0 || echo "${POLICY_ID//\"/""}")
           if [ -f /tmp/policy.json ]; then
