@@ -51,9 +51,13 @@ install:
     download_infra:
       cmds:
         - |
-          ARCH=$(uname -m)
+          ARCH="amd64"
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+          if [ $IS_ARM -gt 0 ] ; then
+            ARCH="arm64"
+          fi
           V=$(echo "1.27.4")
-          echo "https://download.newrelic.com/infrastructure_agent/binaries/linux/${ARCH}/newrelic-infra_linux_${V}_${ARCH}.tar.gz" | { read url; curl "${url}" -o newrelic-infra_linux.tar.gz; }
+          echo "https://download.newrelic.com/infrastructure_agent/binaries/linux/${ARCH}/newrelic-infra_linux_${V}_${ARCH}.tar.gz" | { read url; curl "${url}" -o /tmp/newrelic-infra_linux.tar.gz; }
 
     setup_config:
       cmds:
@@ -87,8 +91,10 @@ install:
     install_infra:
       cmds:
         - |
-          tar xzvf newrelic-infra_linux.tar.gz
-          sudo ./newrelic-infra/installer.sh
+          tar xzvf /tmp/newrelic-infra_linux.tar.gz
+          sudo /tmp/newrelic-infra/installer.sh
+          sudo rm -f /tmp/newrelic-infra_linux.tar.gz
+          sudo rm -rf /tmp/newrelic-infra
 
     assert_agent_status_ok:
       cmds:
