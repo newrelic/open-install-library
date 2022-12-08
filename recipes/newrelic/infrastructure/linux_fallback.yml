@@ -49,6 +49,26 @@ install:
         - |
           echo '{"Metadata":{"CapturedCliOutput":"true","InfraFallback":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
 
+    stop:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            systemctl stop newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              initctl stop newrelic-infra
+            else
+              /etc/init.d/newrelic-infra stop
+            fi
+          fi
+      silent: true
+      ignore_error: true
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
+
     download_infra:
       cmds:
         - |
@@ -58,15 +78,15 @@ install:
             ARCH="arm64"
           fi
           V=$(echo "1.27.4")
-          echo "https://download.newrelic.com/infrastructure_agent/binaries/linux/${ARCH}/newrelic-infra_linux_${V}_${ARCH}.tar.gz" | { read url; curl "${url}" -o /tmp/newrelic-infra_linux.tar.gz; }
-          tar xzvf /tmp/newrelic-infra_linux.tar.gz
+          echo "https://download.newrelic.com/infrastructure_agent/binaries/linux/${ARCH}/newrelic-infra_linux_${V}_${ARCH}.tar.gz" | { read url; curl "${url}" -o ~/newrelic-infra_linux.tar.gz; }
+          tar xzvf ~/newrelic-infra_linux.tar.gz
 
     start_infra:
       cmds:
         - |
-          sudo NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} /tmp/newrelic-infra/installer.sh
-          sudo rm -f /tmp/newrelic-infra_linux.tar.gz
-          sudo rm -rf /tmp/newrelic-infra
+          NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} ~/newrelic-infra/installer.sh
+          rm -f ~/newrelic-infra_linux.tar.gz
+          rm -rf ~/newrelic-infra
 
     setup_config:
       cmds:
