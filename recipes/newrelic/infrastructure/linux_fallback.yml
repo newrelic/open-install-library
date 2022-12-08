@@ -1,0 +1,145 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: infrastructure-agent-installer-fallback
+displayName: Infrastructure Agent Fallback
+description: New Relic install recipe for the Infrastructure agent
+repository: https://github.com/newrelic/infrastructure-agent
+
+installTargets:
+  - type: host
+    os: linux
+
+keywords:
+  - Infrastructure
+  - Agent
+
+processMatch: []
+
+# DEPRECATED! Use `validationUrl` instead.
+validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 5 minutes ago"
+
+validationUrl: "http://localhost:18003/v1/status/entity"
+
+preInstall:
+  requireAtDiscovery: |
+      statusCheckOutput=$(curl http://localhost:18003/v1/status/errors -s)
+      if [ "$statusCheckOutput" == "{}" ]; then
+        echo "Agent already running, skipping"
+        exit 1
+      fi
+      exit 0
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: download_infra
+        - task: setup_config
+        - task: install_infra
+        - task: assert_agent_status_ok
+
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true","InfraFallback":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    download_infra:
+      cmds:
+        - |
+          ARCH=$(uname -m)
+          V=$(echo "1.27.4")
+          echo "https://download.newrelic.com/infrastructure_agent/binaries/linux/${ARCH}/newrelic-infra_linux_${V}_${ARCH}.tar.gz" | { read url; curl "${url}" -o newrelic-infra_linux.tar.gz; }
+
+    setup_config:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra.yml ]; then
+            sed -i "/^staging/d" /etc/newrelic-infra.yml
+            sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
+            sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
+            sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
+            sed -i "/^license_key/d" /etc/newrelic-infra.yml
+            sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
+            sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
+          else
+            touch /etc/newrelic-infra.yml
+          fi
+        - |
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            echo 'staging: true' >> /etc/newrelic-infra.yml
+          fi
+          echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
+          echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
+          echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
+          echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
+          echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
+        - |
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            sed -i "/^proxy/d" /etc/newrelic-infra.yml
+            echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
+          fi
+
+    install_infra:
+      cmds:
+        - |
+          tar xzvf newrelic-infra_linux.tar.gz
+          sudo ./newrelic-infra/installer.sh
+
+    assert_agent_status_ok:
+      cmds:
+        - |
+          infra_present(){
+            INFRA_PRESENT=$(ps aux | grep newrelic-infra$ | wc -l)
+            [[ $INFRA_PRESENT -gt 0 ]]
+            return
+          }
+
+          MAX_RETRIES=150
+          TRIES=0
+          echo "Running agent status check attempt..."
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            statusCheckOutput=$(curl http://localhost:18003/v1/status/errors -s)
+            if [ "$statusCheckOutput" == "{}" ]; then
+              echo "Agent status check ok."
+              break
+            else
+              if [ "$statusCheckOutput" == "" ]; then
+                if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  # Process-based validation attempt
+                  if infra_present; then
+                    echo "detected newrelic-infra process running"
+                    exit 0
+                  fi
+                  echo "infra-agent status endpoint not available" >&2
+                  exit 32
+                fi
+              else
+                if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                  # Process-based validation attempt
+                  if infra_present; then
+                    echo "detected newrelic-infra process running"
+                    exit 0
+                  fi
+                  echo "infra-agent status check not healthy: $statusCheckOutput" >&2
+                  exit 33
+                fi
+              fi
+            fi
+
+            sleep 2
+          done
+
+postInstall:
+  info: |2
+      ⚙️  The Infrastructure Agent configuration file can be found in /etc/newrelic-infra.yml
+      Edit this file to make changes or configure advanced features for the agent. See the docs for options:
+      https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
+      
+      Note: Process monitoring has been enabled by default - all other config options are left to the user.
