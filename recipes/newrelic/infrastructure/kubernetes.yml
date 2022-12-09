@@ -153,8 +153,8 @@ install:
             exit 131
           fi
 
-          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -gt 24 ]]; then
-            echo "Installation failed. Kubernetes v1.16 to v1.24 is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
+          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -gt 25 ]]; then
+            echo "Installation failed. Kubernetes v1.16 to v1.25 is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
             echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsupported k8s version - found $SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 131
           fi
@@ -393,6 +393,36 @@ install:
             echo ""
 
             KUBECTL_INSTALL=false
+
+            # Check if nri-bundle already installed, ask customer if they want uninstall before re-installation, and then move forward.
+            GREEN='\033[0;32m'
+            NC='\033[0m'
+            if $SUDO helm list --all-namespaces | grep nri-bundle > /dev/null 2>&1; then
+              while :; do 
+                echo -e -n "${GREEN}Detected a previously installed New Relic Kubernetes integration on cluster, uninstall first? (Uninstallation is recommended, default: Y) Y/N? ${NC} "
+                if [[ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ]]; then
+                  UNINSTALL_ANSWER="Y"
+                else
+                  read ans 
+                  echo ""
+                  UNINSTALL_ANSWER=$(echo "${ans^^}" | cut -c1-1)
+                fi
+                if [[ -z "$UNINSTALL_ANSWER" ]]; then
+                  UNINSTALL_ANSWER="Y"
+                fi
+                if [[ "$UNINSTALL_ANSWER" == "N" ]]; then
+                  echo "Attempting install over existing integration."
+                  break 
+                fi 
+                if [[ "$UNINSTALL_ANSWER" == "Y" ]]; then
+                  RELEASE_NAME=$(helm list --all-namespaces | grep nri-bundle | awk '{print $1}')
+                  RELEASE_NAMESPACE=$(helm list --all-namespaces | grep nri-bundle | awk '{print $2}')
+                  $SUDO helm uninstall $RELEASE_NAME -n $RELEASE_NAMESPACE
+                  break 
+                fi
+                echo -e "Please type Y or N only."
+              done 
+            fi
 
             $SUDO helm repo add newrelic https://helm-charts.newrelic.com
             $SUDO helm repo update

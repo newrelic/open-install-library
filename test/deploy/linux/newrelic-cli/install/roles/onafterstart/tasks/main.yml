@@ -39,10 +39,30 @@
   set_fact:
     env_vars: "{{ env_vars }} SUDO_USER={{ ansible_user }}"
 
+- name: Set default newrelic api url
+  set_fact:
+    newrelic_api_url_to_use: "api.newrelic.com"
+  when: newrelic_api_url is undefined
+
+- name: Override for non Staging and US regions
+  set_fact:
+    newrelic_api_url_to_use: "{{ newrelic_api_url_to_use | replace('api.newrelic', 'api.'+(newrelic_region|lower)+'.newrelic') }}"
+  when: newrelic_api_url_to_use is defined and newrelic_region is defined and (newrelic_region|upper) != "STAGING" and (newrelic_region|upper) != "US"
+
+- name: Use specified URL if exist
+  set_fact:
+    newrelic_api_url_to_use: "{{ newrelic_api_url }}"
+  when: newrelic_api_url is defined
+
+- name: Ensure https api url
+  set_fact:
+    newrelic_api_url_to_use: "https://{{ newrelic_api_url_to_use }}"
+  when: not newrelic_api_url_to_use | regex_search('^https', ignorecase=True)
+
 - name: Get CLI environment variables
   shell: "/bin/bash -ic 'env' | grep NR_CLI_"
   register: cli_env_vars
-  ignore_errors: yes
+  ignore_errors: true
 
 - set_fact:
     cli_env_dict: "{{ cli_env_dict | default({}) | combine ( { item.split('=')[0]: item.split('=')[1] } ) }}"
@@ -84,14 +104,14 @@
     pkg:
       - tar
     state: present
-  become: yes
+  become: true
   ignore_errors: true
 
 - name: ensure tar is installed for script execution dnf
   dnf:
     name: tar
     state: present
-  become: yes
+  become: true
   ignore_errors: true
 
 - name: Install newrelic-cli
@@ -104,6 +124,17 @@
 
 - name: Export NEW_RELIC_EMAIL_CONTINUE
   shell: "echo export NEW_RELIC_EMAIL_CONTINUE=N >> ~/.bashrc"
+
+- block:
+  - name: Copy delete alert template
+    template:
+      src: remove_golden_alerts.sh
+      dest: /tmp/
+      mode: a+x
+    become: true
+  - name: Delete alerts
+    shell: "/bin/bash /tmp/remove_golden_alerts.sh"
+  when: delete_alerts is defined
 
 - block:
   - name: Run install, expect failure
