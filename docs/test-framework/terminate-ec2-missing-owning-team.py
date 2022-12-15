@@ -1,11 +1,13 @@
 import json
 import boto3
+import os
 
 ec2 = boto3.client('ec2')
 
 def lambda_handler(event, context):
     instance_count = 0
     response = ec2.describe_regions()
+    summary = ''
     print('Region response:'+json.dumps(response))
     for region in response['Regions']:
         region_name = region['RegionName']
@@ -25,7 +27,25 @@ def lambda_handler(event, context):
         if len(instances_to_delete) > 0:
             for instance in instances_to_delete:
                 instance_count = instance_count+1
-                print('Deleting from region:' +region_name +' instance with ID:' +str(instance.id) +" having tags:" +json.dumps(instance.tags) +' key_name:' +instance.key_name +' launch_time:' +str(instance.launch_time))
+                text = 'Deleting from region:' +region_name +' instance with ID:' +str(instance.id) +" having tags:" +json.dumps(instance.tags) +' key_name:' +instance.key_name +' launch_time:' +str(instance.launch_time)
+                instance.terminate()
+                summary = summary +text +'\n'
+                print(text)
+
+    if summary != '':
+        notificationArn = os.environ.get('SNS_TERMINATE_EC2_ARN', '')
+        if notificationArn != '':
+            print('Sending notification')
+            client = boto3.client('sns')
+            try:
+                response = client.publish (
+                    TargetArn = notificationArn,
+                    Subject = context.function_name,
+                    Message = summary,
+                    MessageStructure = 'text'
+                )
+            except Exception as err:
+                print('Error while sending notification, detail:' +err)
 
     return {
         'statusCode': 200,
