@@ -27,7 +27,13 @@ def lambda_handler(event, context):
         if len(instances_to_delete) > 0:
             for instance in instances_to_delete:
                 instance_count = instance_count+1
-                text = 'Terminating from region:' +region_name +' instance with ID:' +str(instance.id) +" having tags:" +json.dumps(instance.tags) +' key_name:' +instance.key_name +' launch_time:' +str(instance.launch_time)
+                text = 'Terminating from region:' +region_name
+                text = text +' instance with ID:' +str(instance.id)
+                if instance.tags != None:
+                    text = text +" having tags:" +json.dumps(instance.tags)
+                if instance.key_name != None:
+                    text = text +' key_name:' +instance.key_name
+                text = text +' launch_time:' +str(instance.launch_time)
                 instance.terminate()
                 summary = summary +text +'\n'
                 print(text)
