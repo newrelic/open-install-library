@@ -42,8 +42,8 @@ install:
         - task: write_recipe_metadata
         - task: stop
         - task: download_infra
-        - task: start_infra
         - task: setup_config
+        - task: start_infra
         - task: restart
         - task: assert_agent_status_ok
 
@@ -86,13 +86,6 @@ install:
           rm -rf $HOME/newrelic-infra
           tar xzvf $HOME/newrelic-infra_linux.tar.gz -C $HOME
 
-    start_infra:
-      cmds:
-        - |
-          NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} $HOME/newrelic-infra/installer.sh
-          rm -f $HOME/newrelic-infra_linux.tar.gz
-          rm -rf $HOME/newrelic-infra
-
     setup_config:
       cmds:
         - |
@@ -122,23 +115,30 @@ install:
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
 
-    restart:
+    start_infra:
       cmds:
         - |
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            systemctl restart newrelic-infra
-          else 
-            if [ {{.IS_INITCTL}} -gt 0 ]; then
-              initctl restart newrelic-infra
-            else
-              /etc/init.d/newrelic-infra restart
-            fi
-          fi
-      vars:
-        IS_SYSTEMCTL:
-          sh: command -v systemctl | wc -l
-        IS_INITCTL:
-          sh: command -v initctl | wc -l
+          NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} $HOME/newrelic-infra/installer.sh
+          rm -f $HOME/newrelic-infra_linux.tar.gz
+          rm -rf $HOME/newrelic-infra
+
+    # restart:
+    #   cmds:
+    #     - |
+    #       if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+    #         systemctl restart newrelic-infra
+    #       else 
+    #         if [ {{.IS_INITCTL}} -gt 0 ]; then
+    #           initctl restart newrelic-infra
+    #         else
+    #           /etc/init.d/newrelic-infra restart
+    #         fi
+    #       fi
+    #   vars:
+    #     IS_SYSTEMCTL:
+    #       sh: command -v systemctl | wc -l
+    #     IS_INITCTL:
+    #       sh: command -v initctl | wc -l
 
     assert_agent_status_ok:
       cmds:
