@@ -397,6 +397,7 @@ install:
             GREEN='\033[0;32m'
             NC='\033[0m'
             if $SUDO helm list --all-namespaces | grep nri-bundle > /dev/null 2>&1; then
+              echo "{\"Metadata\":{\"previousNriBundleDetected\":\"Yes\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
               while :; do 
                 echo -e -n "${GREEN}Detected a previously installed New Relic Kubernetes integration on cluster, uninstall first? (Uninstallation is recommended, default: Y) Y/N? ${NC} "
                 if [[ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ]]; then
@@ -411,16 +412,20 @@ install:
                 fi
                 if [[ "$UNINSTALL_ANSWER" == "N" ]]; then
                   echo "Attempting install over existing integration."
+                  echo "{\"Metadata\":{\"uninstallNriBundleAnswer\":\"No\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
                   break 
                 fi 
                 if [[ "$UNINSTALL_ANSWER" == "Y" ]]; then
                   RELEASE_NAME=$(helm list --all-namespaces | grep nri-bundle | awk '{print $1}')
                   RELEASE_NAMESPACE=$(helm list --all-namespaces | grep nri-bundle | awk '{print $2}')
+                  echo "{\"Metadata\":{\"uninstallNriBundleAnswer\":\"Yes\", \"helmUninstallCommand\":\"$SUDO helm uninstall $RELEASE_NAME -n $RELEASE_NAMESPACE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
                   $SUDO helm uninstall $RELEASE_NAME -n $RELEASE_NAMESPACE
                   break 
                 fi
                 echo -e "Please type Y or N only."
               done 
+            else
+              echo "{\"Metadata\":{\"previousNriBundleDetected\":\"No\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
             fi
 
             $SUDO helm repo add newrelic https://helm-charts.newrelic.com
@@ -472,6 +477,8 @@ install:
             if [[ $SEDTEST -eq 1 ]]; then
               CLEANED_ARGS=$(echo $ARGS | sed -E 's/licenseKey=[a-zA-Z0-9\-]+/licenseKey=XXXXX/g' | sed -E 's/deployKey=[a-zA-Z0-9\-]+/deployKey=XXXXX/g' | sed -E 's/apiKey=[a-zA-Z0-9\-]+/apiKey=XXXXX/g')
             fi
+
+            echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommandBeforeExecution\":\"$SUDO helm upgrade $CLEANED_ARGS\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
 
             $SUDO helm upgrade $ARGS
           else
