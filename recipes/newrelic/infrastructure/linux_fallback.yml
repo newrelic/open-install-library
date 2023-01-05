@@ -25,6 +25,7 @@ preInstall:
   requireAtDiscovery: |
       exit 0
 
+      # Possibly skip on already installed
       statusCheckOutput=$(curl http://localhost:18003/v1/status/errors -s)
       if [ "$statusCheckOutput" == "{}" ]; then
         echo "Agent already running, skipping"
@@ -42,9 +43,9 @@ install:
         - task: write_recipe_metadata
         - task: stop
         - task: download_infra
+        - task: install_infra
         - task: setup_config
-        - task: start_infra
-        # - task: restart
+        - task: restart
         - task: assert_agent_status_ok
 
     write_recipe_metadata:
@@ -61,7 +62,7 @@ install:
             if [ {{.IS_INITCTL}} -gt 0 ]; then
               initctl stop newrelic-infra
             else
-              /etc/init.d/newrelic-infra stop
+              /etc/init.d/newrelic-infra stop &
             fi
           fi
       silent: true
@@ -85,6 +86,14 @@ install:
           echo "https://download.newrelic.com/infrastructure_agent/binaries/linux/${ARCH}/newrelic-infra_linux_${LATEST}_${ARCH}.tar.gz" | { read url; curl "${url}" -o $HOME/newrelic-infra_linux.tar.gz; }
           rm -rf $HOME/newrelic-infra
           tar xzvf $HOME/newrelic-infra_linux.tar.gz -C $HOME
+
+    install_infra:
+      ignore_error: true
+      cmds:
+        - |
+          NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} $HOME/newrelic-infra/installer.sh
+          rm -f $HOME/newrelic-infra_linux.tar.gz
+          rm -rf $HOME/newrelic-infra
 
     setup_config:
       cmds:
@@ -115,30 +124,23 @@ install:
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
 
-    start_infra:
+    restart:
       cmds:
         - |
-          NRIA_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}} $HOME/newrelic-infra/installer.sh
-          rm -f $HOME/newrelic-infra_linux.tar.gz
-          rm -rf $HOME/newrelic-infra
-
-    # restart:
-    #   cmds:
-    #     - |
-    #       if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-    #         systemctl restart newrelic-infra
-    #       else 
-    #         if [ {{.IS_INITCTL}} -gt 0 ]; then
-    #           initctl restart newrelic-infra
-    #         else
-    #           /etc/init.d/newrelic-infra restart
-    #         fi
-    #       fi
-    #   vars:
-    #     IS_SYSTEMCTL:
-    #       sh: command -v systemctl | wc -l
-    #     IS_INITCTL:
-    #       sh: command -v initctl | wc -l
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            systemctl restart newrelic-infra
+          else 
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
+              initctl restart newrelic-infra
+            else
+              /etc/init.d/newrelic-infra restart &
+            fi
+          fi
+      vars:
+        IS_SYSTEMCTL:
+          sh: command -v systemctl | wc -l
+        IS_INITCTL:
+          sh: command -v initctl | wc -l
 
     assert_agent_status_ok:
       cmds:
