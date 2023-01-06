@@ -1,5 +1,6 @@
 import json
 import boto3
+import os
 from datetime import datetime, timedelta, timezone
 
 region = 'ca-central-1'
@@ -9,6 +10,7 @@ prefix_match = 'gitusdkr'
 ec2 = boto3.client('ec2', region_name=region)
 
 def lambda_handler(event, context):
+    summary = ''
     instance_ids = []
     response = ec2.describe_instances(Filters=[
         {
@@ -34,12 +36,29 @@ def lambda_handler(event, context):
                                 if instance_name.startswith(prefix_match):
                                     time_between = datetime.now(timezone.utc) - launch_time
                                     if time_between.days> 1:
-                                        print('Got instance: ' +str(instance_name) +' with id:' +str(instance_id) +' with launch time at ' +str(launch_time) +' which was ' +str(time_between.days) +' days ago')
+                                        text = 'Terminating instance: ' +str(instance_name) +' with id:' +str(instance_id) +' with launch time at ' +str(launch_time) +' which was ' +str(time_between.days) +' days ago'
+                                        print(text)
+                                        summary = summary +text +'\n'
                                         instance_ids.append(instance_id)
 
     if len(instance_ids) > 0:
         print('Terminating instances:'+str(instance_ids) +"...")
         ec2.terminate_instances(InstanceIds=instance_ids)
+
+    if summary != '':
+        notificationArn = os.environ.get('SNS_TERMINATE_EC2_ARN', '')
+        if notificationArn != '':
+            print('Sending notification')
+            client = boto3.client('sns')
+            try:
+                response = client.publish (
+                    TargetArn = notificationArn,
+                    Subject = context.function_name,
+                    Message = summary,
+                    MessageStructure = 'text'
+                )
+            except Exception as err:
+                print('Error while sending notification, detail:' +err)
 
     print('Terminated ' +str(len(instance_ids)) +' instances')
 
