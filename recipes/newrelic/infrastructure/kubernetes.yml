@@ -159,6 +159,95 @@ install:
             exit 131
           fi
 
+          # Check for necessary permissions
+          CAN_CREATE_CLUSTER_ROLES=$($SUDO $KUBECTL auth can-i create clusterRoles 2>/dev/null)
+          CAN_DELETE_CLUSTER_ROLES=$($SUDO $KUBECTL auth can-i delete clusterRoles 2>/dev/null)
+          CAN_DELETE_CLUSTER_ROLE_BINDINGS=$($SUDO $KUBECTL auth can-i delete clusterRoleBindings 2>/dev/null)
+          CAN_CREATE_ROLE_BINDINGS=$($SUDO $KUBECTL auth can-i create roleBindings 2>/dev/null)
+          CAN_UPDATE_ROLE_BINDINGS=$($SUDO $KUBECTL auth can-i update roleBindings 2>/dev/null)
+          CAN_DELETE_ROLE_BINDINGS=$($SUDO $KUBECTL auth can-i delete roleBindings 2>/dev/null)
+          CAN_CREATE_SERVICES=$($SUDO $KUBECTL auth can-i create services 2>/dev/null)
+          CAN_CREATE_WEBHOOKS_CONFIG=$($SUDO $KUBECTL auth can-i create mutatingWebhookConfigurations 2>/dev/null)
+          CAN_DELETE_POD_SECURITY_POLICIES=$($SUDO $KUBECTL auth can-i delete podSecurityPolicies 2>/dev/null)
+          CAN_LIST_SECRETS=$($SUDO $KUBECTL auth can-i list secrets 2>/dev/null)
+
+          if [[ $CAN_CREATE_CLUSTER_ROLES != "yes" ]]; then
+            echo "Create cluster roles permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - create cluster roles\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_DELETE_CLUSTER_ROLES != "yes" ]]; then
+            echo "Delete cluster roles permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - delete cluster roles\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_DELETE_CLUSTER_ROLE_BINDINGS != "yes" ]]; then
+            echo "Delete cluster role bindings permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - delete cluster role bindings\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_CREATE_ROLE_BINDINGS != "yes" ]]; then
+            echo "Create role bindings permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - create role bindings\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_UPDATE_ROLE_BINDINGS != "yes" ]]; then
+            echo "Update role bindings permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - update role bindings\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_DELETE_ROLE_BINDINGS != "yes" ]]; then
+            echo "Delete role bindings permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - delete role bindings\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_CREATE_SERVICES != "yes" ]]; then
+            echo "Create services permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - create services\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_CREATE_WEBHOOKS_CONFIG != "yes" ]]; then
+            echo "Create mutating webhook configurations permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - create mutating webhook configurations\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_DELETE_POD_SECURITY_POLICIES != "yes" ]]; then
+            echo "Delete pod security policies permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - delete pod security policies\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          if [[ $CAN_LIST_SECRETS != "yes" ]]; then
+            echo "List secrets permission needed. Please change permission and re-run the installation."
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsufficient permissions - list secrets\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          # Check if the user has permissions to create a new namespace
+          CAN_CREATE_NAMESPACE=$($SUDO $KUBECTL auth can-i create namespace 2>/dev/null)
+
+          NAMESPACE_EXISTS=false
+          if $SUDO $KUBECTL get namespace ${NR_CLI_NAMESPACE} 1>/dev/null 2>&1; then
+            NAMESPACE_EXISTS=true
+          fi
+
+          if [[ "$NAMESPACE_EXISTS" != "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
+            echo "The ${NR_CLI_NAMESPACE} namespace does not exist and you don't have permissions to create a new namespace." >&2
+            echo "Use an existing namespace or obtain permissions to create a new namespace." >&2
+            echo "{\"Metadata\":{\"InstallationError\":\"${NR_CLI_NAMESPACE} Namespace does not exist and you don't have permissions to create a new namespace\", \"UnsupportedReason\":\"Unsufficient permissions - create namespace\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
+
+          echo "{\"Metadata\":{\"PermissionStatusCheck\":\"Passed Permissions\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+
           # Determine the cluster name if not provided
           CLUSTER=$($SUDO $KUBECTL config current-context 2>/dev/null || echo "unknown")
 
@@ -229,21 +318,6 @@ install:
               echo -e "\033[0;31mSetting Pixie memory limit to 2Gi.\033[0m" >&2
               PIXIE_SUPPORTED=true
             fi
-          fi
-
-          # Check if the user has permissions to create a new namespace
-          CAN_CREATE_NAMESPACE=$($SUDO $KUBECTL auth can-i create namespace 2>/dev/null)
-
-          NAMESPACE_EXISTS=false
-          if $SUDO $KUBECTL get namespace ${NR_CLI_NAMESPACE} 1>/dev/null 2>&1; then
-            NAMESPACE_EXISTS=true
-          fi
-
-          if [[ "$NAMESPACE_EXISTS" != "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
-            echo "The ${NR_CLI_NAMESPACE} namespace does not exist and you don't have permissions to create a new namespace." >&2
-            echo "Use an existing namespace or obtain permissions to create a new namespace." >&2
-            echo "{\"Metadata\":{\"InstallationError\":\"${NR_CLI_NAMESPACE} Namespace does not exist and you don't have permissions to create a new namespace\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
-            exit 1
           fi
 
           if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
@@ -487,43 +561,6 @@ install:
             echo ""
 
             KUBECTL_INSTALL=true
-
-            CAN_CREATE_CLUSTER_ROLES=$($SUDO $KUBECTL auth can-i create clusterRoles 2>/dev/null)
-            CAN_CREATE_ROLE_BINDINGS=$($SUDO $KUBECTL auth can-i create roleBindings 2>/dev/null)
-            CAN_CREATE_SERVICES=$($SUDO $KUBECTL auth can-i create services 2>/dev/null)
-            CAN_CREATE_WEBHOOKS_CONFIG=$($SUDO $KUBECTL auth can-i create mutatingWebhookConfigurations 2>/dev/null)
-            CAN_DELETE_POD_SECURITY_POLICIES=$($SUDO $KUBECTL auth can-i delete podSecurityPolicies 2>/dev/null)
-            CAN_LIST_SECRETS=$($SUDO $KUBECTL auth can-i list secrets 2>/dev/null)
-
-            if [["$CAN_CREATE_CLUSTER_ROLES" != "yes" ]]; then
-              echo "Create cluster roles permission needed. Please change permission and re-run the installation."
-              exit 7
-            fi
-
-            if [["$CAN_CREATE_ROLE_BINDINGS" != "yes" ]]; then
-              echo "Create role bindings permission needed. Please change permission and re-run the installation."
-              exit 7
-            fi
-
-            if [["$CAN_CREATE_SERVICES" != "yes" ]]; then
-              echo "Create services permission needed. Please change permission and re-run the installation."
-              exit 7
-            fi
-
-            if [["$CAN_CREATE_WEBHOOKS_CONFIG" != "yes" ]]; then
-              echo "Create mutating webhook configurations permission needed. Please change permission and re-run the installation."
-              exit 7
-            fi
-
-            if [["$CAN_DELETE_POD_SECURITY_POLICIES" != "yes" ]]; then
-              echo "Delete pod security policies permission needed. Please change permission and re-run the installation."
-              exit 7
-            fi
-
-            if [["$CAN_LIST_SECRETS" != "yes" ]]; then
-              echo "List secrets permission needed. Please change permission and re-run the installation."
-              exit 7
-            fi
 
             # Select k8s-config-generator service environment
             if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
