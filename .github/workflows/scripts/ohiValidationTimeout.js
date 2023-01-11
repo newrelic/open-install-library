@@ -22,6 +22,7 @@ const ohiValidationTimeoutFiles = [
   "test/definitions/ohi/linux/postgres-rhel.json",
   "test/definitions/ohi/linux/redis-debian.json",
   "test/definitions/ohi/linux/varnish-debian.json",
+  "test/definitions/ohi/linux/varnish-rhel.json",
   "test/definitions/ohi/windows/ms-sql-server2019Standard.json",
 ];
 
