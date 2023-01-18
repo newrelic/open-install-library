@@ -85,9 +85,16 @@ install:
           NR_CLI_PRIVILEGED="{{.NR_CLI_PRIVILEGED}}"
           NR_CLI_BETA="{{.NR_CLI_BETA}}"
 
-          NR_CLI_PIXIE="{{.NR_CLI_PIXIE}}"
+          # Deploys New Relic Pixie integration which 
+          # registers the New Relic plugin in Pixie in order to send data from Pixie to New Relic 
           NR_CLI_NEWRELIC_PIXIE="{{.NR_CLI_NEWRELIC_PIXIE}}"
+
+          # Deploys Pixie to cluster 
+          NR_CLI_PIXIE="{{.NR_CLI_PIXIE}}"
+         
+          # Pixie is already deployed in cluster 
           NR_CLI_NEWRELIC_PIXIE_INSTALLED="{{.NR_CLI_NEWRELIC_PIXIE_INSTALLED}}"
+
           NR_CLI_PIXIE_API_KEY="{{.NR_CLI_PIXIE_API_KEY}}"
           NR_CLI_PIXIE_DEPLOY_KEY="{{.NR_CLI_PIXIE_DEPLOY_KEY}}"
           NR_CLI_PIXIE_ADDRESS="{{.NR_CLI_PIXIE_ADDRESS}}"
@@ -199,7 +206,7 @@ install:
           NR_CLI_PRIVILEGED=${NR_CLI_PRIVILEGED:-true}
           NR_CLI_BETA="${NR_CLI_BETA:-false}"
 
-          # Check the Linux kernel version if Pixie is enabled
+          # Check the Linux kernel version for compatibility if Pixie is set to be installed on cluster
           if [[ "$NR_CLI_PIXIE" == "true" ]]; then
             KERNEL_VERSION=$($SUDO $KUBECTL get nodes -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}')
             KERNEL_MAJOR_VERSION=$(echo "${KERNEL_VERSION}" | awk -F. '{ print $1; }')
@@ -212,7 +219,7 @@ install:
           fi
 
           PIXIE_MEM="2Gi"
-          # Check if the nodes have sufficient memory
+          # Check if the nodes have sufficient memory to install Pixie 
           if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
             MEMORY=$($SUDO $KUBECTL get nodes -o jsonpath='{.items[0].status.capacity.memory}' | sed 's/Ki$//')
             if [[ "$MEMORY" -lt 3906250 ]]; then
@@ -252,7 +259,7 @@ install:
             PIXIE_SUPPORTED=false
           fi
 
-          # Check if the cluster type is supported by Pixie
+          # Check if the cluster type can support Pixie installation
           if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
             PIXIE_SUPPORTED=false
 
@@ -343,23 +350,49 @@ install:
           fi
 
           if [[ "$NR_CLI_NEWRELIC_PIXIE_INSTALLED" == "true" ]]; then
-            if ! NR_CLI_PIXIE_API_KEY=$(px api-key create -s -d 'New Relic integration' 2>&1 | tail -n 1); then
-              echo "Failed to create Pixie API key using px CLI." >&2
-              echo $NR_CLI_PIXIE_API_KEY >&2
+            if ! which px 1>/dev/null 2>&1 ; then
+              echo "Pixie CLI not detected on cluster." >&2
               echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
               PIXIE_SUPPORTED=false
-            fi
-            if ! NR_CLI_PIXIE_ENDPOINT=$(px get cluster --cloud-addr 2>&1 | tail -n 1); then
-              echo "Failed to get Pixie cloud address using px CLI." >&2
-              echo $NR_CLI_PIXIE_ENDPOINT >&2
-              echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
-              PIXIE_SUPPORTED=false
-            fi
-            if ! NR_CLI_PIXIE_CLUSTER_ID=$(px get cluster --id 2>&1 | tail -n 1); then
-              echo "Failed to get Pixie cluster id using px CLI." >&2
-              echo $NR_CLI_PIXIE_CLUSTER_ID >&2
-              echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
-              PIXIE_SUPPORTED=false
+            else
+              if ! NR_CLI_PIXIE_API_KEY=$(px api-key create -s -d 'New Relic integration' 2>&1 | tail -n 1); then
+                echo "Failed to create Pixie API key using px CLI." >&2
+                echo $NR_CLI_PIXIE_API_KEY >&2
+                echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+                PIXIE_SUPPORTED=false
+              fi
+              if echo ${NR_CLI_PIXIE_API_KEY} | grep "px auth login" >/dev/null; then
+                echo "Failed to create Pixie API key using px CLI." >&2
+                echo $NR_CLI_PIXIE_API_KEY >&2
+                echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+                PIXIE_SUPPORTED=false
+              fi 
+
+              if ! NR_CLI_PIXIE_ENDPOINT=$(px get cluster --cloud-addr 2>&1 | tail -n 1); then
+                echo "Failed to get Pixie cloud address using px CLI." >&2
+                echo $NR_CLI_PIXIE_ENDPOINT >&2
+                echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+                PIXIE_SUPPORTED=false
+              fi
+              if echo ${NR_CLI_PIXIE_ENDPOINT} | grep "px auth login" >/dev/null; then
+                echo "Failed to get Pixie cloud address using px CLI." >&2
+                echo $NR_CLI_PIXIE_ENDPOINT >&2
+                echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+                PIXIE_SUPPORTED=false
+              fi 
+
+              if ! NR_CLI_PIXIE_CLUSTER_ID=$(px get cluster --id 2>&1 | tail -n 1); then
+                echo "Failed to get Pixie cluster id using px CLI." >&2
+                echo $NR_CLI_PIXIE_CLUSTER_ID >&2
+                echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+                PIXIE_SUPPORTED=false
+              fi
+              if echo ${NR_CLI_PIXIE_CLUSTER_ID} | grep "px auth login" >/dev/null; then
+                echo "Failed to get Pixie cluster id using px CLI." >&2
+                echo $NR_CLI_PIXIE_CLUSTER_ID >&2
+                echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
+                PIXIE_SUPPORTED=false
+              fi 
             fi
           fi
 
