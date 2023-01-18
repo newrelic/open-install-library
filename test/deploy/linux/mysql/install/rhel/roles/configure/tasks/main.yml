@@ -2,6 +2,10 @@
 - debug:
     msg: Install MySQL
 
+- name: Set MySQL RPM file
+  set_fact:
+    mysql_rpm_file: mysql80-community-release-el7-7.noarch.rpm
+
 - name: Set default create_newrelic_user (default not create)
   set_fact:
     create_newrelic_user: "false"
@@ -14,42 +18,53 @@
 
 - name: Install epel
   shell: "amazon-linux-extras install epel -y"
-  become: yes
+  become: true
+
+- name: Install wget
+  yum:
+    name: "wget"
+    state: latest
+  become: true
+
+- name: Download MySQL repository
+  shell: "wget https://dev.mysql.com/get/{{ mysql_rpm_file }}"
+  become: true
 
 - name: Add MySQL Repository
   yum: 
-    name: https://dev.mysql.com/get/mysql80-community-release-el7-3.noarch.rpm
+    name: "{{ mysql_rpm_file }}"
     state: present
-  become: yes
+    lock_timeout: 180
+  become: true
 
 - name: Import most recent repo key
   shell: "rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2022"
-  become: yes
+  become: true
 
 - name: Install the MySQL
   shell: "yum install mysql-community-server -y"
-  become: yes
+  become: true
 
 - name: Install systemctl
   shell: "yum install -y /usr/bin/systemctl; systemctl --version"
-  become: yes
+  become: true
 
 - name: Disable mysqld
   shell: "systemctl stop mysqld"
-  become: yes
+  become: true
 
 - name: Remove /var/lib/mysql/*
   shell: "rm -rf /var/lib/mysql/*"
-  become: yes
+  become: true
 
 - name: Start mysqld service
   shell: "systemctl start mysqld"
-  become: yes
+  become: true
 
 - name: Get temporary pwd for mysql
   shell: "grep 'temporary password' /var/log/mysqld.log | awk '{print $13}'"
   register: PW
-  become: yes
+  become: true
 
 - name: Set password as variable
   set_fact:
@@ -57,11 +72,11 @@
 
 - name: Create directory for limit file
   shell: "mkdir /etc/systemd/system/mysqld.service.d"
-  become: yes
+  become: true
 
 - name: Create file for limit
   shell: "touch /etc/systemd/system/mysqld.service.d/limits.conf"
-  become: yes
+  become: true
 
 - name: Fill conf file
   copy: 
@@ -69,44 +84,44 @@
     content: |
       [Service]
       LimitNOFILE = 65535
-  become: yes
+  become: true
 
 - name: Restart daemon
   shell: systemctl daemon-reload
-  become: yes
+  become: true
 
 - name: Restart Mysql
   shell: systemctl restart mysqld
-  become: yes
+  become: true
 
 - name: Alter root pwd
   command: |
     mysql -u root -p{{ PW }} --connect-expired-password -ne "ALTER USER 'root'@'localhost' IDENTIFIED BY 'TestPassword123$';"
-  become: yes
+  become: true
 
 - name: Create Database
   command: |
     mysql -u root -pTestPassword123$ -ne "CREATE DATABASE IF NOT EXISTS MysqlSample;"
-  become: yes
+  become: true
 
 - block:
   - name: Remove previous created user
     command: |
       mysql -u root -pTestPassword123$ -ne "DROP USER 'newrelic'@'localhost';"
-    become: yes
-    ignore_errors: yes
+    become: true
+    ignore_errors: true
   - name: Create User
     command: |
       mysql -u root -pTestPassword123$ -ne "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'Virtuoso4all!';"
-    become: yes
+    become: true
   - name: Grant replication permission to user
     command: |
       mysql -u root -pTestPassword123$ -ne "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';"
-    become: yes
+    become: true
   - name: Grant select permission to user
     command: |
       mysql -u root -pTestPassword123$ -ne "GRANT SELECT ON *.* TO 'newrelic'@'localhost';"
-    become: yes
+    become: true
   when: create_newrelic_user|bool
 
 - block:
@@ -124,4 +139,4 @@
 
 - name: Start mysql service
   shell: "systemctl enable --now mysqld"
-  become: yes
+  become: true
