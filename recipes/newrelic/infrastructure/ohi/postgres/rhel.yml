@@ -297,8 +297,22 @@ install:
     validate-install:
       cmds:
         - |
-          INFRA_ENTITY_GUID=$(curl http://localhost:18003/v1/status/entity -s | awk -F \" '{print $4}')
-          echo "INFRA_ENTITY_GUID:"+$INFRA_ENTITY_GUID
+
+          MAX_RETRIES=150
+          TRIES=0
+          echo "Running agent status check attempt..."
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            INFRA_ENTITY_GUID=$(curl http://localhost:18003/v1/status/entity -s | awk -F \" '{print $4}')
+            if [ "$INFRA_ENTITY_GUID" == "" ]; then
+              sleep 2
+            else
+              echo "INFRA_ENTITY_GUID:"+$INFRA_ENTITY_GUID
+              break
+            fi
+          done
+
           NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
