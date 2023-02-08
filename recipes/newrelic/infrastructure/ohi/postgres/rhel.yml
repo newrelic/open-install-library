@@ -292,6 +292,40 @@ install:
           sh: command -v systemctl | wc -l
         IS_INITCTL:
           sh: command -v initctl | wc -l
+    
+    validate-install:
+      cmds:
+        - |
+          INFRA_ENTITY_GUID=$(curl http://localhost:18003/v1/status/entity -s | awk -F \" '{print $4}')
+          NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
+          fi
+          if [ $(echo {{.NEW_RELIC_REGION}} | grep -i eu | wc -l) -gt 0 ]; then
+            NEW_RELIC_API_URL=$(echo -n 'https://api.eu.newrelic.com')
+          fi
+
+          if [ -f /tmp/nrql.json ]; then
+            sudo rm -f /tmp/nrql.json
+          fi
+          sudo tee -a /tmp/nrql.json > /dev/null <<"EOT"
+          {
+            "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {nrql(query: NRQL_QUERY) {results}}}}"
+          }
+          EOT
+          sudo sed -i "s/NRQL_QUERY/\"\"SELECT entityKey from SystemSample where entityGuid = 'INFRA_ENTITY_GUID' SINCE 5 minutes ago\"\"/g" /tmp/nrql.json
+          sudo sed -i "s/INFRA_ENTITY_GUID/$INFRA_ENTITY_GUID/g" /tmp/nrql.json
+          sudo sed -i 's/""/\\"/g' /tmp/nrql.json
+          echo 'Querying infra entityKey...'
+          NRQL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+              -L -H 'Content-Type: application/json' \
+              -d @/tmp/nrql.json
+          )
+          if [ -f /tmp/nrql.json ]; then
+            rm -f /tmp/nrql.json
+          fi
+          echo 'done'+$NRQL_RESULT
 
 postInstall:
   info: |2
