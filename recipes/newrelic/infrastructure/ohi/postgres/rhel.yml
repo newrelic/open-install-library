@@ -329,7 +329,7 @@ install:
             "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {nrql(query: NRQL_QUERY) {results}}}}"
           }
           EOT
-          sudo sed -i "s/NRQL_QUERY/\"\"SELECT reportingAgent from PostgresqlDatabaseSample where entityGuid = 'INFRA_ENTITY_GUID' SINCE 10 minutes ago\"\"/g" /tmp/nrql.json
+          sudo sed -i "s/NRQL_QUERY/\"\"FROM SystemSample SELECT entityKey where entityGuid = 'INFRA_ENTITY_GUID' SINCE 10 minutes ago\"\"/g" /tmp/nrql.json
           sudo sed -i 's/INFRA_ENTITY_GUID/'$INFRA_ENTITY_GUID'/g' /tmp/nrql.json
           sudo sed -i 's/""/\\"/g' /tmp/nrql.json
           echo 'Querying infra entityKey...'
@@ -338,10 +338,35 @@ install:
               -L -H 'Content-Type: application/json' \
               -d @/tmp/nrql.json
           )
+          echo 'NRQL_RESULT:'$NRQL_RESULT
+          ENTITY_KEY=$(echo $NRQL_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.results[0] | .entityKey')
+
           # if [ -f /tmp/nrql.json ]; then
           #   rm -f /tmp/nrql.json
           # fi
-          echo 'done'+$NRQL_RESULT
+          echo 'ENTITY_KEY:'$ENTITY_KEY
+
+          # if [ -f /tmp/nrql.json ]; then
+          #   sudo rm -f /tmp/nrql.json
+          # fi
+          # sudo tee -a /tmp/nrql.json > /dev/null <<"EOT"
+          # {
+          #   "query": "{actor {account(id: {{.NEW_RELIC_ACCOUNT_ID}}) {nrql(query: NRQL_QUERY) {results}}}}"
+          # }
+          # EOT
+          # sudo sed -i "s/NRQL_QUERY/\"\"SELECT reportingAgent from PostgresqlDatabaseSample where entityGuid = 'INFRA_ENTITY_GUID' SINCE 10 minutes ago\"\"/g" /tmp/nrql.json
+          # sudo sed -i 's/INFRA_ENTITY_GUID/'$INFRA_ENTITY_GUID'/g' /tmp/nrql.json
+          # sudo sed -i 's/""/\\"/g' /tmp/nrql.json
+          # echo 'Querying infra entityKey...'
+          # NRQL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+          #     -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+          #     -L -H 'Content-Type: application/json' \
+          #     -d @/tmp/nrql.json
+          # )
+          # if [ -f /tmp/nrql.json ]; then
+          #   rm -f /tmp/nrql.json
+          # fi
+          # echo 'done'+$NRQL_RESULT
 
 postInstall:
   info: |2
