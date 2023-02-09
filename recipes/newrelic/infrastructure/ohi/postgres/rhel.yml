@@ -332,15 +332,28 @@ install:
           sudo sed -i "s/NRQL_QUERY/\"\"FROM SystemSample SELECT entityKey where entityGuid = 'INFRA_ENTITY_GUID' SINCE 10 minutes ago\"\"/g" /tmp/nrql.json
           sudo sed -i 's/INFRA_ENTITY_GUID/'$INFRA_ENTITY_GUID'/g' /tmp/nrql.json
           sudo sed -i 's/""/\\"/g' /tmp/nrql.json
+
+          MAX_RETRIES=150
+          TRIES=0
           echo 'Querying infra entityKey...'
-          NRQL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
-              -L -H 'Content-Type: application/json' \
-              -d @/tmp/nrql.json
-          )
-          echo 'NRQL_RESULT:'$NRQL_RESULT
-          ENTITY_KEY=$(echo $NRQL_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.nrql.results[0] | .entityKey' | awk -F \" '{print $2}')
-          echo 'ENTITY_KEY:'$ENTITY_KEY
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            NRQL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                -L -H 'Content-Type: application/json' \
+                -d @/tmp/nrql.json
+            )
+            echo 'NRQL_RESULT:'$NRQL_RESULT
+            ENTITY_KEY=$(echo $NRQL_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.nrql.results[0] | .entityKey' | awk -F \" '{print $2}')
+            echo 'ENTITY_KEY:'$ENTITY_KEY
+            if [ "$ENTITY_KEY" == "" ]; then
+              sleep 2
+            else
+              echo "ENTITY_KEY:"+$ENTITY_KEY
+              break
+            fi
+          done
 
           if [ -f /tmp/nrql.json ]; then
             rm -f /tmp/nrql.json
@@ -353,20 +366,38 @@ install:
           sudo sed -i "s/NRQL_QUERY/\"\"SELECT reportingAgent from PostgresqlDatabaseSample where reportingAgent = 'ENTITY_KEY' SINCE 10 minutes ago\"\"/g" /tmp/nrql.json
           sudo sed -i 's/ENTITY_KEY/'$ENTITY_KEY'/g' /tmp/nrql.json
           sudo sed -i 's/""/\\"/g' /tmp/nrql.json
-          echo 'Querying postgres reportingAgent...'
-          NRQL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
-              -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
-              -L -H 'Content-Type: application/json' \
-              -d @/tmp/nrql.json
-          )
-          echo 'NRQL_RESULT:'$NRQL_RESULT
-          REPORTING_AGENT=$(echo $NRQL_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.nrql.results[0] | .reportingAgent' | awk -F \" '{print $2}')
-          echo 'REPORTING_AGENT:'$REPORTING_AGENT
 
+          MAX_RETRIES=150
+          TRIES=0
+          echo 'Querying postgres reportingAgent...'
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            NRQL_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
+                -H 'Api-Key:{{.NEW_RELIC_API_KEY}}' \
+                -L -H 'Content-Type: application/json' \
+                -d @/tmp/nrql.json
+            )
+            echo 'NRQL_RESULT:'$NRQL_RESULT
+            REPORTING_AGENT=$(echo $NRQL_RESULT | /usr/local/bin/newrelic utils jq '.data.actor.account.nrql.results[0] | .reportingAgent' | awk -F \" '{print $2}')
+            echo 'REPORTING_AGENT:'$REPORTING_AGENT
+            if [ "$REPORTING_AGENT" == "" ]; then
+              sleep 2
+            else
+              echo "REPORTING_AGENT:"+$REPORTING_AGENT
+              break
+            fi
+          done
           if [ -f /tmp/nrql.json ]; then
             rm -f /tmp/nrql.json
           fi
-          # echo 'done'+$NRQL_RESULT
+
+          if [ "$ENTITY_KEY" == "$REPORTING_AGENT" ]; then
+              echo "Validation successful"
+          else
+              printf "\n\nValidation failed.\n" >&2
+              exit 47
+          fi
 
 postInstall:
   info: |2
