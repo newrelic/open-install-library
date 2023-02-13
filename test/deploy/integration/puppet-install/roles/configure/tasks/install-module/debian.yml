@@ -1,0 +1,26 @@
+---
+- name: Find locally-built module tarball
+  shell: find /home/puppet-install/pkg -type f -iname "newrelic-newrelic_installer*tar.gz" -print -quit
+  register: puppet_tarball_location
+
+- name: Install locally-built module from tarball
+  shell: puppet module install {{ puppet_tarball_location.stdout }}
+  register: command_output
+
+- name: ensure manifests directory exists
+  file:
+    path: $HOME/.puppetlabs/etc/code/manifests
+    state: directory
+
+- name: Copy site.pp to localhost
+  template:
+    src: site.pp.j2
+    dest: $HOME/.puppetlabs/etc/code/manifests/site.pp
+
+
+- name: Apply newrelic-newrelic_installer module
+  shell: sudo puppet apply --modulepath=$HOME/.puppetlabs/etc/code/modules $HOME/.puppetlabs/etc/code/manifests/site.pp
+  register: apply_output
+
+- debug:
+    msg: "{{ apply_output.stdout }}"
