@@ -64,6 +64,7 @@ install:
         - task: cleanup
         - task: setup_license
         - task: setup_proxy
+        - task: log_ssl_ciphers
         - task: update_apt
         - task: install_gnupg
         - task: add_gpg_key
@@ -168,6 +169,18 @@ install:
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
+
+    log_ssl_ciphers:
+      cmds:
+        - |
+          IS_OPENSSL_INSTALLED=$(which openssl | wc -l)
+          IS_SORT_INSTALLED=$(which sort | wc -l)
+          IS_UNIQ_INSTALLED=$(which uniq | wc -l)
+          if [ $IS_OPENSSL_INSTALLED -gt 0 ] && [ $IS_SORT_INSTALLED -gt 0 ] && [ $IS_UNIQ_INSTALLED -gt 0 ]; then
+            echo "Detecting available SSL ciphers..."
+            openssl ciphers -v | awk '{print " - " $2}' | sort | uniq
+          fi
+      ignore_error: true
 
     update_apt:
       cmds:
