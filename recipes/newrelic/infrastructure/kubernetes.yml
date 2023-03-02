@@ -488,9 +488,24 @@ install:
               ARGS="${ARGS} --set kube-state-metrics.image.tag=v2.7.0"
             fi
 
+            # Prometheus integrations
+
+            # Legacy Prometheus integration
             ARGS="${ARGS} --set prometheus.enabled=${NR_CLI_PROMETHEUS}"
+
+            # Current Prometheus integration
             ARGS="${ARGS} --set newrelic-prometheus-agent.enabled=${NR_CLI_PROMETHEUS_AGENT}"
-            ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=${NR_CLI_CURATED}"
+            if [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS" ]]; then
+              ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=false"
+              ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=false"
+            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS_EXCEPT_KSM" ]]; then
+              ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=true"
+              ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=false"
+            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "CURATED_EXPERIENCES_ONLY" ]]; then
+              ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=true"
+              ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=true"
+            fi
+
             ARGS="${ARGS} --set kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
             ARGS="${ARGS} --set logging.enabled=${NR_CLI_LOGGING}"
             if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
@@ -564,9 +579,24 @@ install:
               BODY="${BODY},\"kube-state-metrics.image.tag\":\"v2.7.0\""
             fi
 
+            # Prometheus integrations
+
+            # Legacy Prometheus integration
             BODY="${BODY},\"prometheus.enabled\":\"${NR_CLI_PROMETHEUS}\""
+
+            # Current Prometheus integration
             BODY="${BODY},\"newrelic-prometheus-agent.enabled\":\"${NR_CLI_PROMETHEUS_AGENT}\""
-            BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"${NR_CLI_CURATED}\""
+            if [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS" ]]; then
+              BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"false\""
+              BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"false\""
+            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS_EXCEPT_KSM" ]]; then
+              BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"true\""
+              BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"false\""
+            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "CURATED_EXPERIENCES_ONLY" ]]; then
+              BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"true\""
+              BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"true\""
+            fi
+
             BODY="${BODY},\"kubeEvents.enabled\":\"${NR_CLI_KUBE_EVENTS}\""
             BODY="${BODY},\"logging.enabled\":\"${NR_CLI_LOGGING}\""
             BODY="${BODY},\"global.licenseKey\":\"${NEW_RELIC_LICENSE_KEY}\""
