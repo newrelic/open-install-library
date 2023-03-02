@@ -85,14 +85,14 @@ install:
           NR_CLI_PRIVILEGED="{{.NR_CLI_PRIVILEGED}}"
           NR_CLI_BETA="{{.NR_CLI_BETA}}"
 
-          # Deploys New Relic Pixie integration which 
-          # registers the New Relic plugin in Pixie in order to send data from Pixie to New Relic 
+          # Deploys New Relic Pixie integration which
+          # registers the New Relic plugin in Pixie in order to send data from Pixie to New Relic
           NR_CLI_NEWRELIC_PIXIE="{{.NR_CLI_NEWRELIC_PIXIE}}"
 
-          # Deploys Pixie to cluster 
+          # Deploys Pixie to cluster
           NR_CLI_PIXIE="{{.NR_CLI_PIXIE}}"
-         
-          # Pixie is already deployed in cluster 
+
+          # Pixie is already deployed in cluster
           NR_CLI_NEWRELIC_PIXIE_INSTALLED="{{.NR_CLI_NEWRELIC_PIXIE_INSTALLED}}"
 
           NR_CLI_PIXIE_API_KEY="{{.NR_CLI_PIXIE_API_KEY}}"
@@ -219,7 +219,7 @@ install:
           fi
 
           PIXIE_MEM="2Gi"
-          # Check if the nodes have sufficient memory to install Pixie 
+          # Check if the nodes have sufficient memory to install Pixie
           if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
             MEMORY=$($SUDO $KUBECTL get nodes -o jsonpath='{.items[0].status.capacity.memory}' | sed 's/Ki$//')
             if [[ "$MEMORY" -lt 3906250 ]]; then
@@ -366,7 +366,7 @@ install:
                 echo $NR_CLI_PIXIE_API_KEY >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
-              fi 
+              fi
 
               if ! NR_CLI_PIXIE_ENDPOINT=$(px get cluster --cloud-addr 2>&1 | tail -n 1); then
                 echo "Failed to get Pixie cloud address using px CLI." >&2
@@ -379,7 +379,7 @@ install:
                 echo $NR_CLI_PIXIE_ENDPOINT >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
-              fi 
+              fi
 
               if ! NR_CLI_PIXIE_CLUSTER_ID=$(px get cluster --id 2>&1 | tail -n 1); then
                 echo "Failed to get Pixie cluster id using px CLI." >&2
@@ -392,7 +392,7 @@ install:
                 echo $NR_CLI_PIXIE_CLUSTER_ID >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
-              fi 
+              fi
             fi
           fi
 
@@ -431,12 +431,12 @@ install:
             NC='\033[0m'
             if $SUDO helm list --all-namespaces | grep nri-bundle > /dev/null 2>&1; then
               echo "{\"Metadata\":{\"previousNriBundleDetected\":\"Yes\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
-              while :; do 
+              while :; do
                 echo -e -n "${GREEN}Detected a previously installed New Relic Kubernetes integration on cluster, uninstall first? (Uninstallation is recommended, default: Y) Y/N? ${NC} "
                 if [[ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ]]; then
                   UNINSTALL_ANSWER="Y"
                 else
-                  read ans 
+                  read ans
                   echo ""
                   UNINSTALL_ANSWER=$(echo "${ans^^}" | cut -c1-1)
                 fi
@@ -446,17 +446,17 @@ install:
                 if [[ "$UNINSTALL_ANSWER" == "N" ]]; then
                   echo "Attempting install over existing integration."
                   echo "{\"Metadata\":{\"uninstallNriBundleAnswer\":\"No\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
-                  break 
-                fi 
+                  break
+                fi
                 if [[ "$UNINSTALL_ANSWER" == "Y" ]]; then
                   RELEASE_NAME=$(helm list --all-namespaces | grep nri-bundle | awk '{print $1}')
                   RELEASE_NAMESPACE=$(helm list --all-namespaces | grep nri-bundle | awk '{print $2}')
                   echo "{\"Metadata\":{\"uninstallNriBundleAnswer\":\"Yes\", \"helmUninstallCommand\":\"$SUDO helm uninstall $RELEASE_NAME -n $RELEASE_NAMESPACE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
                   $SUDO helm uninstall $RELEASE_NAME -n $RELEASE_NAMESPACE
-                  break 
+                  break
                 fi
                 echo -e "Please type Y or N only."
-              done 
+              done
             else
               echo "{\"Metadata\":{\"previousNriBundleDetected\":\"No\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
             fi
