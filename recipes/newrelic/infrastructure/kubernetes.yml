@@ -86,9 +86,9 @@ install:
 
           # Current Prometheus integration
           NR_CLI_PROMETHEUS_AGENT="{{.NR_CLI_PROMETHEUS_AGENT}}"
-          NR_CLI_PROMETHEUS_SCRAPING_OPTION="{{.NR_CLI_PROMETHEUS_SCRAPING_OPTION}}"
-
+          NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE="{{.NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE}}"
           NR_CLI_CURATED="{{.NR_CLI_CURATED}}"
+
           NR_CLI_LOW_DATA_MODE="{{.NR_CLI_LOW_DATA_MODE}}"
           NR_CLI_PRIVILEGED="{{.NR_CLI_PRIVILEGED}}"
           NR_CLI_BETA="{{.NR_CLI_BETA}}"
@@ -207,9 +207,17 @@ install:
           NR_CLI_KSM=${NR_CLI_KSM:-true}
           NR_CLI_KUBE_EVENTS=${NR_CLI_KUBE_EVENTS:-true}
           NR_CLI_LOGGING=${NR_CLI_LOGGING:-false}
+
+          # Prometheus integrations
+
+          # Legacy Prometheus integration
           NR_CLI_PROMETHEUS=${NR_CLI_PROMETHEUS:-false}
+
+          # Current Prometheus integration
           NR_CLI_PROMETHEUS_AGENT=${NR_CLI_PROMETHEUS_AGENT:-false}
+          NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE=${NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE:-true}
           NR_CLI_CURATED=${NR_CLI_CURATED:-true}
+
           NR_CLI_LOW_DATA_MODE=${NR_CLI_LOW_DATA_MODE:-true}
           NR_CLI_PRIVILEGED=${NR_CLI_PRIVILEGED:-true}
           NR_CLI_BETA="${NR_CLI_BETA:-false}"
@@ -503,21 +511,8 @@ install:
 
             # Current Prometheus integration
             ARGS="${ARGS} --set newrelic-prometheus-agent.enabled=${NR_CLI_PROMETHEUS_AGENT}"
-
-            # Support granular scraping options
-            if [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS" ]]; then
-              ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=false"
-              ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=false"
-            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS_EXCEPT_KSM" ]]; then
-              ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=true"
-              ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=false"
-            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "CURATED_EXPERIENCES_ONLY" ]]; then
-              ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=true"
-              ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=true"
-            else # Same as ALL_ENDPOINTS_EXCEPT_KSM
-              ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=true"
-              ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=false"
-            fi
+            ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=${NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE}"
+            ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=${NR_CLI_CURATED}"
 
             ARGS="${ARGS} --set kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
             ARGS="${ARGS} --set logging.enabled=${NR_CLI_LOGGING}"
@@ -599,21 +594,8 @@ install:
 
             # Current Prometheus integration
             BODY="${BODY},\"newrelic-prometheus-agent.enabled\":\"${NR_CLI_PROMETHEUS_AGENT}\""
-
-            # Support granular scraping options
-            if [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS" ]]; then
-              BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"false\""
-              BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"false\""
-            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "ALL_ENDPOINTS_EXCEPT_KSM" ]]; then
-              BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"true\""
-              BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"false\""
-            elif [[ "${NR_CLI_PROMETHEUS_SCRAPING_OPTION}" == "CURATED_EXPERIENCES_ONLY" ]]; then
-              BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"true\""
-              BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"true\""
-            else # Same as ALL_ENDPOINTS_EXCEPT_KSM
-              BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"true\""
-              BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"false\""
-            fi
+            BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"${NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE}\""
+            BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"${NR_CLI_CURATED}\""
 
             BODY="${BODY},\"kubeEvents.enabled\":\"${NR_CLI_KUBE_EVENTS}\""
             BODY="${BODY},\"logging.enabled\":\"${NR_CLI_LOGGING}\""
