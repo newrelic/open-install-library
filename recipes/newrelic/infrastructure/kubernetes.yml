@@ -444,7 +444,6 @@ install:
 
             KUBECTL_INSTALL=false
 
-            HELM_VERSION="$($SUDO helm version -c --short)"
             # Check if nri-bundle already installed, ask customer if they want uninstall before re-installation, and then move forward.
             GREEN='\033[0;32m'
             NC='\033[0m'
@@ -480,15 +479,15 @@ install:
               echo "{\"Metadata\":{\"previousNriBundleDetected\":\"No\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
             fi
 
-            if [[ $($SUDO helm repo add newrelic https://helm-charts.newrelic.com) ]]; then
-            else
-              echo "ERROR $? returned from (helm-version: $HELM_VERSION): $SUDO helm repo add newrelic https://helm-charts.newrelic.com"
+            HELM_VERSION="$($SUDO helm version -c --short)"
+            ERROR=$($SUDO helm repo add newrelic https://helm-charts.newrelic.com)
+            if [[ "${ERROR}" != "" && "${ERROR}" != "\"newrelic\" already exists with the same configuration, skipping" ]]; then
+              echo "helm (version $HELM_VERSION) repo add failed due to: $ERROR"
               exit 131
             fi
 
             if [[ $($SUDO helm repo update) ]] ; then
             else
-              echo "ERROR $? returned from (helm-version: $HELM_VERSION): $SUDO helm repo update"
               exit 131
             fi
 
@@ -652,7 +651,6 @@ install:
 
             if [[ $($SUDO $KUBECTL apply -f $KUBECTL_YAML_DIR/newrelic-k8s.yml) ]]; then
             else
-              echo "ERROR $? returned from (helm-version: $HELM_VERSION): $SUDO $KUBECTL apply -f $KUBECTL_YAML_DIR/newrelic-k8s.yml"
               exit 131
             fi
           fi
