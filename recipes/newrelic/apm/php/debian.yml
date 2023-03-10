@@ -154,7 +154,8 @@ install:
     user_input:
       cmds:
         - |
-          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+          # Interactive install with NEW_RELIC_APPLICATION_NAME envar unset, prompts user input
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" && -z "$NEW_RELIC_APPLICATION_NAME" ]]; then
             printf "What is the name of your PHP application? (Double-quote (\") is not a valid character in the name) "
             read -r APPLICATION_NAME
 
@@ -163,6 +164,11 @@ install:
             APPLICATION_RESTART=${APPLICATION_RESTART:-y}
 
             echo "$APPLICATION_NAME $APPLICATION_RESTART" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+          fi
+
+          # Interactive install with NEW_RELIC_APPLICATION_NAME envar set, uses envar and also defaults to service restart
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" && ! -z $NEW_RELIC_APPLICATION_NAME ]]; then
+            echo "$NEW_RELIC_APPLICATION_NAME y" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
           fi
 
     verify_continue:
