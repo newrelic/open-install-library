@@ -105,14 +105,6 @@ preInstall:
 
 validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
 
-inputVars:
-  - name: "NR_PHP_APPLICATION"
-    prompt: "What is the name of your PHP application? (Double-quote (\") is not a valid character in the name)"
-    default: "PHP Application"
-  - name: "NR_PHP_RESTART"
-    prompt: "Restart the PHP web service after PHP agent installation? Selecting 'y' will automatically restart php-fpm, nginx, or apache depending on the service that is detected. Selecting 'n' will require you to manually restart the process when prompted. (y/n)"
-    default: "y"
-
 install:
   version: "3"
   silent: true
@@ -127,13 +119,17 @@ install:
     NOCOLOR: '\033[0m'
     YELLOW: '\033[0;33m'
     ARROW: '\033[0;36m===> \033[0;97m'
+    NEW_RELIC_APPLICATION_NAME: '{{.NEW_RELIC_APPLICATION_NAME}}'
+    NEW_RELIC_APPLICATION_RESTART: 'y'
+    USER_INPUT: 'user_input.txt'
 
   tasks:
     default:
       cmds:
+        - task: create_shared
+        - task: user_input
         - task: verify_continue
         - task: assert_pre_req
-        - task: create_shared
         - task: clean_slate
         - task: detect_services
         - task: update_apt
@@ -148,12 +144,53 @@ install:
         - task: send_transaction
         - task: cleanup_temp_files
 
+    create_shared:
+      cmds:
+        - |
+          rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
+          mkdir -p {{.TMP_INSTALL_DIR}}
+          echo -e "{{.WHITE}}Temporary directory {{.TMP_INSTALL_DIR}} created{{.NOCOLOR}}"
+
+    user_input:
+      cmds:
+        - |
+          # Interactive install with NEW_RELIC_APPLICATION_NAME envar unset, prompts user input
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" && -z "$NEW_RELIC_APPLICATION_NAME" ]]; then
+            printf "What is the name of your PHP application? (Double-quote (\") is not a valid character in the name) "
+            read -r APPLICATION_NAME
+
+            printf "Restart the PHP web service after PHP agent installation? Selecting 'y' will automatically restart php-fpm, nginx, or apache depending on the service that is detected. Selecting 'n' will require you to manually restart the process when prompted. (y/n)"
+            read -r APPLICATION_RESTART
+            APPLICATION_RESTART=${APPLICATION_RESTART:-y}
+
+            echo "$APPLICATION_NAME $APPLICATION_RESTART" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+          fi
+
+          # Interactive install with NEW_RELIC_APPLICATION_NAME envar set, uses envar and also defaults to service restart
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" && ! -z $NEW_RELIC_APPLICATION_NAME ]]; then
+            echo "$NEW_RELIC_APPLICATION_NAME y" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+          fi
+
     verify_continue:
       cmds:
         - |
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+            read -r APPLICATION_NAME APPLICATION_RESTART < "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+          else
+            APPLICATION_NAME="{{.NEW_RELIC_APPLICATION_NAME}}"
+            APPLICATION_RESTART="{{.NEW_RELIC_APPLICATION_RESTART}}"
+
+            # Remove '{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}' and re-create it again with
+            # new values to make them available in next tasks.
+            if [ -f "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" ]; then
+              rm -f "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" 2>/dev/null
+            fi
+            echo "$APPLICATION_NAME $APPLICATION_RESTART" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+          fi
+
           echo -e "{{.WHITE}}Confirmation:  The following options were selected.  If you wish to change an option, please select 'n' at the prompt and restart the installation."
-          echo -e "* The following application name was selected: {{.NR_PHP_APPLICATION}}"
-          if [ "{{.NR_PHP_RESTART}}" = "y" ]; then
+          echo -e "* The following application name was selected: $APPLICATION_NAME"
+          if [ "$APPLICATION_RESTART" = "y" ]; then
             echo -e "{{.YELLOW}}* Automatic process restart was selected.  This installation will restart the php-fpm or nginx process depending on the application architecture detected.{{.NOCOLOR}}"
           else
             echo -e "{{.YELLOW}}* Manual process restart was selected.  This installation will not automatically restart the apache, php-fpm, or nginx process depending on the application architecture detected.  You will be prompted to restart manually in order to complete a successful installation of the PHP agent.{{.NOCOLOR}}"
@@ -224,13 +261,6 @@ install:
             echo "This installation recipe for the New Relic PHP Agent on Linux requires the directory /etc/apt/sources.list.d to exist."
             exit 131
           fi
-
-    create_shared:
-      cmds:
-        - |
-          rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
-          mkdir -p {{.TMP_INSTALL_DIR}}
-          echo -e "{{.WHITE}}Temporary directory {{.TMP_INSTALL_DIR}} created{{.NOCOLOR}}"
 
     clean_slate:
       cmds:
@@ -453,6 +483,7 @@ install:
           # files.
           #
 
+          APPLICATION_NAME=$(cat "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" | cut -d' ' -f1 | xargs echo -n)
           INI_DIRS=($WEB_INI_DIR $CLI_INI_DIR)
           for dirs in $INI_DIRS; do
             for ini in $dirs; do
@@ -485,13 +516,17 @@ install:
                 continue
               fi
 
-              ESCAPED_APP_NAME="{{.NR_PHP_APPLICATION}}"
-              # '\' replacement needs to be first so as to not replace the escaping '\'s added later
-              ESCAPED_APP_NAME=${ESCAPED_APP_NAME//\\/\\} # Replace every occurrence of '\' with "\\"
-              ESCAPED_APP_NAME=${ESCAPED_APP_NAME//\//\/} # Replace every occurrence of '/' with "\/"
-              ESCAPED_APP_NAME=${ESCAPED_APP_NAME//\&/\&} # Replace every occurrence of '&' with "\&"
+              # Default aplication name, if APPLICATION_NAME have not been set so far
+              if [ -z "$APPLICATION_NAME" ]; then
+                APPLICATION_NAME="PHP Application"
+              else
+                # '\' replacement needs to be first so as to not replace the escaping '\'s added later
+                APPLICATION_NAME=${APPLICATION_NAME//\\/\\} # Replace every occurrence of '\' with "\\"
+                APPLICATION_NAME=${APPLICATION_NAME//\//\/} # Replace every occurrence of '/' with "\/"
+                APPLICATION_NAME=${APPLICATION_NAME//\&/\&} # Replace every occurrence of '&' with "\&"
+              fi
 
-              sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"${ESCAPED_APP_NAME}\"/" $ini_full_name
+              sed -i "s/newrelic.appname = \"PHP Application\"/newrelic.appname = \"${APPLICATION_NAME}\"/" $ini_full_name
               if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
                 sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
                 sed -i 's/;newrelic.loglevel = "info"/newrelic.loglevel = "verbosedebug"/' $ini_full_name
@@ -557,7 +592,8 @@ install:
           # Case: apache only or nginx only, they respective service needs to be restarted.
           # This means only restart the first process in processes_to_restart.txt.
           #
-          if [ "{{.NR_PHP_RESTART}}" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
+          APPLICATION_RESTART=$(cat "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" | cut -d' ' -f2 | xargs echo -n)
+          if [ "$APPLICATION_RESTART" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
             cd {{.TMP_INSTALL_DIR}}
             read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
             echo -e "{{.YELLOW}}Restarting $process as privileged user $user_name{{.GRAY}}"
