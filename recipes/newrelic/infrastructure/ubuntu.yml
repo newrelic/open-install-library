@@ -186,7 +186,11 @@ install:
       cmds:
         - |
           # Get latest definitions and skip any failure because of deprecation
-          apt-get -o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false update -yq
+          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+          fi
+          apt-get $OPTIONS update -yq
       silent: true
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
@@ -225,14 +229,22 @@ install:
       cmds:
         - |
           # Get latest definitions and skip any failure because of deprecation
-          apt-get -o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false update -yq
+          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+          fi
+          apt-get $OPTIONS update -yq
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
 
     install_infra:
       cmds:
         - |
-          apt-get -o DPkg::Lock::Timeout=60 install newrelic-infra -y -qq
+          OPTIONS="-o DPkg::Lock::Timeout=60"
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+          fi
+          apt-get $OPTIONS install newrelic-infra -y -qq
       silent: true
 
     restart:
