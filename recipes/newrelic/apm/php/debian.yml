@@ -208,19 +208,22 @@ install:
             read -r APPLICATION_RESTART
             APPLICATION_RESTART=${APPLICATION_RESTART:-y}
 
-            echo "$APPLICATION_NAME $APPLICATION_RESTART" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            echo "$APPLICATION_NAME" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            echo "$APPLICATION_RESTART" >> "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
           fi
 
           # Interactive install with NEW_RELIC_APPLICATION_NAME envar set, uses envar and also defaults to service restart
           if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" && ! -z $NEW_RELIC_APPLICATION_NAME ]]; then
-            echo "$NEW_RELIC_APPLICATION_NAME y" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            echo "$NEW_RELIC_APPLICATION_NAME" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            echo "y" >> "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
           fi
 
     verify_continue:
       cmds:
         - |
           if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
-            read -r APPLICATION_NAME APPLICATION_RESTART < "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            read -r APPLICATION_NAME < "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            read -r APPLICATION_RESTART < <(tail -n 1 "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}")
           else
             APPLICATION_NAME="{{.NEW_RELIC_APPLICATION_NAME}}"
             APPLICATION_RESTART="{{.NEW_RELIC_APPLICATION_RESTART}}"
@@ -230,7 +233,8 @@ install:
             if [ -f "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" ]; then
               rm -f "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" 2>/dev/null
             fi
-            echo "$APPLICATION_NAME $APPLICATION_RESTART" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            echo "$APPLICATION_NAME" > "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
+            echo "$APPLICATION_RESTART" >> "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
           fi
 
           echo -e "{{.WHITE}}Confirmation:  The following options were selected.  If you wish to change an option, please select 'n' at the prompt and restart the installation."
@@ -486,7 +490,7 @@ install:
           # files.
           #
 
-          APPLICATION_NAME=$(cat "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" | cut -d' ' -f1 | xargs echo -n)
+          read -r APPLICATION_NAME < "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}"
           INI_DIRS=($WEB_INI_DIR $CLI_INI_DIR)
           for dirs in $INI_DIRS; do
             for ini in $dirs; do
@@ -529,7 +533,7 @@ install:
                 APPLICATION_NAME=${APPLICATION_NAME//\&/\&} # Replace every occurrence of '&' with "\&"
               fi
 
-              sed -i "s/newrelic.appname = \"[^\"]*\"/newrelic.appname = \"${ESCAPED_APPLICATION_NAME}\"/" $ini_full_name
+              sed -i "s/newrelic.appname = \"[^\"]*\"/newrelic.appname = \"${APPLICATION_NAME}\"/" $ini_full_name
               if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
                 sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
                 sed -i 's/;newrelic.loglevel = "info"/newrelic.loglevel = "verbosedebug"/' $ini_full_name
@@ -595,7 +599,7 @@ install:
           # Case: apache only or nginx only, they respective service needs to be restarted.
           # This means only restart the first process in processes_to_restart.txt.
           #
-          APPLICATION_RESTART=$(cat "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}" | cut -d' ' -f2 | xargs echo -n)
+          read -r APPLICATION_RESTART < <(tail -n 1 "{{.TMP_INSTALL_DIR}}/{{.USER_INPUT}}")
           if [ "$APPLICATION_RESTART" = "y" ]  && [ -f "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt" ]; then
             cd {{.TMP_INSTALL_DIR}}
             read -r process user_name < "{{.TMP_INSTALL_DIR}}/processes_to_restart.txt"
