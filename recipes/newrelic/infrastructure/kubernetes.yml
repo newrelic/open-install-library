@@ -570,9 +570,13 @@ install:
 
             echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommandBeforeExecution\":\"$SUDO helm upgrade $CLEANED_ARGS\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
 
-            if [[ $($SUDO helm upgrade $ARGS) ]]; then
-            else
-              echo “ERROR $? returned from: $SUDO helm upgrade $CLEANED_ARGS”
+            ERROR=$($SUDO helm upgrade $ARGS)
+            if [[ $? != 0 ]]; then
+              if [[ "${ERROR}" != "" ]]; then
+                echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
+              else 
+                echo "helm (version $HELM_VERSION) repo upgrade installation failed."
+              fi
               exit 131
             fi
           else
