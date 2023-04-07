@@ -449,7 +449,6 @@ install:
             echo ""
 
             KUBECTL_INSTALL=false
-
             # Check if nri-bundle already installed, ask customer if they want uninstall before re-installation, and then move forward.
             GREEN='\033[0;32m'
             NC='\033[0m'
@@ -658,8 +657,15 @@ install:
             curl -s -H "Content-Type: application/json" -d "${BODY}" "${URL}" > $KUBECTL_YAML_DIR/newrelic-k8s.yml
 
             if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
-              $SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/main/k8s/operator/helm/crds/olm_crd.yaml 2>/dev/null
-              $SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/main/k8s/operator/crd/base/px.dev_viziers.yaml 2>/dev/null
+              # only keep stderr with 2>&1 >/dev/null; if the error include any other than AlreadyExist, collect the error in the DEBUG_MESSAGE
+              ERROR=$($SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/release/operator/v0.1.0/k8s/operator/helm/crds/olm_crd.yaml 2>&1 >/dev/null | grep -v AlreadyExists)
+              if [[ "${ERROR}" != "" ]]; then
+                  DEBUG_MESSAGE="OLM CRD creation failed - ${ERROR}; ${DEBUG_MESSAGE}"
+              fi
+               ERROR=$($SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/release/operator/v0.1.0/k8s/operator/crd/base/px.dev_viziers.yaml 2>&1 >/dev/null | grep -v AlreadyExists)
+              if [[ "${ERROR}" != "" ]]; then
+                  DEBUG_MESSAGE="OLM CRD creation failed - ${ERROR}; ${DEBUG_MESSAGE}"
+              fi
             fi
 
             # Clean up old nri-metadata-injection jobs if they exist
