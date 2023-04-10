@@ -47,6 +47,7 @@ install:
         - task: install_infra
         - task: start_infra
         - task: assert_agent_status_ok
+        - task: get_infra_key
 
     assert_required_permissions:
       cmds:
@@ -150,7 +151,7 @@ install:
           if ($env:HTTPS_PROXY) {
             $WebClient.Proxy = New-Object System.Net.WebProxy($env:HTTPS_PROXY, $true)
           }
-          
+
           try {
             $WebClient.DownloadFile("{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/windows/newrelic-infra.msi", "$env:TEMP\newrelic-infra.msi")
           }
@@ -235,8 +236,8 @@ install:
       cmds:
         - |
           powershell -command '
-            Function isInfraRunning { 
-              (Get-Service newrelic-infra -ErrorAction SilentlyContinue | Select-Object Status).Status -eq "Running" 
+            Function isInfraRunning {
+              (Get-Service newrelic-infra -ErrorAction SilentlyContinue | Select-Object Status).Status -eq "Running"
             }
             $maxRetries = 150
             $tries = 0
@@ -282,15 +283,39 @@ install:
           $version = (Get-WmiObject -class Win32_OperatingSystem).Caption
           $metadata = @"
           {
-            "Metadata": 
+            "Metadata":
             {
                 "version": "$version"
             }
-          } 
+          }
           "@
-          try { 
-            $metadata | Set-Content {{.NR_CLI_OUTPUT}} 
+          try {
+            $metadata | Set-Content {{.NR_CLI_OUTPUT}}
           } catch {}
+          '
+
+    get_infra_key:
+      cmds:
+        - |
+          powershell -command '
+            $INFRA_KEY=Invoke-WebRequest -UseBasicParsing -Method Get -Uri http://localhost:18003/v1/status/entity | Select-Object -ExpandProperty Content;
+            $INFRA_KEY -match "i-.+[a-z0-9A-Z]";
+            $INFRA_KEY=$Matches[0];
+            if ($INFRA_KEY) {
+              $metadata = @"
+                {
+                  "Metadata":
+                  {
+                      "INFRA_KEY": "$INFRA_KEY"
+                  }
+                }
+              "@
+              try {
+                $metadata | Set-Content {{.NR_CLI_OUTPUT}}
+              } catch {}
+            } else {
+              Write-Host "empty infrastructure agent key"
+            }
           '
 
 postInstall:
