@@ -70,6 +70,7 @@ install:
         - task: install_infra
         - task: restart
         - task: assert_agent_status_ok
+        - task: get_infra_key
 
     write_recipe_metadata:
       cmds:
@@ -334,6 +335,16 @@ install:
 
             sleep 2
           done
+
+    get_infra_key:
+      cmds:
+        - |
+          INFRA_KEY=$(curl http://localhost:18003/v1/status/entity -s | tr -d {}\" | sed -e 's/^.*key://')
+          if [ ! -z "$INFRA_KEY" ]; then
+            echo "{\"Metadata\":{\"INFRA_KEY\":\"$INFRA_KEY\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+          else
+            echo "empty infrastructure agent key"
+          fi
 
 postInstall:
   info: |2
