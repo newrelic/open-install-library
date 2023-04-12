@@ -488,16 +488,12 @@ install:
             fi
 
             HELM_VERSION="$($SUDO helm version -c --short)"
-            ERROR=$($SUDO helm repo add newrelic https://helm-charts.newrelic.com)
-            if [[ $? != 0 ]]; then
-              if [[ "${ERROR}" !=  "" ]]; then
-                echo "helm (version $HELM_VERSION) repo add failed due to: $ERROR"
-              else
-                echo "helm (version $HELM_VERSION) repo add failed."
-              fi
+            # With 2>&1 >/dev/null, ERROR only keeps the error message if $? is non-zero and is empty if $? is zero
+            ERROR=$($SUDO helm repo add newrelic https://helm-charts.newrelic.com 2>&1 >/dev/null)
+            if [[ "${ERROR}" !=  "" ]]; then
+              echo "helm (version $HELM_VERSION) repo add failed due to: $ERROR"
               exit 131
             fi
-
             if [[ $($SUDO helm repo update) ]] ; then
             else
               exit 131
@@ -570,15 +566,13 @@ install:
 
             echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommandBeforeExecution\":\"$SUDO helm upgrade $CLEANED_ARGS\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
 
-            ERROR=$($SUDO helm upgrade $ARGS)
-            if [[ $? != 0 ]]; then
-              if [[ "${ERROR}" != "" ]]; then
-                echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
-              else 
-                echo "helm (version $HELM_VERSION) repo upgrade installation failed."
-              fi
+            # With 2>&1 >/dev/null, ERROR only keeps the error message if $? is non-zero and is empty if $? is zero
+            ERROR=$($SUDO helm upgrade $ARGS 2>&1 >/dev/null)
+            if [[ "${ERROR}" != "" ]]; then
+              echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
               exit 131
             fi
+            echo $?
           else
             echo ""
             echo "Using kubectl to install the Kubernetes integration"
