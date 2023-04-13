@@ -43,6 +43,21 @@ preInstall:
         exit 1
       fi
 
+      # Map of tool names to the associated error code
+      required_tools_and_error_codes="grep:132 sed:132 awk:132 egrep:132 curl:132 mount:132 apt-get:132"
+
+      for tuple in $required_tools_and_error_codes; do
+        tool=$(echo ${tuple} |cut -d':' -f1)
+        code=$(echo ${tuple} |cut -d':' -f2)
+
+        IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+        if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+        then
+          echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >&2
+          exit ${code}
+        fi
+      done
+
       IS_FPM_RUNNING=$(ps aux | grep php-fpm | grep -v grep | wc -l)
       IS_APACHE_RUNNING=$(ps -eo comm,etime,user | grep root | grep apache2 | grep -v grep| wc -l)
       if [ "$IS_FPM_RUNNING" -eq 0 ]; then
@@ -72,21 +87,6 @@ preInstall:
         exit 132
       fi
 
-      # Map of tool names to the associated error code
-      required_tools_and_error_codes="grep:132 sed:132 awk:132 egrep:132 curl:132 mount:132 apt-get:132"
-
-      for tuple in $required_tools_and_error_codes; do
-        tool=$(echo ${tuple} |cut -d':' -f1)
-        code=$(echo ${tuple} |cut -d':' -f2)
-
-        IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
-        if [ "$IS_TOOL_INSTALLED" -eq 0 ]
-        then
-          echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >&2
-          exit ${code}
-        fi
-      done
-
       # check if /tmp is mounted noexec - this causes problems with how the recipe works
       tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
       if [ ! -z "${tmp_is_noexec}" ]; then
@@ -97,6 +97,18 @@ preInstall:
       # need directory for extra repositories to exist
       if [ ! -d "/etc/apt/sources.list.d/" ]; then
         echo "This installation recipe for the New Relic PHP Agent on Linux requires the directory /etc/apt/sources.list.d to exist." >&2
+        exit 132
+      fi
+
+      # check if we have permissions to manipulate /tmp
+      mkdir -p /tmp/newrelic-php-agent.test-dir 2>/dev/null
+      MKDIR_STATUS=$?
+
+      rm -rf /tmp/newrelic-php-agent.test-dir 2>/dev/null
+      RM_STATUS=$?
+
+      if [ $RM_STATUS -ne 0 ] || [ $MKDIR_STATUS -ne 0 ]; then
+        echo "This installation recipe for the New Relic PHP Agent on Linux requires write permissions to /tmp. "
         exit 132
       fi
 
@@ -126,7 +138,6 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_pre_req
         - task: user_input
         - task: verify_continue
         - task: clean_slate
@@ -142,59 +153,6 @@ install:
         - task: restart_services
         - task: send_transaction
         - task: cleanup_temp_files
-
-    assert_pre_req:
-      cmds:
-        - |
-          if [ -z "$SUDO_USER" ]; then
-            echo -e "{{.RED}}This installation recipe for the New Relic PHP agent must be run under sudo.{{.NOCOLOR}}" >> /dev/stderr
-            exit 7
-          fi
-        - |
-          IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
-          if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]
-          then
-            echo -e "{{.RED}}This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'.{{.NOCOLOR}}" >> /dev/stderr
-            exit 20
-          fi
-        - |
-          # Map of tool names to the associated error code
-          required_tools_and_error_codes="grep:10 sed:11 awk:12 egrep:10 curl:22 mount:131 php:131 apt-get:131"
-
-          for tuple in $required_tools_and_error_codes; do
-            tool=$(echo ${tuple} |cut -d':' -f1)
-            code=$(echo ${tuple} |cut -d':' -f2)
-
-            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
-            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
-            then
-              echo -e "{{.RED}}This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed.{{.NOCOLOR}}" >> /dev/stderr
-              exit ${code}
-            fi
-          done
-        - |
-          # check if /tmp is mounted noexec
-          tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
-          if [ ! -z "${tmp_is_noexec}" ]; then
-            echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec."
-            exit 131
-          fi
-        - |
-          # need directory for extra repositories to exist
-          if [ ! -d "/etc/apt/sources.list.d/" ]; then
-            echo "This installation recipe for the New Relic PHP Agent on Linux requires the directory /etc/apt/sources.list.d to exist."
-            exit 131
-          fi
-        - |
-          # check if we have permissions to manipulate /tmp          
-          rm -rf {{.TMP_INSTALL_DIR}} 2>/dev/null
-          RM_STATUS=$?
-          mkdir -p {{.TMP_INSTALL_DIR}} 2>/dev/null
-          MKDIR_STATUS=$?
-          if [ $RM_STATUS -ne 0 ] || [ $MKDIR_STATUS -ne 0 ]; then
-            echo "This installation recipe for the New Relic PHP Agent on Linux requires write permissions to /tmp. "
-            exit 131
-          fi          
 
     user_input:
       cmds:
@@ -267,7 +225,6 @@ install:
               echo -e "{{.WHITE}}Please type Y or N only.{{.NOCOLOR}}"
             done
           fi
-
 
     clean_slate:
       cmds:
