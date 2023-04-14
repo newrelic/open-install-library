@@ -27,86 +27,6 @@ processMatch:
   - apache2
   - httpd
 
-preInstall:
-  requireAtDiscovery: |
-      # verify running with sudo
-      if [ -z "$SUDO_USER" ]; then
-        echo "This installation recipe for the New Relic PHP agent must be run under sudo." >&2
-        exit 3
-      fi
-
-      IS_PHP_INSTALLED=$(which php | wc -l)
-      if [ "$IS_PHP_INSTALLED" -eq 0 ]; then
-        # PHP not installed, no detection
-        exit 1
-      fi
-
-      # Map of tool names to the associated error code
-      required_tools_and_error_codes="grep:132 sed:132 awk:132 egrep:132 curl:132 mount:132 yum:132"
-
-      for tuple in $required_tools_and_error_codes; do
-        tool=$(echo ${tuple} |cut -d':' -f1)
-        code=$(echo ${tuple} |cut -d':' -f2)
-
-        IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
-        if [ "$IS_TOOL_INSTALLED" -eq 0 ]
-        then
-          echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >&2
-          exit ${code}
-        fi
-      done
-
-      IS_FPM_RUNNING=$(ps aux | grep php-fpm | grep -v grep | wc -l)
-      IS_APACHE_RUNNING=$(ps -eo comm,etime,user | grep root | grep apache2 | grep -v grep| wc -l)
-      if [ "$IS_FPM_RUNNING" -eq 0 ]; then
-        # No FPM running, recipe cannot install, either signal DETECTED or skip
-        if [ "$IS_APACHE_RUNNING" -eq 0 ]; then
-          # No Apache or FPM running, no detection
-          exit 4
-        else
-          # No FPM, Apache is running, let's check if Apache PHP module is enabled
-          IS_APACHE_PHP_ENABLED=$(apachectl -t -D DUMP_MODULES | grep php | grep -v grep | wc -l)
-          if [ "$IS_APACHE_PHP_ENABLED" -eq 0 ]; then
-            # No FPM, Apache is running, but not PHP module enabled, no detection
-            exit 5
-          else
-            echo "No FPM, Apache running with PHP module, Ok to install" >&2
-          fi
-        fi
-      else
-        echo "PHP-FPM present, Ok to install" >&2
-      fi
-
-      # Either FPM or Apache present with PHP enabled, will signal DETECTED or ok to install
-
-      IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
-      if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
-        echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'." >&2
-        exit 132
-      fi
-
-      # check if /tmp is mounted noexec - this causes problems with how the recipe works
-      tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
-      if [ ! -z "${tmp_is_noexec}" ]; then
-        echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec." >&2
-        exit 132
-      fi
-
-      # check if we have permissions to manipulate /tmp
-      mkdir -p /tmp/newrelic-php-agent.test-dir 2>/dev/null
-      MKDIR_STATUS=$?
-
-      rm -rf /tmp/newrelic-php-agent.test-dir 2>/dev/null
-      RM_STATUS=$?
-
-      if [ $RM_STATUS -ne 0 ] || [ $MKDIR_STATUS -ne 0 ]; then
-        echo "This installation recipe for the New Relic PHP Agent on Linux requires write permissions to /tmp. "
-        exit 132
-      fi
-
-      # everything looks good!
-      exit 0
-
 validationNrql: "SELECT count(*) from Transaction WHERE host like '{{.HOSTNAME}}%' facet entityGuid since 10 minutes ago"
 
 install:
@@ -141,6 +61,92 @@ install:
         - task: restart_services
         - task: send_transaction
         - task: cleanup_temp_files
+
+    assert_pre_req:
+      cmds:
+        - |
+          # newline for visibility
+          echo
+
+          # verify running with sudo
+          if [ -z "$SUDO_USER" ]; then
+            echo "This installation recipe for the New Relic PHP agent must be run under sudo." >&2
+            echo
+            exit 3
+          fi
+
+          IS_PHP_INSTALLED=$(which php | wc -l)
+          if [ "$IS_PHP_INSTALLED" -eq 0 ]; then
+            # PHP not installed, no detection
+            exit 1
+          fi
+
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:132 sed:132 awk:132 egrep:132 curl:132 mount:132 apt-get:132"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]
+            then
+              echo "This installation recipe for the New Relic PHP Agent on Linux requires '${tool}' to be installed." >&2
+              echo
+              exit ${code}
+            fi
+          done
+
+          IS_FPM_RUNNING=$(ps aux | grep php-fpm | grep -v grep | wc -l)
+          IS_APACHE_RUNNING=$(ps -eo comm,etime,user | grep root | grep apache2 | grep -v grep| wc -l)
+          if [ "$IS_FPM_RUNNING" -eq 0 ]; then
+            # No FPM running, recipe cannot install, either signal DETECTED or skip
+            if [ "$IS_APACHE_RUNNING" -eq 0 ]; then
+              # No Apache or FPM running, no detection
+              exit 4
+            else
+              # No FPM, Apache is running, let's check if Apache PHP module is enabled
+              IS_APACHE_PHP_ENABLED=$(apachectl -t -D DUMP_MODULES | grep php | grep -v grep | wc -l)
+              if [ "$IS_APACHE_PHP_ENABLED" -eq 0 ]; then
+                # No FPM, Apache is running, but not PHP module enabled, no detection
+                exit 5
+              else
+                echo "No FPM, Apache running with PHP module, Ok to install"
+              fi
+            fi
+          else
+            echo "PHP-FPM present, Ok to install"
+          fi
+
+          # Either FPM or Apache present with PHP enabled, will signal DETECTED or ok to install
+
+          IS_SYSTEMCTL_INSTALLED=$(which systemctl | wc -l)
+          if [ "$IS_SYSTEMCTL_INSTALLED" -eq 0 ]; then
+            echo "This installation recipe for the New Relic PHP agent only supports services managed by 'systemd'." >&2
+            echo
+            exit 132
+          fi
+
+          # check if /tmp is mounted noexec - this causes problems with how the recipe works
+          tmp_is_noexec=$(mount| egrep ".*on /tmp.*,noexec,.*$")
+          if [ ! -z "${tmp_is_noexec}" ]; then
+            echo "This installation recipe for the New Relic PHP Agent on Linux requires /tmp to not be mounted noexec." >&2
+            echo
+            exit 132
+          fi
+
+          # check if we have permissions to manipulate /tmp
+          mkdir -p /tmp/newrelic-php-agent.test-dir 2>/dev/null
+          MKDIR_STATUS=$?
+
+          rm -rf /tmp/newrelic-php-agent.test-dir 2>/dev/null
+          RM_STATUS=$?
+
+          if [ $RM_STATUS -ne 0 ] || [ $MKDIR_STATUS -ne 0 ]; then
+            echo "This installation recipe for the New Relic PHP Agent on Linux requires write permissions to /tmp."
+            echo
+            exit 132
+          fi
 
     user_input:
       cmds:
