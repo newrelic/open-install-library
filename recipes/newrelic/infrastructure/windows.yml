@@ -47,6 +47,7 @@ install:
         - task: install_infra
         - task: start_infra
         - task: assert_agent_status_ok
+        - task: get_infra_key
 
     assert_required_permissions:
       cmds:
@@ -284,6 +285,42 @@ install:
           try {
             $metadata | Set-Content {{.NR_CLI_OUTPUT}}
           } catch {}
+          '
+
+    get_infra_key:
+      cmds:
+        - |
+          powershell -command '
+            $maxRetries = 150
+            $tries = 0
+            while ($tries -lt $maxRetries) {
+              $tries += 1
+              $agentStatus = ""
+              try {
+                $agentStatus = Invoke-WebRequest -UseBasicParsing -Method Get -Uri http://localhost:18003/v1/status/errors | Select-Object -ExpandProperty Content;
+              } catch { }
+              if ($agentStatus -ieq "{}") {
+                try {
+                  $infraKey = Invoke-WebRequest -UseBasicParsing -Method Get -Uri http://localhost:18003/v1/status/entity | Select-Object -ExpandProperty Content;
+                } catch { }
+
+                $infraKey = $infraKey -replace "[""{}]","" -replace "^.*key:",""
+
+                if ($infraKey) {
+                  Write-Host "Infra key: $infraKey"
+                  $metadata = "{""Metadata"":{""INFRA_KEY"":""$infraKey""}}"
+                  try {
+                    $metadata | Set-Content {{.NR_CLI_OUTPUT}}
+                  } catch {}
+                  break
+                } 
+              }
+              Start-Sleep -s 1
+            }
+
+            if (($infraKey -eq $null) -or ($infraKey -eq "")) {
+              Write-Host "empty infrastructure agent key"
+            }
           '
 
 postInstall:
