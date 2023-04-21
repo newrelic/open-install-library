@@ -229,8 +229,26 @@ install:
 
     start_infra:
       cmds:
-        - powershell -command 'net start newrelic-infra'
-        - echo "New Relic infrastructure agent for Windows installed and started"
+        - |
+          powershell -command '
+          $serviceName = "newrelic-infra"
+          $service = Get-Service $serviceName -ErrorAction SilentlyContinue -ErrorVariable errorMessage
+          if ($service -eq $null) {
+              Write-Host "The service $serviceName is not present. Error message: $errorMessage" -ForegroundColor Red
+          }
+          if ($service.Status -ne "Running") {
+              try {
+                  Start-Service -Name $serviceName
+                  Write-Host "New Relic infrastructure agent for Windows installed and started"  -ForegroundColor Green
+              }
+              catch {
+                  Write-Host "Error starting service: $_" -ForegroundColor Red
+              }
+          }
+          else {
+              Write-Host "$serviceName is already running" -ForegroundColor Green
+          }
+          '
 
     assert_agent_status_ok:
       cmds:
