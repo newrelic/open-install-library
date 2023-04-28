@@ -73,17 +73,47 @@ install:
           if [ -f /tmp/policy.json ]; then
             sudo rm -f /tmp/policy.json
           fi
+          
+          # check if the file is deleted successfully 
+          if [ ! -f "/tmp/policy.json" ]; then
+            echo "File deleted successfully"
+          else
+            echo "Failed to delete '/tmp/policy.json' "
+            exit 2
+          fi
+
+          # check if the user has the write permissions 
+          if [ ! -w "/tmp" ]; then
+            echo "Error: You do not have write permission to the /tmp directory"
+            exit 2
+          fi
+
+          # Check if the filesystem containing the /tmp directory is full
+          if [ $(df --output=avail /tmp | tail -n 1) -lt 1 ]; then
+            echo "Error: The filesystem containing the /tmp directory is full"
+            exit 2
+          fi
+
           sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
           {
             "query": "mutation {alertsPolicyCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policy: { name: POLICY_NAME incidentPreference: PER_CONDITION_AND_TARGET }) { id name } }"
           }
           EOT
+
+          # check if tee is successful
           if [ $? -eq 0 ]; then 
             echo "File '/tmp/policy.json' is created"
           else 
             echo "Unable to create the file '/tmp/policy.json'. Please retry using the right permissions"
             exit 2
           fi 
+
+          # check if sed is not installed 
+          if ! command -v sed &> /dev/null; then
+            echo "sed is not installed"
+            exit 11
+          fi
+
           sudo sed -i "s/POLICY_NAME/\"\"{{.ALERT_POLICY_NAME}}\"\"/g" /tmp/policy.json
           sudo sed -i 's/""/\\"/g' /tmp/policy.json
           POLICY_RESULT=$(curl -sX POST $NEW_RELIC_API_URL'/graphql' \
@@ -114,6 +144,14 @@ install:
           if [ -f /tmp/condition.json ]; then
             sudo rm -f /tmp/condition.json
           fi
+          # check if the file is deleted successfully 
+          if [ ! -f "/tmp/condition.json" ]; then
+            echo "File deleted successfully"
+          else
+            echo "Failed to delete '/tmp/condition.json' "
+            exit 2
+          fi
+          
           sudo tee -a /tmp/condition.json > /dev/null <<"EOT"
           {
             "query": "mutation {alertsNrqlConditionStaticCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 85 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 valueFunction: SINGLE_VALUE }) { id name } }"
@@ -149,12 +187,6 @@ install:
             "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
           }
           EOT
-          if [ $? -eq 0 ]; then 
-            echo "File '/tmp/condition.json' is created"
-          else 
-            echo "Unable to create the file '/tmp/condition.json'. Please retry using the right permissions"
-            exit 2
-          fi 
           sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
           sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_ERROR_RATE_NAME}}\"\"/g" /tmp/condition.json
           sudo sed -i "s/CONDITION_ID/\"\"$HIGH_ERROR_CONDITION_ID\"\"/g" /tmp/condition.json
@@ -180,12 +212,6 @@ install:
             "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: UPPER_ONLY }) { id name } }"
           }
           EOT
-          if [ $? -eq 0 ]; then 
-            echo "File '/tmp/condition.json' is created"
-          else 
-            echo "Unable to create the file '/tmp/condition.json'. Please retry using the right permissions"
-            exit 2
-          fi 
           sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
           sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_HIGH_RESPONSE_TIME_NAME}}\"\"/g" /tmp/condition.json
           sudo sed -i "s/CONDITION_ID/\"\"$HIGH_RESPONSE_CONDITION_ID\"\"/g" /tmp/condition.json
@@ -208,12 +234,6 @@ install:
             "query": "mutation {alertsNrqlConditionBaselineCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policyId: POLICY_ID, condition: { name: CONDITION_NAME enabled: true nrql: { query: NRQL_QUERY } signal: { aggregationMethod: EVENT_FLOW aggregationDelay: 120 } terms: { threshold: 3 thresholdDuration: 300 thresholdOccurrences: ALL operator: ABOVE priority: CRITICAL } violationTimeLimitSeconds: 2592000 baselineDirection: LOWER_ONLY expiration: { closeViolationsOnExpiration: true expirationDuration: 600 openViolationOnExpiration: true } }) { id name } }"
           }
           EOT
-          if [ $? -eq 0 ]; then 
-            echo "File '/tmp/condition.json' is created"
-          else 
-            echo "Unable to create the file '/tmp/condition.json'. Please retry using the right permissions"
-            exit 2
-          fi 
           sudo sed -i 's/POLICY_ID/'$POLICY_ID'/g' /tmp/condition.json
           sudo sed -i "s/CONDITION_NAME/\"\"{{.ALERT_LOW_THROUGHPUT_NAME}}\"\"/g" /tmp/condition.json
           sudo sed -i "s/CONDITION_ID/\"\"$LOW_THROUGHPUT_CONDITION_ID\"\"/g" /tmp/condition.json
