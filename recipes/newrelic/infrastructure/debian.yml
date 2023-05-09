@@ -270,6 +270,23 @@ install:
             OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
           fi
           apt-get $OPTIONS install newrelic-infra -y -qq
+          # Check the exit status of the previous command
+          if [ $? -ne 0 ]; then
+            echo "Error: newrelic-infra installation failed"
+            echo "Attempting to configure the packages again"
+            dpkg --configure -a
+            # Check if there was an error
+            if [ $? -ne 0 ]; then
+              echo "Error found while reconfiguring dpkg database"
+              # Force-Install the Software
+              echo "Attempting to install any missing dependencies or fixes broken packages."
+              apt-get $OPTIONS install -f
+              if [ $? -ne 0 ]; then 
+                exit 1
+              fi
+              echo "Installation is successful"
+            fi
+          fi
       silent: true
 
     restart:
