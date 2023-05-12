@@ -61,6 +61,11 @@ install:
     setup:
       cmds:
         - |
+          if ! command -v sed &> /dev/null; then
+            echo "sed is not installed. install sed and retry"
+            exit 11
+          fi
+          
           NEW_RELIC_API_URL=$(echo -n 'https://api.newrelic.com')
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             NEW_RELIC_API_URL=$(echo -n 'https://staging-api.newrelic.com')
@@ -70,23 +75,6 @@ install:
           fi
 
           echo 'Creating alert policy {{.ALERT_POLICY_NAME}}...'
-          if [ -f /tmp/policy.json ]; then
-            sudo rm -f /tmp/policy.json
-          fi
-          
-          # check if the file is deleted successfully 
-          if [ ! -f "/tmp/policy.json" ]; then
-            echo "File deleted successfully"
-          else
-            echo "Failed to delete '/tmp/policy.json' "
-            exit 2
-          fi
-
-          # # check if the user has the write permissions 
-          # if [ ! -w "/tmp" ]; then
-          #   echo "Error: You do not have write permission to the /tmp directory"
-          #   exit 2
-          # fi
 
           # Check if the filesystem containing the /tmp directory is full
           if [ $(df --output=avail /tmp | tail -n 1) -lt 1 ]; then
@@ -94,25 +82,14 @@ install:
             exit 2
           fi
 
-          sudo tee -a /tmp/policy.json > /dev/null <<"EOT"
-          {
+          echo -e '{
             "query": "mutation {alertsPolicyCreate(accountId: {{.NEW_RELIC_ACCOUNT_ID}}, policy: { name: POLICY_NAME incidentPreference: PER_CONDITION_AND_TARGET }) { id name } }"
-          }
-          EOT
+          }' > /tmp/policy.json
 
-          # check if tee is successful
-          if [ $? -eq 0 ]; then 
-            echo "File '/tmp/policy.json' is created"
-          else 
+          if [ $? -ne 0 ]; then
             echo "Unable to create the file '/tmp/policy.json'. Please retry using the right permissions"
             exit 2
           fi 
-
-          # check if sed is not installed 
-          if ! command -v sed &> /dev/null; then
-            echo "sed is not installed"
-            exit 11
-          fi
 
           sudo sed -i "s/POLICY_NAME/\"\"{{.ALERT_POLICY_NAME}}\"\"/g" /tmp/policy.json
           sudo sed -i 's/""/\\"/g' /tmp/policy.json
