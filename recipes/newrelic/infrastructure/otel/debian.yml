@@ -1,19 +1,16 @@
 # Visit our schema definition for additional information on this file format.
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
-name: nr-open-telemetry-collector-installer
+name: nr-otel-collector
 displayName: New Relic Open Telemetry Collector
 description: New Relic install recipe for the Open Telemetry Collector
 repository: https://github.com/newrelic/opentelemetry-collector-releases
 
-dependencies:
-  - infrastructure-agent-installer
 
 installTargets:
   - type: host
     os: linux
     platformFamily: "debian"
-    kernelArch: x86_64
   - type: host
     os: linux
     platform: "ubuntu"  
@@ -37,6 +34,30 @@ keywords:
   - Jammy
 
 
+
+preInstall:
+  requireAtDiscovery: |
+      IS_DOCKER_CONTAINER_CGROUP=$(grep 'docker\|lxc' /proc/1/cgroup | wc -l)
+      if [ $IS_DOCKER_CONTAINER_CGROUP -gt 0 ] ; then
+        echo "docker detected with cgroup, unsupported" >&2
+        exit 131
+      fi
+      IS_DOCKER_CONTAINER_ENVIRON=$(grep container=lxc /proc/1/environ | wc -l)
+      if [ $IS_DOCKER_CONTAINER_ENVIRON -gt 0 ] ; then
+        echo "docker detected with environ, unsupported" >&2
+        exit 131
+      fi
+      if [[ -f /.dockerenv ]] ; then
+        echo "docker detected with .dockerenv, unsupported" >&2
+        exit 131
+      fi
+      IS_WSL_CONTAINER=$(grep -i 'Microsoft' /proc/version | wc -l)
+      if [ $IS_WSL_CONTAINER -gt 0 ] ; then
+        echo "microsoft Windows Subsystem for Linux for infra detected, unsupported" >&2
+        exit 131
+      fi
+      exit 0
+
 install:
   version: "3"
   silent: true
@@ -44,7 +65,10 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_infra
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: update_apt
+        - task: install_gnupg
         - task: add_gpg_key
         - task: add_nr_source
         - task: update_apt_nr_source
@@ -53,22 +77,96 @@ install:
         - task: update_otel_end_point
         - task: restart_otel_service
         - task: assert_otel_collector_status_ok
-        - task: post_instal
+        - task: post_install
 
     
-    assert_infra:
+    write_recipe_metadata:
       cmds:
         - |
-          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
-          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
-            exit 1
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3      
           fi
+        - |
+          IS_GREP_INSTALLED=$(which grep | wc -l)
+          if [ $IS_GREP_INSTALLED -eq 0 ] ; then
+            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
+            exit 10
+          fi
+        - |
+          IS_SED_INSTALLED=$(which sed | wc -l)
+          if [ $IS_SED_INSTALLED -eq 0 ] ; then
+            echo "sed is required to run the newrelic install. Please install sed and re-run the installation." >&2
+            exit 11
+          fi
+        - |
+          IS_AWK_INSTALLED=$(which awk | wc -l)
+          if [ $IS_AWK_INSTALLED -eq 0 ] ; then
+            echo "awk is required to run the newrelic install. Please install awk and re-run the installation." >&2
+            exit 12
+          fi
+        - |
+          IS_CAT_INSTALLED=$(which cat | wc -l)
+          if [ $IS_CAT_INSTALLED -eq 0 ] ; then
+            echo "cat is required to run the newrelic install. Please install cat and re-run the installation." >&2
+            exit 13
+          fi
+        - |
+          IS_TEE_INSTALLED=$(which tee | wc -l)
+          if [ $IS_TEE_INSTALLED -eq 0 ] ; then
+            echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >&2
+            exit 14
+          fi
+        - |
+          IS_TOUCH_INSTALLED=$(which touch | wc -l)
+          if [ $IS_TOUCH_INSTALLED -eq 0 ] ; then
+            echo "touch is required to run the newrelic install. Please install touch and re-run the installation." >&2
+            exit 15
+          fi
+      vars:
+        DEBIAN_CODENAME:
+          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
+        DEBIAN_VERSION_CODENAME:
+          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
+          
+    
+    update_apt:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+          fi
+          apt-get $OPTIONS update -yq
+      silent: true
+      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+      ignore_error: true
+
+    install_gnupg:
+      cmds:
+        - |
+          if [ {{.HAS_GPG}} -eq 0 ] ; then
+            OPTIONS="-o DPkg::Lock::Timeout=60"
+            if [ ! -z "$HTTPS_PROXY" ]; then
+              OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+            fi
+            apt-get $OPTIONS install gnupg2 -y
+          fi
+      vars:
+        HAS_GPG:
+          sh: command -v gpg | wc -l
           
     add_gpg_key:
       cmds:
         - |
-          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/gpg/newrelic-infra.gpg | apt-key add -
+          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | apt-key add -
       silent: true
 
     add_nr_source:
@@ -116,17 +214,19 @@ install:
     update_license_key:
       cmds:
         - |
-          sed -i 's/${NEW_RELIC_LICENSE_KEY}/{{.NEW_RELIC_LICENSE_KEY}}/g' /etc/nr-otel-collector/config.yaml
+          sed -i 's/\(api-key: \).*/\1'"{{.NEW_RELIC_LICENSE_KEY}}"'/' /etc/nr-otel-collector/config.yaml
 
     update_otel_end_point:
       cmds:
         - |
           region={{.NEW_RELIC_REGION}}
           if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-            sed -i 's/^OTEL_EXPORTER_OTLP_ENDPOINT=.*$/OTEL_EXPORTER_OTLP_ENDPOINT=staging.otlp.nr-data.net:4317' /etc/nr-otel-collector/nr-otel-collector.conf
+            sed -i 's/^OTEL_EXPORTER_OTLP_ENDPOINT=.*$/OTEL_EXPORTER_OTLP_ENDPOINT=staging.otlp.nr-data.net:4317/' /etc/nr-otel-collector/nr-otel-collector.conf
           elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-            sed -i 's/^OTEL_EXPORTER_OTLP_ENDPOINT=.*$/OTEL_EXPORTER_OTLP_ENDPOINT=otlp.eu01.nr-data.net:4317' /etc/nr-otel-collector/nr-otel-collector.conf
-            fi     
+            sed -i 's/^OTEL_EXPORTER_OTLP_ENDPOINT=.*$/OTEL_EXPORTER_OTLP_ENDPOINT=otlp.eu01.nr-data.net:4317/' /etc/nr-otel-collector/nr-otel-collector.conf
+          else 
+            sed -i 's/^OTEL_EXPORTER_OTLP_ENDPOINT=.*$/OTEL_EXPORTER_OTLP_ENDPOINT=otlp.nr-data.net:4317/' /etc/nr-otel-collector/nr-otel-collector.conf
+            fi      
               
 
     restart_otel_service:
@@ -192,7 +292,7 @@ install:
           done
 
     
-    post_instal:
+    post_install:
       info: |2
           ⚙️  The New Relic Otel Collector Agent configuration file can be found in /etc/nr-otel-collector/config.yaml
           Edit this file to make changes or configure advanced features for the agent. See the docs for options:
