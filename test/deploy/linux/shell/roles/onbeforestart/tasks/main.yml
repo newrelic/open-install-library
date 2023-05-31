@@ -2,22 +2,13 @@
 # Parameters:
 # step_onbeforestart: A shell command snippet to execute
 
-- fail:
-    msg: "A step_onbeforestart is required. Create this entry in your user config file"
-  when: step_onbeforestart is not defined
-
-- name: ensure tar is installed for script execution
-  yum:
-    pkg:
-      - tar
-    state: present
-  become: yes
-
-- name: Run onbeforestart step
-  shell: "{{step_onbeforestart}}"
-  async: 600
-  register: output
-  become: true
-- fail:
-    msg: "The command failed to install when it was expected to succeed:{{ output.stdout }}"
-  when: output is failed
+- block:
+  - name: Run prepare step
+    shell: "{{step_onbeforestart}}"
+    async: 600
+    register: output
+    become: true
+  - fail:
+      msg: "The command failed to install when it was expected to succeed:{{ output.stdout }}"
+    when: output is failed
+  when: step_onbeforestart is defined

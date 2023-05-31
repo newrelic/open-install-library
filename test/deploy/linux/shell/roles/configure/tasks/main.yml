@@ -2,22 +2,13 @@
 # Parameters:
 # step_configure: A shell command snippet to execute
 
-- fail:
-    msg: "A step_configure is required. Create this entry in your user config file"
-  when: step_configure is not defined
-
-- name: ensure tar is installed for script execution
-  yum:
-    pkg:
-      - tar
-    state: present
-  become: yes
-
-- name: Run configure step
-  shell: "{{step_configure}}"
-  async: 600
-  register: output
-  become: true
-- fail:
-    msg: "The command failed to install when it was expected to succeed:{{ output.stdout }}"
-  when: output is failed
+- block:
+  - name: Run prepare step
+    shell: "{{step_configure}}"
+    async: 600
+    register: output
+    become: true
+  - fail:
+      msg: "The command failed to install when it was expected to succeed:{{ output.stdout }}"
+    when: output is failed
+  when: step_configure is defined
