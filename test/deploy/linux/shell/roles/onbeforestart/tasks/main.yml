@@ -1,0 +1,25 @@
+---
+# Parameters:
+# step_onbeforestart: A shell command snippet to execute
+# chdir_path: Optional, change into this directory before running the command
+
+- set_fact:
+    chdir_path: "{{ ansible_env.HOME }}"
+  when: chdir_path is not defined
+
+- set_fact:
+    chdir_path: "{{ chdir_path }}/{{ service_id }}"
+  when: service_id is defined
+
+- block:
+  - name: Run onbeforestart step
+    ansible.builtin.shell: "{{step_onbeforestart}}"
+    args:
+      chdir: "{{ chdir_path }}"
+    async: 600
+    register: output
+    become: true
+  - fail:
+      msg: "The command failed to install when it was expected to succeed:{{ output.stdout }}"
+    when: output is failed
+  when: step_onbeforestart is defined
