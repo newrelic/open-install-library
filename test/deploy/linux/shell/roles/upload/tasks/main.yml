@@ -1,0 +1,33 @@
+---
+# Parameters:
+# step_upload_file_base64: A base64 encoded file
+# step_upload_file_name: A filename to write the file to
+# chdir_path: Optional, change into this directory before running the command
+
+- set_fact:
+    chdir_path: "{{ ansible_env.HOME }}"
+  when: chdir_path is not defined
+
+- set_fact:
+    chdir_path: "{{ chdir_path }}/{{ service_id }}"
+  when: service_id is defined
+
+- block:
+  - fail:
+      msg: "A step_upload_file_name is required. Create this entry in your user config file"
+    when: step_upload_file_name is not defined
+  - set_fact:
+      step_upload_file_path: "{{ chdir_path }}/{{ step_upload_file_name }}"
+  - name: decode base64 file
+    set_fact:
+      step_upload_file_content: "{{step_upload_file_base64 | b64decode}}"
+  - name: Copy file to remove
+    ansible.builtin.copy:
+      content: "{{ step_upload_file_content }}"
+      dest: "{{ step_upload_file_path }}"
+    register: output
+    become: true
+  - fail:
+      msg: "The command failed to upload the file {{ step_upload_file_name }} to {{ step_upload_file_path }} details:{{ output.stdout }}"
+    when: output is failed
+  when: step_upload_file_base64 is defined
