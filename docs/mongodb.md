@@ -1,12 +1,14 @@
 # Overview
 
-The MongoDB recipe is handling the scenarios below and is checking for them in the order listed:
+The MongoDB recipe installs the [New Relic MongoDB Integration](https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/mongodb/mongodb-monitoring-integration-new/) and handles the scenarios mentioned below checking for them in the order listed:
 
 - An open MongoDB server (for dev/testing purposes)
 - A MongoDB server with regular (SCRAM) credentials-based authentication
 - A MongoDB server with SSL/TLS authentication enabled
 
 If you need to test the MongoDB recipe instrumentation in any of these scenarios, below are the steps for creating MongoDB instances for each one of them.
+
+For more information about the MongoDB 
 
 ## Testing Instrumenting a MongoDB Server (No Authentication Enabled)
 
@@ -27,39 +29,48 @@ If you need to test the MongoDB recipe instrumentation in any of these scenarios
 
     ```
 
+Alternatively, you can launch your own cloud resources, manually [install](https://www.mongodb.com/docs/manual/installation/) and [configure](https://www.mongodb.com/docs/manual/reference/configuration-options/) MongoDB and then run the recipe installation.
+
 ## Testing Instrumenting a MongoDB Server with [SCRAM](https://www.mongodb.com/docs/manual/core/security-scram/) Authentication Enabled
 
 For this case, please do the following:
 
 1. Follow steps 1, 2 and 3 from the previous case.
-2. Additionally, connect to MongoDB by using the [mongo shell](https://www.mongodb.com/products/shell) available in your test instance deployed through the manual definition. You may need to install the mongo shell if testing through other means.
-3. Once connected to `mongod`, issue these commands which will create a `root` user account in the MongoDB server with username `sysadmin` and password `virtuoso`:
+2. Additionally, connect to MongoDB by using the [mongo shell](https://www.mongodb.com/docs/mongodb-shell/) available in your test instance deployed through the manual definition. You may need to install the mongo shell if testing through other means.
+3. Once connected to `mongod`, issue these commands which will create a `root` user account in the MongoDB server with username `sysadmin` and password `TestPassword123$`:
     ```sh
     use admin
-    db.createUser({ user: "sysadmin", pwd: "virtuoso", roles: [ { role: "root", db: "admin" }, { role: "userAdminAnyDatabase", db: "admin" } ] })
+    db.createUser({ 
+        user: "sysadmin",
+        pwd: "TestPassword123$",
+        roles: [
+            { role: "root", db: "admin" },
+            { role: "userAdminAnyDatabase", db: "admin" }
+        ] 
+    })
     ```
-    **IMPORTANT NOTE**: The credentials created in step 3 are super-privileged. This should be used only for testing purposes. For any other situation you should create a more appropriate user account with less privileges.
+    **IMPORTANT**: The credentials created in `step 3` are super-privileged. This should be used only for testing purposes. For any other situation you should create a more appropriate user account with less privileges.
 4. Open again MongoDB's config file `/etc/mongod.conf` and add these 2 lines:
     ```sh
     security:
       authorization: enabled
     ```
 5. Restart mongodb with `sudo systemctl restart mongod` (or similar command) and run the MongoDB integration install.
-6. The recipe will prompt if using SCRAM credentials to authenticate. Please, answer 'Y' and follow the prompts. Provide the credentials created in step 3.
+6. The recipe will prompt if using SCRAM credentials to authenticate. Please, answer 'Y' and follow the prompts. Provide the credentials created in `step 3`.
 
 ## Testing Instrumenting a MongoDB Server with SSL Authentication Enabled
 
-This scenario is a little more difficult to test as it requires creating the CA and related certificates. The following links below were helpful: 
+This scenario is a little more difficult to test as it requires creating the CA and related certificates. The following links below were helpful, in case you want to take a look at them: 
 
 - https://www.mongodb.com/docs/manual/appendix/security/appendixA-openssl-ca/
 - https://www.mongodb.com/docs/manual/appendix/security/appendixB-openssl-server/
 - https://www.mongodb.com/docs/manual/appendix/security/appendixC-openssl-client/
 
-The steps on those links are summarized as follows:
+The steps on those links above are summarized for your convenience as follows:
 
 1. In your MongoDB server, create a `ca` folder for example: `/home/admin/ca`.
-2. Copy/save the .cnf files mentioned in the MongoDB documentation links above to the folder created in step 1.
-3. Open the `openssl-test-server.cnf` and go to the `alt-names` section of that file to update the DNS/IP details of your MongoDB server/instance. For example:
+2. Copy/save the .cnf files mentioned in the initial steps in the MongoDB documentation links above to the folder created in `step 1`.
+3. Open the `openssl-test-server.cnf` and go to the `alt-names` section of that file to update the `DNS/IP` details of your MongoDB server/instance. For example:
     ```sh
     ...
     [ alt_names ]
@@ -69,7 +80,7 @@ The steps on those links are summarized as follows:
     IP.2 = 127.0.0.1  
     ...
     ```
-4. Save the following commands into a `setup.sh` file inside the `ca` folder and run it. You will be prompted 4 times to enter `distinguish names` for the certificates to be created. Make sure to enter some test, non-repeated, unique values each time you are prompted. At the end, this shell script will generate all needed `.key`, `.pem`, `.crt`, `.csr` files.
+4. Save the following commands into a `setup.sh` file inside the `ca` folder, grant execution permissions and run it. You will be prompted 4 times to enter `distinguish names` for the certificates to be created. Make sure to enter some test, non-repeated, unique values each time you are prompted. At the end, this shell script will generate all needed `.key`, `.pem`, `.crt`, `.csr` files.
     ```sh
     # Clean up
     rm *.crt *.key *.csr *.key *.srl *.pem
@@ -107,7 +118,7 @@ The steps on those links are summarized as follows:
     # Create the test PEM file for the client
     cat mongodb-test-client.crt mongodb-test-client.key > test-client.pem
     ```
-5. In your `mongod.conf` file, make sure to disable SCRAM authentication and add the following lines. Note the paths to you newly create certificates:
+5. In your `mongod.conf` file, make sure to disable SCRAM authentication, if enabled, and add the following lines. Note the paths to you newly create certificates:
     ```sh
     net:
       tls:
@@ -119,15 +130,24 @@ The steps on those links are summarized as follows:
     ```sh
     net:
       port: 27017
-      bindIp: 0.0.0.0 #127.0.0.1
+      bindIp: 0.0.0.0
     ```
 7. Restart your `mongodb` service.
-8. Make sure you are in the `ca` folder and test connecting to mongo by issuing the following command (the recipe uses version 4.0). Note that the --host value needs to match with the update you made in step 3 (as certificates hostnames will be checked):
+   
+    **IMPORTANT**: If the MongoDB service does not start due to insufficient permissions to read the certificates, you may want to check the certificates permissions or move them
+    to another location, like `/etc/ssl/certs` (depending on your linux distribution) to use more appropriate system-wide PKI permissions/settings.
+8. Make sure you are in the `ca` folder and test connecting to mongo by issuing the following command (the recipe uses version 4.0). Note that the --host value needs to match with the update you made in `step 3` (as certificates hostnames will be checked):
    ```ssh
     # Mongo version 4.2 or greater:
-    mongo --tls --host ip-172-31-11-35:27017 --tlsCertificateKeyFile test-client.pem --tlsCAFile test-ca.pem
+    mongosh --tls --host ip-172-31-11-35:27017 --tlsCertificateKeyFile test-client.pem --tlsCAFile test-ca.pem
 
-    # Mongo version 4.0 or earlier:
-    mongo --ssl --host ip-172-31-11-35:27017 --sslPEMKeyFile test-client.pem --sslCAFile test-ca.pem
+    # Mongo version 4.0:
+    mongosh --ssl --host ip-172-31-11-35:27017 --sslPEMKeyFile test-client.pem --sslCAFile test-ca.pem
    ```
-9. If you can connect with the previous command, you are ready to run the MongoDB recipe integration install and test this SSL/TLS scenario. Type 'N' when asked about SCRAM authentication. Type 'Y' when prompted about SSL/TLS authentication and follow the prompts to provide Hostname (should be your MongoDB test instance hostname), Port, SSL CA Certificate Path (e.g.: /home/admin/ca/test-ca.pem) and your Client Certificate Path (e.g.: /home/admin/ca/test-client.pem). 
+9. If you can connect with the previous command, you are ready to run the MongoDB recipe integration install and test this SSL/TLS scenario:
+- Type 'N' when asked about SCRAM authentication.
+- Type 'Y' when prompted about SSL/TLS authentication and follow the prompts to provide:
+    - `Hostname` (should be your MongoDB test instance hostname),
+    - `Port`,
+    - `SSL CA Certificate Path` (e.g.: /home/admin/ca/test-ca.pem), and 
+    - `Client Certificate Path` (e.g.: /home/admin/ca/test-client.pem)
