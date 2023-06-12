@@ -8,8 +8,6 @@ The MongoDB recipe installs the [New Relic MongoDB Integration](https://docs.new
 
 If you need to test the MongoDB recipe instrumentation in any of these scenarios, below are the steps for creating MongoDB instances for each one of them.
 
-For more information about the MongoDB 
-
 ## Testing Instrumenting a MongoDB Server (No Authentication Enabled)
 
 1. You may use [demo-deployer](https://github.com/newrelic/demo-deployer) to start a mongodb server instance by using something like this:
