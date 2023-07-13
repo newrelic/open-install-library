@@ -12,51 +12,56 @@
     create_env_var: "false"
   when: create_env_var is undefined
 
-- zypper:
+- name: Update installed packages
+  community.general.zypper:
     name: "*"
     state: latest
-  become: yes
+  become: true
+  environment:
+    ZYPP_LOCK_TIMEOUT: "100"
 
-- zypper:
-    name: "wget"
+- name: Ensure wget is installed
+  community.general.zypper:
+    name: wget
     state: present
-  become: yes
+  become: true
+  environment:
+    ZYPP_LOCK_TIMEOUT: "100"
 
 - name: Download MySQL SUSE repository
   shell: "wget https://dev.mysql.com/get/mysql80-community-release-sles12-6.noarch.rpm"
-  become: yes
+  become: true
 
 - name: Install MySQL SUSE repository
   shell: "rpm -ivh mysql80-community-release-sles12-6.noarch.rpm"
-  become: yes
+  become: true
 
-- name: Import GPG key for MySQL SUSE repository
-  shell: "rpm --import /etc/RPM-GPG-KEY-mysql"
-  become: yes
-
-- zypper:
+- name: Install mysql-community-server
+  community.general.zypper:
     name: mysql-community-server
     state: present
-    disable_gpg_check: yes
-    update_cache: yes
-  become: yes
+    disable_gpg_check: true
+    update_cache: true
+  become: true
+  environment:
+    ZYPP_LOCK_TIMEOUT: "100"
 
 - name: Disable mysql
   shell: "systemctl stop mysql"
-  become: yes
+  become: true
 
 - name: Remove /var/lib/mysql/*
   shell: "rm -rf /var/lib/mysql/*"
-  become: yes
+  become: true
 
 - name: Start mysqld service
   shell: "systemctl start mysql"
-  become: yes
+  become: true
 
 - name: Get temporary pwd for mysql
   shell: "grep 'temporary password' /var/log/mysql/mysqld.log | awk '{print $13}'"
   register: PW
-  become: yes
+  become: true
 
 - name: Set password as variable
   set_fact: PW={{ PW.stdout }}
@@ -64,31 +69,31 @@
 - name: Alter root pwd
   command: |
     mysql -u root -p{{ PW }} --connect-expired-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'TestPassword123$';"
-  become: yes
+  become: true
 
 - name: Create Database
   command: |
     mysql -u root -pTestPassword123$ -e "CREATE DATABASE IF NOT EXISTS MysqlSample;"
-  become: yes
+  become: true
 
 - block:
   - name: Remove previous created user
     command: |
       mysql -u root -pTestPassword123$ -e "DROP USER 'newrelic'@'localhost';"
-    become: yes
-    ignore_errors: yes
+    become: true
+    ignore_errors: true
   - name: Create User
     command: |
       mysql -u root -pTestPassword123$ -e "CREATE USER 'newrelic'@'localhost' IDENTIFIED BY 'Virtuoso4all!' WITH MAX_USER_CONNECTIONS 5;"
-    become: yes
+    become: true
   - name: Grant replication permission to user
     command: |
       mysql -u root -pTestPassword123$ -ne "GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';"
-    become: yes
+    become: true
   - name: Grant select permission to user
     command: |
       mysql -u root -pTestPassword123$ -ne "GRANT SELECT ON *.* TO 'newrelic'@'localhost';"
-    become: yes
+    become: true
   when: create_newrelic_user|bool
 
 - name: Enable MySQL service
@@ -107,4 +112,4 @@
 
 - name: Restart MySQL
   shell: "systemctl restart mysql"
-  become: yes
+  become: true
