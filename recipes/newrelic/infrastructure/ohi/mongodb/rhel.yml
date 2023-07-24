@@ -270,8 +270,6 @@ install:
               read -r -p "MongoDB Password? " MONGO_PASSWORD
               stty echo
               echo ""
-              read -r -p "MongoDB Port? (Default 27017) " MONGO_PORT
-              MONGO_PORT=${MONGO_PORT:-27017}
 
               CAN_CONNECT=$(mongosh --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --username $MONGO_USERNAME \
                           --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} --eval "db.adminCommand( { listDatabases: 1 } )" 2> /dev/null \
@@ -289,14 +287,14 @@ install:
               echo "Max connection attempts reached"
               exit 131
             else
-              MONGO_MONITORING_USER_EXISTS=$(mongosh {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONGO_PORT --username $MONGO_USERNAME \
+              MONGO_MONITORING_USER_EXISTS=$(mongosh {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --username $MONGO_USERNAME \
                                            --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} --eval "db.getUser('{{.NR_CLI_DB_USERNAME}}')" \
                                            | grep "_id: '{{.NR_CLI_DB_AUTH}}.{{.NR_CLI_DB_USERNAME}}'" | wc -l)
 
               if [ $MONGO_MONITORING_USER_EXISTS -gt 0 ]; then
                 echo "Required user already present, attempting to update its password"
 
-                USER_UPDATE_FAILED=$(mongosh {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONGO_PORT --username $MONGO_USERNAME \
+                USER_UPDATE_FAILED=$(mongosh {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --username $MONGO_USERNAME \
                                    --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} \
                                    --eval "db.changeUserPassword('{{.NR_CLI_DB_USERNAME}}', '{{.NR_CLI_DB_PASSWORD}}')" \
                                    | grep 'ok: 1' | wc -l)
@@ -306,14 +304,14 @@ install:
                   exit 131
                 fi
               else 
-                SETUP_MONGO_MONITORING_USER=$(mongosh {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port $MONGO_PORT --username $MONGO_USERNAME \
+                SETUP_MONGO_MONITORING_USER=$(mongosh {{.NR_CLI_DB_AUTH}} --host {{.NR_CLI_DB_HOSTNAME}} --port {{.NR_CLI_DB_PORT}} --username $MONGO_USERNAME \
                                            --password $MONGO_PASSWORD --authenticationDatabase {{.NR_CLI_DB_AUTH}} < /tmp/mongo-user.js \
                                            | grep "ok: 1" | wc -l)
 
                 if [ $SETUP_MONGO_MONITORING_USER -gt 0 ]; then
                   echo "Required user created"
                 else
-                  echo "Could not create required role/user on {{.NR_CLI_DB_HOSTNAME}}:$MONGO_PORT, db {{.NR_CLI_DB_AUTH}}"
+                  echo "Could not create required role/user on {{.NR_CLI_DB_HOSTNAME}}:{{.NR_CLI_DB_PORT}}, db {{.NR_CLI_DB_AUTH}}"
                   exit 131
                 fi
               fi
@@ -395,15 +393,14 @@ install:
               ((TRIES++))
               read -r -p "Localhost's Certificate Hostname? " HOST
               HOST=${HOST:-localhost}
-              read -r -p "Port? (Default 27017) " PORT 
-              PORT=${PORT:-27017}
+
               read -r -p "SSL CA Certificate Path? " CA_CERT_PATH
               read -r -p "Client Certificate PEM file Path? " CLIENT_CERT_PATH
 
-              if [[ -z $HOST || -z $NR_CLI_DB_PORT || -z $CA_CERT_PATH || -z $CLIENT_CERT_PATH ]]; then
+              if [[ -z $HOST || -z {{.NR_CLI_DB_PORT}} || -z $CA_CERT_PATH || -z $CLIENT_CERT_PATH ]]; then
                 echo "Please provide all the required certificate information"
               else
-                CAN_CONNECT=$(mongosh --tls --host $HOST:$PORT --tlsCertificateKeyFile $CLIENT_CERT_PATH --tlsCAFile $CA_CERT_PATH \
+                CAN_CONNECT=$(mongosh --tls --host $HOST:{{.NR_CLI_DB_PORT}} --tlsCertificateKeyFile $CLIENT_CERT_PATH --tlsCAFile $CA_CERT_PATH \
                            --eval "db.runCommand({ connectionStatus: 1 })" | grep -e 'ok: 1' | wc -l)
 
                 if [ $CAN_CONNECT -gt 0 ]; then
