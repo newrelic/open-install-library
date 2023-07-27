@@ -34,7 +34,7 @@ Alternatively, you can launch your own cloud resources, manually [install](https
 For this case, please do the following:
 
 1. Follow steps 1, 2 and 3 from the previous case.
-2. Additionally, connect to MongoDB by using the [mongo shell](https://www.mongodb.com/docs/mongodb-shell/) available in your test instance deployed through the manual definition. You may need to install the mongo shell if testing through other means.
+2. Additionally, connect to MongoDB by using the [mongo shell](https://www.mongodb.com/docs/mongodb-shell/) available in your test instance deployed through the manual definition. You may need to install the mongo shell if testing through other means or if your MongoDB version is not current.
 3. Once connected to `mongod`, issue these commands which will create a `root` user account in the MongoDB server with username `sysadmin` and password `TestPassword123$`:
     ```sh
     use admin
@@ -67,8 +67,8 @@ This scenario is a little more difficult to test as it requires creating the CA 
 The steps on those links above are summarized for your convenience as follows:
 
 1. In your MongoDB server, create a `ca` folder for example: `/home/admin/ca`.
-2. Copy/save the .cnf files mentioned in the initial steps in the MongoDB documentation links above to the folder created in `step 1`.
-3. Open the `openssl-test-server.cnf` and go to the `alt-names` section of that file to update the `DNS/IP` details of your MongoDB server/instance. For example:
+2. Create the `.cnf` files with their appropriate content as mentioned in the initial steps in the MongoDB documentation links above to the folder created in `step 1`.
+3. One of those `.cnf` files is `openssl-test-server.cnf`. Open it and go to the `alt-names` section of this file to update the `DNS/IP` details of your MongoDB server/instance. After updating it, it should look similar to this example:
     ```sh
     ...
     [ alt_names ]
@@ -146,6 +146,5 @@ The steps on those links above are summarized for your convenience as follows:
 - Type 'N' when asked about SCRAM authentication.
 - Type 'Y' when prompted about SSL/TLS authentication and follow the prompts to provide:
     - `Hostname` (should be your MongoDB test instance hostname),
-    - `Port`,
     - `SSL CA Certificate Path` (e.g.: /home/admin/ca/test-ca.pem), and 
     - `Client Certificate Path` (e.g.: /home/admin/ca/test-client.pem)
