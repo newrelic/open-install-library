@@ -76,6 +76,7 @@ install:
         - task: update_otel_license_key
         - task: update_otel_mem_limit
         - task: update_otel_end_point
+        - task: config_supervisors
         - task: config_host_monitoring
         - task: restart_super_agent
         #- task: assert_agent_status_ok
@@ -246,7 +247,6 @@ install:
           curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | apt-key add -
       silent: true
 
-    #TODO do we continue calling it newrelic-infra.list?
     add_nr_source:
       cmds:
         - |
@@ -304,9 +304,6 @@ install:
               echo "Installation is successful"
             fi
           fi
-           
-          #TODO: stop is required to avoid 15" timeout in the restart
-          systemctl stop newrelic-super-agent
       silent: true
 
     update_otel_license_key:
@@ -329,7 +326,22 @@ install:
             echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.eu01.nr-data.net:4317/' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
           else
             echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.nr-data.net:4317/' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
-          fi 
+          fi
+
+    config_supervisors:
+      cmds:
+        - |
+          if [ "{{.NR_CLI_INFRA_AGENT}}" == "false" ] ; then
+            sed -i  '/#/! s/nr_infra_agent/#nr_infra_agent/g' /etc/newrelic-super-agent/config.yaml
+          else
+            sed -i 's/#nr_infra_agent/nr_infra_agent/g' /etc/newrelic-super-agent/config.yaml
+          fi
+        - |
+          if [ "{{.NR_CLI_NRDOT}}" == "false" ] ; then
+            sed -i  '/#/! s/nr_otel_collector/#nr_otel_collector/g' /etc/newrelic-super-agent/config.yaml
+          else
+            sed -i 's/#nr_otel_collector/nr_otel_collector/g' /etc/newrelic-super-agent/config.yaml
+          fi
 
     config_host_monitoring:
       cmds:
