@@ -244,12 +244,16 @@ install:
     update_otel_end_point:
       cmds:
         - |
+          if [ -f /etc/newrelic-super-agent/newrelic-super-agent.conf ]; then
+            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
+          fi
+        - |
           if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-            sed -i 's/\(endpoint: \).*/\1'"staging-otlp.nr-data.net:4317"'/' /etc/nr-otel-collector/config.yaml  
+            echo 'OTEL_EXPORTER_OTLP_ENDPOINT=staging-otlp.nr-data.net:4317' >> /etc/newrelic-super-agent/newrelic-super-agent.conf  
           elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-            echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.eu01.nr-data.net:4317/' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
+            echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.eu01.nr-data.net:4317' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
           else
-            echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.nr-data.net:4317/' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
+            echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.nr-data.net:4317' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
           fi
 
     config_supervisors:
@@ -270,13 +274,23 @@ install:
     config_host_monitoring:
       cmds:
         - |
-          if [[ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]]; then     
+          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+            sed -i "/^is_secure_forward_only/d" /etc/newrelic-infra.yml
+          fi
+        - |
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then     
+            if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
+              mv /etc/newrelic-infra/logging.d/logging.yml /etc/newrelic-infra/logging.d/logging.yml.example
+            fi
+            if [ -f /etc/newrelic-infra/logging.d/discovered.yml ]; then
+              mv /etc/newrelic-infra/logging.d/discovered.yml /etc/newrelic-infra/logging.d/discovered.yml.example
+            fi
             echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
-            [ -f /etc/newrelic-infra/logging.d/logging.yml ] && mv /etc/newrelic-infra/logging.d/logging.yml /etc/newrelic-infra/logging.d/logging.yml.example
-            [ -f /etc/newrelic-infra/logging.d/discovered.yml ] && mv /etc/newrelic-infra/logging.d/discovered.yml /etc/newrelic-infra/logging.d/discovered.yml.example
           else
-            sed -i 's/\<otlp, hostmetrics\>/otlp/g' /etc/nr-otel-collector/config.yaml
-            sed -i 's/\<otlp, filelog\>/otlp/g' /etc/nr-otel-collector/config.yaml
+            if [ -f /etc/nr-otel-collector/config.yaml ]; then
+              sed -i 's/\<otlp, hostmetrics\>/otlp/g' /etc/nr-otel-collector/config.yaml
+              sed -i 's/\<otlp, filelog\>/otlp/g' /etc/nr-otel-collector/config.yaml
+            fi
           fi 
 
     restart_super_agent:
