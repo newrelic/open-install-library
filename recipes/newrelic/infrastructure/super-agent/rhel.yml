@@ -2,17 +2,31 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 name: newrelic-super-agent
-displayName: New Relic super agent
-description: New Relic install recipe for the super agent
+displayName: New Relic Super Agent
+description: New Relic install recipe for the Super Agent
 repository: https://github.com/newrelic/newrelic-supervisor
 
 installTargets:
   - type: host
     os: linux
-    platform: suse
+    platform: amazon
+    platformFamily: rhel
   - type: host
     os: linux
-    platformFamily: suse
+    platform: amazon
+    platformFamily: rhel
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: amazon
+    platformFamily: rhel
+    platformVersion: "2023"
+  - type: host
+    os: linux
+    platform: "centos"
+  - type: host
+    os: linux
+    platform: "redhat"
 
 keywords:
   - SuperAgent
@@ -21,8 +35,15 @@ keywords:
   - Infrastructure
   - Agent
   - Linux
-  - Suse
-  - SLES
+  - CentOS 7
+  - CentOS 8
+  - RHEL 7
+  - RHEL 8
+  - RHEL 9
+  - Amazon Linux
+  - Amazon Linux AMI
+  - Amazon Linux 2
+  - Amazon Linux 2023
 
 processMatch: []
 
@@ -52,6 +73,14 @@ preInstall:
 install:
   version: "3"
   silent: true
+
+  vars:
+    AMAZON_LINUX_VERSION:
+      sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+    REPO_DIR:
+      sh: if [ {{.AMAZON_LINUX_VERSION}} = "2" ] || [ {{.AMAZON_LINUX_VERSION}} = "2023" ]; then echo "amazonlinux"; else echo "el"; fi
+    ARCH:
+      sh: uname -m
 
   tasks:
     default:
@@ -121,19 +150,22 @@ install:
             exit 15
           fi
         - |
-          IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
+          IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/el/{{.DISTRO_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
           if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-            echo "there is no newrelic super agent available for the distribution '{{.SLES_VERSION}}'." >&2
-            exit 131
+            echo "there is no newrelic super agent available for the distribution '{{.DISTRO_VERSION}}'." >&2
+            exit 21
           fi
       vars:
-        SLES_VERSION:
-          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+        DISTRO_VERSION:
+          sh: |
+            rpm -E %{rhel}
 
     cleanup:
       cmds:
         - |
-          rm -rf /var/db/newrelic-infra/data 2>/dev/null          
+          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+            rm -rf /var/db/newrelic-infra/data 2>/dev/null
+          fi
 
     setup_infra_license:
       cmds:
@@ -156,7 +188,7 @@ install:
             if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
               echo 'staging: true' >> /etc/newrelic-infra.yml
             fi
-  
+          
             echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
             echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
             echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
@@ -170,27 +202,33 @@ install:
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] && [ ! -z "$HTTPS_PROXY" ]; then
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
+
+            if ! grep -q '^proxy=' /etc/dnf/dnf.conf; then
+              echo "************************************************************"
+              echo "WARNING: proxy settings not detected in your dnf config"
+              echo "If installation fails with a timeout, add the following line to /etc/dnf/dnf.conf and retry:"
+              echo "proxy={{.HTTPS_PROXY}}"
+              echo "************************************************************"
+            fi
           fi
 
     install_super_agent:
       cmds:
         - |
           ARCH=$(uname -m)
-          REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
+          REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/el/{{.DISTRO_VERSION}}/$ARCH/newrelic-infra.repo")
           IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
             echo "newrelic super agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
-          curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
-        - curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
-        - rpm --import newrelic_rpm_key_current.gpg
-        - zypper -n --quiet ref -r newrelic-infra
-        - zypper -n --quiet install newrelic-super-agent
-        - rm newrelic_rpm_key_current.gpg
+          curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+          yum -y -q install newrelic-super-agent
       vars:
-        SLES_VERSION:
-          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+        DISTRO_VERSION:
+          sh: |
+            rpm -E %{rhel}
       silent: true
 
     update_otel_license_key:
@@ -253,7 +291,7 @@ install:
               sed -i 's/\<otlp, hostmetrics\>/otlp/g' /etc/nr-otel-collector/config.yaml
               sed -i 's/\<otlp, filelog\>/otlp/g' /etc/nr-otel-collector/config.yaml
             fi
-          fi
+          fi 
 
     restart_super_agent:
       cmds:
@@ -286,4 +324,4 @@ install:
     
     post_install:
       info: |2
-          ⚙️  The New Relic super agent configuration file can be found in /etc/newrelic-super-agent/config.yaml
+          ⚙️  The New Relic Super Agent configuration file can be found in /etc/newrelic-super-agent/config.yaml
