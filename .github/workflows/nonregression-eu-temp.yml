@@ -3,6 +3,9 @@ name: Non Regression Testing (EU) - Temp
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
 jobs:
   log-context:
     runs-on: ubuntu-latest
@@ -71,8 +74,6 @@ jobs:
     needs: [get-test-definition-files]
     if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] }} # Avoids empty matrix validation error
     runs-on: ubuntu-latest
-    concurrency:
-        group: ${{ github.workflow }}-${{ github.ref }}
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
       fail-fast: false
@@ -85,7 +86,6 @@ jobs:
           fetch-depth: 0
 
       - name: Update Test Definition Files URLs
-        # id: get-test-definition-files
         env:
           TEST_DEFINITION_FILE: ${{ matrix.testDefinitionFile }}
         uses: actions/github-script@v3
@@ -154,6 +154,7 @@ jobs:
         run: |
           set -e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
+          echo "Matrix: $MATRIX"
           echo $testDefinitionFile
           docker run -i\
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
