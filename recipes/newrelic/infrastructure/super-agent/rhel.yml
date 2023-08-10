@@ -150,7 +150,12 @@ install:
             exit 15
           fi
         - |
-          IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/el/{{.DISTRO_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
+          if [[ {{.AMAZON_LINUX_VERSION}} != "2" && {{.AMAZON_LINUX_VERSION}} != "2023" ]] ; then
+            REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/{{.REPO_DIR}}/{{.DISTRO_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
+          else
+            REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/{{.REPO_DIR}}/{{.AMAZON_LINUX_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
+          fi
+          IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
             echo "there is no newrelic super agent available for the distribution '{{.DISTRO_VERSION}}'." >&2
             exit 21
@@ -215,8 +220,11 @@ install:
     install_super_agent:
       cmds:
         - |
-          ARCH=$(uname -m)
-          REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/el/{{.DISTRO_VERSION}}/$ARCH/newrelic-infra.repo")
+          if [[ {{.AMAZON_LINUX_VERSION}} != "2" && {{.AMAZON_LINUX_VERSION}} != "2023" ]] ; then
+            REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/{{.REPO_DIR}}/{{.DISTRO_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
+          else
+            REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/{{.REPO_DIR}}/{{.AMAZON_LINUX_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
+          fi
           IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
             echo "newrelic super agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
