@@ -57,55 +57,26 @@ jobs:
                 }));
                 return Array.prototype.concat(...files);
             }
-            const definitionsDir = 'test/definitions-eu'
-            const testDefinitions = await getFiles(definitionsDir);
+            const definitionsDir = 'test/definitions-eu';
 
-            const outputTestFilesMap = testDefinitions.map(testDefinitionFile => {
-                return { testDefinitionFile, 'testDisplayName': testDefinitionFile.replace(`${definitionsDir}/`, '') }
-            })
-            const output = {
-                "include": 
-                    [
-                        {
-                        testDefinitionFile: 'test/definitions-eu/apm/dotNet/linux/ubuntu20-apache-aspnetcore.json',
-                        testDisplayName: 'apm/dotNet/linux/ubuntu20-apache-aspnetcore.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/infra-agent/rhel/awslinuxarm64-infra.json',
-                        testDisplayName: 'infra-agent/rhel/awslinuxarm64-infra.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/infra-agent/suse/suse125-infra.json',
-                        testDisplayName: 'infra-agent/suse/suse125-infra.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/infra-agent/suse/suse152-infra.json',
-                        testDisplayName: 'infra-agent/suse/suse152-infra.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/infra-agent/suse/suse154-infra.json',
-                        testDisplayName: 'infra-agent/suse/suse154-infra.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/smoke/debian10-infra.json',
-                        testDisplayName: 'smoke/debian10-infra.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/smoke/nginx-linux2-ami.json',
-                        testDisplayName: 'smoke/nginx-linux2-ami.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/smoke/ubuntu20-infra.json',
-                        testDisplayName: 'smoke/ubuntu20-infra.json'
-                        },
-                        {
-                        testDefinitionFile: 'test/definitions-eu/smoke/windows2019.json',
-                        testDisplayName: 'smoke/windows2019.json'
-                        }
-                    ]
+            files = {};
+            for (const dir of ['apm', 'infra-agent', 'logging', 'otel', 'smoke']) {
+                const testDefinitions = await getFiles(definitionsDir+'/'+dir);
+
+                const outputTestFilesMap = testDefinitions.map(testDefinitionFile => {
+                    return { testDefinitionFile, 'testDisplayName': testDefinitionFile.replace(`${definitionsDir}/`, '') }
+                })
+                const output = {
+                    "include": outputTestFilesMap
+                }
+                console.log(output);
+                files[dir] = output;            
             }
-            console.log(output);
-            return output;
+
+            console.log("%j", files)
+            return files;
+      - name: Get result
+        run: echo "${{steps.get-files.outputs.result}}"
 
   test-deploy-recipe:
     name: ${{ matrix.testDisplayName }}
