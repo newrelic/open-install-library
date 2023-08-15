@@ -112,6 +112,9 @@ preInstall: object, optional
   # whether or not the recipe should be executed.
   requireAtDiscovery: string, optional
 
+  # if set true, recipe will only be evaluated if it's included in targeted install
+  targetedInstallOnly: bool, optional
+
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
 install: string, required
