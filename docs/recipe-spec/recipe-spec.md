@@ -112,8 +112,10 @@ preInstall: object, optional
   # whether or not the recipe should be executed.
   requireAtDiscovery: string, optional
 
-  # if set true, recipe will only be evaluated if it's included in targeted install
-  targetedInstallOnly: bool, optional
+  # discovery behavior for the recipe. If omitted, default to always behavior.
+  # always: recipe will be attempted to discover/detect in all mode
+  # never: recipe will not be attempted to be disocver/detect in all mode
+  discoveryMode: string (enum), optional         # One of [ alaways, never, targetedOnly ]
 
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
