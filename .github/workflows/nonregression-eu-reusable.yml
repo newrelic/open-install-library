@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       folder:
-        description: 'Path to a test/definitions-eu sub-folder. E.g.: test/definitions-eu/apm'
+        description: 'A subfolder of test/definitions-eu, e.g.: test/definitions-eu/apm'
         required: true
         type: string
 
@@ -68,7 +68,6 @@ jobs:
             }
             console.log(output);
             return output;
-
   test-deploy-recipe:
     name: ${{ matrix.testDisplayName }}
     needs: [get-test-definition-files]
@@ -155,12 +154,11 @@ jobs:
         run: |
           set -e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
-          echo $testDefinitionFile ${{ github.workspace }} ${{ github.run_id }}
-          ls ${{ github.workspace }}
+          echo $testDefinitionFile
           docker run -i\
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -l debug
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkreu-test202308161813.json -d $testDefinitionFile -l debug
           echo ::set-output name=exit_status::$?
       - name: Teardown any previous deployment
         if: always()
@@ -172,7 +170,7 @@ jobs:
           docker run \
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -t
+            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkreu-test202308161813.json -d $testDefinitionFile -t
 
       - name: Report any error
         if: steps.deployerRun.outputs.exit_status != 0
