@@ -112,6 +112,11 @@ preInstall: object, optional
   # whether or not the recipe should be executed.
   requireAtDiscovery: string, optional
 
+  # discovery behavior for the recipe. If omitted, default to both guided, and targeted.
+  # guided: recipe will be attempted to discover/detect during guided install
+  # targeted: recipe will be attempted to be disocver/detect during targeted install
+  discoveryMode: string (enum), optional         # One or many of [ guided, targeted ]
+
 # go-task yaml definition
 # This spec - https://github.com/go-task/task
 install: string, required
