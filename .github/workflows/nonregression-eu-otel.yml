@@ -1,51 +1,45 @@
-name: Non Regression Testing (EU) - Reusable
+name: 'Non Regression Testing (EU) - OTel'
 
 on:
-  workflow_call:
-    inputs:
-      folder:
-        description: 'A subfolder of test/definitions-eu, e.g.: test/definitions-eu/apm'
-        required: true
-        type: string
+  workflow_dispatch:
+
+env:
+  FOLDER: otel
 
 jobs:
   log-context:
+    name: Contexts
     runs-on: ubuntu-latest
     steps:
-      - name: Dump GitHub contexts
+      - name: GitHub
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
         run: echo "$GITHUB_CONTEXT"
-      - name: Dump job context
-        env:
-          JOB_CONTEXT: ${{ toJson(job) }}
-        run: echo "$JOB_CONTEXT"
-      - name: Dump steps context
-        env:
-          STEPS_CONTEXT: ${{ toJson(steps) }}
-        run: echo "$STEPS_CONTEXT"
-      - name: Dump runner context
+      - name: Runner
         env:
           RUNNER_CONTEXT: ${{ toJson(runner) }}
         run: echo "$RUNNER_CONTEXT"
-  get-test-definition-files:
-    name: Get Test Definition Files
+
+  get-files:
+    name: Test Definition Files
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.get-test-definition-files.outputs.result }}
+      matrix: ${{ steps.get-files.outputs.result }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
-      - name: Get Test Definition Files
-        id: get-test-definition-files
-        uses: actions/github-script@v3
+      - name: Get Files
+        id: get-files
+        uses: actions/github-script@v6
         with:
           script: |
             const fs = require('fs');
             const fsp = fs.promises;
             const path = require('path');
+
+            const { FOLDER } = process.env
 
             // readdir recursive directory search
             const { readdir } = fsp;
@@ -58,7 +52,7 @@ jobs:
                 return Array.prototype.concat(...files);
             }
             const definitionsDir = 'test/definitions-eu';
-            const testDefinitions = await getFiles(definitionsDir + '/' + '${{ inputs.folder }}');
+            const testDefinitions = await getFiles(definitionsDir + '/' + `${FOLDER}`);
 
             const outputTestFilesMap = testDefinitions.map(testDefinitionFile => {
                 return { testDefinitionFile, 'testDisplayName': testDefinitionFile.replace(`${definitionsDir}/`, '') }
@@ -68,27 +62,28 @@ jobs:
             }
             console.log(output);
             return output;
+
   test-deploy-recipe:
     name: ${{ matrix.testDisplayName }}
-    needs: [get-test-definition-files]
-    if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] }} # Avoids empty matrix validation error
+    needs: [get-files]
+    if: ${{ fromJSON(needs.get-files.outputs.matrix).include[0] }} # Avoids empty matrix validation error
     runs-on: ubuntu-latest
     strategy:
-      matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.get-files.outputs.matrix) }}
       fail-fast: false
     env:
       MATRIX: ${{ toJSON(matrix) }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
-      - name: Update Test Definition Files URLs
-        id: get-test-definition-files
+      - name: Update Files URLs
+        id: get-files
         env:
           TEST_DEFINITION_FILE: ${{ matrix.testDefinitionFile }}
-        uses: actions/github-script@v3
+        uses: actions/github-script@v6
         with:
           script: |
             const fs = require('fs');
@@ -129,7 +124,7 @@ jobs:
 
             return testDefinitionFile;
 
-      - name: Write AWS Certificate to File
+      - name: Setup Certificate 
         env:
           AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
         run: |
@@ -138,18 +133,18 @@ jobs:
           echo "$AWS_PEM" > configs/gitdeployerCanada.pem
           sudo chmod 400 configs/gitdeployerCanada.pem
 
-      - name: Write Test Definition File JSON to file
+      - name: Write Tests Files
         env:
           USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
         run: |
           echo "$USER_JSON" > configs/gitusdkreu${{ github.run_id }}.json
 
-      - name: Pull Deployer image
+      - name: Pull Deployer Image
         run: |
           docker pull ghcr.io/newrelic/deployer:latest
           docker images ghcr.io/newrelic/deployer:latest
 
-      - name: Run deployer
+      - name: Run Deployer
         id: deployerRun
         run: |
           set -e
@@ -160,7 +155,8 @@ jobs:
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -l debug
           echo ::set-output name=exit_status::$?
-      - name: Teardown any previous deployment
+
+      - name: Teardown Deployment
         if: always()
         id: cleanupResources
         continue-on-error: true
@@ -172,6 +168,98 @@ jobs:
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -t
 
-      - name: Report any error
+      - name: Error Reporting
         if: steps.deployerRun.outputs.exit_status != 0
         run: exit 1
+
+  slack-notify:
+    name: Slack
+    runs-on: ubuntu-latest
+    needs: [test-deploy-recipe]
+    if: always()
+    steps:
+      - name: Build Result Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          author_name: GitHub Actions
+          status: custom
+          fields: commit,repo,ref,author,eventName,message,workflow
+          custom_payload: |
+            {
+              username: "GitHub Actions",
+              icon_emoji: ":octocat:",
+              attachments: [{
+                color: ${{
+                  needs.test-deploy-recipe.result == 'success'
+                }} === true ? '#43cc11' : '#e05d44',
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `Build for ${process.env.AS_REPO}`
+                    }
+                  },
+                  {
+                    type: "section",
+                    fields: [
+                      {
+                        type: "mrkdwn",
+                        text: `*Commit:*\n${process.env.AS_COMMIT}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Author:*\n${process.env.AS_AUTHOR}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Branch:*\n${process.env.AS_REF}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Message:*\n${process.env.AS_MESSAGE}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Type:*\n${process.env.AS_EVENT_NAME}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: "*PR:*\n${{ github.event.pull_request.html_url }}"
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Workflow:*\n${ process.env.AS_WORKFLOW }`
+                      }
+                    ]
+                  },
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: [
+                        "*Result:*",
+                        `• ${ ${{ needs.test-deploy-recipe.result == 'success' }} === true ? '✅' : '❌' } Non-regression testing of all recipes (EU): ${{ needs.test-deploy-recipe.result }}`
+                      ].join('\n')
+                    }
+                  },
+                  {
+                    type: "context",
+                    elements: [
+                      {
+                        type: "image",
+                        image_url: "https://avatars2.githubusercontent.com/in/15368",
+                        alt_text: "Github Actions"
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: "This message was created automatically by GitHub Actions."
+                      }
+                    ]
+                  }
+                ]
+              }]
+            }
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
