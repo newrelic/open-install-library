@@ -38,6 +38,7 @@ preInstall:
       IS_PHP_INSTALLED=$(which php | wc -l)
       if [ "$IS_PHP_INSTALLED" -eq 0 ]; then
         # PHP not installed, no detection
+        echo "Error: PHP is not installed. Please install PHP, configure and enable your web server (Apache or NGINX), then retry the installation." >&2
         exit 1
       fi
 
@@ -62,12 +63,14 @@ preInstall:
         # No FPM running, recipe cannot install, either signal DETECTED or skip
         if [ "$IS_APACHE_RUNNING" -eq 0 ]; then
           # No Apache or FPM running, no detection
+          echo "Error: Neither Apache nor php-fpm is running. Please start the relevant services then retry the installation." >&2
           exit 4
         else
           # No FPM, Apache is running, let's check if Apache PHP module is enabled
           IS_APACHE_PHP_ENABLED=$(apachectl -t -D DUMP_MODULES | grep php | grep -v grep | wc -l)
           if [ "$IS_APACHE_PHP_ENABLED" -eq 0 ]; then
             # No FPM, Apache is running, but not PHP module enabled, no detection
+            echo "Error: Apache is running, but the PHP module is still disabled. Please enable the PHP module and retry the installation." >&2
             exit 5
           else
             echo "No FPM, Apache running with PHP module, Ok to install" >&2
@@ -130,6 +133,7 @@ install:
   tasks:
     default:
       cmds:
+        - task: collect_metadata
         - task: user_input
         - task: verify_continue
         - task: clean_slate
@@ -141,6 +145,12 @@ install:
         - task: restart_services
         - task: send_transaction
         - task: cleanup_temp_files
+
+    collect_metadata:
+      cmds:
+        - |
+          phpVersion=$(php -r "echo PHP_VERSION;")
+          echo "{\"Metadata\":{\"phpVersion\":\"${phpVersion}\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
 
     user_input:
       cmds:

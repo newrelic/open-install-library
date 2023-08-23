@@ -1,16 +1,18 @@
-name: Non Regression Testing (EU)
+name: Non Regression Testing (EU) - Reusable
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 11 * * 1-5"
+  workflow_call:
+    inputs:
+      folder:
+        description: 'A subfolder of test/definitions-eu, e.g.: test/definitions-eu/apm'
+        required: true
+        type: string
 
 jobs:
   log-context:
     runs-on: ubuntu-latest
     steps:
-      # Dump all contexts
-      - name: Dump GitHub context
+      - name: Dump GitHub contexts
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
         run: echo "$GITHUB_CONTEXT"
@@ -26,14 +28,6 @@ jobs:
         env:
           RUNNER_CONTEXT: ${{ toJson(runner) }}
         run: echo "$RUNNER_CONTEXT"
-      - name: Dump strategy context
-        env:
-          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
-        run: echo "$STRATEGY_CONTEXT"
-      - name: Dump matrix context
-        env:
-          MATRIX_CONTEXT: ${{ toJson(matrix) }}
-        run: echo "$MATRIX_CONTEXT"
   get-test-definition-files:
     name: Get Test Definition Files
     runs-on: ubuntu-latest
@@ -63,8 +57,8 @@ jobs:
                 }));
                 return Array.prototype.concat(...files);
             }
-            const definitionsDir = 'test/definitions-eu'
-            const testDefinitions = await getFiles(definitionsDir);
+            const definitionsDir = 'test/definitions-eu';
+            const testDefinitions = await getFiles(definitionsDir + '/' + '${{ inputs.folder }}');
 
             const outputTestFilesMap = testDefinitions.map(testDefinitionFile => {
                 return { testDefinitionFile, 'testDisplayName': testDefinitionFile.replace(`${definitionsDir}/`, '') }
@@ -74,7 +68,6 @@ jobs:
             }
             console.log(output);
             return output;
-
   test-deploy-recipe:
     name: ${{ matrix.testDisplayName }}
     needs: [get-test-definition-files]
@@ -83,7 +76,6 @@ jobs:
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
       fail-fast: false
-      max-parallel: 20
     env:
       MATRIX: ${{ toJSON(matrix) }}
     steps:
@@ -183,94 +175,3 @@ jobs:
       - name: Report any error
         if: steps.deployerRun.outputs.exit_status != 0
         run: exit 1
-
-  slack-notify:
-    runs-on: ubuntu-latest
-    needs: [test-deploy-recipe]
-    if: always()
-    steps:
-      - name: Build Result Slack Notification
-        uses: 8398a7/action-slack@v3
-        with:
-          author_name: GitHub Actions
-          status: custom
-          fields: commit,repo,ref,author,eventName,message,workflow
-          custom_payload: |
-            {
-              username: "GitHub Actions",
-              icon_emoji: ":octocat:",
-              attachments: [{
-                color: ${{
-                  needs.test-deploy-recipe.result == 'success'
-                }} === true ? '#43cc11' : '#e05d44',
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: `Build for ${process.env.AS_REPO}`
-                    }
-                  },
-                  {
-                    type: "section",
-                    fields: [
-                      {
-                        type: "mrkdwn",
-                        text: `*Commit:*\n${process.env.AS_COMMIT}`
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: `*Author:*\n${process.env.AS_AUTHOR}`
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: `*Branch:*\n${process.env.AS_REF}`
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: `*Message:*\n${process.env.AS_MESSAGE}`
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: `*Type:*\n${process.env.AS_EVENT_NAME}`
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: "*PR:*\n${{ github.event.pull_request.html_url }}"
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: `*Workflow:*\n${ process.env.AS_WORKFLOW }`
-                      }
-                    ]
-                  },
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: [
-                        "*Result:*",
-                        `• ${ ${{ needs.test-deploy-recipe.result == 'success' }} === true ? '✅' : '❌' } Non-regression testing of all recipes (EU): ${{ needs.test-deploy-recipe.result }}`
-                      ].join('\n')
-                    }
-                  },
-                  {
-                    type: "context",
-                    elements: [
-                      {
-                        type: "image",
-                        image_url: "https://avatars2.githubusercontent.com/in/15368",
-                        alt_text: "Github Actions"
-                      },
-                      {
-                        type: "mrkdwn",
-                        text: "This message was created automatically by GitHub Actions."
-                      }
-                    ]
-                  }
-                ]
-              }]
-            }
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
