@@ -7,7 +7,7 @@ The recipe installation can be tested manually. To do so, the Deployer can be us
 Get the latest docker image of the Deployer
 
 ```bash
-docker pull ghcr.io/newrelic/deployer:latest
+docker pull newrelic/deployer:latest
 ```
 
 Then start the provisioning of all hosts using the Deployer in batch mode.
@@ -21,7 +21,7 @@ Run the snippet below after replacing:
 docker run -i \
 -v ~/configs/:/mnt/deployer/configs/ \
 -v <absolute_path>/definitions/:/mnt/deployer/definitions/ \
---entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m deploy -l debug
+--entrypoint ruby newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m deploy -l debug
 ```
 
 ## Testing
@@ -36,7 +36,7 @@ Use the `ohi-auto-config` directory for provisioning instances with integrations
 docker run -it \
   -v $HOME/configs/:/mnt/deployer/configs/ \
   -v <absolute_path>/open-install-library/test/manual/definitions/ohi-auto-config/:/mnt/deployer/ohi-auto-config/ \
-  --entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d ohi-auto-config -s 20 -m deploy -l debug
+  --entrypoint ruby newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d ohi-auto-config -s 20 -m deploy -l debug
 ```
 
 | Recipe        | Prompt Values                                                                                                                                                                                                                   |
@@ -68,7 +68,7 @@ Run the snippet below after replacing:
 docker run -i \
 -v ~/configs/:/mnt/deployer/configs/ \
 -v <absolute_path>/definitions/:/mnt/deployer/definitions/ \
---entrypoint ruby ghcr.io/newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m teardown -l debug
+--entrypoint ruby newrelic/deployer:latest batch.rb -c configs/<my_user_config_filename>.json -d definitions -s 20 -m teardown -l debug
 ```
 
 ## macOS
