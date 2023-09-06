@@ -1,0 +1,271 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: logs-super-agent-integration
+displayName: Logs Integration
+description: New Relic install recipe for Logging in super-agent
+repository: https://github.com/newrelic/infrastructure-agent/tree/master/assets/examples/logging
+
+# dependencies:
+#  - newrelic-super-agent
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2" # Required to override linux-unsupported
+    kernelArch: x86_64
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2022"
+    kernelArch: x86_64
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2023"
+    kernelArch: x86_64
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "((8|9|10|11|12)\\.?.*)" # Jessie, Buster, Strecht
+    kernelArch: x86_64
+  - type: host
+    os: linux
+    platform: "ubuntu"
+    platformVersion: "(((16|18|20|21|22)\\.04)|(20.10))" # Xenial, Bionic, Focal, Hirsute, Jammy, Groovy
+  - type: host
+    os: linux
+    platform: "redhat"
+    platformFamily: rhel
+    platformVersion: "((7|8|9)\\.?.*)"
+  - type: host
+    os: linux
+    platform: "centos"
+    platformFamily: rhel
+    platformVersion: "((7|8|9)\\.?.*)"
+  - type: host
+    os: linux
+    platformFamily: suse
+    platformVersion: "(15\\.[1-4]|15-SP[1-4])"
+    kernelArch: x86_64
+  # ARM supported
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "((8|9|10|11|12)\\.?.*)" # Jessie, Buster, Strecht
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "ubuntu"
+    platformVersion: "(((16|18|20|21|22)\\.04)|(20.10))" # Xenial, Bionic, Focal, Hirsute, Jammy, Groovy
+    kernelArch: aarch64
+  - type: host
+    os: linux
+    platform: "centos"
+    platformFamily: rhel
+    platformVersion: "((7|8)\\.?.*)"
+    kernelArch: aarch64
+
+keywords:
+  - Logs
+
+processMatch: []
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: init
+        - task: setup
+        - task: logEvent
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          # Map of tool names to the associated error code
+          required_tools_and_error_codes="grep:10 sed:11 tee:14 touch:15"
+
+          for tuple in $required_tools_and_error_codes; do
+            tool=$(echo ${tuple} |cut -d':' -f1)
+            code=$(echo ${tuple} |cut -d':' -f2)
+
+            IS_TOOL_INSTALLED=$(which ${tool} | wc -l)
+            if [ "$IS_TOOL_INSTALLED" -eq 0 ]; then
+              echo "This installation recipe on Linux requires '${tool}' to be installed." >&2
+              exit ${code}
+            fi
+          done
+
+    init:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
+            rm /etc/newrelic-infra/logging.d/logging.yml;
+          fi
+        - |
+          if [ -f /etc/newrelic-infra/logging.d/discovered.yml ]; then
+            rm /etc/newrelic-infra/logging.d/discovered.yml;
+          fi
+        - |
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" != "otel" ]; then
+            mkdir -p "/etc/newrelic-infra/logging.d"
+            touch /etc/newrelic-infra/logging.d/logging.yml;
+            touch /etc/newrelic-infra/logging.d/discovered.yml;
+          fi
+        - |
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then     
+            echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
+          else
+            if [ -f /etc/nr-otel-collector/config.yaml ]; then
+              sed -i 's/\<otlp, hostmetrics\>/otlp/g' /etc/nr-otel-collector/config.yaml
+              sed -i 's/\<otlp, filelog\>/otlp/g' /etc/nr-otel-collector/config.yaml
+            fi
+          fi
+
+    setup:
+      cmds:
+        - |
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" != "otel" ]; then
+            NR_CLI_SKIP_LOGS={{.NR_CLI_SKIP_LOGS}}
+            target_log_files=()
+            target_discovered_log_files=()
+            source_log_files=("/var/log/alternatives.log")
+            source_log_files+=("/var/log/cloud-init.log")
+            source_log_files+=("/var/log/auth.log")
+            source_log_files+=("/var/log/dpkg.log")
+            source_log_files+=("/var/log/syslog")
+            source_log_files+=("/var/log/messages")
+            source_log_files+=("/var/log/secure")
+            source_log_files+=("/var/log/yum.log")
+  
+            for log_file in "${source_log_files[@]}"
+            do
+              file_exist=$(ls $log_file 2>1 | wc -l)
+              if [ $file_exist -gt 0 ]; then
+                target_log_files+=($log_file)
+              fi
+            done
+  
+            discoveredLogFiles=$(echo -n "{{.NR_DISCOVERED_LOG_FILES | trim}}")
+            discoveredLogsStringLength=${#discoveredLogFiles}
+            # Disable glob expansion (necessary for discovered logs)
+            set -f
+            if [ $discoveredLogsStringLength -gt 0 ]; then
+              for filePath in $(echo -n $discoveredLogFiles | sed "s/,/ /g"); do
+                target_discovered_log_files+=($filePath)
+              done
+            fi
+  
+            file_exist=$(find /var/lib/docker/containers -name "*.log" 2>1 | wc -l)
+            if [ $file_exist -gt 0 ]; then
+              target_log_files+=("/var/lib/docker/containers/*/*.log")
+            fi
+            
+            if [[ "$NR_CLI_SKIP_LOGS" == "true" ]] ; then
+              target_log_files=()
+              target_discovered_log_files=()
+            fi
+  
+            target_log_files+=({{.NEW_RELIC_CLI_LOG_FILE_PATH}})
+  
+            echo "logs:" | tee /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+            for log_file in "${target_log_files[@]}"
+            do
+              if [ "$log_file" == "/var/lib/docker/containers/*/*.log" ]; then
+                echo -e "  - name: containers\n    file: /var/lib/docker/containers/*/*.log" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+              else
+                NAME=$(basename $log_file)
+                echo -e "  - name: $NAME" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                echo -e "    file: $log_file" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                if [[ "$NAME" == "newrelic-cli.log" ]]; then
+                  echo -e "    attributes:\n      newrelic-cli: true" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                  echo -e "      logtype: newrelic-cli" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "alternatives.log" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_alternatives" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "cloud-init.log" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_cloud-init" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "auth.log" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_auth" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "dpkg.log" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_dpkg" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "syslog" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_syslog" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "messages" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_messages" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "secure" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_secure" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+                if [[ "$NAME" == "yum.log" ]]; then
+                  echo -e "    attributes:\n      logtype: linux_yum" | tee -a /etc/newrelic-infra/logging.d/logging.yml > /dev/null
+                fi
+              fi
+            done
+  
+            if [ ${#target_discovered_log_files[@]} -gt 0 ]; then
+              echo "logs:" | tee /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+  
+              # index is incremented to facilitate dynamic name values for each discovered log file path
+              index=0
+              for filePath in $(echo -n $discoveredLogFiles | sed "s/,/ /g"); do
+  
+                echo -e "  - name: configured-logs-$index" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+                echo -e "    file: $filePath" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+  
+                if [[ $filePath == *"nginx/error"* ]]; then
+                  echo -e "    attributes:\n      logtype: nginx-error" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+                fi
+                if [[ $filePath == *"nginx/access"* ]]; then
+                  echo -e "    attributes:\n      logtype: nginx" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+                fi
+  
+                if [[ $filePath == *"mysql/error"* ]]; then
+                  echo -e "    attributes:\n      logtype: mysql-error" | tee -a /etc/newrelic-infra/logging.d/discovered.yml > /dev/null
+                fi
+  
+                index=$((index+1))
+              done
+            fi
+          fi
+
+    logEvent:
+      cmds:
+        # Wait to give the services time to get going with the new configuration and plugin startup
+        - |
+          sleep 10
+        - |
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" != "otel" ]; then
+            echo "Log configuration:" | tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+            cat /etc/newrelic-infra/logging.d/logging.yml | tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+            echo "Log installation completed" | tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+          fi
+
+postInstall:
+  info: |2
+      ⚙️  If NR_CLI_HOST_MONITORING_SOURCE was set to 'newrelic':
+      ⚙️  The Logs configuration file (base configuration) can be found in /etc/newrelic-infra/logging.d/logging.yml
+      ⚙️  The Logs configuration file for discovered processes can be found in /etc/newrelic-infra/logging.d/discovered.yml
+      Edit these files to make changes or configure advanced features for the Logs integration. See the docs for options:
+      https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters

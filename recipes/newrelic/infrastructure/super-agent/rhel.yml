@@ -98,7 +98,6 @@ install:
         - task: update_otel_mem_limit
         - task: update_otel_end_point
         - task: config_supervisors
-        - task: config_host_monitoring
         - task: restart_super_agent
         - task: assert_super_agent_started
         - task: post_install
@@ -186,7 +185,8 @@ install:
               sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
               sed -i "/^license_key/d" /etc/newrelic-infra.yml
               sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
-              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml                      
+              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
+              sed -i "/^is_secure_forward_only/d" /etc/newrelic-infra.yml
             else
               touch /etc/newrelic-infra.yml
             fi
@@ -281,28 +281,6 @@ install:
           else
             sed -i 's/#nr_otel_collector/nr_otel_collector/g' /etc/newrelic-super-agent/config.yaml
           fi
-
-    config_host_monitoring:
-      cmds:
-        - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
-            sed -i "/^is_secure_forward_only/d" /etc/newrelic-infra.yml
-          fi
-        - |
-          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then     
-            if [ -f /etc/newrelic-infra/logging.d/logging.yml ]; then
-              mv /etc/newrelic-infra/logging.d/logging.yml /etc/newrelic-infra/logging.d/logging.yml.example
-            fi
-            if [ -f /etc/newrelic-infra/logging.d/discovered.yml ]; then
-              mv /etc/newrelic-infra/logging.d/discovered.yml /etc/newrelic-infra/logging.d/discovered.yml.example
-            fi
-            echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
-          else
-            if [ -f /etc/nr-otel-collector/config.yaml ]; then
-              sed -i 's/\<otlp, hostmetrics\>/otlp/g' /etc/nr-otel-collector/config.yaml
-              sed -i 's/\<otlp, filelog\>/otlp/g' /etc/nr-otel-collector/config.yaml
-            fi
-          fi 
 
     restart_super_agent:
       cmds:
