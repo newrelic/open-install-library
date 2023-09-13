@@ -146,7 +146,15 @@ install:
           fi
 
           # Check the Kubernetes version
-          KUBECTL_VERSION=$($SUDO $KUBECTL version 2>&1)
+          KUBECTL_VERSION=$($SUDO $KUBECTL version --short 2>&1)
+
+          # Check if $KUBECTL_VERSION contains an error with unknown flag --short
+          # run again without --short flag since it was deprecated in kubectl version 1.28
+          if echo "$KUBECTL_VERSION" | grep -q "unknown flag: --short"
+          then
+            KUBECTL_VERSION=$($SUDO $KUBECTL version 2>&1)
+          fi
+
           CLIENT_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
           CLIENT_MINOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $2; }')
           SERVER_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Server Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
