@@ -19,10 +19,10 @@ You'll need the following:
 The demo-deployer is used to provision a minikube host
 
 ```bash
-docker pull ghcr.io/newrelic/deployer:latest
+docker pull newrelic/deployer:latest
 docker run -it\
     -v $HOME/configs/:/mnt/deployer/configs/\
-    --entrypoint ruby ghcr.io/newrelic/deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/manual/definitions/ohi/linux/k8-minikube-empty.json
+    --entrypoint ruby newrelic/deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/manual/definitions/ohi/linux/k8-minikube-empty.json
 ```
 
 Once logged in, you can execute `kubectl` commands to access the cluster. Here are a few commands to check the cluster is running.
