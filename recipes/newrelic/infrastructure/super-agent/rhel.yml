@@ -98,6 +98,7 @@ install:
         - task: update_otel_mem_limit
         - task: update_otel_end_point
         - task: config_supervisors
+        - task: config_host_monitoring
         - task: restart_super_agent
         - task: assert_super_agent_started
         - task: post_install
@@ -271,15 +272,30 @@ install:
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" == "false" ] ; then
-            sed -i  '/#/! s/nr_infra_agent/#nr_infra_agent/g' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*#\s*nr_infra_agent:/s/#//' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*#\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/#//' /etc/newrelic-super-agent/config.yaml            
           else
-            sed -i 's/#nr_infra_agent/nr_infra_agent/g' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*nr_infra_agent:/s/^  /  #/' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/^  /  #/' /etc/newrelic-super-agent/config.yaml
           fi
         - |
           if [ "{{.NR_CLI_NRDOT}}" == "false" ] ; then
-            sed -i  '/#/! s/nr_otel_collector/#nr_otel_collector/g' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*#\s*nr_otel_collector:/s/#//' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*#\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/#//' /etc/newrelic-super-agent/config.yaml 
           else
-            sed -i 's/#nr_otel_collector/nr_otel_collector/g' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*nr_otel_collector:/s/^  /  #/' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/^  /  #/' /etc/newrelic-super-agent/config.yaml
+          fi
+
+    config_host_monitoring:
+      cmds:
+        - |
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then     
+            echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
+          else
+            if [ -f /etc/nr-otel-collector/config.yaml ]; then
+              sed -i 's/\<otlp, hostmetrics\>/otlp/g' /etc/nr-otel-collector/config.yaml
+            fi
           fi
 
     restart_super_agent:
