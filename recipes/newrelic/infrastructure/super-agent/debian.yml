@@ -97,7 +97,7 @@ install:
           IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
           if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
             echo "This newrelic install must be run under sudo or root" >&2
-            exit 3      
+            exit 3
           fi
         - |
           IS_GREP_INSTALLED=$(which grep | wc -l)
@@ -178,7 +178,7 @@ install:
               sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
               sed -i "/^license_key/d" /etc/newrelic-infra.yml
               sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
-              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml            
+              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
               sed -i "/^is_secure_forward_only/d" /etc/newrelic-infra.yml
             else
               touch /etc/newrelic-infra.yml
@@ -300,7 +300,7 @@ install:
               # Force-Install the Software
               echo "Attempting to install any missing dependencies or fixes broken packages."
               apt-get $OPTIONS install -f
-              if [ $? -ne 0 ]; then 
+              if [ $? -ne 0 ]; then
                 exit 1
               fi
               echo "Installation is successful"
@@ -326,7 +326,7 @@ install:
           fi
         - |
           if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-            echo 'OTEL_EXPORTER_OTLP_ENDPOINT=staging-otlp.nr-data.net:4317' >> /etc/newrelic-super-agent/newrelic-super-agent.conf  
+            echo 'otel_exporter_otlp_endpoint: staging-otlp.nr-data.net:4317' >> /etc/newrelic-super-agent/nrdot-values.yaml
           elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
             echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.eu01.nr-data.net:4317' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
           else
@@ -352,10 +352,13 @@ install:
         - |
           if [ "{{.NR_CLI_NRDOT}}" == "false" ] ; then
             sed -i '/^\s*nr_otel_collector:/s/^/#/' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/^/#/' /etc/newrelic-super-agent/config.yaml 
+            sed -i '/^\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/^/#/' /etc/newrelic-super-agent/config.yaml
           else
             sed -i '/^\s*#\s*nr_otel_collector:/s/#//' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*#\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/#//' /etc/newrelic-super-agent/config.yaml
+            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+              sed -i 's/nr_otel_collector:/nr_otel_collector:\n    values_file: "\/etc\/newrelic-super-agent\/nrdot-values\.yaml"/' /etc/newrelic-super-agent/config.yaml
+            fi
           fi
 
     config_opamp:
@@ -388,7 +391,7 @@ install:
     config_host_monitoring:
       cmds:
         - |
-          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then     
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then
             echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
           else
             if [ -f /etc/nr-otel-collector/config.yaml ]; then
@@ -401,7 +404,7 @@ install:
         - |
           if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
             systemctl restart newrelic-super-agent
-          else 
+          else
             if [ {{.IS_INITCTL}} -gt 0 ]; then
               initctl restart newrelic-super-agent
             else
