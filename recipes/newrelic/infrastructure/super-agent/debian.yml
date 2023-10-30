@@ -43,7 +43,7 @@ preInstall:
       echo "docker detected with environ, unsupported" >&2
       exit 131
     fi
-    if [[ -f /.dockerenv ]] ; then
+    if [ -f /.dockerenv ] ; then
       echo "docker detected with .dockerenv, unsupported" >&2
       exit 131
     fi
@@ -138,7 +138,7 @@ install:
         - |
           if [ -n "{{.DEBIAN_CODENAME}}" ]; then
             IS_AGENT_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt/dists/{{.DEBIAN_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
-            if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
+            if [ $IS_AGENT_AVAILABLE -eq 0 ] ; then
               echo "there is no newrelic super agent available for the distribution with codename '{{.DEBIAN_CODENAME}}'." >&2
               exit 131
             fi
@@ -199,7 +199,7 @@ install:
     setup_infra_proxy:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" && ! -z "$HTTPS_PROXY" ]; then
+          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false"] && [ ! -z "$HTTPS_PROXY" ]; then
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
@@ -257,10 +257,13 @@ install:
           if [ $IS_ARM -gt 0 ] ; then
             ARCH="arm64"
           fi
+
           if [ -n "{{.DEBIAN_CODENAME}}" ]; then
-            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+            printf "\ndeb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
           else
-            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+            printf "\ndeb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
           fi
       vars:
         DEBIAN_CODENAME:
@@ -336,13 +339,13 @@ install:
     config_supervisors:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" == "false" && "{{.NR_CLI_NRDOT}}" == "false" ] ; then
+          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
             sed -i '/^\s*agents:/s/^/#/' /etc/newrelic-super-agent/config.yaml
           else
             sed -i 's/s*#\s*agents:/agents:/g' /etc/newrelic-super-agent/config.yaml
           fi
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" == "false" ] ; then
+          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ]; then
             sed -i '/^\s*nr_infra_agent:/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/^/#/' /etc/newrelic-super-agent/config.yaml
           else
@@ -350,7 +353,7 @@ install:
             sed -i '/^\s*#\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/#//' /etc/newrelic-super-agent/config.yaml
           fi
         - |
-          if [ "{{.NR_CLI_NRDOT}}" == "false" ] ; then
+          if [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
             sed -i '/^\s*nr_otel_collector:/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/^/#/' /etc/newrelic-super-agent/config.yaml 
           else
@@ -364,7 +367,7 @@ install:
     config_opamp:
       cmds:
         - |
-          if [ "{{.NR_CLI_FLEET_ENABLED}}" == "false" ] ; then
+          if [ "{{.NR_CLI_FLEET_ENABLED}}" = "false" ] ; then
             sed -i '/^\s*opamp:/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*endpoint: https:\/\/opamp/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*api-key:/s/^/#/' /etc/newrelic-super-agent/config.yaml
@@ -391,7 +394,7 @@ install:
     config_host_monitoring:
       cmds:
         - |
-          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then     
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" = "otel" ]; then     
             echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
           else
             if [ -f /etc/nr-otel-collector/config.yaml ]; then
