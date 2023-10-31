@@ -38,7 +38,7 @@ preInstall:
         echo "docker detected with environ, unsupported" >&2
         exit 131
       fi
-      if [[ -f /.dockerenv ]] ; then
+      if [ -f /.dockerenv ] ; then
         echo "docker detected with .dockerenv, unsupported" >&2
         exit 131
       fi
@@ -181,16 +181,21 @@ install:
       cmds:
         - |
           ARCH=$(uname -m)
-          REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
-          IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
+          SUPER_AGENT_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
+          IS_NEWRELIC_AVAILABLE=$(curl -Ls $SUPER_AGENT_REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
             echo "newrelic super agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
-          curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
+          INFRA_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
+          
+          curl -s $INFRA_REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
+          curl -s $SUPER_AGENT_REPO_URL | sed 's/\[newrelic-infra]/\n[newrelic-super-agent]/g' >> /etc/zypp/repos.d/newrelic-infra.repo
+
         - curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
         - rpm --import newrelic_rpm_key_current.gpg
         - zypper -n --quiet ref -r newrelic-infra
+        - zypper -n --quiet ref -r newrelic-super-agent
         - zypper -n --quiet install newrelic-super-agent
         - rm newrelic_rpm_key_current.gpg
       vars:
@@ -226,13 +231,13 @@ install:
     config_supervisors:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" == "false" && "{{.NR_CLI_NRDOT}}" == "false" ] ; then
+          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ] ; then
             sed -i '/^\s*agents:/s/^/#/' /etc/newrelic-super-agent/config.yaml           
           else
             sed -i 's/s*#\s*agents:/agents:/g' /etc/newrelic-super-agent/config.yaml
           fi
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" == "false" ] ; then
+          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] ; then
             sed -i '/^\s*nr_infra_agent:/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/^/#/' /etc/newrelic-super-agent/config.yaml
           else
@@ -240,7 +245,7 @@ install:
             sed -i '/^\s*#\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/#//' /etc/newrelic-super-agent/config.yaml
           fi
         - |
-          if [ "{{.NR_CLI_NRDOT}}" == "false" ] ; then
+          if [ "{{.NR_CLI_NRDOT}}" = "false" ] ; then
             sed -i '/^\s*nr_otel_collector:/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/^/#/' /etc/newrelic-super-agent/config.yaml 
           else
@@ -254,7 +259,7 @@ install:
     config_opamp:
       cmds:
         - |
-          if [ "{{.NR_CLI_FLEET_ENABLED}}" == "false" ] ; then
+          if [ "{{.NR_CLI_FLEET_ENABLED}}" = "false" ] ; then
             sed -i '/^\s*opamp:/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*endpoint: https:\/\/opamp/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*api-key:/s/^/#/' /etc/newrelic-super-agent/config.yaml
@@ -281,7 +286,7 @@ install:
     config_host_monitoring:
       cmds:
         - |
-          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" == "otel" ]; then     
+          if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" = "otel" ]; then     
             echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
           else
             if [ -f /etc/nr-otel-collector/config.yaml ]; then
