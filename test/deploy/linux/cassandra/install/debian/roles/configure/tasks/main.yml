@@ -33,15 +33,19 @@
   become: yes
 
 - name: install java
-  shell: sudo apt install adoptopenjdk-8-hotspot -y
+  shell: apt install adoptopenjdk-8-hotspot -y
+  become: yes
+
+- name: install curl
+  shell: apt install curl -y
   become: yes
 
 - name: add cassandra keys
-  shell: wget -q -O - https://www.apache.org/dist/cassandra/KEYS | sudo apt-key add -
+  shell: curl https://downloads.apache.org/cassandra/KEYS | sudo apt-key add -
   become: yes
 
 - name: add cassandra repo
-  shell: sudo sh -c 'echo "deb https://www.apache.org/dist/cassandra/debian 311x main" > /etc/apt/sources.list.d/cassandra.list'
+  shell: sudo sh -c 'echo "deb https://debian.cassandra.apache.org 30x main" | sudo tee -a /etc/apt/sources.list.d/cassandra.sources.list'
   become: yes
 
 - name: update packages
@@ -61,7 +65,7 @@
   become: yes
 
 - name: Ensure Cassandra is ready to accept query
-  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "SELECT dateof(now()) FROM system.local ;"
+  shell: cqlsh localhost 9042 -u cassandra -p cassandra -e "SELECT dateof(now()) FROM system.local ;"
   register: output
   retries: 20
   delay: 15
@@ -72,7 +76,7 @@
   when: output is failed
 
 - name: Create newrelic login
-  shell: cqlsh localhost 9042 -ucassandra -pcassandra -e "CREATE USER newrelic WITH PASSWORD 'Virtuoso4all!';"
+  shell: cqlsh localhost 9042 -u cassandra -p cassandra -e "CREATE USER newrelic WITH PASSWORD 'Virtuoso4all!';"
   become: yes
   when: create_newrelic_user|bool
 
