@@ -1,0 +1,50 @@
+---
+- debug:
+    msg: Configure
+
+- name: Set default create_newrelic_user (default not create)
+  set_fact:
+    create_newrelic_user: "false"
+  when: create_newrelic_user is undefined
+
+- name: Set default create_env_var (default not create)
+  set_fact:
+    create_env_var: "false"
+  when: create_env_var is undefined
+
+# By default JMX security is disabled.
+- name: Require authentication
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/cassandra/conf/cassandra-env.sh
+    regexp: "jmxremote.authenticate=false"
+    line: '  JVM_OPTS="$JVM_OPTS -Dcom.sun.management.jmxremote.authenticate=true"'
+
+- name: Configure access file
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/cassandra/conf/cassandra-env.sh
+    regexp: "jmxremote.access.file"
+    line: JVM_OPTS="$JVM_OPTS -Dcom.sun.management.jmxremote.access.file=/etc/cassandra/jmxremote.access"
+
+- name: Add passwords file
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cassandra/jmxremote.password
+    content: |
+      cassandra cassandra
+      newrelic Virtuoso4all
+
+- name: Add access file
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/cassandra/jmxremote.access
+    content: |
+      cassandra readwrite
+      newrelic readonly
+
+- name: Restart Cassandra
+  become: true
+  ansible.builtin.systemd:
+    name: cassandra
+    state: restarted
