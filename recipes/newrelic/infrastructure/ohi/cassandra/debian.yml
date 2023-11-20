@@ -89,6 +89,19 @@ install:
     input_assert:
       cmds:
         - |
+          # Check env vars
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          NEW_RELIC_CASSANDRA_USERNAME="{{.NEW_RELIC_CASSANDRA_USERNAME}}"
+          NEW_RELIC_CASSANDRA_PASSWORD="{{.NEW_RELIC_CASSANDRA_PASSWORD}}"
+          NEW_RELIC_CASSANDRA_HOSTNAME="{{.NEW_RELIC_CASSANDRA_HOSTNAME}}"
+          NEW_RELIC_CASSANDRA_PORT="{{.NEW_RELIC_CASSANDRA_PORT}}"
+          NEW_RELIC_CASSANDRA_CONFIG_PATH="{{.NEW_RELIC_CASSANDRA_CONFIG_PATH}}"
+
+          # Set defaults
+          NEW_RELIC_CASSANDRA_HOSTNAME=${NEW_RELIC_CASSANDRA_HOSTNAME:-localhost}
+          NEW_RELIC_CASSANDRA_PORT=${NEW_RELIC_CASSANDRA_PORT:-7199}
+          NEW_RELIC_CASSANDRA_CONFIG_PATH=${NEW_RELIC_CASSANDRA_CONFIG_PATH:-/etc/cassandra/cassandra.yaml}
+        - |
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
         - |
           # Get latest definitions and skip any failure because of deprecation
@@ -101,24 +114,23 @@ install:
           fi
 
           sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
-
         - |
           sudo tee /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
           integrations:
             - name: nri-cassandra
               env:
                 METRICS: true
-                HOSTNAME: {{.NR_CLI_DB_HOSTNAME}}
-                PORT: {{.NR_CLI_DB_PORT}}
-                USERNAME: {{.NR_CLI_DB_USERNAME}}
-                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                HOSTNAME: $NEW_RELIC_CASSANDRA_HOSTNAME
+                PORT: $NEW_RELIC_CASSANDRA_PORT
+                USERNAME: $NEW_RELIC_CASSANDRA_USERNAME
+                PASSWORD: $NEW_RELIC_CASSANDRA_PASSWORD
                 REMOTE_MONITORING: true
               interval: 30s
             - name: nri-cassandra
               env:
                 INVENTORY: true
-                HOSTNAME: {{.NR_CLI_DB_HOSTNAME}}
-                CONFIG_PATH: /etc/cassandra/cassandra.yaml
+                HOSTNAME: $NEW_RELIC_CASSANDRA_HOSTNAME
+                CONFIG_PATH: $NEW_RELIC_CASSANDRA_CONFIG_PATH
                 REMOTE_MONITORING: true
               inventory_source: config/cassandra
               interval: 60s
