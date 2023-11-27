@@ -115,32 +115,37 @@ install:
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
               fi
 
-              # Check credentials
-              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+              # Check if authentication is required
+              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" version 2>&1)
 
-              if [ $(echo $NODETOOL_RESPONSE | grep -Ei "Invalid username or password|Required values.*not provided" | wc -l) -gt 0 ]; then
-                TRIES=0
-                printf "\nJMX authentication required"
-                while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-                  printf "\nCassandra connection username (via JMX): "
-                  stty -echo
-                  read -r NEW_RELIC_CASSANDRA_USERNAME
-                  stty echo
-                  printf "\n"
-                  printf "Cassandra connection password (via JMX): "
-                  stty -echo
-                  read -r NEW_RELIC_CASSANDRA_PASSWORD
-                  stty echo
-                  printf "\n"
-                  ((TRIES++))
+              if [ $(echo $NODETOOL_RESPONSE | grep -i "Credentials required" | wc -l) -gt 0 ]; then
+                # Check if environment variables have been set and are valid
+                NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
 
-                  NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
-                  if [ $(echo $NODETOOL_RESPONSE | grep "ReleaseVersion" | wc -l) -eq 0 ] ; then
-                    printf "\n[Error]: Could not authenticate on Cassandra server. Check username or password.\nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/cassandra-monitoring-integration/#config-options for more info.\n" >&2
-                    if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
-                  fi
-                  break
-                done
+                if [ $(echo $NODETOOL_RESPONSE | grep -Ei "Invalid username or password|Required values.*not provided" | wc -l) -gt 0 ]; then
+                  TRIES=0
+                  printf "\nJMX authentication required"
+                  while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+                    printf "\nCassandra connection username (via JMX): "
+                    stty -echo
+                    read -r NEW_RELIC_CASSANDRA_USERNAME
+                    stty echo
+                    printf "\n"
+                    printf "Cassandra connection password (via JMX): "
+                    stty -echo
+                    read -r NEW_RELIC_CASSANDRA_PASSWORD
+                    stty echo
+                    printf "\n"
+                    ((TRIES++))
+
+                    NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+                    if [ $(echo $NODETOOL_RESPONSE | grep "ReleaseVersion" | wc -l) -eq 0 ] ; then
+                      printf "\n[Error]: Could not authenticate on Cassandra server. Check username or password.\nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/cassandra-monitoring-integration/#config-options for more info.\n" >&2
+                      if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
+                    fi
+                    break
+                  done
+                fi
               fi
               break
             done
