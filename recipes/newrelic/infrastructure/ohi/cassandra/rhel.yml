@@ -156,16 +156,20 @@ install:
             done
           fi
 
-          # Check if authentication is required in -y mode
+          # Check for required input in -y mode
           if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
-            NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" version 2>&1)
-            if [ $(echo $NODETOOL_RESPONSE | grep "Credentials required" | wc -l) -gt 0 ] && ([ "$NEW_RELIC_CASSANDRA_USERNAME" == "" ] || [ "$NEW_RELIC_CASSANDRA_PASSWORD" == "" ]); then
+            NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USER" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+            if [ $(echo $NODETOOL_RESPONSE | grep -i "Failed to connect" | wc -l) -gt 0 ]; then
+              EXIT130=" - NEW_RELIC_CASSANDRA_PORT=<port>\n"
+            fi
+
+            if [ $(echo $NODETOOL_RESPONSE | grep -Ei "Invalid username or password|Required values.*not provided" | wc -l) -gt 0 ]; then
               EXIT130=" - NEW_RELIC_CASSANDRA_USERNAME=<jmx_username>\n - NEW_RELIC_CASSANDRA_PASSWORD=<jmx_user_password>"
             fi
           fi
 
           if [ "$EXIT130" != "" ]; then
-            printf "You did not provide all the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
+            printf "There is a problem with the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT130\n"
             exit 130
           else
             printf "\n[OK] All checks passed. Installing Cassandra Integration...\n\n"
