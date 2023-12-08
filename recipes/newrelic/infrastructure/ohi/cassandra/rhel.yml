@@ -85,24 +85,16 @@ install:
       cmds:
         - |
           TRIES=0
-
-          # Check env vars
-          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
-          NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
-          NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
-          NR_CLI_DB_HOSTNAME="{{.NR_CLI_DB_HOSTNAME}}"
-          NR_CLI_DB_PORT="{{.NR_CLI_DB_PORT}}"
-          NEW_RELIC_CASSANDRA_USERNAME="{{.NEW_RELIC_CASSANDRA_USERNAME}}"
-          NEW_RELIC_CASSANDRA_PASSWORD="{{.NEW_RELIC_CASSANDRA_PASSWORD}}"
-          NEW_RELIC_CASSANDRA_HOSTNAME="{{.NEW_RELIC_CASSANDRA_HOSTNAME}}"
-          NEW_RELIC_CASSANDRA_PORT="{{.NEW_RELIC_CASSANDRA_PORT}}"
-          NEW_RELIC_CASSANDRA_CONFIG_PATH="{{.NEW_RELIC_CASSANDRA_CONFIG_PATH}}"
-
-          # Set defaults
-          NEW_RELIC_CASSANDRA_HOSTNAME=${NEW_RELIC_CASSANDRA_HOSTNAME:-${NR_CLI_DB_HOSTNAME:-localhost}}
-          NEW_RELIC_CASSANDRA_PORT=${NEW_RELIC_CASSANDRA_PORT:-${NR_CLI_DB_PORT:-7199}}
           NODETOOL_RESPONSE=""
 
+          # Check env vars and set defaults
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          NEW_RELIC_CASSANDRA_USERNAME=${NEW_RELIC_CASSANDRA_USERNAME:-${NR_CLI_DB_USERNAME:-""}}
+          NEW_RELIC_CASSANDRA_PASSWORD=${NEW_RELIC_CASSANDRA_PASSWORD:-${NR_CLI_DB_PASSWORD:-""}}
+          NEW_RELIC_CASSANDRA_HOSTNAME=${NEW_RELIC_CASSANDRA_HOSTNAME:-${NR_CLI_DB_HOSTNAME:-"localhost"}}
+          NEW_RELIC_CASSANDRA_PORT=${NEW_RELIC_CASSANDRA_PORT:-${NR_CLI_DB_PORT:-7199}}
+
+          # Set config path
           DEFAULT_CASSANDRA_CONFIG_PATH="/etc/cassandra/cassandra.yaml"
           if [ -e "/etc/cassandra/conf/cassandra.yaml" ]; then
             DEFAULT_CASSANDRA_CONFIG_PATH="/etc/cassandra/conf/cassandra.yaml"
@@ -162,7 +154,7 @@ install:
 
           # Check for required input in -y mode
           if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
-            NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USER" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+            NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
             if [ $(echo $NODETOOL_RESPONSE | grep -i "Failed to connect" | wc -l) -gt 0 ]; then
               EXIT130=" - NEW_RELIC_CASSANDRA_PORT=<port>\n"
             fi
