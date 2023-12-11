@@ -99,14 +99,17 @@ install:
           # Interactive mode
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
             while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
-              # Check port
-              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" version 2>&1)
+              # Check port and hostname
+              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" version 2>&1)
 
               if [ $(echo $NODETOOL_RESPONSE | grep "Failed to connect" | wc -l) -gt 0 ]; then
-                printf "\n[Error]: Could not connect to Cassandra with port ${NEW_RELIC_CASSANDRA_PORT}. Please provide a port number.\nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/cassandra-monitoring-integration/#config-options for more info.\n" >&2
-                printf "\nCassandra Port (default: 7199): "
+                printf "\n[Error]: Could not connect to Cassandra with port ${NEW_RELIC_CASSANDRA_PORT} or hostname ${NEW_RELIC_CASSANDRA_HOSTNAME}. Please provide a port number and hostname.\nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/cassandra-monitoring-integration/#config-options for more info.\n" >&2
+                printf "\nCassandra port (default: 7199): "
                 read -r NEW_RELIC_CASSANDRA_PORT
                 NEW_RELIC_CASSANDRA_PORT=${NEW_RELIC_CASSANDRA_PORT:-7199}
+                printf "\nCassandra hostname (default: localhost): "
+                read -r NEW_RELIC_CASSANDRA_HOSTNAME
+                NEW_RELIC_CASSANDRA_HOSTNAME=${NEW_RELIC_CASSANDRA_HOSTNAME:-localhost}
                 ((TRIES++))
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
               fi
@@ -149,9 +152,9 @@ install:
 
           # Check for required input in -y mode
           if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
-            NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+           NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
             if [ $(echo $NODETOOL_RESPONSE | grep -i "Failed to connect" | wc -l) -gt 0 ]; then
-              EXIT130=" - NEW_RELIC_CASSANDRA_PORT=<port>\n"
+              EXIT130=" - NEW_RELIC_CASSANDRA_PORT=<port>\n - NEW_RELIC_CASSANDRA_HOSTNAME=<hostname>"
             fi
 
             if [ $(echo $NODETOOL_RESPONSE | grep -Ei "Invalid username or password|Required values.*not provided" | wc -l) -gt 0 ]; then
