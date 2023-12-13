@@ -1,7 +1,11 @@
-name: Smoke Tests (dp)(EU)
+name: Non Regression Testing (dp)
 
 on:
   workflow_dispatch:
+#  schedule:
+#    - cron: "0 9 * * 1-5"
+#  push:
+#    branches: [ main ]
 
 jobs:
   log-context:
@@ -49,7 +53,9 @@ jobs:
           script: |
             const fs = require('fs');
             const fsp = fs.promises;
-            const path = require('path');
+            const path = require("path");
+
+            const { isOHIValidationTimeout } = require("${{ github.workspace }}/.github/workflows/scripts/ohiValidationTimeout");
 
             // readdir recursive directory search
             const { readdir } = fsp;
@@ -61,12 +67,17 @@ jobs:
                 }));
                 return Array.prototype.concat(...files);
             }
-            const definitionsDir = 'test/definitions-eu/smoke'
+            const definitionsDir = 'test/definitions'
             const testDefinitions = await getFiles(definitionsDir);
 
-            const outputTestFilesMap = testDefinitions.map(testDefinitionFile => {
-                return { testDefinitionFile, 'testDisplayName': testDefinitionFile.replace(`${definitionsDir}/`, '') }
-            })
+            const outputTestFilesMap = testDefinitions
+              .filter((testDefinitionFile) => !isOHIValidationTimeout(testDefinitionFile))
+              .map((testDefinitionFile) => {
+                return {
+                  testDefinitionFile,
+                  testDisplayName: testDefinitionFile.replace(`${definitionsDir}/`, ""),
+                };
+              });
             const output = {
                 "include": outputTestFilesMap
             }
@@ -75,7 +86,7 @@ jobs:
 
   test-deploy-recipe:
     name: ${{ matrix.testDisplayName }}
-    needs: [ get-test-definition-files ]
+    needs: [get-test-definition-files]
     if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] }} # Avoids empty matrix validation error
     runs-on: ubuntu-latest
     strategy:
@@ -84,11 +95,6 @@ jobs:
     env:
       MATRIX: ${{ toJSON(matrix) }}
     steps:
-      - name: Use Node.js
-        uses: actions/setup-node@v1
-        with:
-          node-version: '20.x'
-
       - name: Checkout Repo
         uses: actions/checkout@v2
         with:
@@ -137,7 +143,7 @@ jobs:
             const outputPath = `${process.env.GITHUB_WORKSPACE}/${testDefinitionFile}`;
             fs.writeFileSync(outputPath, jsonContent);
 
-            return testDefinitionFile;      
+            return testDefinitionFile;
 
       - name: Install Test Dependencies
         working-directory: .github/workflows/scripts/dp
@@ -161,7 +167,7 @@ jobs:
 
   slack-notify:
     runs-on: ubuntu-latest
-    needs: [ test-deploy-recipe ]
+    needs: [test-deploy-recipe]
     if: always()
     steps:
       - name: Build Result Slack Notification
@@ -225,7 +231,7 @@ jobs:
                       type: "mrkdwn",
                       text: [
                         "*Result:*",
-                        `• ${ ${{ needs.test-deploy-recipe.result == 'success' }} === true ? '✅' : '❌' } Non-regression testing of smoke tests (EU): ${{ needs.test-deploy-recipe.result }}`
+                        `• ${ ${{ needs.test-deploy-recipe.result == 'success' }} === true ? '✅' : '❌' } Non-regression testing of all recipes: ${{ needs.test-deploy-recipe.result }}`
                       ].join('\n')
                     }
                   },

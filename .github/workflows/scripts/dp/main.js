@@ -1,4 +1,4 @@
-const https = require('https')
+const fs = require('fs')
 const {SQSClient, SendMessageCommand} = require('@aws-sdk/client-sqs')
 const {DynamoDBClient, QueryCommand} = require('@aws-sdk/client-dynamodb')
 const {unmarshall} = require('@aws-sdk/util-dynamodb')
@@ -42,17 +42,12 @@ function queryForDeploymentStatus(messageId) {
 
 async function isDeploymentSuccessful(deploymentId, retries, waitSeconds) {
     for (let i = 0; i < retries; i++) {
-        console.log(`Deployment pending, sleeping ${waitSeconds} seconds...`)
-        await sleep(waitSeconds * 1000)
 
         try {
             const response = await dynamodb.send(queryForDeploymentStatus(deploymentId))
-            console.log(`Query succeeded. Items found: ${response.Items.length}`)
-
             for (let i = 0; i < response.Items.length; i++) {
                 const item = unmarshall(response.Items[i])
                 if (item.completed) {
-                    console.log(`Completed: ${item.id} - ${item.message} - ${item.completed} - ${item.status}`)
                     if (item.status === 'FAILED') {
                         console.error(`::error:: Deployment failed: ${item.message}`)
                         return false
@@ -61,6 +56,10 @@ async function isDeploymentSuccessful(deploymentId, retries, waitSeconds) {
                     return true
                 }
             }
+
+            console.log(`Deployment pending, sleeping ${waitSeconds} seconds...`)
+            await sleep(waitSeconds * 1000)
+
         } catch (err) {
             console.log(`Error querying table: ${err}`)
         }
@@ -72,47 +71,40 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function main() {
-    const url = process.env.TEST_DEFINITION_URL
-
-    https.get(url, (res) => {
-        let body = ''
-
-        res.on('data', (chunk) => {
-            body += chunk
+async function main() {
+    let messageId
+    let configJson = fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/${JSON.parse(process.env.MATRIX).testDefinitionFile}`)
+    try {
+        const command = new SendMessageCommand({
+            QueueUrl: SQS_URL,
+            MessageBody: configJson,
         })
+        data = await sqs.send(command);
+        messageId = data.MessageId
+        console.log(`Message sent: ${messageId}`)
+    } catch (err) {
+        console.log(err.message)
+        throw new Error('Failed sending message to SQS queue');
+    }
 
-        res.on('end', async () => {
-            let messageId
-            try {
-                const command = new SendMessageCommand({
-                    QueueUrl: SQS_URL,
-                    MessageBody: body,
-                })
-                data = await sqs.send(command)
-                messageId = data.MessageId
-                console.log(`Message sent: ${messageId}`)
-            } catch (err) {
-                console.error(`Error sending message: ${err}`)
-            }
+    // Initial sleep since fargate takes time to spin up deployer
+    await sleep(120 * 1000)
 
-            // Execute the query with retries/sleeps
-            let RETRIES = 100, WAIT_SECONDS = 30
-            const success = await isDeploymentSuccessful(messageId, RETRIES, WAIT_SECONDS)
-            if (!success) {
-                console.log('::set-output name=exit_status::1')
-            }
-        })
+    // Execute the query with retries/sleeps
+    let RETRIES = 50, WAIT_SECONDS = 30
+    const success = await isDeploymentSuccessful(messageId, RETRIES, WAIT_SECONDS)
+    if (!success) {
+        throw new Error(`Deployment failed for ${messageId} after ${RETRIES} retries`);
+    }
 
-        res.on('error', (err) => {
-            console.error(`Error calling URL: ${err}`)
-            console.log('::set-output name=exit_status::1')
-        })
-
-        console.log('::set-output name=exit_status::0')
-    })
+    console.log(`Successfully install New Relic for instanceId ${messageId}!`)
 }
 
 if (require.main === module) {
-    main()
+    main().then(() => {
+        console.log('::set-output name=exit_status::0')
+    }).catch((err) => {
+        console.error(`::error::${err}`)
+        console.error('::set-output name=exit_status::1')
+    })
 }
