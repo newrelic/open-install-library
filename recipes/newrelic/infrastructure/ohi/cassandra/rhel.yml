@@ -120,11 +120,11 @@ install:
               fi
 
               # Check if authentication is required
-              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" version 2>&1)
+              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" version 2>&1)
 
               if [ $(echo $NODETOOL_RESPONSE | grep -i "Credentials required" | wc -l) -gt 0 ]; then
                 # Check if environment variables have been set and are valid
-                NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+                NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
 
                 if [ $(echo $NODETOOL_RESPONSE | grep -Ei "Invalid username or password|Required values.*not provided" | wc -l) -gt 0 ]; then
                   TRIES=0
@@ -142,7 +142,7 @@ install:
                     printf "\n"
                     ((TRIES++))
 
-                    NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+                    NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
                     if [ $(echo $NODETOOL_RESPONSE | grep "ReleaseVersion" | wc -l) -eq 0 ] ; then
                       printf "\n[Error]: Could not authenticate on Cassandra server. Check username or password.\nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/cassandra-monitoring-integration/#config-options for more info.\n" >&2
                       if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
