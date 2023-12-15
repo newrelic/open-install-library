@@ -190,6 +190,29 @@ install:
           # DEBUG_MESSAGE is used to collect all necessary debug info we need.
           DEBUG_MESSAGE=""
 
+          # Determine if user is installing in gke autopilot
+          while :; do
+            echo -e -n "${GREEN}Are you installing in a GKE Autopilot cluster? Y/N? ${NC} "
+            read ans
+            echo ""
+            GKE_AUTOPILOT_ANSWER=$(echo "${ans^^}" | cut -c1-1)
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "N" ]]; then
+              echo "Continuing with installing the integration."
+              echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"No\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+              break
+            fi
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+              echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+              echo "GKE Autopilot does not allowed privileged access. Turning off privileged mode." >&2
+              echo -e "\033[0;31mTurning off Pixie and Logging for this installation which requires privileged access.\033[0m" >&2
+              NR_CLI_PRIVILEGED=false
+              PIXIE_SUPPORTED=false
+              NR_CLI_LOGGING=false
+              break
+            fi
+            echo -e "Please type Y or N only."
+          done
+
           # Determine the cluster name if not provided
           CLUSTER=$($SUDO $KUBECTL config current-context 2>/dev/null || echo "unknown")
 
