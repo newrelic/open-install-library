@@ -552,7 +552,7 @@ install:
             fi
             ARGS="${ARGS} --set ksm.enabled=${NR_CLI_KSM}"
 
-            # if installing in GKE Autopilot, we need to turn off controlPlane and set kubelet scheme and port
+            # if installing in GKE Autopilot, we need to turn off controlPlane and pixie and set kubelet scheme and port
             if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
               ARGS="${ARGS} --set newrelic-infrastructure.controlPlane.enabled=false"
               ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.scheme=http"
@@ -620,10 +620,16 @@ install:
             echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommandBeforeExecution\":\"$SUDO helm upgrade $CLEANED_ARGS\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
 
             # With 2>&1 >/dev/null, ERROR only keeps the error message if $? is non-zero and is empty if $? is zero
+            echo "Installing newrelic-bundle......."
             ERROR=$($SUDO helm upgrade $ARGS 2>&1 >/dev/null)
             if [[ "${ERROR}" != "" ]]; then
-              echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
-              exit 131
+              if [[ "${GKE_AUTOPILOT_ANSWER}" == "Y" ]] && ! (echo "${ERROR}" | grep -q "Error"); then
+                echo "Warnings from GKE Autopilot: $ERROR"
+                break
+              else
+                echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
+                exit 131
+              fi
             fi
           else
             echo ""
@@ -651,7 +657,7 @@ install:
             BODY="${BODY},\"global.lowDataMode\":\"${NR_CLI_LOW_DATA_MODE}\""
             BODY="${BODY},\"ksm.enabled\":\"${NR_CLI_KSM}\""
 
-            # # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
+            # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
             # BODY="${BODY},\"newrelic-infrastructure.controlPlane\":\"false\""
             # BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
             # BODY="${BODY},\""newrelic-infrastructure.kubelet.config.port\":\"10255\""
