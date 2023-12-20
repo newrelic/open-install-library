@@ -632,6 +632,14 @@ install:
               fi
             fi
           else
+            # We currently dont' support installing in GKE Autopilot using kubectl
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+             echo ""
+             echo -e "\033[0;31mUsing kubectl to install the Kubernetes integration is currently not supported.\033[0m" >&2
+             echo -e "\033[0;31mPlease install helm and try again.\033[0m" >&2
+             exit 131
+            fi
+
             echo ""
             echo "Using kubectl to install the Kubernetes integration"
             echo ""
@@ -658,9 +666,11 @@ install:
             BODY="${BODY},\"ksm.enabled\":\"${NR_CLI_KSM}\""
 
             # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
-            # BODY="${BODY},\"newrelic-infrastructure.controlPlane\":\"false\""
-            # BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
-            # BODY="${BODY},\""newrelic-infrastructure.kubelet.config.port\":\"10255\""
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+              # BODY="${BODY},\"newrelic-infrastructure.controlPlane\":\"false\""
+              # BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
+              # BODY="${BODY},\"newrelic-infrastructure.kubelet.config.port\":\"10255\""
+            fi
 
             # leaving this commented out for the future
             # if [[ $SERVER_MAJOR_VERSION -eq 1 && $SERVER_MINOR_VERSION -lt 25 ]]; then
