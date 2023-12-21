@@ -191,27 +191,37 @@ install:
           DEBUG_MESSAGE=""
 
           # Determine if user is installing in gke autopilot
+
+          GKE_AUTOPILOT_ANSWER="N"
           while :; do
             echo -e -n "${GREEN}Are you installing in a GKE Autopilot cluster? Y/N? ${NC} "
-            read ans
-            echo ""
-            GKE_AUTOPILOT_ANSWER=$(echo "${ans^^}" | cut -c1-1)
-            if [[ "$GKE_AUTOPILOT_ANSWER" == "N" ]]; then
+
+            if [[ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ]]; then
+              echo "Assume yes flag was provided - answering N for installing in GKE Autopilot."
               echo "Continuing with installing the integration."
-              echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"No\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+              GKE_AUTOPILOT_ANSWER="N"
               break
+            else
+              read ans
+              echo ""
+              GKE_AUTOPILOT_ANSWER=$(echo "${ans^^}" | cut -c1-1)
+              if [[ "$GKE_AUTOPILOT_ANSWER" == "N" ]]; then
+                echo "Continuing with installing the integration."
+                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"No\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+                break
+              fi
+              if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+                echo "GKE Autopilot does not allowed privileged access. Turning off privileged mode." >&2
+                echo -e "\033[0;31mTurning off Pixie for this installation which requires privileged access.\033[0m" >&2
+                echo -e "\033[0;31mTurning off Logging for this installation which currently is not supported in GKE Autopilot.\033[0m" >&2
+                NR_CLI_PRIVILEGED=false
+                PIXIE_SUPPORTED=false
+                NR_CLI_LOGGING=false
+                break
+              fi
+              echo -e "Please type Y or N only."
             fi
-            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
-              echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
-              echo "GKE Autopilot does not allowed privileged access. Turning off privileged mode." >&2
-              echo -e "\033[0;31mTurning off Pixie for this installation which requires privileged access.\033[0m" >&2
-              echo -e "\033[0;31mTurning off Logging for this installation which currently is not supported in GKE Autopilot.\033[0m" >&2
-              NR_CLI_PRIVILEGED=false
-              PIXIE_SUPPORTED=false
-              NR_CLI_LOGGING=false
-              break
-            fi
-            echo -e "Please type Y or N only."
           done
 
           # Determine the cluster name if not provided
