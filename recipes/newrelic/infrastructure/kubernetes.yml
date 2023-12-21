@@ -190,6 +190,40 @@ install:
           # DEBUG_MESSAGE is used to collect all necessary debug info we need.
           DEBUG_MESSAGE=""
 
+          # Determine if user is installing in gke autopilot
+
+          GKE_AUTOPILOT_ANSWER="N"
+          while :; do
+            echo -e -n "${GREEN}Are you installing in a GKE Autopilot cluster? Y/N? ${NC} "
+
+            if [[ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ]]; then
+              echo "Assume yes flag was provided - answering N for installing in GKE Autopilot."
+              echo "Continuing with installing the integration."
+              GKE_AUTOPILOT_ANSWER="N"
+              break
+            else
+              read ans
+              echo ""
+              GKE_AUTOPILOT_ANSWER=$(echo "${ans^^}" | cut -c1-1)
+              if [[ "$GKE_AUTOPILOT_ANSWER" == "N" ]]; then
+                echo "Continuing with installing the integration."
+                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"No\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+                break
+              fi
+              if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+                echo -e "\033[0;31mGKE Autopilot does not allow privileged access. Turning off privileged mode.\033[0m" >&2
+                echo -e "\033[0;31mTurning off Pixie for this installation which requires privileged access.\033[0m" >&2
+                echo -e "\033[0;31mTurning off Logging for this installation which currently is not supported in GKE Autopilot.\033[0m" >&2
+                NR_CLI_PRIVILEGED=false
+                PIXIE_SUPPORTED=false
+                NR_CLI_LOGGING=false
+                break
+              fi
+            fi
+              echo -e "Please type Y or N only."
+          done
+
           # Determine the cluster name if not provided
           CLUSTER=$($SUDO $KUBECTL config current-context 2>/dev/null || echo "unknown")
 
@@ -528,6 +562,14 @@ install:
             fi
             ARGS="${ARGS} --set ksm.enabled=${NR_CLI_KSM}"
 
+            # if installing in GKE Autopilot, we need to turn off controlPlane and pixie and set kubelet scheme and port
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+              ARGS="${ARGS} --set newrelic-infrastructure.controlPlane.enabled=false"
+              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.scheme=http"
+              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.port=10255"
+              ARGS="${ARGS} --set newrelic-pixie.enabled=false"
+            fi
+
             # leaving this commented out for the future
             # if [[ $SERVER_MAJOR_VERSION -eq 1 && $SERVER_MINOR_VERSION -lt 25 ]]; then
             #   ARGS="${ARGS} --set kube-state-metrics.image.tag=v2.6.0"
@@ -588,10 +630,16 @@ install:
             echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommandBeforeExecution\":\"$SUDO helm upgrade $CLEANED_ARGS\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
 
             # With 2>&1 >/dev/null, ERROR only keeps the error message if $? is non-zero and is empty if $? is zero
+            echo "Installing newrelic-bundle......."
             ERROR=$($SUDO helm upgrade $ARGS 2>&1 >/dev/null)
             if [[ "${ERROR}" != "" ]]; then
-              echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
-              exit 131
+              if [[ "${GKE_AUTOPILOT_ANSWER}" == "Y" ]] && ! (echo "${ERROR}" | grep -q "Error"); then
+                echo "Warnings from GKE Autopilot: $ERROR"
+                break
+              else
+                echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
+                exit 131
+              fi
             fi
           else
             echo ""
@@ -618,6 +666,13 @@ install:
             BODY="${BODY},\"newrelic-infrastructure.privileged\":\"${NR_CLI_PRIVILEGED}\""
             BODY="${BODY},\"global.lowDataMode\":\"${NR_CLI_LOW_DATA_MODE}\""
             BODY="${BODY},\"ksm.enabled\":\"${NR_CLI_KSM}\""
+
+            # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+              BODY="${BODY},\"newrelic-infrastructure.controlPlane.enabled\":\"false\""
+              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
+              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.port\":\"10255\""
+            fi
 
             # leaving this commented out for the future
             # if [[ $SERVER_MAJOR_VERSION -eq 1 && $SERVER_MINOR_VERSION -lt 25 ]]; then
