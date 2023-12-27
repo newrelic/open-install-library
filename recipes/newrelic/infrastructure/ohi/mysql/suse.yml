@@ -164,23 +164,25 @@ install:
           fi
 
           # Create new user with needed permissions, delete any previous user if exists
-          if [ -f /tmp/sql-create-user.sql ]; then
-            sudo rm -f /tmp/sql-create-user.sql
-          fi
-          
-          sudo tee -a /tmp/sql-create-user.sql > /dev/null <<"EOT"
-          GRANT USAGE ON *.* to 'NEW_RELIC_MYSQL_USERNAME'@'localhost' IDENTIFIED BY 'NEW_RELIC_MYSQL_PASSWORD';
+          sudo tee /tmp/sql-drop-user.sql > /dev/null <<"EOT"
           DROP USER 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
-          GRANT REPLICATION CLIENT, SELECT ON *.* TO 'NEW_RELIC_MYSQL_USERNAME'@'localhost' IDENTIFIED BY 'NEW_RELIC_MYSQL_PASSWORD';
           EOT
 
-          sudo sed -i 's/NR_CLI_DB_USERNAME/'$NR_CLI_DB_USERNAME'/g' /tmp/sql-create-user.sql
-          sudo sed -i 's/NR_CLI_DB_PASSWORD/'$NR_CLI_DB_PASSWORD'/g' /tmp/sql-create-user.sql
-          if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
-          
-            printf "MySql credential with permission to create user, and grant select/replication permission is required, please enter it below when prompted\n"
+          sudo tee /tmp/sql-create-user.sql > /dev/null <<"EOT"
+          CREATE USER 'NEW_RELIC_MYSQL_USERNAME'@'localhost' IDENTIFIED BY 'NEW_RELIC_MYSQL_PASSWORD';
+          GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';
+          GRANT SELECT ON *.* TO 'newrelic'@'localhost';
+          EOT
+
+          sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-drop-user.sql
+          sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-create-user.sql
+          sudo sed -i 's/NEW_RELIC_MYSQL_PASSWORD/'$NEW_RELIC_MYSQL_PASSWORD'/g' /tmp/sql-create-user.sql
+
+          if [[ $MYSQL_ROOT_PASSWORD -gt 0 && "$NEW_RELIC_ASSUME_YES" != "true" ]] ; then
             TRIES=0
+            printf "MySql credential with permission to create user, and grant select/replication permission is required, please enter it below when prompted\n"
             SQL_OUTPUT_ERROR=1
+
             while [ $TRIES -lt {{.MAX_RETRIES}} ] && [ $SQL_OUTPUT_ERROR -gt 0 ] ; 
             do
               if [ $TRIES -gt 0 ]; then printf "\nPlease try again\n"; fi
@@ -189,6 +191,7 @@ install:
               read -r USERNAME
               USERNAME=${USERNAME:-root}
 
+              sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NR_CLI_DB_PORT -p$NR_CLI_DB_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
@@ -199,19 +202,27 @@ install:
               printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPerhaps the MySql root DB password is incorrect.\nPlease either re-run the installation with the correct root DB password, or follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n\n" >&2
               sudo cat /tmp/sql-create-user.sql
               sudo rm -f /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-drop-user.sql
               printf "\n"
               echo -e "detail:"$EXEC_OUTPUT
               printf "\n"
               exit 131
             fi
           else
-            EXEC_OUTPUT=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT < /tmp/sql-create-user.sql 2>&1)
+            if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
+              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
+              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+            else
+              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
+              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
+            fi
             echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
             SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
             if [ $SQL_OUTPUT_ERROR -gt 0 ] ; then
               printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPlease follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n\n" >&2
               sudo cat /tmp/sql-create-user.sql
               sudo rm -f /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-drop-user.sql
               printf "\n"
               echo -e "detail:"$EXEC_OUTPUT
               printf "\n"
@@ -219,6 +230,7 @@ install:
             fi
           fi
           sudo rm -f /tmp/sql-create-user.sql
+          sudo rm -f /tmp/sql-drop-user.sql
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
