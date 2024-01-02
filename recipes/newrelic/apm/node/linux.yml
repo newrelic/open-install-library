@@ -24,17 +24,30 @@ preInstall:
       if [ -z "$ASSERT_NODE_INSTALLED" ] ; then
         exit 1
       fi
+
+      LOWEST_SUPPORTED_MAJOR_NODE_VERSION=16
+      NODEJS_BINARY_PATH=$(command -v node)
+      INSTALLED_MAJOR_NODE_VERSION=$($NODEJS_BINARY_PATH -v | awk -F '[^0-9]+' '{ print $2 }')
+      if [ "$INSTALLED_MAJOR_NODE_VERSION" -lt "$LOWEST_SUPPORTED_MAJOR_NODE_VERSION" ]; then
+        echo "Error: Node.js version not supported. Please upgrade to the latest supported version." >&2
+        exit 132
+      fi
+
       ASSERT_NPM_INSTALLED=$(sudo -i -u $SUDO_USER command -v npm)
       if [ -z "$ASSERT_NPM_INSTALLED" ] ; then
         exit 2
       fi
+
       # Only PM2 is supported at this time
       ASSERT_PM2_INSTALLED=$(sudo -i -u $SUDO_USER command -v pm2)
       if [ -z "$ASSERT_PM2_INSTALLED" ] ; then
+        echo "Error: PM2 is required to complete installation." >&2
         exit 132
       fi
+
       IS_PM2_RUNNING=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
       if [ $IS_PM2_RUNNING -eq 0 ] ; then
+        echo "Error: PM2 not running. Please start PM2 and retry the installation." >&2
         exit 132
       fi
       exit 0
