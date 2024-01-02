@@ -25,14 +25,6 @@ preInstall:
         exit 1
       fi
 
-      LOWEST_SUPPORTED_MAJOR_NODE_VERSION=16
-      NODEJS_BINARY_PATH=$(command -v node)
-      INSTALLED_MAJOR_NODE_VERSION=$($NODEJS_BINARY_PATH -v | awk -F '[^0-9]+' '{ print $2 }')
-      if [ "$INSTALLED_MAJOR_NODE_VERSION" -lt "$LOWEST_SUPPORTED_MAJOR_NODE_VERSION" ]; then
-        echo "Error: Node.js version not supported. Please upgrade to the latest supported version." >&2
-        exit 132
-      fi
-
       ASSERT_NPM_INSTALLED=$(sudo -i -u $SUDO_USER command -v npm)
       if [ -z "$ASSERT_NPM_INSTALLED" ] ; then
         exit 2
@@ -121,6 +113,7 @@ install:
       label: 'Finding Node processes and installing Node agent'
       cmds:
         - |
+          LOWEST_SUPPORTED_MAJOR_NODE_VERSION=16
           FOUND_PROCESSES=$(sudo -i -u $SUDO_USER newrelic-introspector-node list)
           if [ "$FOUND_PROCESSES" == "" ] ||  [ "$FOUND_PROCESSES" == "[]" ]; then
             echo "No Node processes found running on the host" >&2
@@ -130,6 +123,12 @@ install:
             for PID in "${PROCESSES[@]}"
             do
               INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER newrelic-introspector-node introspect --pid ${PID})
+              INSTALLED_MAJOR_NODE_VERSION=$(echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=node_version":").*?(?=\")' | cut -d. -f1)
+              if [ "$INSTALLED_MAJOR_NODE_VERSION" -lt "$LOWEST_SUPPORTED_MAJOR_NODE_VERSION" ]; then
+                echo "Error: Node.js version not supported. Please upgrade to the latest supported version." >&2
+                exit 132
+              fi
+
               COMMAND=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=pm_exec_path":").*?(?=\")' )
 
               if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
