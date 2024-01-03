@@ -2,7 +2,7 @@
 
 This guide describes how to provision an AWS EKS cluster using the [demo-deployer](https://github.com/newrelic/demo-deployer), kubectl, eksctl. 
 
-## Pre-requesite
+## Pre-requisite
 
 You'll need the following:
 * AWS account

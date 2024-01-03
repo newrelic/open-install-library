@@ -4,7 +4,7 @@ For manual or automated testing, we can use a minikube kubernetes cluster.
 
 To test with a real multi-node cluster see the [Kubernetes EKS testing](./kubernetes-eks.md) documentation.
 
-## Pre-requesite
+## Pre-requisite
 
 You'll need the following:
 * AWS account
