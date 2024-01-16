@@ -12,10 +12,10 @@ A docker image of the `Deployer` is published to [GitHub Container Registry](htt
 All you need to do is to place your user config files, and any related secret (pem key file for example) to a local folder on your machine for example `/home/[username]/configs` and mount that folder when executing the docker command to run the deployer.
 
 ```bash
-docker pull ghcr.io/newrelic/deployer:latest
+docker pull newrelic/deployer:latest
 docker run -it\
     -v $HOME/configs/:/mnt/deployer/configs/\
-    --entrypoint ruby ghcr.io/newrelic/deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/definitions/infra-agent/awslinux2-infra.json
+    --entrypoint ruby newrelic/deployer main.rb -c configs/<user config filename>.json -d https://raw.githubusercontent.com/newrelic/open-install-library/main/test/definitions/infra-agent/awslinux2-infra.json
 ```
 
 ## Debug
@@ -25,5 +25,5 @@ If you need to look into the details when running the recipe or validation, you 
 ```bash
 docker run -it\
     -v $HOME/configs/:/mnt/deployer/configs/\
-    --entrypoint sh ghcr.io/newrelic/deployer
+    --entrypoint sh newrelic/deployer
 ```

@@ -36,23 +36,16 @@ logMatch:
   - name: cassandra-debug
     file: /var/log/cassandra/debug.log*
 
+# The newrelic-cli will use this integration name to check the config file(s)
+# that were setup during the installation to ensure the integration
+# runs properly with the defined environment variables
+validationIntegration: cassandra
+
+# DEPRECATED
 validationNrql: "SELECT count(*) from CassandraSample SINCE 10 minutes ago WHERE reportingAgent = '{{.INFRA_KEY}}'"
 
 successLinkConfig:
   type: EXPLORER
-
-inputVars:
-  - name: "NR_CLI_DB_USERNAME"
-    prompt: "Cassandra connection Username (via JMX)"
-  - name: "NR_CLI_DB_PASSWORD"
-    prompt: "Cassandra connection Password (via JMX)"
-    secret: true
-  - name: "NR_CLI_DB_HOSTNAME"
-    prompt: "Cassandra node Hostname (default: localhost)"
-    default: "localhost"
-  - name: "NR_CLI_DB_PORT"
-    prompt: "Cassandra Port (default: 7199)"
-    default: 7199
 
 preInstall:
   info: |2
@@ -68,7 +61,10 @@ install:
     default:
       cmds:
         - task: assert_pre_req
-        - task: setup
+        - task: input_assert
+          vars:
+            MAX_RETRIES: 3
+            EXIT131: ""
         - task: restart
 
     assert_pre_req:
@@ -80,43 +76,129 @@ install:
             exit 1
           fi
 
-    setup:
-      label: "Installing Cassandra integration..."
+    input_assert:
       cmds:
         - |
+          TRIES=0
+          NODETOOL_RESPONSE=""
+
+          # Check env vars and set defaults
+          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
+          NEW_RELIC_CASSANDRA_USERNAME=${NEW_RELIC_CASSANDRA_USERNAME:-${NR_CLI_DB_USERNAME:-""}}
+          NEW_RELIC_CASSANDRA_PASSWORD=${NEW_RELIC_CASSANDRA_PASSWORD:-${NR_CLI_DB_PASSWORD:-""}}
+          NEW_RELIC_CASSANDRA_HOSTNAME=${NEW_RELIC_CASSANDRA_HOSTNAME:-${NR_CLI_DB_HOSTNAME:-"localhost"}}
+          NEW_RELIC_CASSANDRA_PORT=${NEW_RELIC_CASSANDRA_PORT:-${NR_CLI_DB_PORT:-7199}}
+
+          # Set config path
+          DEFAULT_CASSANDRA_CONFIG_PATH="/etc/cassandra/cassandra.yaml"
+          if [ -e "/etc/cassandra/conf/cassandra.yaml" ]; then
+            DEFAULT_CASSANDRA_CONFIG_PATH="/etc/cassandra/conf/cassandra.yaml"
+          fi
+          NEW_RELIC_CASSANDRA_CONFIG_PATH=${NEW_RELIC_CASSANDRA_CONFIG_PATH:-$(echo "$DEFAULT_CASSANDRA_CONFIG_PATH")}
+
+          # Interactive mode
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+              # Check port and hostname
+              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" version 2>&1)
+
+              if [ $(echo $NODETOOL_RESPONSE | grep "Failed to connect" | wc -l) -gt 0 ]; then
+                printf "\n[Error]: Could not connect to Cassandra with port ${NEW_RELIC_CASSANDRA_PORT} or hostname ${NEW_RELIC_CASSANDRA_HOSTNAME}. Please provide a port number and hostname.\nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/cassandra-monitoring-integration/#config-options for more info.\n" >&2
+                printf "\nCassandra port (default: 7199): "
+                read -r NEW_RELIC_CASSANDRA_PORT
+                NEW_RELIC_CASSANDRA_PORT=${NEW_RELIC_CASSANDRA_PORT:-7199}
+                printf "\nCassandra hostname (default: localhost): "
+                read -r NEW_RELIC_CASSANDRA_HOSTNAME
+                NEW_RELIC_CASSANDRA_HOSTNAME=${NEW_RELIC_CASSANDRA_HOSTNAME:-localhost}
+                ((TRIES++))
+                if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
+              fi
+
+              # Check if authentication is required
+              NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" version 2>&1)
+
+              if [ $(echo $NODETOOL_RESPONSE | grep -i "Credentials required" | wc -l) -gt 0 ]; then
+                # Check if environment variables have been set and are valid
+                NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+
+                if [ $(echo $NODETOOL_RESPONSE | grep -Ei "Invalid username or password|Required values.*not provided" | wc -l) -gt 0 ]; then
+                  TRIES=0
+                  printf "\nJMX authentication required"
+                  while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
+                    printf "\nCassandra connection username (via JMX): "
+                    stty -echo
+                    read -r NEW_RELIC_CASSANDRA_USERNAME
+                    stty echo
+                    printf "\n"
+                    printf "Cassandra connection password (via JMX): "
+                    stty -echo
+                    read -r NEW_RELIC_CASSANDRA_PASSWORD
+                    stty echo
+                    printf "\n"
+                    ((TRIES++))
+
+                    NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+                    if [ $(echo $NODETOOL_RESPONSE | grep "ReleaseVersion" | wc -l) -eq 0 ] ; then
+                      printf "\n[Error]: Could not authenticate on Cassandra server. Check username or password.\nSee https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/cassandra-monitoring-integration/#config-options for more info.\n" >&2
+                      if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 131; else continue; fi
+                    fi
+                    break
+                  done
+                fi
+              fi
+              break
+            done
+          fi
+
+          # Check for required input in -y mode
+          if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
+           NODETOOL_RESPONSE=$(nodetool -p "$NEW_RELIC_CASSANDRA_PORT" -h "$NEW_RELIC_CASSANDRA_HOSTNAME" -u "$NEW_RELIC_CASSANDRA_USERNAME" -pw "$NEW_RELIC_CASSANDRA_PASSWORD" version 2>&1)
+            if [ $(echo $NODETOOL_RESPONSE | grep -i "Failed to connect" | wc -l) -gt 0 ]; then
+              EXIT131=" - NEW_RELIC_CASSANDRA_PORT=<port>\n - NEW_RELIC_CASSANDRA_HOSTNAME=<hostname>"
+            fi
+
+            if [ $(echo $NODETOOL_RESPONSE | grep -Ei "Invalid username or password|Required values.*not provided" | wc -l) -gt 0 ]; then
+              EXIT131=" - NEW_RELIC_CASSANDRA_USERNAME=<jmx_username>\n - NEW_RELIC_CASSANDRA_PASSWORD=<jmx_user_password>"
+            fi
+          fi
+
+          if [ "$EXIT131" != "" ]; then
+            printf "There is a problem with the required environment variables. Please set the following variable(s) and try again:\n\n$EXIT131\n"
+            exit 131
+          else
+            printf "\n[OK] All checks passed. Installing Cassandra Integration...\n\n"
+          fi
+
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-        - |
+
           # Get latest definitions and skip any failure because of deprecation
           sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
-        - |
           sudo apt-get install nri-cassandra -y
-        - |
+
           if [ -f /etc/newrelic-infra/integrations.d/cassandra-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/cassandra-config.yml;
           fi
 
           sudo cp /etc/newrelic-infra/integrations.d/cassandra-config.yml.sample /etc/newrelic-infra/integrations.d/cassandra-config.yml;
-
-        - |
-          sudo tee /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null <<"EOT"
+          sudo tee /etc/newrelic-infra/integrations.d/cassandra-config.yml > /dev/null << EOT
           integrations:
             - name: nri-cassandra
               env:
                 METRICS: true
-                HOSTNAME: {{.NR_CLI_DB_HOSTNAME}}
-                PORT: {{.NR_CLI_DB_PORT}}
-                USERNAME: {{.NR_CLI_DB_USERNAME}}
-                PASSWORD: {{.NR_CLI_DB_PASSWORD}}
+                HOSTNAME: $NEW_RELIC_CASSANDRA_HOSTNAME
+                PORT: $NEW_RELIC_CASSANDRA_PORT
+                USERNAME: $NEW_RELIC_CASSANDRA_USERNAME
+                PASSWORD: $NEW_RELIC_CASSANDRA_PASSWORD
                 REMOTE_MONITORING: true
-              interval: 30
+              interval: 30s
             - name: nri-cassandra
               env:
                 INVENTORY: true
-                HOSTNAME: {{.NR_CLI_DB_HOSTNAME}}
-                CONFIG_PATH: /etc/cassandra/cassandra.yaml
+                HOSTNAME: $NEW_RELIC_CASSANDRA_HOSTNAME
+                CONFIG_PATH: $NEW_RELIC_CASSANDRA_CONFIG_PATH
                 REMOTE_MONITORING: true
-              inventory_source: config/redis
-              interval: 60
+              inventory_source: config/cassandra
+              interval: 60s
           EOT
 
     restart:

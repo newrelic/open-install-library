@@ -60,6 +60,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Ensure no fork repo
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          SOURCE_NAME=$(echo ${{ github.event.pull_request.head.repo.full_name }})
+          REMOTE_NAME=$(echo ${{ github.event.pull_request.base.repo.full_name }})
+          if [ $SOURCE_NAME != $REMOTE_NAME ]; then
+            echo "PR should be created from a branch on the source repo, not from a fork, so the E2E tests can run. If you need access please reach out to the #help-virtuoso channel."
+            exit 1
+          fi
+
       # 1) Check for all incoming changes to files under `recipes` directory
       - name: Get Changed Files
         id: getfile
@@ -177,8 +187,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
-      max-parallel: 15
       fail-fast: false
+      max-parallel: 10
     env:
       MATRIX: ${{ toJSON(matrix) }}
     steps:
@@ -248,8 +258,8 @@ jobs:
 
       - name: Pull Deployer image
         run: |
-          docker pull ghcr.io/newrelic/deployer:latest
-          docker images ghcr.io/newrelic/deployer:latest
+          docker pull newrelic/deployer:latest
+          docker images newrelic/deployer:latest
 
       - name: Run deployer
         id: deployerRun
@@ -261,7 +271,7 @@ jobs:
           docker run \
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
+            --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
           echo ::set-output name=exit_status::$?
 
       - name: Teardown any previous deployment
@@ -274,7 +284,7 @@ jobs:
           docker run \
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-            --entrypoint ruby ghcr.io/newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -t
+            --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -t
 
       - name: Report any error
         if: steps.deployerRun.outputs.exit_status != 0

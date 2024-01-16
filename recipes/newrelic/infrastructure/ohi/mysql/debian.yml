@@ -7,7 +7,7 @@ description: New Relic install recipe for default MySQL Open Source on-host inte
 repository: https://github.com/newrelic/nri-mysql
 
 dependencies:
-  - infrastructure-agent-installer
+  - infrastructure-agent-installer || super-agent
 
 installTargets:
   - type: host
@@ -17,7 +17,7 @@ installTargets:
   - type: host
     os: linux
     platform: "ubuntu"
-    platformVersion: "((16|18|20)\\.04)" # Xenial, Bionic, Focal
+    platformVersion: "(((16|18|20|21|22)\\.04)|(20.10))" # Xenial, Bionic, Focal, Hirsute, Jammy, Groovy
 
 # keyword convention for dealing with search terms that could land someone on this instrumentation project
 keywords:
@@ -52,8 +52,12 @@ logMatch:
     attributes:
       logtype: mysql-error
 
-# NRQL the newrelic-cli will use to validate the agent/integration this recipe
-# installed is successfully sending data to New Relic
+# The newrelic-cli will use this integration name to check the config file(s)
+# that were setup during the installation to ensure the integration
+# runs properly with the defined environment variables
+validationIntegration: mysql
+
+# DEPRECATED
 validationNrql: "SELECT count(*) from MysqlSample FACET entityGuid SINCE 10 minutes ago WHERE reportingAgent = '{{.INFRA_KEY}}'"
 
 successLinkConfig:
@@ -73,14 +77,14 @@ install:
         - task: input_assert
           vars:
             MAX_RETRIES: 3
-        - task: restart
 
     assert_infra:
       cmds:
         - |
           IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
-          if [ $IS_INFRA_INSTALLED -eq 0 ] ; then
-            echo "The infrastructure agent is required to install this integration, we recommend going through our guided install path for this pre-requisite which can be found here:  https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
+          IS_SUPER_AGENT_INSTALLED=$(sudo ps aux | grep newrelic-super-agent | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] && [ $IS_SUPER_AGENT_INSTALLED -eq 0 ] ; then
+            echo "The infrastructure agent or the super agent is required to install this integration. We recommend going through our guided install path for this pre-requisite which can be found at: https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
             exit 1
           fi
 
@@ -175,15 +179,17 @@ install:
           fi
 
           # Create new user with needed permissions, delete any previous user if exists
-          if [ -f /tmp/sql-create-user.sql ]; then
-            sudo rm -f /tmp/sql-create-user.sql
-          fi
-          sudo tee -a /tmp/sql-create-user.sql > /dev/null <<"EOT"
-          DROP USER IF EXISTS 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
-          CREATE USER 'NEW_RELIC_MYSQL_USERNAME'@'localhost' IDENTIFIED BY 'NEW_RELIC_MYSQL_PASSWORD';
-          GRANT REPLICATION CLIENT ON *.* TO 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
-          GRANT SELECT ON *.* TO 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
+          sudo tee /tmp/sql-drop-user.sql > /dev/null <<"EOT"
+          DROP USER 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
           EOT
+
+          sudo tee /tmp/sql-create-user.sql > /dev/null <<"EOT"
+          CREATE USER 'NEW_RELIC_MYSQL_USERNAME'@'localhost' IDENTIFIED BY 'NEW_RELIC_MYSQL_PASSWORD';
+          GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';
+          GRANT SELECT ON *.* TO 'newrelic'@'localhost';
+          EOT
+
+          sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-drop-user.sql
           sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-create-user.sql
           sudo sed -i 's/NEW_RELIC_MYSQL_PASSWORD/'$NEW_RELIC_MYSQL_PASSWORD'/g' /tmp/sql-create-user.sql
 
@@ -200,6 +206,7 @@ install:
               read -r USERNAME
               USERNAME=${USERNAME:-root}
 
+              sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
@@ -210,6 +217,7 @@ install:
               printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPerhaps the MySql root DB password is incorrect.\nPlease either re-run the installation with the correct root DB password, or follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/\n\n" >&2
               sudo cat /tmp/sql-create-user.sql
               sudo rm -f /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-drop-user.sql
               printf "\n"
               echo -e "detail:"$EXEC_OUTPUT
               printf "\n"
@@ -217,8 +225,10 @@ install:
             fi
           else
             if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
+              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
             else
+              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
             fi
             echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
@@ -227,6 +237,7 @@ install:
               printf "\n\nThis installation was unable to create the required newrelic user.\nWe attempted to create the user with the SQL statement below.\nPlease follow the manual installation steps documented at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/mysql-monitoring-integration/ \n\n" >&2
               sudo cat /tmp/sql-create-user.sql
               sudo rm -f /tmp/sql-create-user.sql
+              sudo rm -f /tmp/sql-drop-user.sql
               printf "\n"
               echo -e "detail:"$EXEC_OUTPUT
               printf "\n"
@@ -234,6 +245,7 @@ install:
             fi
           fi
           sudo rm -f /tmp/sql-create-user.sql
+          sudo rm -f /tmp/sql-drop-user.sql
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
@@ -258,26 +270,8 @@ install:
                 EXTENDED_MYISAM_METRICS: true
                 REMOTE_MONITORING: true
               inventory_source: config/mysql
-              interval: 30
+              interval: 30s
           EOT
-
-    restart:
-      cmds:
-        - |
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            sudo systemctl restart newrelic-infra
-          else
-            if [ {{.IS_INITCTL}} -gt 0 ]; then
-              sudo initctl restart newrelic-infra
-            else
-              sudo /etc/init.d/newrelic-infra restart
-            fi
-          fi
-      vars:
-        IS_SYSTEMCTL:
-          sh: command -v systemctl | wc -l
-        IS_INITCTL:
-          sh: command -v initctl | wc -l
 
     collect_meta:
       cmds:

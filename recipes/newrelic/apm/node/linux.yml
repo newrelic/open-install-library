@@ -24,17 +24,22 @@ preInstall:
       if [ -z "$ASSERT_NODE_INSTALLED" ] ; then
         exit 1
       fi
+
       ASSERT_NPM_INSTALLED=$(sudo -i -u $SUDO_USER command -v npm)
       if [ -z "$ASSERT_NPM_INSTALLED" ] ; then
         exit 2
       fi
+
       # Only PM2 is supported at this time
       ASSERT_PM2_INSTALLED=$(sudo -i -u $SUDO_USER command -v pm2)
       if [ -z "$ASSERT_PM2_INSTALLED" ] ; then
+        echo "Error: PM2 is required to complete installation." >&2
         exit 132
       fi
+
       IS_PM2_RUNNING=$(sudo ps aux | grep pm2 | grep -v grep | wc -l)
       if [ $IS_PM2_RUNNING -eq 0 ] ; then
+        echo "Error: PM2 not running. Please start PM2 and retry the installation." >&2
         exit 132
       fi
       exit 0
@@ -108,6 +113,7 @@ install:
       label: 'Finding Node processes and installing Node agent'
       cmds:
         - |
+          LOWEST_SUPPORTED_MAJOR_NODE_VERSION=16
           FOUND_PROCESSES=$(sudo -i -u $SUDO_USER newrelic-introspector-node list)
           if [ "$FOUND_PROCESSES" == "" ] ||  [ "$FOUND_PROCESSES" == "[]" ]; then
             echo "No Node processes found running on the host" >&2
@@ -117,6 +123,12 @@ install:
             for PID in "${PROCESSES[@]}"
             do
               INTROSPECTION_DATA=$(sudo -i -u $SUDO_USER newrelic-introspector-node introspect --pid ${PID})
+              INSTALLED_MAJOR_NODE_VERSION=$(echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=node_version":").*?(?=\")' | cut -d. -f1)
+              if [ "$INSTALLED_MAJOR_NODE_VERSION" -lt "$LOWEST_SUPPORTED_MAJOR_NODE_VERSION" ]; then
+                echo "Error: Node.js version not supported. Please upgrade to the latest supported version." >&2
+                exit 132
+              fi
+
               COMMAND=$( echo "${INTROSPECTION_DATA}" | grep -oP '.*\K(?<=pm_exec_path":").*?(?=\")' )
 
               if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then

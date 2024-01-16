@@ -40,6 +40,12 @@ repository: string, required
 # ex:
 # dependencies:
 #   - infrastructure-agent-installer
+#
+# A special 'OR' variant for recipe dependencies involves the infrastructure and super agents. It allows the super-agent
+# to be used as an alternative recipe dependency instead of the infrastructure-agent-installer when the super-agent is a targeted install:
+# ex:
+# dependencies:
+#   - infrastructure-agent-installer || super-agent
 dependencies: list, optional
 
 # Still TBD
@@ -111,6 +117,11 @@ preInstall: object, optional
   # requireAtDiscovery contains a script to be run during the install to determine
   # whether or not the recipe should be executed.
   requireAtDiscovery: string, optional
+
+  # discovery behavior for the recipe. If omitted, default to both guided, and targeted.
+  # guided: recipe will be attempted to discover/detect during guided install
+  # targeted: recipe will be attempted to be disocver/detect during targeted install
+  discoveryMode: string (enum), optional         # One or many of [ guided, targeted ]
 
 # go-task yaml definition
 # This spec - https://github.com/go-task/task

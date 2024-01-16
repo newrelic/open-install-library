@@ -147,6 +147,16 @@ install:
 
           # Check the Kubernetes version
           KUBECTL_VERSION=$($SUDO $KUBECTL version --short 2>&1)
+          SHORT_FLAG_ERROR=false
+
+          # Check if $KUBECTL_VERSION contains an error with unknown flag --short
+          # run again without --short flag since it was deprecated in kubectl version 1.28
+          if echo "$KUBECTL_VERSION" | grep -q "unknown flag: --short"
+          then
+            SHORT_FLAG_ERROR=true
+            KUBECTL_VERSION=$($SUDO $KUBECTL version 2>&1)
+          fi
+
           CLIENT_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
           CLIENT_MINOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Client Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $2; }')
           SERVER_MAJOR_VERSION=$(echo "${KUBECTL_VERSION}" | grep 'Server Version' | awk -F' v' '{ print $2; }' | awk -F. '{ print $1; }')
@@ -170,8 +180,8 @@ install:
             exit 131
           fi
 
-          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 16 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -gt 27 ]]; then
-            echo "Installation failed. Kubernetes v1.16 to v1.27 is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
+          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 24 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -gt 28 ]]; then
+            echo "Installation failed. Kubernetes v1.24 to v1.28 is required, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
             echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsupported k8s version - found $SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 131
           fi
@@ -179,6 +189,40 @@ install:
           # Due to nr cli limitation, we can only send the last echo message to backend.
           # DEBUG_MESSAGE is used to collect all necessary debug info we need.
           DEBUG_MESSAGE=""
+
+          # Determine if user is installing in gke autopilot
+
+          GKE_AUTOPILOT_ANSWER="N"
+          while :; do
+            echo -e -n "${GREEN}Are you installing in a GKE Autopilot cluster? Y/N? ${NC} "
+
+            if [[ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ]]; then
+              echo "Assume yes flag was provided - answering N for installing in GKE Autopilot."
+              echo "Continuing with installing the integration."
+              GKE_AUTOPILOT_ANSWER="N"
+              break
+            else
+              read ans
+              echo ""
+              GKE_AUTOPILOT_ANSWER=$(echo "${ans^^}" | cut -c1-1)
+              if [[ "$GKE_AUTOPILOT_ANSWER" == "N" ]]; then
+                echo "Continuing with installing the integration."
+                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"No\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+                break
+              fi
+              if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+                echo -e "\033[0;31mGKE Autopilot does not allow privileged access. Turning off privileged mode.\033[0m" >&2
+                echo -e "\033[0;31mTurning off Pixie for this installation which requires privileged access.\033[0m" >&2
+                echo -e "\033[0;31mTurning off Logging for this installation which currently is not supported in GKE Autopilot.\033[0m" >&2
+                NR_CLI_PRIVILEGED=false
+                PIXIE_SUPPORTED=false
+                NR_CLI_LOGGING=false
+                break
+              fi
+            fi
+              echo -e "Please type Y or N only."
+          done
 
           # Determine the cluster name if not provided
           CLUSTER=$($SUDO $KUBECTL config current-context 2>/dev/null || echo "unknown")
@@ -314,7 +358,14 @@ install:
               fi
             fi
 
-            K8S_VERSION=$($SUDO $KUBECTL version --short | grep "Server Version")
+            # SHORT_FLAG_ERROR will be true if it returned an --short flag error earlier in the script
+            # if SHORT_FLAG_ERROR is true, run KUBECTL version without --short flag since it was deprecated in kubectl version 1.28
+            if $SHORT_FLAG_ERROR == true; then
+              K8S_VERSION=$($SUDO $KUBECTL version | grep "Server Version")
+            else
+              K8S_VERSION=$($SUDO $KUBECTL version --short | grep "Server Version")
+            fi
+
             if echo ${K8S_VERSION} | grep "\-gke\." >/dev/null; then
               PIXIE_SUPPORTED=true
             fi
@@ -511,11 +562,22 @@ install:
             fi
             ARGS="${ARGS} --set ksm.enabled=${NR_CLI_KSM}"
 
-            if [[ $SERVER_MAJOR_VERSION -eq 1 && $SERVER_MINOR_VERSION -lt 25 ]]; then
-              ARGS="${ARGS} --set kube-state-metrics.image.tag=v2.6.0"
-            else
-              ARGS="${ARGS} --set kube-state-metrics.image.tag=v2.7.0"
+            # if installing in GKE Autopilot, we need to turn off controlPlane and pixie and set kubelet scheme and port
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+              ARGS="${ARGS} --set newrelic-infrastructure.controlPlane.enabled=false"
+              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.scheme=http"
+              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.port=10255"
+              ARGS="${ARGS} --set newrelic-pixie.enabled=false"
             fi
+
+            # leaving this commented out for the future
+            # if [[ $SERVER_MAJOR_VERSION -eq 1 && $SERVER_MINOR_VERSION -lt 25 ]]; then
+            #   ARGS="${ARGS} --set kube-state-metrics.image.tag=v2.6.0"
+            # else
+            #   ARGS="${ARGS} --set kube-state-metrics.image.tag=v2.7.0"
+            # fi
+
+            ARGS="${ARGS} --set kube-state-metrics.image.tag=v2.10.0"
 
             # Prometheus integrations
 
@@ -568,10 +630,16 @@ install:
             echo "{\"Metadata\":{\"helmVersion\":\"$($SUDO helm version -c --short)\", \"helmCommandBeforeExecution\":\"$SUDO helm upgrade $CLEANED_ARGS\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\",\"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
 
             # With 2>&1 >/dev/null, ERROR only keeps the error message if $? is non-zero and is empty if $? is zero
+            echo "Installing newrelic-bundle......."
             ERROR=$($SUDO helm upgrade $ARGS 2>&1 >/dev/null)
             if [[ "${ERROR}" != "" ]]; then
-              echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
-              exit 131
+              if [[ "${GKE_AUTOPILOT_ANSWER}" == "Y" ]] && ! (echo "${ERROR}" | grep -q "Error"); then
+                echo "Warnings from GKE Autopilot: $ERROR"
+                break
+              else
+                echo "helm (version $HELM_VERSION) repo upgrade installation failed due to: $ERROR"
+                exit 131
+              fi
             fi
           else
             echo ""
@@ -599,11 +667,20 @@ install:
             BODY="${BODY},\"global.lowDataMode\":\"${NR_CLI_LOW_DATA_MODE}\""
             BODY="${BODY},\"ksm.enabled\":\"${NR_CLI_KSM}\""
 
-            if [[ $SERVER_MAJOR_VERSION -eq 1 && $SERVER_MINOR_VERSION -lt 25 ]]; then
-              BODY="${BODY},\"kube-state-metrics.image.tag\":\"v2.6.0\""
-            else
-              BODY="${BODY},\"kube-state-metrics.image.tag\":\"v2.7.0\""
+            # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
+            if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
+              BODY="${BODY},\"newrelic-infrastructure.controlPlane.enabled\":\"false\""
+              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
+              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.port\":\"10255\""
             fi
+
+            # leaving this commented out for the future
+            # if [[ $SERVER_MAJOR_VERSION -eq 1 && $SERVER_MINOR_VERSION -lt 25 ]]; then
+            #   BODY="${BODY},\"kube-state-metrics.image.tag\":\"v2.6.0\""
+            # else
+            #   BODY="${BODY},\"kube-state-metrics.image.tag\":\"v2.7.0\""
+            # fi
+            BODY="${BODY},\"kube-state-metrics.image.tag\":\"v2.10.0\""
 
             # Prometheus integrations
 
@@ -653,12 +730,12 @@ install:
 
             if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
               # only keep stderr in ERROR with 2>&1 >/dev/null; if the ERROR include any other than AlreadyExist, exit with the ERROR message
-              ERROR=$($SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/release/operator/v0.1.1/k8s/operator/helm/crds/olm_crd.yaml 2>&1 >/dev/null | grep -v AlreadyExists)
+              ERROR=$($SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/release/operator/v0.1.4/k8s/operator/helm/crds/olm_crd.yaml 2>&1 >/dev/null | grep -v AlreadyExists)
               if [[ "${ERROR}" != "" ]]; then
                 echo "{\"Metadata\":{\"InstallationError\":\"OLM CRD creation failed - ${ERROR}\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}}
                 exit 33
               fi
-              ERROR=$($SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/release/operator/v0.1.1/k8s/operator/crd/base/px.dev_viziers.yaml 2>&1 >/dev/null | grep -v AlreadyExists)
+              ERROR=$($SUDO $KUBECTL create -f https://raw.githubusercontent.com/pixie-io/pixie/release/operator/v0.1.4/k8s/operator/crd/base/px.dev_viziers.yaml 2>&1 >/dev/null | grep -v AlreadyExists)
               if [[ "${ERROR}" != "" ]]; then
                 echo "{\"Metadata\":{\"InstallationError\":\"PX DEV VIZIERS creation failed - ${ERROR}\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}}
                 exit 33
