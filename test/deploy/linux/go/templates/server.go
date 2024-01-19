@@ -6,9 +6,12 @@ import (
 	"time"
 )
 
+//importCommand
+//importGinCommand
+
 func main() {
 	go client()
-	//paste license key code snippet here
+	//codeSnippet
 
 	transactions := make(chan string)
 
@@ -21,7 +24,7 @@ func main() {
 		}
 	}()
 
-	// Create a Gin router.
+	// routerSnippet
 
 	router.GET("/transaction", func(c *gin.Context) {
 		transaction := <-transactions
