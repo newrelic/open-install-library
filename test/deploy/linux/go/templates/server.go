@@ -2,17 +2,17 @@ package main
 
 import (
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-//importCommand
-//importGinCommand
-
+// importCommand
+// importGinCommand
 func main() {
 	go client()
-	//codeSnippet
 
+	//codeSnippet
 	transactions := make(chan string)
 
 	go func() {
@@ -24,8 +24,7 @@ func main() {
 		}
 	}()
 
-	// routerSnippet
-
+	//routerSnippet
 	router.GET("/transaction", func(c *gin.Context) {
 		transaction := <-transactions
 		c.JSON(200, gin.H{
