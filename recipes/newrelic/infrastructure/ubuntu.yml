@@ -64,6 +64,7 @@ install:
         - task: cleanup
         - task: setup_license
         - task: setup_proxy
+        - task: setup_fedramp
         - task: log_ssl_ciphers
         - task: update_apt
         - task: install_gnupg
@@ -162,13 +163,21 @@ install:
           echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
           echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
 
-
     setup_proxy:
       cmds:
         - |
           if [ ! -z "$HTTPS_PROXY" ]; then
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
+          fi
+
+    setup_fedramp:
+      cmds:
+        - |
+          FEDRAMP={{.FEDRAMP}}
+          sed -i "/^fedramp:/d" /etc/newrelic-infra.yml 2>/dev/null
+          if [[ "${FEDRAMP,,}" == "true" && -f /etc/newrelic-infra.yml ]]; then
+            echo 'fedramp: true' >> /etc/newrelic-infra.yml
           fi
 
     log_ssl_ciphers:
