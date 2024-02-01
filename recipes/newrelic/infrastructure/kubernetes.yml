@@ -80,6 +80,7 @@ install:
           NR_CLI_LOGGING="{{.NR_CLI_LOGGING}}"
           NR_CLI_LOGGING_LOW_DATA_MODE="{{.NR_CLI_LOGGING_LOW_DATA_MODE}}"
 
+
           # Prometheus integrations
 
           # Legacy Prometheus integration
@@ -217,7 +218,26 @@ install:
                 echo -e "\033[0;31mTurning off Logging for this installation which currently is not supported in GKE Autopilot.\033[0m" >&2
                 NR_CLI_PRIVILEGED=false
                 PIXIE_SUPPORTED=false
-                NR_CLI_LOGGING=false
+
+                while :; do
+                  echo -e "\033[0;31mUsing FileStore will give better reliability but will imply storage cost on Google Cloud FileStore.\033[0m" >&2
+                  echo -e "\033[0;31mNot using FileStore will imply some logs being lost or duplicated during Fluent-Bit redeploys or restarts.\033[0m" >&2
+                  echo -e -n "${GREEN}Do you want to use FileStore to keep track of read and sent logs by Fluent-Bit? Y/N? ${NC} "
+                  read filestoreans
+                  echo ""
+                  LOGGING_USE_FILESTORE=$(echo "${filestoreans^^}" | cut -c1-1)
+                  if [[ "$LOGGING_USE_FILESTORE" == "Y" ]]; then
+                    NR_CLI_LOGGING_PERSISTENCE=persistentVolume
+                    NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS=standard-rwx
+                    NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
+                    break
+                  fi 
+                  if [[ "$LOGGING_USE_FILESTORE" == "N" ]]; then
+                    NR_CLI_LOGGING_PERSISTENCE=none
+                    break
+                  fi
+                  echo -e "Please type Y or N only."
+                done
                 break
               fi
             fi
@@ -258,6 +278,9 @@ install:
           NR_CLI_KUBE_EVENTS=${NR_CLI_KUBE_EVENTS:-true}
           NR_CLI_LOGGING=${NR_CLI_LOGGING:-false}
           NR_CLI_LOGGING_LOW_DATA_MODE=${NR_CLI_LOGGING_LOW_DATA_MODE:-true}
+          NR_CLI_LOGGING_PERSISTENCE=${NR_CLI_LOGGING_PERSISTENCE:-""}
+          NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS=${NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS:-""}
+          NR_CLI_LOGGING_LINUX_MOUNT_PATH=${NR_CLI_LOGGING_LINUX_MOUNT_PATH:-""}
 
           # Prometheus integrations
 
@@ -595,6 +618,16 @@ install:
             ARGS="${ARGS} --set kubeEvents.enabled=${NR_CLI_KUBE_EVENTS}"
             ARGS="${ARGS} --set logging.enabled=${NR_CLI_LOGGING}"
             ARGS="${ARGS} --set newrelic-logging.lowDataMode=${NR_CLI_LOGGING_LOW_DATA_MODE}"
+            if [[ -n "${NR_CLI_LOGGING_PERSISTENCE}" ]]; then
+              ARGS="${ARGS} --set newrelic-logging.fluentBit.persistence.mode=${NR_CLI_LOGGING_PERSISTENCE}"
+            fi
+            if [[ -n "${NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS}" ]]; then
+              ARGS="${ARGS} --set newrelic-logging.fluentBit.persistence.persistentVolume.storageClass=${NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS}"
+            fi
+            if [[ -n "${NR_CLI_LOGGING_LINUX_MOUNT_PATH}" ]]; then
+              ARGS="${ARGS} --set newrelic-logging.fluentBit.linuxMountPath=${NR_CLI_LOGGING_LINUX_MOUNT_PATH}"
+            fi
+            
             if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
               ARGS="${ARGS} --set global.nrStaging=true"
             fi
