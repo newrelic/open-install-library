@@ -217,27 +217,39 @@ install:
                 NR_CLI_PRIVILEGED=false
                 PIXIE_SUPPORTED=false
 
-                while :; do
-                  echo -e "\033[0;31mFluent-Bit can use a FileStore volume to prevent data loss or duplicated logs during Fluent-Bit pod restarts or redeploys.\033[0m" >&2
-                  echo -e "\033[0;31mUsing FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
-                  echo -e "\033[0;31mNot using FileStore will produce data loss or data duplication when Fluent-Bit gets restarted.\033[0m" >&2
-                  echo -e -n "${GREEN}Do you want to use FileStore to keep track of read and sent logs by Fluent-Bit? Y/N? ${NC} "
-                  read filestoreans
-                  echo ""
-                  LOGGING_USE_FILESTORE=$(echo "${filestoreans^^}" | cut -c1-1)
-                  if [[ "$LOGGING_USE_FILESTORE" == "Y" ]]; then
-                    NR_CLI_LOGGING_PERSISTENCE=persistentVolume
-                    NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS=standard-rwx
-                    NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
-                    break
+                if [[ "$NR_CLI_LOGGING" == "true" ]]; then
+                  # We assume that if those both envs are set, the FileStore decision has been made on the Guided install.
+                  if [[ -z "$NR_CLI_LOGGING_PERSISTENCE" || -z "$NR_CLI_LOGGING_LINUX_MOUNT_PATH" ]]; then
+                    while :; do
+                      echo ""
+                      echo -e "\033[0;31mFluent-Bit can use a FileStore volume to prevent data loss or duplicated logs during Fluent-Bit pod restarts or redeploys.\033[0m" >&2
+                      echo -e "\033[0;31mUsing FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
+                      echo -e "\033[0;31mNot using FileStore will produce data loss or data duplication when Fluent-Bit gets restarted.\033[0m" >&2
+                      echo -e -n "${GREEN}Do you want to use FileStore to keep track of read and sent logs by Fluent-Bit? Y/N? ${NC} "
+                      read filestoreans
+                      echo ""
+                      LOGGING_USE_FILESTORE=$(echo "${filestoreans^^}" | cut -c1-1)
+                      if [[ "$LOGGING_USE_FILESTORE" == "Y" ]]; then
+                        NR_CLI_LOGGING_PERSISTENCE=persistentVolume
+                        NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS=standard-rwx
+                        NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
+                        break
+                      fi
+                      if [[ "$LOGGING_USE_FILESTORE" == "N" ]]; then
+                        NR_CLI_LOGGING_PERSISTENCE=none
+                        NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
+                        break
+                      fi
+                      echo -e "Please type Y or N only."
+                    done
+                  else
+                    if [[ "$NR_CLI_LOGGING_PERSISTENCE" == "none" ]]; then
+                      echo -e "\033[0;31mFluent-Bit is not using a database and data loss or data duplication can happen when Fluent-Bit gets restarted.\033[0m" >&2
+                    elif [[ "$NR_CLI_LOGGING_PERSISTENCE" == "persistentVolume" ]]; then
+                      echo -e "\033[0;31mFluent-Bit is using FileStore volume to prevent data loss or duplicated logs during Fluent-Bit pod restarts or redeploys. Using FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
+                    fi
                   fi
-                  if [[ "$LOGGING_USE_FILESTORE" == "N" ]]; then
-                    NR_CLI_LOGGING_PERSISTENCE=none
-                    NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
-                    break
-                  fi
-                  echo -e "Please type Y or N only."
-                done
+                fi
                 break
               fi
             fi
@@ -651,6 +663,8 @@ install:
                 fi
               fi
             fi
+
+            echo $ARGS
 
             # Adding a quick test to ensure we don't expose any keys in case non-compatible versions of sed are used
             SEDTEST=$(echo 0 | sed -E 's/[a-zA-Z0-9\-]/1/')
