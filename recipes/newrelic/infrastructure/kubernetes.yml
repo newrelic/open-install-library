@@ -80,7 +80,6 @@ install:
           NR_CLI_LOGGING="{{.NR_CLI_LOGGING}}"
           NR_CLI_LOGGING_LOW_DATA_MODE="{{.NR_CLI_LOGGING_LOW_DATA_MODE}}"
 
-
           # Prometheus integrations
 
           # Legacy Prometheus integration
@@ -215,13 +214,13 @@ install:
                 echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
                 echo -e "\033[0;31mGKE Autopilot does not allow privileged access. Turning off privileged mode.\033[0m" >&2
                 echo -e "\033[0;31mTurning off Pixie for this installation which requires privileged access.\033[0m" >&2
-                echo -e "\033[0;31mTurning off Logging for this installation which currently is not supported in GKE Autopilot.\033[0m" >&2
                 NR_CLI_PRIVILEGED=false
                 PIXIE_SUPPORTED=false
 
                 while :; do
-                  echo -e "\033[0;31mUsing FileStore will give better reliability but will imply storage cost on Google Cloud FileStore.\033[0m" >&2
-                  echo -e "\033[0;31mNot using FileStore will imply some logs being lost or duplicated during Fluent-Bit redeploys or restarts.\033[0m" >&2
+                  echo -e "\033[0;31mFluent-Bit can use a FileStore volume to prevent data loss or duplicated logs during Fluent-Bit pod restarts or redeploys.\033[0m" >&2
+                  echo -e "\033[0;31mUsing FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
+                  echo -e "\033[0;31mNot using FileStore will produce data loss or data duplication when Fluent-Bit gets restarted.\033[0m" >&2
                   echo -e -n "${GREEN}Do you want to use FileStore to keep track of read and sent logs by Fluent-Bit? Y/N? ${NC} "
                   read filestoreans
                   echo ""
@@ -231,9 +230,10 @@ install:
                     NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS=standard-rwx
                     NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
                     break
-                  fi 
+                  fi
                   if [[ "$LOGGING_USE_FILESTORE" == "N" ]]; then
                     NR_CLI_LOGGING_PERSISTENCE=none
+                    NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
                     break
                   fi
                   echo -e "Please type Y or N only."
@@ -731,6 +731,15 @@ install:
             BODY="${BODY},\"kubeEvents.enabled\":\"${NR_CLI_KUBE_EVENTS}\""
             BODY="${BODY},\"logging.enabled\":\"${NR_CLI_LOGGING}\""
             BODY="${BODY},\"newrelic-logging.lowDataMode\":\"${NR_CLI_LOGGING_LOW_DATA_MODE}\""
+            if [[ -n "${NR_CLI_LOGGING_PERSISTENCE}" ]]; then
+              BODY="${BODY},\"newrelic-logging.fluentBit.persistence.mode\":\"${NR_CLI_LOGGING_PERSISTENCE}\""
+            fi
+            if [[ -n "${NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS}" ]]; then
+              BODY="${BODY},\"newrelic-logging.fluentBit.persistence.persistentVolume.storageClass\":\"${NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS}\""
+            fi
+            if [[ -n "${NR_CLI_LOGGING_LINUX_MOUNT_PATH}" ]]; then
+              BODY="${BODY},\"newrelic-logging.fluentBit.linuxMountPath\":\"${NR_CLI_LOGGING_LINUX_MOUNT_PATH}\""
+            fi
             BODY="${BODY},\"global.licenseKey\":\"${NEW_RELIC_LICENSE_KEY}\""
             if [[ "${NEW_RELIC_REGION}" == "STAGING" ]]; then
               BODY="${BODY},\"global.nrStaging\":true"
