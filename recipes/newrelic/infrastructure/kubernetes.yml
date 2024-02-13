@@ -194,66 +194,47 @@ install:
 
           GKE_AUTOPILOT_ANSWER="N"
           while :; do
-            echo -e -n "${GREEN}Are you installing in a GKE Autopilot cluster? Y/N? ${NC} "
+            if [[ "{{.NRI-CLI-GKE-AUTOPILOT}}" == "true" ]]; then
+              echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
+              echo -e "\033[0;31mGKE Autopilot does not allow privileged access. Turning off privileged mode.\033[0m" >&2
+              echo -e "\033[0;31mTurning off Pixie for this installation which requires privileged access.\033[0m" >&2
+              NR_CLI_PRIVILEGED=false
+              PIXIE_SUPPORTED=false
 
-            if [[ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ]]; then
-              echo "Assume yes flag was provided - answering N for installing in GKE Autopilot."
-              echo "Continuing with installing the integration."
-              GKE_AUTOPILOT_ANSWER="N"
-              break
-            else
-              read ans
-              echo ""
-              GKE_AUTOPILOT_ANSWER=$(echo "${ans^^}" | cut -c1-1)
-              if [[ "$GKE_AUTOPILOT_ANSWER" == "N" ]]; then
-                echo "Continuing with installing the integration."
-                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"No\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
-                break
-              fi
-              if [[ "$GKE_AUTOPILOT_ANSWER" == "Y" ]]; then
-                echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
-                echo -e "\033[0;31mGKE Autopilot does not allow privileged access. Turning off privileged mode.\033[0m" >&2
-                echo -e "\033[0;31mTurning off Pixie for this installation which requires privileged access.\033[0m" >&2
-                NR_CLI_PRIVILEGED=false
-                PIXIE_SUPPORTED=false
-
-                if [[ "$NR_CLI_LOGGING" == "true" ]]; then
-                  # We assume that if those both envs are set, the FileStore decision has been made on the Guided install.
-                  if [[ -z "$NR_CLI_LOGGING_PERSISTENCE" || -z "$NR_CLI_LOGGING_LINUX_MOUNT_PATH" ]]; then
-                    while :; do
-                      echo ""
-                      echo -e "\033[0;31mFluent Bit can use a FileStore volume to prevent data loss or duplicated logs during Fluent Bit pod restarts or redeploys.\033[0m" >&2
-                      echo -e "\033[0;31mUsing FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
-                      echo -e "\033[0;31mNot using FileStore will produce data loss or data duplication when Fluent Bit gets restarted.\033[0m" >&2
-                      echo -e -n "${GREEN}Do you want to use FileStore to keep track of read and sent logs by Fluent Bit? Y/N? ${NC} "
-                      read filestoreans
-                      echo ""
-                      LOGGING_USE_FILESTORE=$(echo "${filestoreans^^}" | cut -c1-1)
-                      if [[ "$LOGGING_USE_FILESTORE" == "Y" ]]; then
-                        NR_CLI_LOGGING_PERSISTENCE=persistentVolume
-                        NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS=standard-rwx
-                        NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
-                        break
-                      fi
-                      if [[ "$LOGGING_USE_FILESTORE" == "N" ]]; then
-                        NR_CLI_LOGGING_PERSISTENCE=none
-                        NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
-                        break
-                      fi
-                      echo -e "Please type Y or N only."
-                    done
-                  else
-                    if [[ "$NR_CLI_LOGGING_PERSISTENCE" == "none" ]]; then
-                      echo -e "\033[0;31mFluent Bit is not using a database and data loss or data duplication can happen when Fluent Bit gets restarted.\033[0m" >&2
-                    elif [[ "$NR_CLI_LOGGING_PERSISTENCE" == "persistentVolume" ]]; then
-                      echo -e "\033[0;31mFluent Bit is using FileStore volume to prevent data loss or duplicated logs during Fluent Bit pod restarts or redeploys. Using FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
+              if [[ "$NR_CLI_LOGGING" == "true" ]]; then
+                # We assume that if those both envs are set, the FileStore decision has been made on the Guided install.
+                if [[ -z "$NR_CLI_LOGGING_PERSISTENCE" || -z "$NR_CLI_LOGGING_LINUX_MOUNT_PATH" ]]; then
+                  while :; do
+                    echo ""
+                    echo -e "\033[0;31mFluent Bit can use a FileStore volume to prevent data loss or duplicated logs during Fluent Bit pod restarts or redeploys.\033[0m" >&2
+                    echo -e "\033[0;31mUsing FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
+                    echo -e "\033[0;31mNot using FileStore will produce data loss or data duplication when Fluent Bit gets restarted.\033[0m" >&2
+                    echo -e -n "${GREEN}Do you want to use FileStore to keep track of read and sent logs by Fluent Bit? Y/N? ${NC} "
+                    read filestoreans
+                    echo ""
+                    LOGGING_USE_FILESTORE=$(echo "${filestoreans^^}" | cut -c1-1)
+                    if [[ "$LOGGING_USE_FILESTORE" == "Y" ]]; then
+                      NR_CLI_LOGGING_PERSISTENCE=persistentVolume
+                      NR_CLI_LOGGING_PERSISTENCE_STORAGE_CLASS=standard-rwx
+                      NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
+                      break
                     fi
+                    if [[ "$LOGGING_USE_FILESTORE" == "N" ]]; then
+                      NR_CLI_LOGGING_PERSISTENCE=none
+                      NR_CLI_LOGGING_LINUX_MOUNT_PATH=/var/log
+                      break
+                    fi
+                    echo -e "Please type Y or N only."
+                  done
+                else
+                  if [[ "$NR_CLI_LOGGING_PERSISTENCE" == "none" ]]; then
+                    echo -e "\033[0;31mFluent Bit is not using a database and data loss or data duplication can happen when Fluent Bit gets restarted.\033[0m" >&2
+                  elif [[ "$NR_CLI_LOGGING_PERSISTENCE" == "persistentVolume" ]]; then
+                    echo -e "\033[0;31mFluent Bit is using FileStore volume to prevent data loss or duplicated logs during Fluent Bit pod restarts or redeploys. Using FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
                   fi
                 fi
-                break
               fi
-            fi
-              echo -e "Please type Y or N only."
+            fi 
           done
 
           # Determine the cluster name if not provided
