@@ -2,34 +2,41 @@
 - debug:
     msg: Install go
 
-- name: install go
+- name: Install go
   shell: yum install go -y
   become: true
 
 - name: Create templates directory
   file:
-    path: ~/templates
+    path: /home/ec2-user/templates
     state: directory
 
 - name: Copy files to templates directory
   synchronize:
       src: "{{ item }}"
-      dest: ~/templates/
+      dest: /home/ec2-user/templates
       mode: push
   with_fileglob:
     - "../../../../templates/*"
   become: true
 
-- name: Run go mod init
-  shell: cd /home/ec2-user/templates && go mod init home/ec2-user/templates
+- name: Initialize and tidy Go modules
+  shell: |
+    cd /home/ec2-user/templates &&
+    export GOPATH=/home/ec2-user/go &&
+    export GOBIN=/home/ec2-user/go/bin &&
+    go mod init home/ec2-user/templates &&
+    go mod tidy
   become: true
+  environment:
+    PATH: "{{ ansible_env.PATH }}"
 
-- name: Run go mod tidy
-  shell: cd /home/ec2-user/templates && go mod tidy
-  become: true
-
-- name: Change Permissions for /home/ec2-user/templates
-  shell: chown -R ec2-user:ec2-user /home/ec2-user/templates/ && chmod -R 755 /home/ec2-user/templates
+- name: Change Permissions for /home/ec2-user/templates && go
+  shell: |
+    chown -R ec2-user:ec2-user /home/ec2-user/templates/ && 
+    chmod -R 755 /home/ec2-user/templates && 
+    chown -R ec2-user:ec2-user /home/ec2-user/go/ && 
+    chmod -R 755 /home/ec2-user/go
   become: true
 
 # Use the below command to run it locally
