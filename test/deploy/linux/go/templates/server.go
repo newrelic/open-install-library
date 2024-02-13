@@ -14,6 +14,8 @@ func main() {
 	go client()
 
 	//codeSnippet
+
+	
 	transactions := make(chan string)
 
 	go func() {
@@ -26,6 +28,9 @@ func main() {
 	}()
 
 	//routerSnippet
+
+
+
 	router.GET("/transaction", func(c *gin.Context) {
 		transaction := <-transactions
 		c.JSON(200, gin.H{
