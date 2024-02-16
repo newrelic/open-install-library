@@ -1,0 +1,42 @@
+---
+- debug:
+    msg: Setting up Sample Java application
+
+- name: Create a directory for javaApp
+  shell: mkdir -p /home/ec2-user/javaApp
+  become: true
+
+- name: Copy files to templates directory
+  synchronize:
+      src: "{{ item }}"
+      dest: /home/ec2-user/javaApp
+      mode: push
+  with_fileglob:
+    - "../templates/*"
+  become: true
+  # - name: Copy file to remove
+  #   ansible.builtin.copy:
+  #     content: ../templates/javaApp/*
+  #     dest: /home/ec2-user/javaApp
+      # recurse: yes
+  #   register: output
+  #   become: true
+  # - fail:
+  #     msg: "The command failed to upload the file {{ step_upload_file_name }} to {{ step_upload_file_path }} details:{{ output.stdout }}"
+  #   when: output is failed
+
+- name: Change the permissions of the tomcat directory
+  shell: chmod 755 /opt/tomcat/latest/webapps
+  become: true
+
+- name: Change the permissions of the tomcat bin 
+  shell: chmod -R 755 /opt/tomcat/latest/bin
+  become: true
+
+- name: Deploy the javaApp
+  shell: mvn clean package -f /home/ec2-user/javaApp/pom.xml
+  become: true
+
+- name: Move the package
+  shell: mv /home/ec2-user/javaApp/target/javaApp.war /opt/tomcat/latest/webapp 
+  become: true
