@@ -1,0 +1,32 @@
+---
+- debug:
+    msg: Set up sample tomcat-java app on the host
+
+- name: Copy file to remote
+  ansible.builtin.copy:
+    src: ../../../../javaApp
+    dest: /home/ec2-user
+    mode: '0777'
+  become: true
+
+- name: Change the permissions of the tomcat directory
+  shell: chmod 755 /opt/tomcat/latest/webapps
+  become: true
+
+- name: Change the permissions of the tomcat bin 
+  shell: chmod -R 777 /opt/tomcat/latest/bin
+  become: true
+
+- name: Build Java App with Maven
+  ansible.builtin.command:
+    cmd: mvn clean package -f /home/ec2-user/javaApp/pom.xml
+  environment:
+    JAVA_HOME: "/opt/jdk-14.0.1"
+    PATH: "{{ ansible_env.PATH }}:/opt/jdk-14.0.1/bin:/opt/apache-maven/bin"
+    JRE_HOME: "/opt/jdk-14.0.1"
+  become: true
+
+- name: Move the package
+  shell: mv /home/ec2-user/javaApp/target/javaApp.war /opt/tomcat/latest/webapps 
+  become: true
+
