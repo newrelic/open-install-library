@@ -1,0 +1,79 @@
+---
+- debug:
+    msg: Install Java, Create Dockerfile, and setup Java application
+
+# create a directory to host java application and newrelic
+- name: Create myJavaApp directory
+  file:
+    path: "/home/{{ ansible_user }}/myJavaApp"
+    state: directory
+
+# create a sample Dockerfile
+- name: Create a sample Dockerfile
+  copy:
+    content: |
+      FROM openjdk:8
+      WORKDIR /app
+      COPY . /app
+      EXPOSE 80
+      CMD ["java", "Main"]
+    dest: "/home/{{ ansible_user }}/myJavaApp/Dockerfile"
+    mode: "0644"
+  when: ansible_os_family == 'RedHat'
+
+- name: Install Java
+  yum:
+    name: java-1.8.0-openjdk-devel
+    state: present
+  become: yes
+  when: ansible_os_family == 'RedHat'
+
+# create a java app
+- name: Create sample Java application
+  copy:
+    content: |
+      public class Main {
+        public static void main(String[] args) {
+          // define the number of iterations for the loop
+          int iterations = 500;
+          
+          // loop to print "Hello, Java!" multiple times with a delay
+          for (int i = 0; i < iterations; i++) {
+            System.out.println("Hello, Java!");
+
+            // Delay for 5 secsonds (5000 ms)
+            try { 
+              Thread.sleep(5000);
+            } catch (InterruptedException e) {
+              e.printStackTrace();
+            }
+          }
+        }
+      }
+    dest: "/home/{{ ansible_user }}/myJavaApp/Main.java"
+    mode: 0644
+
+# compile java file
+- name: compile java code
+  shell: javac Main.java
+  args:
+    chdir: "/home/{{ ansible_user }}/myJavaApp"
+
+# create Manifest
+- name: Create Manifest.txt file
+  copy:
+    content: |
+      Main-Class: Main
+    dest: "/home/{{ ansible_user }}/myJavaApp/Manifest.txt"
+
+# create jar file for the Java app
+- name: Create JAR file
+  command: jar cfm Main.jar Manifest.txt Main.class
+  args:
+    chdir: "/home/{{ ansible_user }}/myJavaApp"
+
+# Give all permissions to the jar file
+- name: Change permissions for the JAR file
+  file:
+    path: "/home/{{ ansible_user }}/myJavaApp/Main.jar"
+    mode: "0777"  # Adjust the permissions as needed
