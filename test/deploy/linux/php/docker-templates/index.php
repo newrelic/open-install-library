@@ -5,8 +5,13 @@ header('Content-Type: text/plain');
 // Function to print "Hello, World!"
 function printHelloWorld() {
     echo "Hello, World!\n";
-     ob_flush();
-    flush();
+    if (extension_loaded('newrelic')) { // Ensure PHP agent is available
+        newrelic_background_job(false);
+    }
+    if (ob_get_length()) {
+        ob_flush();
+        flush();
+    }
 }
 
 // Print "Hello, World!" initially
