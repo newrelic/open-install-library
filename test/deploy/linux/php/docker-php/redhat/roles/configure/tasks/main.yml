@@ -1,0 +1,59 @@
+---
+- debug:
+    msg: Install Docker and PHP
+    
+########################################
+# RHEL support for Docker installation
+########################################
+- block:
+  - name: RHEL - install Docker 
+    package:
+      name: docker
+      update_cache: yes
+      state: present
+  
+  - name: RHEL - Start docker service
+    shell: "service docker start"
+  
+  - name: RHEL - Granting permissions to docker from ec2-user
+    shell: "usermod -a -G docker ec2-user"
+
+  - name: RHEL - Flush user/group permissions change
+    meta: reset_connection
+
+  - name: RHEL - Verify docker service is ready
+    shell: docker info
+    register: output
+    retries: 20
+    delay: 15
+    until: output is not failed    
+  
+  when: ansible_pkg_mgr == 'yum'
+  become: true
+
+- name: Create templates directory
+  file:
+    path: /home/ec2-user/templates
+    state: directory
+
+- name: Copy files to templates directory
+  synchronize:
+      src: "{{ item }}"
+      dest: /home/ec2-user/templates
+      mode: push
+  with_fileglob:
+    - "../../../../docker-templates/*"
+  become: true
+
+########################################
+# PHP installation
+########################################
+
+- name: Yum update
+  shell: yum update
+  become: true
+
+- name: Install PHP
+  shell: yum install php -y
+  become: true
+
