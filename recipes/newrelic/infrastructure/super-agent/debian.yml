@@ -76,11 +76,11 @@ install:
         - task: update_apt_nr_source
         - task: install_super_agent
         - task: update_otel_license_key
-        - task: update_otel_mem_limit
-        - task: update_otel_end_point
         - task: config_supervisors
         - task: config_opamp
         - task: config_host_monitoring
+        - task: update_otel_mem_limit
+        - task: update_otel_end_point
         - task: restart_super_agent
         - task: assert_super_agent_started
         - task: post_install
@@ -192,7 +192,7 @@ install:
             echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
             echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
             echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
-            echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
+            echo 'license_key: {{`{{NEW_RELIC_LICENSE_KEY}}`}}' >> /etc/newrelic-infra.yml
             echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
           fi
 
@@ -303,7 +303,7 @@ install:
               # Force-Install the Software
               echo "Attempting to install any missing dependencies or fixes broken packages."
               apt-get $OPTIONS install -f
-              if [ $? -ne 0 ]; then 
+              if [ $? -ne 0 ]; then
                 exit 1
               fi
               echo "Installation is successful"
@@ -311,34 +311,32 @@ install:
           fi
       silent: true
 
+    # Add NR Ingest Key as ENV Var for the Super Agent Systemd service (used by Infra Agent and Otel)
     update_otel_license_key:
       cmds:
         - |
-          sed -i 's/\(api-key: \).*/\1'"{{.NEW_RELIC_LICENSE_KEY}}"'/' /etc/nr-otel-collector/config.yaml
+          sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
+          echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
 
     update_otel_mem_limit:
       cmds:
         - |
-          sed -i 's/\(limit_mib: \).*/\1'"100"'/' /etc/nr-otel-collector/config.yaml
+          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+            sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+          fi
 
+    # Add OTLP Endpoint as ENV Var for the Super Agent Systemd service
     update_otel_end_point:
       cmds:
         - |
-          if [ -f /etc/newrelic-super-agent/newrelic-super-agent.conf ]; then
-            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
-          fi
-        - |
-          # Remove old config location (to deprecate)
-          rm -f /etc/newrelic-super-agent/nrdot-values.yaml
-          sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
-          # Create nr-otel-collector sub-agent dir
-          mkdir -p /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values
-          if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-            echo 'otel_exporter_otlp_endpoint: "staging-otlp.nr-data.net:4317"' >> /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yml
-          elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-            echo 'otel_exporter_otlp_endpoint: "otlp.eu01.nr-data.net:4317"' >> /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yml
-          else
-            echo 'otel_exporter_otlp_endpoint: "otlp.nr-data.net:4317"' >> /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yml
+          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+              sed -i "s/endpoint: .*$/endpoint: staging-otlp.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+            elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+              sed -i "s/endpoint: .*$/endpoint: otlp.eu01.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+            else
+              sed -i "s/endpoint: .*$/endpoint: otlp.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+            fi
           fi
 
     config_supervisors:
@@ -402,10 +400,12 @@ install:
         - |
           if [ "{{.NR_CLI_HOST_MONITORING_SOURCE}}" = "otel" ]; then     
             echo 'is_secure_forward_only: true' >> /etc/newrelic-infra.yml
+            mkdir -p /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values
+            cp /etc/newrelic-super-agent/examples/values-nr-otel-collector-agent-linux-0.1.0.yaml /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
           else
-            if [ -f /etc/nr-otel-collector/config.yaml ]; then
-              sed -i 's/\<otlp, hostmetrics\>/otlp/g' /etc/nr-otel-collector/config.yaml
-              sed -i 's/\<otlp, filelog\>/otlp/g' /etc/nr-otel-collector/config.yaml
+            if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+              mkdir -p /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values
+              cp /etc/newrelic-super-agent/examples/values-nr-otel-collector-gateway-0.1.0.yaml /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
             fi
           fi
 
