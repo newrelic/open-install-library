@@ -2,26 +2,43 @@
 - name: Debug OS Family
   debug:
     var: ansible_facts['os_family']
+
 - name: Debug ansible_user
   debug:
     var: ansible_user
+
 - name: Debug ansible_become_method
   debug:
     msg: "{{ (ansible_facts['os_family'] == 'Windows') | ternary('runas', 'sudo') }}"
+
 - name: Debug ansible_become_user
   debug:
     msg: "{{ (ansible_facts['os_family'] == 'Windows') | ternary('Administrator', 'root') }}"
 
-- name: Install CrowdStrike Falcon Sensor
+- name: Install CrowdStrike Falcon Sensor (Linux)
+  become: true
+  gather_facts: true
   block:
     - include_role:
         name: newrelic.crowdstrike_provision.install_crowdstrike_falcon
   vars:
-    gather_facts: true
-    ansible_become: true
-    ansible_become_method: "{{ (ansible_facts['os_family'] == 'Windows') | ternary('runas', 'sudo') }}"
-    ansible_become_user: "{{ (ansible_facts['os_family'] == 'Windows') | ternary('Administrator', 'root') }}"
     falcon_client_id: "{{ lookup('env', 'CROWDSTRIKE_CLIENT_ID') }}"
     falcon_client_secret: "{{ lookup('env', 'CROWDSTRIKE_CLIENT_SECRET') }}"
     falcon_customer_id: "{{ lookup('env', 'CROWDSTRIKE_CUSTOMER_ID') }}"
     api_base_url: "https://api.laggar.gcw.crowdstrike.com"
+  when: ansible_facts['os_family'] != 'Windows'
+
+- name: Install CrowdStrike Falcon Sensor (Windows)
+  become: true
+  become_method: runas
+  become_user: SYSTEM
+  gather_facts: true
+  block:
+    - include_role:
+        name: newrelic.crowdstrike_provision.install_crowdstrike_falcon
+  vars:
+    falcon_client_id: "{{ lookup('env', 'CROWDSTRIKE_CLIENT_ID') }}"
+    falcon_client_secret: "{{ lookup('env', 'CROWDSTRIKE_CLIENT_SECRET') }}"
+    falcon_customer_id: "{{ lookup('env', 'CROWDSTRIKE_CUSTOMER_ID') }}"
+    api_base_url: "https://api.laggar.gcw.crowdstrike.com"
+  when: ansible_facts['os_family'] == 'Windows'
