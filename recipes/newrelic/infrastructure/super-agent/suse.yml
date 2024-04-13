@@ -65,6 +65,7 @@ install:
         - task: setup_infra_license
         - task: setup_infra_proxy
         - task: install_super_agent
+        - task: migrate_newrelic_infra_config
         - task: update_otel_license_key
         - task: config_supervisors
         - task: config_opamp
@@ -144,6 +145,8 @@ install:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
             if [ -f /etc/newrelic-infra.yml ]; then
+              printf "\nAn existing newrelic-infra configuration file was detected. Updating where needed."
+
               sed -i "/^staging/d" /etc/newrelic-infra.yml
               sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
               sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
@@ -152,8 +155,16 @@ install:
               sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
               sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
               sed -i "/^is_secure_forward_only/d" /etc/newrelic-infra.yml
+
+              printf "\nWould you like to migrate this newrelic-infra config to use it with the newrelic super agent? [y/N]: "
+              read -r MIGRATE_NEWRELIC_INFRA_CONFIG
+              if [ "$MIGRATE_NEWRELIC_INFRA_CONFIG" == "y" ]; then
+                touch /etc/newrelic-infra-do-migrate
+              fi
             else
               touch /etc/newrelic-infra.yml
+              # If we are creating a new file, perform the migration as well
+              touch /etc/newrelic-infra-do-migrate
             fi
           fi
         - |
@@ -202,6 +213,15 @@ install:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
       silent: true
+
+    # If configured to do so, migrate the newrelic-infra configuration for usage with the super agent
+    migrate_newrelic_infra_config:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra-do-migrate ]; then
+            rm /etc/newrelic-infra-do-migrate
+            newrelic-config-migrate
+          fi
 
     update_otel_license_key:
       cmds:
