@@ -75,6 +75,7 @@ install:
         - task: add_nr_source
         - task: update_apt_nr_source
         - task: install_super_agent
+        - task: migrate_newrelic_infra_config
         - task: update_otel_license_key
         - task: config_supervisors
         - task: config_opamp
@@ -84,7 +85,6 @@ install:
         - task: restart_super_agent
         - task: assert_super_agent_started
         - task: post_install
-
 
     write_recipe_metadata:
       cmds:
@@ -172,16 +172,32 @@ install:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
             if [ -f /etc/newrelic-infra.yml ]; then
+              printf "\nAn existing newrelic-infra configuration file was detected. Updating where needed."
+
               sed -i "/^staging/d" /etc/newrelic-infra.yml
               sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
               sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
               sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
               sed -i "/^license_key/d" /etc/newrelic-infra.yml
               sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
-              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml            
+              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
               sed -i "/^is_secure_forward_only/d" /etc/newrelic-infra.yml
+
+              if [ "{{.NR_SA_MIGRATE_INFRA_CONFIG}}" == "true" ] || [ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ] ; then
+                touch /etc/newrelic-infra-do-migrate
+              else
+                printf "\nWould you like to migrate this newrelic-infra config to use it with the newrelic super agent? (y/N): "
+                read -r MIGRATE_NEWRELIC_INFRA_CONFIG
+                MIGRATE_NEWRELIC_INFRA_CONFIG=${MIGRATE_NEWRELIC_INFRA_CONFIG:-N}
+
+                if [ "$MIGRATE_NEWRELIC_INFRA_CONFIG" == "y" ] ; then
+                  touch /etc/newrelic-infra-do-migrate
+                fi
+              fi
             else
               touch /etc/newrelic-infra.yml
+              # If we are creating a new file, perform the migration as well
+              touch /etc/newrelic-infra-do-migrate
             fi
           fi
         - |
@@ -310,6 +326,15 @@ install:
             fi
           fi
       silent: true
+
+    # If configured to do so, migrate the newrelic-infra configuration for usage with the super agent
+    migrate_newrelic_infra_config:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-infra-do-migrate ]; then
+            rm /etc/newrelic-infra-do-migrate
+            newrelic-config-migrate
+          fi
 
     # Add NR Ingest Key as ENV Var for the Super Agent Systemd service (used by Infra Agent and Otel)
     update_otel_license_key:
