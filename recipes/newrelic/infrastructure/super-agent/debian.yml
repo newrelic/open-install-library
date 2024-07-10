@@ -66,6 +66,7 @@ install:
     default:
       cmds:
         - task: write_recipe_metadata
+        - task: detect_previous_install
         - task: assert_pre_req
         - task: cleanup
         - task: setup_infra_license
@@ -87,12 +88,21 @@ install:
         - task: migrate_newrelic_infra_config
         - task: restart_super_agent
         - task: assert_super_agent_started
+        - task: signal_recipe_applied
         - task: post_install
 
     write_recipe_metadata:
       cmds:
         - |
           echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    detect_previous_install:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this installation was detected. Some installation tasks will be skipped."
+            echo "If you would like to run all the tasks, please remove the /etc/newrelic-super-agent/.nr-cli file and re-run the installation."
+          fi
 
     assert_pre_req:
       cmds:
@@ -166,14 +176,22 @@ install:
     cleanup:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "cleanup" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] && [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
             rm -rf /var/db/newrelic-infra/data 2>/dev/null
           fi
 
     setup_infra_license:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "setup_infra_license" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] && [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
             if [ -f /etc/newrelic-infra.yml ]; then
               printf "\nAn existing newrelic-infra configuration file was detected. Updating where needed."
 
@@ -204,7 +222,7 @@ install:
             fi
           fi
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] && [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
             if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
               echo 'staging: true' >> /etc/newrelic-infra.yml
             fi
@@ -218,7 +236,11 @@ install:
     setup_infra_proxy:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] && [ ! -z "$HTTPS_PROXY" ]; then
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "setup_infra_proxy" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] && [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] && [ ! -z "$HTTPS_PROXY" ]; then
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
@@ -343,13 +365,23 @@ install:
     update_otel_license_key:
       cmds:
         - |
-          sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
-          echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "update_otel_license_key" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
+            echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
+          fi
 
     update_otel_mem_limit:
       cmds:
         - |
-          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "update_otel_mem_limit" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] && [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
             sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
           fi
 
@@ -357,45 +389,65 @@ install:
     update_otel_end_point:
       cmds:
         - |
-          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              sed -i "s/endpoint: .*$/endpoint: staging-otlp.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
-            elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              sed -i "s/endpoint: .*$/endpoint: otlp.eu01.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
-            else
-              sed -i "s/endpoint: .*$/endpoint: otlp.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "update_otel_end_point" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+              if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+                sed -i "s/endpoint: .*$/endpoint: staging-otlp.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+              elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+                sed -i "s/endpoint: .*$/endpoint: otlp.eu01.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+              else
+                sed -i "s/endpoint: .*$/endpoint: otlp.nr-data.net:4317/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+              fi
             fi
           fi
 
     config_supervisors:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
-            cp /etc/newrelic-super-agent/examples/super-agent-config-no-agents.yaml /etc/newrelic-super-agent/config.yaml
-          else
-            cp /etc/newrelic-super-agent/examples/super-agent-config-all-agents.yaml /etc/newrelic-super-agent/config.yaml
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "config_supervisors" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
+              cp /etc/newrelic-super-agent/examples/super-agent-config-no-agents.yaml /etc/newrelic-super-agent/config.yaml
+            else
+              cp /etc/newrelic-super-agent/examples/super-agent-config-all-agents.yaml /etc/newrelic-super-agent/config.yaml
+            fi
           fi
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ]; then
-            sed -i '/^\s*nr-infra-agent:/s/^/#/' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/^/#/' /etc/newrelic-super-agent/config.yaml
-          else
-            sed -i '/^\s*#\s*nr-infra-agent:/s/#//' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*#\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/#//' /etc/newrelic-super-agent/config.yaml
+          [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ]; then
+              sed -i '/^\s*nr-infra-agent:/s/^/#/' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/^/#/' /etc/newrelic-super-agent/config.yaml
+            else
+              sed -i '/^\s*#\s*nr-infra-agent:/s/#//' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*#\s*agent_type: "newrelic\/com\.newrelic\.infrastructure_agent/s/#//' /etc/newrelic-super-agent/config.yaml
+            fi
           fi
         - |
-          if [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
-            sed -i '/^\s*nr-otel-collector:/s/^/#/' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/^/#/' /etc/newrelic-super-agent/config.yaml
-          else
-            sed -i '/^\s*#\s*nr-otel-collector:/s/#//' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*#\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/#//' /etc/newrelic-super-agent/config.yaml
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            if [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
+              sed -i '/^\s*nr-otel-collector:/s/^/#/' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/^/#/' /etc/newrelic-super-agent/config.yaml
+            else
+              sed -i '/^\s*#\s*nr-otel-collector:/s/#//' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*#\s*agent_type: "newrelic\/io\.opentelemetry\.collector/s/#//' /etc/newrelic-super-agent/config.yaml
+            fi
           fi
 
     config_fleet_id:
       cmds:
         - |
-          if [ ! -z "{{.NR_CLI_FLEET_ID}}" ] ; then
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "config_fleet_id" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] && [ ! -z "{{.NR_CLI_FLEET_ID}}" ] ; then
             sed -i 's/^#\s*fleet_id:/fleet_id:/g' /etc/newrelic-super-agent/config.yaml
             sed -i 's/fleet_id: FLEET_ID_HERE/fleet_id: {{.NR_CLI_FLEET_ID}}/g' /etc/newrelic-super-agent/config.yaml
           fi
@@ -403,41 +455,60 @@ install:
     config_opamp:
       cmds:
         - |
-          if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" = "false" ] ; then
-            sed -i '/^\s*opamp:/s/^/#/' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*endpoint: https:\/\/opamp/s/^/#/' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*api-key:/s/^/#/' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*headers:/s/^/#/' /etc/newrelic-super-agent/config.yaml
-          else
-            sed -i 's/s*#\s*opamp:/opamp:/g' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*#\s*endpoint: https:\/\/opamp/s/#//' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*#\s*api-key:/s/#//' /etc/newrelic-super-agent/config.yaml
-            sed -i '/^\s*#\s*headers:/s/#//' /etc/newrelic-super-agent/config.yaml
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "config_opamp" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" = "false" ] ; then
+              sed -i '/^\s*opamp:/s/^/#/' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*endpoint: https:\/\/opamp/s/^/#/' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*api-key:/s/^/#/' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*headers:/s/^/#/' /etc/newrelic-super-agent/config.yaml
+            else
+              sed -i 's/s*#\s*opamp:/opamp:/g' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*#\s*endpoint: https:\/\/opamp/s/#//' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*#\s*api-key:/s/#//' /etc/newrelic-super-agent/config.yaml
+              sed -i '/^\s*#\s*headers:/s/#//' /etc/newrelic-super-agent/config.yaml
+            fi
           fi
         - |
-          if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"staging-service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
-          elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.eu.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
-          else
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+              sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"staging-service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
+            elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+              sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.eu.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
+            else
+              sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
+            fi
           fi
         - |
-          if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" != "false" ] ; then
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] && [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" != "false" ] ; then
             sed -i 's/api-key: API_KEY_HERE/api-key: {{.NEW_RELIC_LICENSE_KEY}}/g' /etc/newrelic-super-agent/config.yaml
           fi
 
     config_host_monitoring:
       cmds:
         - |
-          if [ "{{.NEW_RELIC_SUPER_AGENT_HOST_MONITORING_SOURCE}}" = "otel" ]; then
-            echo 'is_integrations_only: true' >> /etc/newrelic-infra.yml
-            mkdir -p /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values
-            cp /etc/newrelic-super-agent/examples/values-nr-otel-collector-agent-linux-0.1.0.yaml /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
-          else
-            if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+          # Log if a previous execution of this recipe was detected, indicating we are skipping this task
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this recipe was detected. Skipping "config_host_monitoring" task."
+          fi
+          if [ ! -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            if [ "{{.NEW_RELIC_SUPER_AGENT_HOST_MONITORING_SOURCE}}" = "otel" ]; then
+              echo 'is_integrations_only: true' >> /etc/newrelic-infra.yml
               mkdir -p /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values
-              cp /etc/newrelic-super-agent/examples/values-nr-otel-collector-gateway-0.1.0.yaml /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+              cp /etc/newrelic-super-agent/examples/values-nr-otel-collector-agent-linux-0.1.0.yaml /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+            else
+              if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+                mkdir -p /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values
+                cp /etc/newrelic-super-agent/examples/values-nr-otel-collector-agent-linux-0.1.0.yaml /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+              else
+                if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+                  mkdir -p /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values
+                  cp /etc/newrelic-super-agent/examples/values-nr-otel-collector-gateway-0.1.0.yaml /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
+                fi
+              fi
             fi
           fi
 
@@ -469,6 +540,11 @@ install:
             echo "The newrelic super agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 31
           fi
+
+    signal_recipe_applied:
+      cmds:
+        - |
+          touch /etc/newrelic-super-agent/.nr-cli
 
     post_install:
       info: |2
