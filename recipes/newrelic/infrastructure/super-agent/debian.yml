@@ -158,6 +158,12 @@ install:
             exit 18
           fi
         - |
+          IS_MKTEMP_INSTALLED=$(which mktemp | wc -l)
+          if [ $IS_MKTEMP_INSTALLED -eq 0 ] ; then
+            echo "mktemp is required to run the newrelic install. Please install coreutils and re-run the installation." >&2
+            exit 19
+          fi
+        - |
           if [ -n "{{.DEBIAN_CODENAME}}" ]; then
             IS_AGENT_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt/dists/{{.DEBIAN_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
             if [ $IS_AGENT_AVAILABLE -eq 0 ] ; then
@@ -429,13 +435,23 @@ install:
             sed -i '/^\s*#\s*endpoint: https:\/\/opamp/s/# //' /etc/newrelic-super-agent/config.yaml
           fi
         - |
-          if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" = "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" == "" ]; then
+          if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" = "false" ]; then
             sed -i '/^\s*api-key:/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*headers:/s/^/#/' /etc/newrelic-super-agent/config.yaml
           else
             sed -i '/^\s*#\s*api-key:/s/# //' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*#\s*headers:/s/# //' /etc/newrelic-super-agent/config.yaml
           fi
+        - |
+          if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"staging-service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
+          elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.eu.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
+          else
+            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
+          fi
+    config_super_agent_auth:
+      cmds:
         - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" = "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
             sed -i '/^\s*auth_config: PLACEHOLDER/s/^/#/' /etc/newrelic-super-agent/config.yaml
@@ -451,24 +467,14 @@ install:
             sed -i '/^\s*#\s*private_key_path: PLACEHOLDER/s/# //' /etc/newrelic-super-agent/config.yaml
           fi
         - |
-          if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"staging-service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
-          elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.eu.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
-          else
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-super-agent/config.yaml
-          fi
-    config_super_agent_auth:
-      cmds:
-        - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
-            set -o nounset,pipefail
+            set -uo pipefail
 
             mkdir /etc/newrelic-super-agent/keys
             chown root:root /etc/newrelic-super-agent/keys
             chmod 700 /etc/newrelic-super-agent/keys
 
-            TEMPORAL_FOLDER=$(mkdir -p "$TMP/super-agent-installation-$RANDOM")
+            TEMPORAL_FOLDER=$(mktemp -d newrelic-super-agent.XXXXXXXXXX)
             openssl genrsa -out "$TEMPORAL_FOLDER/key" 4096
             openssl rsa -in "$TEMPORAL_FOLDER/key" -pubout -out "$TEMPORAL_FOLDER/pub"
 
@@ -507,8 +513,6 @@ install:
                   -o "$TEMPORAL_FOLDER/response.json" \
                   --data @- \
                   "$REGISTRATION_ENDPOINT"
-                --data '{ "query": "mutation { createSystemIdentity(name: \"'${NAME}'\", organizationId: \"'${ORGANIZATION_ID}'\", publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\") { id name organizationId clientId publicKey } }" }' \
-                ${REGISTRATION_ENDPOINT}
               )
 
               if [ $HTTP_CODE -eq 200 ]; then
