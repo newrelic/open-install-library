@@ -138,16 +138,10 @@ install:
             exit 17
           fi
         - |
-          IS_JQ_INSTALLED=$(which jq | wc -l)
-          if [ $IS_JQ_INSTALLED -eq 0 ] ; then
-            echo "jq is required to run the newrelic install. Please install jq and re-run the installation." >&2
-            exit 18
-          fi
-        - |
           IS_MKTEMP_INSTALLED=$(which mktemp | wc -l)
           if [ $IS_MKTEMP_INSTALLED -eq 0 ] ; then
             echo "mktemp is required to run the newrelic install. Please install coreutils and re-run the installation." >&2
-            exit 19
+            exit 18
           fi
         - |
           IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
@@ -369,17 +363,18 @@ install:
             chmod 700 /etc/newrelic-super-agent/keys
 
             TEMPORAL_FOLDER=$(mktemp -d newrelic-super-agent.XXXXXXXXXX)
+            trap "rm -rf $TEMPORAL_FOLDER" EXIT
             openssl genrsa -out "$TEMPORAL_FOLDER/key" 4096
             openssl rsa -in "$TEMPORAL_FOLDER/key" -pubout -out "$TEMPORAL_FOLDER/pub"
 
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              REGISTRATION_ENDPOINT=https://staging-iam-service.vip.cf.nr-ops.net/graphql
+              REGISTRATION_ENDPOINT=https://staging-iam-service.vip.cf.nr-ops.net/system-identity/graphql
               # TODO: TOKEN_RENEWAL_ENDPOINT
             elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              REGISTRATION_ENDPOINT=https://iam-service.eu.vip.cf.nr-ops.net/graphql
+              REGISTRATION_ENDPOINT=https://iam-service.eu.vip.cf.nr-ops.net/system-identity/graphql
               # TODO: TOKEN_RENEWAL_ENDPOINT
             else
-              REGISTRATION_ENDPOINT=https://iam-service.vip.cf.nr-ops.net/graphql
+              REGISTRATION_ENDPOINT=https://iam-service.vip.cf.nr-ops.net/system-identity/graphql
               # TODO: TOKEN_RENEWAL_ENDPOINT
             fi
 
@@ -387,23 +382,20 @@ install:
 
             for RETRY in 1 2 3; do
               HTTP_CODE=$(echo '{ "query":
-                  "{
-                    mutation createSystemIdentity {
-                      createSystemIdentity(
-                        name: \"'$NAME'\",
-                        organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
-                        publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
-                      ) {
-                        clientId,
-                        id,
-                        name
-                      }
+                  "mutation {
+                    create(
+                      name: \"'$NAME'\",
+                      organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
+                      publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
+                    ) {
+                      clientId,
+                      name
                     }
                   }"
                 }' | tr -d $'\n' | curl -X POST \
                   -s -w "%{http_code}" \
                   -H "Content-Type: application/json" \
-                  -H "api-key: {{ .NEW_RELIC_API_KEY }}" \
+                  -H "api-key: {{ .NEW_RELIC_LICENSE_KEY }}" \
                   -o "$TEMPORAL_FOLDER/response.json" \
                   --data @- \
                   "$REGISTRATION_ENDPOINT"
@@ -417,23 +409,24 @@ install:
               sleep 2
             done
 
-            ERROR_MESSAGE=$(jq -r '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json")
-            if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
-              echo "Error creating an identity: $ERROR_MESSAGE"
-              exit
+            if [ $HTTP_CODE -ne 200 ]; then
+              exit 99
             fi
 
-            CLIENT_ID=$(jq 'data.createSystemIdentity.clientId' < "$TEMPORAL_FOLDER/response.json")
-            ID=$(jq 'data.createSystemIdentity.id' < "$TEMPORAL_FOLDER/response.json")
-            NAME=$(jq 'data.createSystemIdentity.name' < "$TEMPORAL_FOLDER/response.json")
+            ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq -r '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json")
+            if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
+              echo "Error creating an identity: $ERROR_MESSAGE"
+              exit 100
+            fi
+
+            CLIENT_ID=$(/usr/local/bin/newrelic utils jq -r '.data.createSystemIdentity.clientId' < "$TEMPORAL_FOLDER/response.json")
+            NAME=$(/usr/local/bin/newrelic utils jq -r '.data.createSystemIdentity.name' < "$TEMPORAL_FOLDER/response.json")
 
             mv "$TEMPORAL_FOLDER/key" "/etc/newrelic-super-agent/keys/$CLIENT_ID.key"
             # TODO: sed -i 's/token_url: PLACEHOLDER/token_url: '"$TOKEN_RENEWAL_ENDPOINT"'/g' /etc/newrelic-super-agent/config.yaml
             sed -i 's/client_id: PLACEHOLDER/client_id: '"$CLIENT_ID"'/g' /etc/newrelic-super-agent/config.yaml
             sed -i 's/provider: PLACEHOLDER/provider: local/g' /etc/newrelic-super-agent/config.yaml
             sed -i 's/private_key_path: PLACEHOLDER/private_key_path: '"/etc/newrelic-super-agent/keys/$CLIENT_ID.key"'/g' /etc/newrelic-super-agent/config.yaml
-
-            rm -rf "$TEMPORAL_FOLDER"
           fi
 
     config_host_monitoring:
