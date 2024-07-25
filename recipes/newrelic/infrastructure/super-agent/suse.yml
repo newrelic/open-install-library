@@ -348,7 +348,7 @@ install:
             sed -i '/^\s*provider: PLACEHOLDER/s/^/#/' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*private_key_path: PLACEHOLDER/s/^/#/' /etc/newrelic-super-agent/config.yaml
           else
-            sed -i '/^\s*#\s*auth_config: PLACEHOLDER/s/# //' /etc/newrelic-super-agent/config.yaml
+            sed -i '/^\s*#\s*auth_config:\s*$/s/# //' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*#\s*token_url: PLACEHOLDER/s/# //' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*#\s*client_id: PLACEHOLDER/s/# //' /etc/newrelic-super-agent/config.yaml
             sed -i '/^\s*#\s*provider: PLACEHOLDER/s/# //' /etc/newrelic-super-agent/config.yaml
@@ -358,32 +358,35 @@ install:
           if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
             set -uo pipefail
 
-            mkdir /etc/newrelic-super-agent/keys
+            mkdir -p /etc/newrelic-super-agent/keys
             chown root:root /etc/newrelic-super-agent/keys
             chmod 700 /etc/newrelic-super-agent/keys
 
             TEMPORAL_FOLDER=$(mktemp -d newrelic-super-agent.XXXXXXXXXX)
+            chown root:root "${TEMPORAL_FOLDER}"
+            chmod 700 "${TEMPORAL_FOLDER}"
             trap "rm -rf $TEMPORAL_FOLDER" EXIT
             openssl genrsa -out "$TEMPORAL_FOLDER/key" 4096
             openssl rsa -in "$TEMPORAL_FOLDER/key" -pubout -out "$TEMPORAL_FOLDER/pub"
 
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              REGISTRATION_ENDPOINT=https://staging-iam-service.vip.cf.nr-ops.net/system-identity/graphql
-              TOKEN_RENEWAL_ENDPOINT = https://staging-system-identity-oauth.vip.cf.nr-ops.net/oauth2/token
+              REGISTRATION_ENDPOINT=https://staging-api.newrelic.com/graphql
+              TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.staging-service.newrelic.com/oauth2/token
             elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              REGISTRATION_ENDPOINT=https://iam-service.eu.vip.cf.nr-ops.net/system-identity/graphql
-              TOKEN_RENEWAL_ENDPOINT = https://system-identity-oauth.eu.vip.cf.nr-ops.net/oauth2/token
+              REGISTRATION_ENDPOINT=https://api.eu.newrelic.com/graphql
+              TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.eu.newrelic.com/oauth2/token
             else
-              REGISTRATION_ENDPOINT=https://iam-service.vip.cf.nr-ops.net/system-identity/graphql
-              TOKEN_RENEWAL_ENDPOINT = https://system-identity-oauth.vip.cf.nr-ops.net/oauth2/token
+              REGISTRATION_ENDPOINT=https://api.newrelic.com/graphql
+              TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
             fi
 
-            NAME="System Identity for $(hostname)"
+            DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            NAME="System Identity for $(hostname) - $DATE"
 
             for RETRY in 1 2 3; do
               HTTP_CODE=$(echo '{ "query":
                   "mutation {
-                    create(
+                    systemIdentityCreate(
                       name: \"'$NAME'\",
                       organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
                       publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
@@ -392,12 +395,12 @@ install:
                       name
                     }
                   }"
-                }' | tr -d $'\n' | curl -X POST \
+                }' | tr -d $'\n' | curl \
                   -s -w "%{http_code}" \
                   -H "Content-Type: application/json" \
-                  -H "api-key: {{ .NEW_RELIC_LICENSE_KEY }}" \
+                  -H "API-Key: {{ .NEW_RELIC_API_KEY }}" \
                   -o "$TEMPORAL_FOLDER/response.json" \
-                  --data @- \
+                  --data-binary @- \
                   "$REGISTRATION_ENDPOINT"
               )
 
@@ -413,20 +416,19 @@ install:
               exit 99
             fi
 
-            ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq -r '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json")
+            ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
             if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
               echo "Error creating an identity: $ERROR_MESSAGE"
               exit 100
             fi
 
-            CLIENT_ID=$(/usr/local/bin/newrelic utils jq -r '.data.createSystemIdentity.clientId' < "$TEMPORAL_FOLDER/response.json")
-            NAME=$(/usr/local/bin/newrelic utils jq -r '.data.createSystemIdentity.name' < "$TEMPORAL_FOLDER/response.json")
+            CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.systemIdentityCreate.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
 
             mv "$TEMPORAL_FOLDER/key" "/etc/newrelic-super-agent/keys/$CLIENT_ID.key"
-            sed -i 's/token_url: PLACEHOLDER/token_url: '"$TOKEN_RENEWAL_ENDPOINT"'/g' /etc/newrelic-super-agent/config.yaml
+            sed -i 's~token_url: PLACEHOLDER~token_url: '"$TOKEN_RENEWAL_ENDPOINT"'~g' /etc/newrelic-super-agent/config.yaml
             sed -i 's/client_id: PLACEHOLDER/client_id: '"$CLIENT_ID"'/g' /etc/newrelic-super-agent/config.yaml
             sed -i 's/provider: PLACEHOLDER/provider: local/g' /etc/newrelic-super-agent/config.yaml
-            sed -i 's/private_key_path: PLACEHOLDER/private_key_path: '"/etc/newrelic-super-agent/keys/$CLIENT_ID.key"'/g' /etc/newrelic-super-agent/config.yaml
+            sed -i 's~private_key_path: PLACEHOLDER~private_key_path: '"/etc/newrelic-super-agent/keys/$CLIENT_ID.key"'~g' /etc/newrelic-super-agent/config.yaml
           fi
 
     config_host_monitoring:
