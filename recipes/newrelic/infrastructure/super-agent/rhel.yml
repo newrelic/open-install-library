@@ -517,13 +517,36 @@ install:
     assert_super_agent_started:
       cmds:
         - |
-          # Ensure super agent has enough time to start
-          sleep 10
-          IS_AGENT_INSTALLED=$(sudo ps aux | grep newrelic-super-agent | grep -v grep | wc -l)
-          if [ $IS_AGENT_INSTALLED -eq 0 ] ; then
-            echo "The newrelic super agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
-            exit 31
-          fi
+          MAX_RETRIES=150
+          TRIES=0
+          echo "Running agent status check attempt..."
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            statusCheckOutput=$(curl -s http://localhost:51200/status)
+            if [ -z "$statusCheckOutput" ]; then
+              # so jq doesn't fail if empty
+              statusCheckOutput="{}"
+            fi
+            STATUS=$(echo $statusCheckOutput | /usr/local/bin/newrelic utils jq '.super_agent.healthy')
+            if [ "$STATUS" == "true" ]; then
+              echo "Agent status check ok."
+              break
+            else
+              if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                # Process-based validation attempt
+                IS_AGENT_INSTALLED=$(sudo ps aux | grep newrelic-super-agent | grep -v grep | wc -l)
+                if [ $IS_AGENT_INSTALLED -gt 0 ] ; then
+                  echo "detected newrelic-super-agent process running"
+                  exit 0
+                fi
+                echo "The newrelic super agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+                exit 31
+              fi
+            fi
+          
+            sleep 2
+          done
 
     post_install:
       info: |2
