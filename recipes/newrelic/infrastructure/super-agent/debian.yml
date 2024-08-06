@@ -61,11 +61,16 @@ preInstall:
 install:
   version: "3"
   silent: true
-
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    IS_INITCTL:
+      sh: command -v initctl | wc -l
   tasks:
     default:
       cmds:
         - task: write_recipe_metadata
+        - task: detect_previous_install
         - task: assert_pre_req
         - task: cleanup
         - task: setup_infra_license
@@ -88,12 +93,21 @@ install:
         - task: migrate_newrelic_infra_config
         - task: restart_super_agent
         - task: assert_super_agent_started
+        - task: signal_recipe_applied
         - task: post_install
 
     write_recipe_metadata:
       cmds:
         - |
           echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    detect_previous_install:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this installation was detected. Some installation tasks will be skipped."
+            echo "If you would like to run all the tasks, please remove the /etc/newrelic-super-agent/.nr-cli file and re-run the installation."
+          fi
 
     assert_pre_req:
       cmds:
@@ -183,6 +197,8 @@ install:
           sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
 
     cleanup:
+      # skipping this task if .nr-cli exists
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
@@ -190,6 +206,7 @@ install:
           fi
 
     setup_infra_license:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
@@ -233,8 +250,8 @@ install:
             echo 'license_key: {{`{{NEW_RELIC_LICENSE_KEY}}`}}' >> /etc/newrelic-infra.yml
             echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
           fi
-
     setup_infra_proxy:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] && [ ! -z "$HTTPS_PROXY" ]; then
@@ -350,6 +367,7 @@ install:
 
     # If configured to do so, migrate the newrelic-infra configuration for usage with the super agent
     migrate_newrelic_infra_config:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"]
       cmds:
         - |
           if [ -f /etc/newrelic-infra-do-migrate ]; then
@@ -359,12 +377,14 @@ install:
 
     # Add NR Ingest Key as ENV Var for the Super Agent Systemd service (used by Infra Agent and Otel)
     update_otel_license_key:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
           echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
 
     update_otel_mem_limit:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
@@ -373,6 +393,7 @@ install:
 
     # Add OTLP Endpoint as ENV Var for the Super Agent Systemd service
     update_otel_end_point:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
@@ -386,6 +407,7 @@ install:
           fi
 
     config_supervisors:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
@@ -411,6 +433,7 @@ install:
           fi
 
     config_fleet_id:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ ! -z "{{.NR_CLI_FLEET_ID}}" ] ; then
@@ -419,6 +442,7 @@ install:
           fi
 
     config_opamp:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" = "false" ]; then
@@ -450,6 +474,7 @@ install:
           fi
 
     config_super_agent_auth:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
@@ -543,6 +568,7 @@ install:
           fi
 
     config_host_monitoring:
+      status: ["test -f /etc/newrelic-super-agent/.nr-cli"] 
       cmds:
         - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_HOST_MONITORING_SOURCE}}" = "otel" ]; then
@@ -568,11 +594,6 @@ install:
               /etc/init.d/newrelic-super-agent restart
             fi
           fi
-      vars:
-        IS_SYSTEMCTL:
-          sh: command -v systemctl | wc -l
-        IS_INITCTL:
-          sh: command -v initctl | wc -l
 
     assert_super_agent_started:
       cmds:
@@ -582,8 +603,18 @@ install:
           IS_AGENT_INSTALLED=$(sudo ps aux | grep newrelic-super-agent | grep -v grep | wc -l)
           if [ $IS_AGENT_INSTALLED -eq 0 ] ; then
             echo "The newrelic super agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+
+            if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+              journalctl -u newrelic-super-agent --no-pager
+            fi
+
             exit 31
           fi
+
+    signal_recipe_applied:
+      cmds:
+        - |
+          touch /etc/newrelic-super-agent/.nr-cli
 
     post_install:
       info: |2
