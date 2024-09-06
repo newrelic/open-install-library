@@ -2,8 +2,8 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 name: super-agent
-displayName: New Relic Super Agent
-description: New Relic install recipe for the Super Agent
+displayName: Agent Control
+description: New Relic install recipe for Agent Control
 repository: https://github.com/newrelic/newrelic-super-agent
 
 installTargets:
@@ -87,11 +87,16 @@ install:
       sh: if [ {{.AMAZON_LINUX_VERSION}} = "2" ] || [ {{.AMAZON_LINUX_VERSION}} = "2023" ]; then echo "amazonlinux"; else echo "el"; fi
     ARCH:
       sh: uname -m
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    IS_INITCTL:
+      sh: command -v initctl | wc -l
 
   tasks:
     default:
       cmds:
         - task: write_recipe_metadata
+        - task: detect_previous_install
         - task: assert_pre_req
         - task: cleanup
         - task: setup_infra_license
@@ -107,13 +112,22 @@ install:
         - task: update_otel_end_point
         - task: migrate_newrelic_infra_config
         - task: restart_super_agent
-        - task: assert_super_agent_started
+        - task: assert_super_agent_status_ok
+        - task: signal_recipe_applied
         - task: post_install
 
     write_recipe_metadata:
       cmds:
         - |
           echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    detect_previous_install:
+      cmds:
+        - |
+          if [ -f /etc/newrelic-super-agent/.nr-cli ] ; then
+            echo "A previous execution of this installation was detected. Some installation tasks will be skipped."
+            echo "If you would like to run all the tasks, please remove the /etc/newrelic-super-agent/.nr-cli file and re-run the installation."
+          fi
 
     assert_pre_req:
       cmds:
@@ -185,7 +199,7 @@ install:
           fi
           IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
-            echo "there is no newrelic super agent available for the distribution '{{.DISTRO_VERSION}}'." >&2
+            echo "there is no New Relic Agent Control available for the distribution '{{.DISTRO_VERSION}}'." >&2
             exit 21
           fi
       vars:
@@ -194,6 +208,9 @@ install:
             rpm -E %{rhel}
 
     cleanup:
+      # skipping this task if .nr-cli exists
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
@@ -201,6 +218,8 @@ install:
           fi
 
     setup_infra_license:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
@@ -219,7 +238,7 @@ install:
               if [ "{{.NR_SA_MIGRATE_INFRA_CONFIG}}" == "true" ] || [ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ] ; then
                 touch /etc/newrelic-infra-do-migrate
               else
-                printf "\nWould you like to migrate this newrelic-infra config to use it with the newrelic super agent? (y/N): "
+                printf "\nWould you like to migrate this newrelic-infra config to use it with New Relic Agent Control? (y/N): "
                 read -r MIGRATE_NEWRELIC_INFRA_CONFIG
                 MIGRATE_NEWRELIC_INFRA_CONFIG=${MIGRATE_NEWRELIC_INFRA_CONFIG:-N}
 
@@ -274,7 +293,7 @@ install:
           fi
           IS_NEWRELIC_AVAILABLE=$(curl -Ls $SUPER_AGENT_REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
-            echo "newrelic super agent is not available for this architecture {{.ARCH}}. See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+            echo "New Relic Agent Control is not available for this architecture {{.ARCH}}. See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
 
@@ -283,14 +302,20 @@ install:
 
           yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra' --enablerepo='newrelic-super-agent'
           yum -y -q install newrelic-super-agent
+
+          if [ "{{.AMAZON_LINUX_VERSION}}" == "2" ] || [ "{{.AMAZON_LINUX_VERSION}}" == "2023" ] ; then
+            yum -y -q install fluent-bit
+          fi
       vars:
         DISTRO_VERSION:
           sh: |
             rpm -E %{rhel}
       silent: true
 
-    # If configured to do so, migrate the newrelic-infra configuration for usage with the super agent
+    # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
     migrate_newrelic_infra_config:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ -f /etc/newrelic-infra-do-migrate ]; then
@@ -299,20 +324,26 @@ install:
           fi
 
     update_otel_license_key:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-super-agent/newrelic-super-agent.conf
           echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-super-agent/newrelic-super-agent.conf
 
     update_otel_mem_limit:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
             sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-super-agent/fleet/agents.d/nr-otel-collector/values/values.yaml
           fi
 
-    # Add OTLP Endpoint as ENV Var for the Super Agent Systemd service
+    # Add OTLP Endpoint as ENV Var for the super-agent Systemd service
     update_otel_end_point:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
@@ -326,6 +357,8 @@ install:
           fi
 
     config_supervisors:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
@@ -351,6 +384,8 @@ install:
           fi
 
     config_fleet_id:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ ! -z "{{.NR_CLI_FLEET_ID}}" ] ; then
@@ -359,6 +394,8 @@ install:
           fi
 
     config_opamp:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" = "false" ]; then
@@ -390,6 +427,8 @@ install:
           fi
 
     config_super_agent_auth:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
@@ -483,6 +522,8 @@ install:
           fi
 
     config_host_monitoring:
+      status:
+        - test -f /etc/newrelic-super-agent/.nr-cli
       cmds:
         - |
           if [ "{{.NEW_RELIC_SUPER_AGENT_HOST_MONITORING_SOURCE}}" = "otel" ]; then
@@ -508,23 +549,52 @@ install:
               /etc/init.d/newrelic-super-agent restart
             fi
           fi
-      vars:
-        IS_SYSTEMCTL:
-          sh: command -v systemctl | wc -l
-        IS_INITCTL:
-          sh: command -v initctl | wc -l
 
-    assert_super_agent_started:
+    assert_super_agent_status_ok:
       cmds:
         - |
-          # Ensure super agent has enough time to start
-          sleep 10
-          IS_AGENT_INSTALLED=$(sudo ps aux | grep newrelic-super-agent | grep -v grep | wc -l)
-          if [ $IS_AGENT_INSTALLED -eq 0 ] ; then
-            echo "The newrelic super agent has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
-            exit 31
-          fi
+          MAX_RETRIES=150
+          TRIES=0
+          echo "Running agent status check attempt..."
+          # wait for status endpoint to be ready
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            ((TRIES++))
+            statusCheckOutput=$(curl -s http://localhost:51200/status)
+            if [ -z "$statusCheckOutput" ]; then
+              # so jq doesn't fail if empty
+              statusCheckOutput="{}"
+            fi
+            STATUS=$(echo $statusCheckOutput | /usr/local/bin/newrelic utils jq '.super_agent.healthy')
+            if [ "$STATUS" == "true" ]; then
+              echo "Agent status check ok."
+              break
+            else
+              if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
+                # Process-based validation attempt
+                IS_AGENT_INSTALLED=$(ps aux | grep newrelic-super-agent | grep -v grep | wc -l)
+                if [ $IS_AGENT_INSTALLED -gt 0 ] ; then
+                  echo "detected newrelic-super-agent process running"
+                  exit 0
+                fi
+          
+                echo "New Relic Agent Control has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+          
+                if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+                  journalctl -u newrelic-super-agent --no-pager
+                fi
+                
+                exit 31
+              fi
+            fi
+          
+            sleep 2
+          done
+
+    signal_recipe_applied:
+      cmds:
+        - |
+          touch /etc/newrelic-super-agent/.nr-cli
 
     post_install:
       info: |2
-          ⚙️  The New Relic Super Agent configuration file can be found in /etc/newrelic-super-agent/config.yaml
+          ⚙️  New Relic Agent Control configuration file can be found in /etc/newrelic-super-agent/config.yaml
