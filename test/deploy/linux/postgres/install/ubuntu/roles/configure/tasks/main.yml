@@ -1,0 +1,71 @@
+---
+- name: Install and configure PostgreSQL on local machine
+  hosts: localhost
+  become: yes
+  vars:
+    postgresql_version: 12
+    postgresql_db: mydatabase  # Replace with your desired database name
+    postgresql_user: postgres     # Replace with your desired PostgreSQL user
+    postgresql_password: mypassword  # Replace with your desired PostgreSQL password
+
+  tasks:
+    - name: Ensure Python3 and pip are installed
+      apt:
+        name:
+          - python3
+          - python3-pip
+        state: present
+
+    - name: Ensure psycopg2 is installed
+      pip:
+        name: psycopg2-binary
+        state: present
+        executable: /usr/bin/pip3
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install PostgreSQL
+      apt:
+        name: "postgresql-{{ postgresql_version }}"
+        state: present
+
+    - name: Install PostgreSQL contrib package
+      apt:
+        name: "postgresql-contrib-{{ postgresql_version }}"
+        state: present
+
+    - name: Ensure PostgreSQL is running
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Ensure the 'postgres' user can login
+      become_user: postgres
+      postgresql_user:
+        name: postgres
+        role_attr_flags: LOGIN
+
+    - name: Set PostgreSQL user password
+      become_user: postgres
+      postgresql_user:
+        name: postgres
+        password: "{{ postgresql_password }}"
+        role_attr_flags: SUPERUSER
+
+    - name: Create database
+      become_user: postgres
+      postgresql_db:
+        name: "{{ postgresql_db }}"
+        owner: "{{ postgresql_user }}"
+        state: present
+
+    - name: Create PostgreSQL user with privileges
+      become_user: postgres
+      postgresql_user:
+        name: "{{ postgresql_user }}"
+        password: "{{ postgresql_password }}"
+        db: "{{ postgresql_db }}"
+        priv: ALL
