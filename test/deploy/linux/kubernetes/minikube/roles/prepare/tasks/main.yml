@@ -16,19 +16,23 @@
 
 - block:
   - name: Enable docker service
-    shell: "sudo systemctl enable docker.service"
-  - name: Enable docker service
-    shell: "sudo systemctl enable containerd.service"
+    shell: "systemctl enable docker.service"
+    become: yes
+  - name: Enable containerd service
+    shell: "systemctl enable containerd.service"
+    become: yes
   - name: Start docker service
-    shell: "sudo systemctl start docker.service"
-  - name: Start docker service
-    shell: "sudo systemctl start containerd.service"
-  become: true
+    shell: "systemctl start docker.service"
+    become: yes
+  - name: Start containerd service
+    shell: "systemctl start containerd.service"
+    become: yes
 
 - name: Ensure group "docker" exists
   ansible.builtin.group:
     name: docker
     state: present
+  become: yes
 
 - name: adding existing user "{{ ansible_user }}" to group docker
   user:
@@ -49,18 +53,19 @@
 
 - block:
   - name: Download Minikube
-    shell: 'sudo curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64'
-  - name: Install Minikube
-    shell: 'sudo install minikube-linux-amd64 /usr/local/bin/minikube'
+    shell: 'curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64'
     become: yes
-  - name: Delete existing minikube cluster
-    shell: 'sudo minikube delete'
+  - name: Install Minikube
+    shell: 'install minikube-linux-amd64 /usr/local/bin/minikube'
+    become: yes
   - name: Configure minikube driver
-    shell: 'sudo minikube config set driver docker'
+    shell: 'minikube config set driver docker'
+    become: yes
   when: is_minikube_installed.stdout|int == 0
 
 - name: Start Minikube
-  shell: 'sudo minikube start --memory 8192 --cpus 4 --kubernetes-version=v1.26.1'
+  shell: 'minikube start --memory 8192 --cpus 4 --kubernetes-version=v1.26.1'
+  become: yes
 
 - name: Create kubectl wrap command
   template:
@@ -72,29 +77,28 @@
 
 - name: Get list of pods
   shell: 'kubectl get pods --all-namespaces'
+  become: yes
 
 - name: Download the Helm binary
   shell: 'wget https://get.helm.sh/helm-v3.8.0-linux-amd64.tar.gz'
-  become: true
+  become: yes
 
 - name: Extract the Helm archive
   shell: 'tar -xvf helm-v3.8.0-linux-amd64.tar.gz'
+  become: yes
 
-# Adjust the permissions as needed
 - name: Give all permissions to the Helm binary file
-  shell: |
-    chmod -R 777 /home/ec2-user/linux-amd64
-  become: true
-
-- name: Set minikube context
-  shell: 'kubectl config use-context minikube'
+  shell: 'chmod -R 777 /home/ec2-user/linux-amd64'
+  become: yes
 
 - name: Move the Helm executable to a system directory
-  shell: mv linux-amd64/helm /usr/local/bin/
-  become: true
+  shell: 'mv linux-amd64/helm /usr/local/bin/'
+  become: yes
 
-- name: Update the systems's PATH environmenta variable
-  shell: echo "export PATH=$:/usr/local/bin/" | sudo tee -a /etc/profile
+- name: Update the system's PATH environment variable
+  shell: 'echo "export PATH=$PATH:/usr/local/bin/" | tee -a /etc/profile'
+  become: yes
 
 - name: Resolve path issues
-  shell: "echo export PATH=$PATH:/usr/bin/ >> ~/.bashrc"
+  shell: 'echo "export PATH=$PATH:/usr/bin/" >> ~/.bashrc'
+  become: yes
