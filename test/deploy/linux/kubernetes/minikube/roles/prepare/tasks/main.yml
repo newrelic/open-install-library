@@ -15,18 +15,18 @@
   become: yes
 
 - block:
-  - name: Enable docker service
-    shell: "systemctl enable docker.service"
-    become: yes
-  - name: Enable containerd service
-    shell: "systemctl enable containerd.service"
-    become: yes
-  - name: Start docker service
-    shell: "systemctl start docker.service"
-    become: yes
-  - name: Start containerd service
-    shell: "systemctl start containerd.service"
-    become: yes
+    - name: Enable docker service
+      shell: "systemctl enable docker.service"
+      become: yes
+    - name: Enable containerd service
+      shell: "systemctl enable containerd.service"
+      become: yes
+    - name: Start docker service
+      shell: "systemctl start docker.service"
+      become: yes
+    - name: Start containerd service
+      shell: "systemctl start containerd.service"
+      become: yes
 
 - name: Ensure group "docker" exists
   ansible.builtin.group:
@@ -52,20 +52,24 @@
   until: docker_output is not failed
 
 - block:
-  - name: Download Minikube
-    shell: 'curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64'
-    become: yes
-  - name: Install Minikube
-    shell: 'install minikube-linux-amd64 /usr/local/bin/minikube'
-    become: yes
-  - name: Configure minikube driver
-    shell: 'minikube config set driver docker'
-    become: yes
-  when: is_minikube_installed.stdout|int == 0
+    - name: Download Minikube
+      become: yes
+      get_url:
+        url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        dest: /usr/local/bin/minikube
+        mode: '0755'
 
-- name: Start Minikube
+- name: Configure minikube driver
+  become: no
+  shell: 'minikube config set driver docker'
+  environment:
+    PATH: "/usr/local/bin/:{{ ansible_env.PATH }}"
+
+- name: Start Minikube as non-root user
+  become: no
   shell: 'minikube start --memory 8192 --cpus 4 --kubernetes-version=v1.26.1'
-  become: yes
+  environment:
+    PATH: "/usr/local/bin/:{{ ansible_env.PATH }}"
 
 - name: Create kubectl wrap command
   template:
@@ -75,9 +79,17 @@
     mode: '0777'
   become: yes
 
+- name: Set Kubernetes context to Minikube
+  shell: 'kubectl config use-context minikube'
+  become: no
+  environment:
+    PATH: "/usr/local/bin/:{{ ansible_env.PATH }}"
+
 - name: Get list of pods
+  become: no
   shell: 'kubectl get pods --all-namespaces'
-  become: yes
+  environment:
+    PATH: "/usr/local/bin/:{{ ansible_env.PATH }}"
 
 - name: Download the Helm binary
   shell: 'wget https://get.helm.sh/helm-v3.8.0-linux-amd64.tar.gz'
