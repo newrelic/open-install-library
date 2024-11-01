@@ -205,9 +205,9 @@ install:
             NR_CLI_PRIVILEGED=false
             PIXIE_SUPPORTED=false
 
-            if [[ "$NR_CLI_LOGGING" == "true" ]]; then
+            if [[ "${NR_CLI_LOGGING}" == "true" ]]; then
               # We assume that if those both envs are set, the FileStore decision has been made on the Guided install.
-              if [[ -z "$NR_CLI_LOGGING_PERSISTENCE" || -z "$NR_CLI_LOGGING_LINUX_MOUNT_PATH" ]]; then
+              if [[ -z "${NR_CLI_LOGGING_PERSISTENCE}" || -z "${NR_CLI_LOGGING_LINUX_MOUNT_PATH}" ]]; then
                 while :; do
                   echo ""
                   echo -e "\033[0;31mFluent Bit can use a FileStore volume to prevent data loss or duplicated logs during Fluent Bit pod restarts or redeploys.\033[0m" >&2
@@ -231,9 +231,9 @@ install:
                   echo -e "Please type Y or N only."
                 done
               else
-                if [[ "$NR_CLI_LOGGING_PERSISTENCE" == "none" ]]; then
+                if [[ "${NR_CLI_LOGGING_PERSISTENCE}" == "none" ]]; then
                   echo -e "\033[0;31mFluent Bit is not using a database and data loss or data duplication can happen when Fluent Bit gets restarted.\033[0m" >&2
-                elif [[ "$NR_CLI_LOGGING_PERSISTENCE" == "persistentVolume" ]]; then
+                elif [[ "${NR_CLI_LOGGING_PERSISTENCE}" == "persistentVolume" ]]; then
                   echo -e "\033[0;31mFluent Bit is using FileStore volume to prevent data loss or duplicated logs during Fluent Bit pod restarts or redeploys. Using FileStore will incur additional costs as charged by Google. Consult your Google Cloud Admin or visit the FileStore docs.\033[0m" >&2
                 fi
               fi
@@ -243,7 +243,7 @@ install:
           # Determine the cluster name if not provided
           CLUSTER=$($SUDO $KUBECTL config current-context 2>/dev/null || echo "unknown")
 
-          if [[ "$NR_CLI_CLUSTERNAME" == "" && "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+          if [[ "${NR_CLI_CLUSTERNAME}" == "" && "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
             while :; do
               echo -e -n "Do you want to install the Kubernetes integration on cluster \033[1m${CLUSTER}\033[0m Y/N (default: Y)? "
               read answer
@@ -263,7 +263,7 @@ install:
             done
           fi
 
-          if [[ "$NR_CLI_CLUSTERNAME" == "" ]]; then
+          if [[ "${NR_CLI_CLUSTERNAME}" == "" ]]; then
             NR_CLI_CLUSTERNAME="$CLUSTER"
             echo -e "Cluster name set to \033[1m${NR_CLI_CLUSTERNAME}\033[0m" >&2
           fi
@@ -294,7 +294,7 @@ install:
           NR_CLI_BETA="${NR_CLI_BETA:-false}"
 
           # Check the Linux kernel version for compatibility if Pixie is set to be installed on cluster
-          if [[ "$NR_CLI_PIXIE" == "true" ]]; then
+          if [[ "${NR_CLI_PIXIE}" == "true" ]]; then
             KERNEL_VERSION=$($SUDO $KUBECTL get nodes -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}')
             KERNEL_MAJOR_VERSION=$(echo "${KERNEL_VERSION}" | awk -F. '{ print $1; }')
             KERNEL_MINOR_VERSION=$(echo "${KERNEL_VERSION}" | awk -F. '{ print $2; }')
@@ -307,7 +307,7 @@ install:
 
           PIXIE_MEM="2Gi"
           # Check if the nodes have sufficient memory to install Pixie
-          if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
+          if [[ "${NR_CLI_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" ]]; then
             MEMORY=$($SUDO $KUBECTL get nodes -o jsonpath='{.items[0].status.capacity.memory}' | sed 's/Ki$//')
             if [[ "$MEMORY" -lt 3906250 ]]; then
               echo "Pixie requires nodes with 4 Gb of memory or more, got ${MEMORY} Ki." >&2
@@ -340,14 +340,14 @@ install:
             exit 1
           fi
 
-          if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" && "$CAN_CREATE_NAMESPACE" != "yes" ]]; then
+          if [[ "${NR_CLI_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" && "${CAN_CREATE_NAMESPACE}" != "yes" ]]; then
             echo "Permissions to create a new namespace are required for Pixie." >&2
             echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
             PIXIE_SUPPORTED=false
           fi
 
           # Check if the cluster type can support Pixie installation
-          if [[ "$NR_CLI_PIXIE" == "true" && "$PIXIE_SUPPORTED" == "true" ]]; then
+          if [[ "${NR_CLI_PIXIE}" == "true" && "${PIXIE_SUPPORTED}" == "true" ]]; then
             PIXIE_SUPPORTED=false
 
             if [[ "$CLUSTER" == "docker-desktop" ]]; then
@@ -396,7 +396,7 @@ install:
               PIXIE_SUPPORTED=true
             fi
 
-            if [[ "$PIXIE_SUPPORTED" != "true" ]]; then
+            if [[ "${PIXIE_SUPPORTED}" != "true" ]]; then
               echo "This type of Kubernetes cluster is not supported by Pixie: GKE, EKS, AKS, Minikube, k3s, k0s and kOps are supported." >&2
               echo -e "\033[0;31mTurning off Pixie for this installation\033[0m" >&2
               DEBUG_MESSAGE="Pixie is unsupported due to k8s version - ${K8S_VERSION}; ${DEBUG_MESSAGE}"
@@ -413,7 +413,7 @@ install:
           fi
 
           # Check if a privileged container can be deployed in the namespace
-          if [[ "$NR_CLI_PRIVILEGED" == "true" ]]; then
+          if [[ "${NR_CLI_PRIVILEGED}" == "true" ]]; then
           cat <<EOF > nr-check-privileged.yaml
           apiVersion: v1
           kind: Pod
@@ -442,7 +442,7 @@ install:
           rm nr-check-privileged.yaml
           fi
 
-          if [[ "$NR_CLI_NEWRELIC_PIXIE_INSTALLED" == "true" ]]; then
+          if [[ "${NR_CLI_NEWRELIC_PIXIE_INSTALLED}" == "true" ]]; then
             if ! which px 1>/dev/null 2>&1 ; then
               echo "Pixie CLI not detected on cluster." >&2
               echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
@@ -450,39 +450,39 @@ install:
             else
               if ! NR_CLI_PIXIE_API_KEY=$(px api-key create -s -d 'New Relic integration' 2>&1 | tail -n 1); then
                 echo "Failed to create Pixie API key using px CLI." >&2
-                echo $NR_CLI_PIXIE_API_KEY >&2
+                echo ${NR_CLI_PIXIE_API_KEY} >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
               fi
               if echo ${NR_CLI_PIXIE_API_KEY} | grep "px auth login" >/dev/null; then
                 echo "Failed to create Pixie API key using px CLI." >&2
-                echo $NR_CLI_PIXIE_API_KEY >&2
+                echo ${NR_CLI_PIXIE_API_KEY} >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
               fi
 
               if ! NR_CLI_PIXIE_ENDPOINT=$(px get cluster --cloud-addr 2>&1 | tail -n 1); then
                 echo "Failed to get Pixie cloud address using px CLI." >&2
-                echo $NR_CLI_PIXIE_ENDPOINT >&2
+                echo ${NR_CLI_PIXIE_ENDPOINT} >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
               fi
               if echo ${NR_CLI_PIXIE_ENDPOINT} | grep "px auth login" >/dev/null; then
                 echo "Failed to get Pixie cloud address using px CLI." >&2
-                echo $NR_CLI_PIXIE_ENDPOINT >&2
+                echo ${NR_CLI_PIXIE_ENDPOINT} >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
               fi
 
               if ! NR_CLI_PIXIE_CLUSTER_ID=$(px get cluster --id 2>&1 | tail -n 1); then
                 echo "Failed to get Pixie cluster id using px CLI." >&2
-                echo $NR_CLI_PIXIE_CLUSTER_ID >&2
+                echo ${NR_CLI_PIXIE_CLUSTER_ID} >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
               fi
               if echo ${NR_CLI_PIXIE_CLUSTER_ID} | grep "px auth login" >/dev/null; then
                 echo "Failed to get Pixie cluster id using px CLI." >&2
-                echo $NR_CLI_PIXIE_CLUSTER_ID >&2
+                echo ${NR_CLI_PIXIE_CLUSTER_ID} >&2
                 echo -e "\033[0;31mTurning off Pixie.\033[0m" >&2
                 PIXIE_SUPPORTED=false
               fi
@@ -609,7 +609,7 @@ install:
             ARGS="${ARGS} --set newrelic-prometheus-agent.enabled=${NR_CLI_PROMETHEUS_AGENT}"
             ARGS="${ARGS} --set newrelic-prometheus-agent.lowDataMode=${NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE}"
             ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled=${NR_CLI_CURATED}"
-            if [ -n "$NR_CLI_PROMETHEUS_CUSTOM_APP_LABELS" ]; then
+            if [ -n "${NR_CLI_PROMETHEUS_CUSTOM_APP_LABELS}" ]; then
               ARGS="${ARGS} --set newrelic-prometheus-agent.config.kubernetes.integrations_filter.app_values=\"${NR_CLI_PROMETHEUS_CUSTOM_APP_LABELS}\""
             fi
 
@@ -725,7 +725,7 @@ install:
             BODY="${BODY},\"newrelic-prometheus-agent.enabled\":\"${NR_CLI_PROMETHEUS_AGENT}\""
             BODY="${BODY},\"newrelic-prometheus-agent.lowDataMode\":\"${NR_CLI_PROMETHEUS_AGENT_LOW_DATA_MODE}\""
             BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.enabled\":\"${NR_CLI_CURATED}\""
-            if [ -n "$NR_CLI_PROMETHEUS_CUSTOM_APP_LABELS" ]; then
+            if [ -n "${NR_CLI_PROMETHEUS_CUSTOM_APP_LABELS}" ]; then
               BODY="${BODY},\"newrelic-prometheus-agent.config.kubernetes.integrations_filter.app_values\":\"${NR_CLI_PROMETHEUS_CUSTOM_APP_LABELS}\""
             fi
 
@@ -810,14 +810,14 @@ install:
           fi
 
           # Check for 'nrk8s-kubelet-node-scraper' pod presence first, otherwise default to former pod name 'nrk8s-kubelet'
-          POD_NAME=$(test $($SUDO $KUBECTL get pods -o wide -n $NR_CLI_NAMESPACE | grep 'nrk8s-kubelet-node-scraper' | wc -l | sed 's/ //g') -gt 0 && echo 'nrk8s-kubelet-node-scraper' || echo 'nrk8s-kubelet')
+          POD_NAME=$(test $($SUDO $KUBECTL get pods -o wide -n ${NR_CLI_NAMESPACE} | grep 'nrk8s-kubelet-node-scraper' | wc -l | sed 's/ //g') -gt 0 && echo 'nrk8s-kubelet-node-scraper' || echo 'nrk8s-kubelet')
 
           echo "Running ${POD_NAME} status check attempt..."
           MAX_RETRIES=150
           TRIES=0
           while [ $TRIES -lt $MAX_RETRIES ]; do
             ((TRIES++))
-            IS_INFRA_POD_STARTED=$($SUDO $KUBECTL get pods -o wide -n $NR_CLI_NAMESPACE | grep ${POD_NAME} | grep -i "running" | wc -l | sed 's/ //g')
+            IS_INFRA_POD_STARTED=$($SUDO $KUBECTL get pods -o wide -n ${NR_CLI_NAMESPACE} | grep ${POD_NAME} | grep -i "running" | wc -l | sed 's/ //g')
             if [[ $IS_INFRA_POD_STARTED -gt 0 ]]; then
               echo "${POD_NAME} pod started"
               break
@@ -826,8 +826,8 @@ install:
               echo "${POD_NAME} pod is not starting" >&2
               BUNDLE_VERSION=$(helm list --all-namespaces | grep nri-bundle | awk '{print $9}')
               DEBUG_MESSAGE="nri-bundle version - ${BUNDLE_VERSION}; ${DEBUG_MESSAGE}"
-              POD_STATUS=$($SUDO $KUBECTL get pods -o wide -n $NR_CLI_NAMESPACE | grep ${POD_NAME} | awk '{print $3}')
-              POD_RESTARTS=$($SUDO $KUBECTL get pods -o wide -n $NR_CLI_NAMESPACE | grep ${POD_NAME} | awk '{print $4}')
+              POD_STATUS=$($SUDO $KUBECTL get pods -o wide -n ${NR_CLI_NAMESPACE} | grep ${POD_NAME} | awk '{print $3}')
+              POD_RESTARTS=$($SUDO $KUBECTL get pods -o wide -n ${NR_CLI_NAMESPACE} | grep ${POD_NAME} | awk '{print $4}')
               DEBUG_MESSAGE="${POD_NAME} status - ${POD_STATUS}; ${POD_NAME} restarts - ${POD_RESTARTS}; ${DEBUG_MESSAGE}"
               echo "{\"Metadata\":{\"InstallationError\":\"${POD_NAME} pod is not starting\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}}
               exit 33
