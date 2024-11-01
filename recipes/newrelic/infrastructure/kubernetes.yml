@@ -79,6 +79,7 @@ install:
           NR_CLI_KUBE_EVENTS="{{.NR_CLI_KUBE_EVENTS}}"
           NR_CLI_LOGGING="{{.NR_CLI_LOGGING}}"
           NR_CLI_LOGGING_LOW_DATA_MODE="{{.NR_CLI_LOGGING_LOW_DATA_MODE}}"
+          NR_CLI_GKE_AUTOPILOT="{{.NR_CLI_GKE_AUTOPILOT}}"
           NR_CLI_AGENT_OPERATOR="{{.NR_CLI_AGENT_OPERATOR}}"
 
           # Prometheus integrations
@@ -196,7 +197,7 @@ install:
           # DEBUG_MESSAGE is used to collect all necessary debug info we need.
           DEBUG_MESSAGE=""
 
-          if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]]; then
+          if [[ "${NR_CLI_GKE_AUTOPILOT}" == "true" ]]; then
             echo "{\"Metadata\":{\"gkeAutopilotAnswer\":\"Yes\",\"DebugMessage\":\"$DEBUG_MESSAGE\"}}" | tee -a {{.NR_CLI_OUTPUT}} > /dev/null
             echo -e "\033[0;31mGKE Autopilot usage confirmed.\033[0m" >&2
             echo -e "\033[0;31mGKE Autopilot does not allow privileged access. Turning off privileged mode.\033[0m" >&2
@@ -583,7 +584,7 @@ install:
             fi
 
             # if installing in GKE Autopilot, we need to turn off controlPlane and pixie and set kubelet scheme and port
-            if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]]; then
+            if [[ "${NR_CLI_GKE_AUTOPILOT}" == "true" ]]; then
               ARGS="${ARGS} --set newrelic-infrastructure.controlPlane.enabled=false"
               ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.scheme=http"
               ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.port=10255"
@@ -663,7 +664,7 @@ install:
             echo "Installing newrelic-bundle......."
             ERROR=$($SUDO helm upgrade $ARGS 2>&1 >/dev/null)
             if [[ "${ERROR}" != "" ]]; then
-              if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]] && ! (echo "${ERROR}" | grep -q "Error"); then
+              if [[ "${NR_CLI_GKE_AUTOPILOT}" == "true" ]] && ! (echo "${ERROR}" | grep -q "Error"); then
                 echo "Warnings from GKE Autopilot: $ERROR"
                 break
               else
@@ -701,7 +702,7 @@ install:
             fi
 
             # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
-            if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]]; then
+            if [[ "${NR_CLI_GKE_AUTOPILOT}" == "true" ]]; then
               BODY="${BODY},\"newrelic-infrastructure.controlPlane.enabled\":\"false\""
               BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
               BODY="${BODY},\"newrelic-infrastructure.kubelet.config.port\":\"10255\""
