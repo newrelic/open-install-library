@@ -7,6 +7,8 @@
 # newrelic_cli_path: (optional) The newrelic-cli to use instead of using latest published
 # command_should_fail: (optional) Should the newrelic install command fail? False by default.
 # validate_output: (optional) An array of Strings that must appear in stdout for this test to pass.
+# use_organization_id: (optional) A boolean value to control if NEW_RELIC_ORGANIZATION_ID should be added to env_vars. False by default.
+# newrelic_organization_id: (optional) The NewRelic Organization ID if use_organization_id is set to True.
 
 - name: Prepare command_should_fail option
   when: command_should_fail is not defined
@@ -22,6 +24,11 @@
   set_fact:
     newrelic_region: "US"
   when: newrelic_region is not defined
+
+- name: Prepare newrelic_organization_id
+  set_fact:
+    use_organization_id: false
+  when: use_organization_id is not defined
 
 - fail:
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
@@ -57,6 +64,12 @@
 - name: Adding sudo user environment variable
   set_fact:
     env_vars: "{{ env_vars }} SUDO_USER={{ ansible_user }}"
+      
+- name: Adding newrelic organization environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} NEW_RELIC_ORGANIZATION={{ newrelic_organization_id }}"
+  when: use_organization_id | bool == True
+  no_log: true
 
 - name: Get CLI environment variables
   shell: "/bin/bash -ic 'env' | grep NR_CLI_"
