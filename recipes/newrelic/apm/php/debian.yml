@@ -465,10 +465,20 @@ install:
               # Get the PHP INI Directory associated with this specific NR INI file
               #
               php_ini_dir=$(echo $ini | sed -n 's/\(.*\)\/conf.d/\1/p')
-              if [ -z "${php_ini_dir}" ]; then
-                php_ini_dir=$ini
+              if [[ -z "${php_ini_dir}" ]]; then
+                if [[ -z "${CLI_DIRS}" ]]; then
+                    if [[ -d "${ini}/../apache2" ]]; then
+                      php_ini_dir="${ini}/../apache2"
+                    fi
+                    if [[ -d "${ini}/../fpm" ]]; then
+                      php_ini_dir="${ini}/../fpm"
+                    fi
+                elif [[ -d "${ini}/../cli" ]]; then
+                  php_ini_dir="${ini}/../cli"
+                else
+                  php_ini_dir=$ini
+                fi
               fi
-
               #
               # Get the PHP Binary directory associated with this particular NR INI file.
               sed_slash_ini=$(echo "${ini}"  | sed 's/\//\\\//g')
@@ -501,6 +511,10 @@ install:
               fi
 
               sed -i "s/newrelic.appname = \"[^\"]*\"/newrelic.appname = \"${APPLICATION_NAME}\"/" $ini_full_name
+          
+              LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+              sed -i -E "s/newrelic.license = \"(REPLACE_WITH_REAL_KEY|)\"/newrelic.license = \"${NEW_RELIC_LICENSE_KEY}\"/" $ini_full_name
+          
               if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
                 sed -i 's/;newrelic.daemon.collector_host = ""/newrelic.daemon.collector_host = "staging-collector.newrelic.com"/' $ini_full_name
                 sed -i 's/;newrelic.loglevel = "info"/newrelic.loglevel = "verbosedebug"/' $ini_full_name
@@ -520,7 +534,7 @@ install:
               #
               target_ini_dir="/etc/php5/conf.d/"
               if [ -x /usr/sbin/phpquery ]; then
-                target_ini_dir="${ini}/../../mods-available/"
+                target_ini_dir="${php_ini_dir}/../mods-available/"
               elif [ -x /usr/sbin/php5endmod ]; then
                 target_ini_dir="/etc/php5/mods-available/"
               fi
@@ -533,7 +547,11 @@ install:
               # This ensures we always get the most up to date newrelic.ini file on the
               # system.
               #
-              mv ${ini_full_name} ${target_ini_dir}
+              ini_source_dir=$(dirname "$(realpath "$ini_full_name")")
+              ini_destination_dir=$(realpath "$target_ini_dir")
+              if [[ "$ini_source_dir" != "$ini_destination_dir" ]]; then
+                mv "${ini_full_name}" "${ini_destination_dir}"
+              fi
 
               #
               # We rely on the package installer to enable the newrelic module.
