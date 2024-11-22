@@ -1,0 +1,117 @@
+---
+- name: update system.
+  shell: sudo apt update
+  become: yes
+
+- name: Install ats
+  apt:
+    name: ['trafficserver']
+    update_cache: yes
+    state: latest
+  become: yes
+  when: ansible_pkg_mgr == 'apt'
+
+- name: Install Apache2
+  apt:
+    name: ['apache2']
+    update_cache: yes
+    state: latest
+  become: yes
+
+- name: Start apache2 service
+  shell: "sudo systemctl start apache2"
+  become: yes
+  when: ansible_pkg_mgr == 'apt'
+
+- name: set apache ports config
+  lineinfile:
+    path: "/etc/apache2/ports.conf"
+    state: present
+    regexp: "80"
+    line: "Listen 127.0.0.1:80"
+  become: true
+  no_log: true
+
+- name: set apache ports config
+  lineinfile:
+    path: "/etc/apache2/apache2.conf"
+    line: "ServerName localhost"
+    state: present
+  become: true
+  no_log: true
+
+- name: Configuring Traffic Server as a Reverse Proxy
+  lineinfile:
+    path: "/etc/trafficserver/remap.config"
+    line: "map http://13.233.89.63:8080/ http://127.0.0.1:80/"
+    state: present
+  become: true
+  no_log: true
+
+- name: enabling ATS metrics
+  lineinfile:
+    path: "/etc/trafficserver/plugin.config"
+    line: "stats_over_http.so"
+    state: present
+  become: true
+  no_log: true
+
+- name: enabling ATS metrics setup
+  lineinfile:
+    path: "/etc/trafficserver/records.config"
+    line: "CONFIG proxy.config.http.cache.http INT 1
+
+           CONFIG proxy.config.reverse_proxy.enabled INT 1
+
+           CONFIG proxy.config.url_remap.remap_required INT 1
+
+           CONFIG proxy.config.url_remap.pristine_host_hdr INT 1
+
+           CONFIG proxy.config.http.server_ports STRING 8080 8080:ipv6"
+    state: present
+  become: true
+  no_log: true
+
+- name: Start apache2 service
+  shell: "systemctl restart apache2"
+  become: yes
+  when: ansible_pkg_mgr == 'apt'
+
+- name: creating ats run directory
+  shell: mkdir -p /var/run/trafficserver
+  become: true 
+
+- name: give permission to ats
+  shell: chown -R trafficserver:trafficserver /var/run/trafficserver
+  become: true 
+
+- name: Start trafficserver service
+  shell: "systemctl restart trafficserver"
+  become: yes
+  when: ansible_pkg_mgr == 'apt'
+
+- block:
+  - name: Copy nri-flex config file
+    template:
+      src: nri-flex-ats.yml
+      dest: /etc/newrelic-infra/integrations.d/nri-flex-ats.yml
+    become: true
+
+- block:
+  - name: Copy nri-flex config file
+    template:
+      src: nri-flex-ats-cache.yml
+      dest: /etc/newrelic-infra/integrations.d/nri-flex-ats-cache.yml
+    become: true
+
+- block:
+  - name: Copy nri-flex config file
+    template:
+      src: nri-flex-ats-http.yml
+      dest: /etc/newrelic-infra/integrations.d/nri-flex-ats-http.yml
+    become: true
+
+- name: Restart the newrelic-infra service
+  shell: "systemctl restart newrelic-infra.service"
+  become: yes
+  when: ansible_pkg_mgr == 'apt'
