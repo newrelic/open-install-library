@@ -519,58 +519,143 @@ install:
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
               REGISTRATION_ENDPOINT=https://staging-api.newrelic.com/graphql
               TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.staging-service.newrelic.com/oauth2/token
+              IDENTITY_CREATION_ENDPOINT=https://ng-iam-service.staging-service.nr-ops.net/system-identity/graphql
             elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
               REGISTRATION_ENDPOINT=https://api.eu.newrelic.com/graphql
               TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
+              IDENTITY_CREATION_ENDPOINT=https://ng-iam-service.service.eu.nr-ops.net/system-identity/graphql
             else
               REGISTRATION_ENDPOINT=https://api.newrelic.com/graphql
               TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
+              IDENTITY_CREATION_ENDPOINT=https://ng-iam-service.service.nr-ops.net/system-identity/graphql
             fi
-
-            DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            NAME="System Identity for $(hostname) - $DATE"
-
-            for RETRY in 1 2 3; do
-              HTTP_CODE=$(echo '{ "query":
-                  "mutation {
-                    systemIdentityCreate(
-                      name: \"'$NAME'\",
-                      organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
-                      publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
-                    ) {
-                      clientId,
-                      name
-                    }
-                  }"
-                }' | tr -d $'\n' | curl \
+            
+            ############################################################
+            # Get the L1 Access Token
+            ############################################################
+            if [ "{{.NEW_RELIC_AUTH_CLIENT_ID}}" != "" ] && [ "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" != "" ]; then
+              RESPONSE_FILE=$TEMPORAL_FOLDER/response_token.json
+              for RETRY in 1 2 3; do
+                HTTP_CODE=$(echo '{"client_id": "{{.NEW_RELIC_AUTH_CLIENT_ID}}", "client_secret": "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}", "grant_type": "client_credentials"}' | tr -d $'\n' | curl \
                   -s -w "%{http_code}" \
                   -H "Content-Type: application/json" \
-                  -H "API-Key: {{ .NEW_RELIC_API_KEY }}" \
-                  -o "$TEMPORAL_FOLDER/response.json" \
+                  -o "$RESPONSE_FILE" \
                   --data-binary @- \
-                  "$REGISTRATION_ENDPOINT"
-              )
+                  "$TOKEN_RENEWAL_ENDPOINT"
+                )
 
-              if [ $HTTP_CODE -eq 200 ]; then
-                break
+                if [ $HTTP_CODE -eq 200 ]; then
+                  break
+                fi
+          
+                ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.error_description // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
+
+                echo "Error getting system identity auth token. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
+                sleep 2
+              done
+
+              if [ $HTTP_CODE -ne 200 ]; then
+                echo "Error getting system identity auth token"
+                exit 99
               fi
-
-              echo "Error creating the new system identity. The API endpoint returned $HTTP_CODE. Retrying ($RETRY/3)..."
-              sleep 2
-            done
-
-            if [ $HTTP_CODE -ne 200 ]; then
-              exit 99
+              
+              ACCESS_TOKEN=$(/usr/local/bin/newrelic utils jq  '.access_token' < "$RESPONSE_FILE" | tr -d '"' )
+          
+              ############################################################
+              # Create System Identity
+              ############################################################
+              DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+              NAME="System Identity for $(hostname) - $DATE"
+  
+              for RETRY in 1 2 3; do
+                HTTP_CODE=$(echo '{ "query":
+                    "mutation {
+                      create(
+                        name: \"'$NAME'\",
+                        organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
+                        publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
+                      ) {
+                        clientId,
+                        name
+                      }
+                    }"
+                  }' | tr -d $'\n' | curl \
+                    -s -w "%{http_code}" \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $ACCESS_TOKEN" \
+                    -o "$TEMPORAL_FOLDER/response.json" \
+                    --data-binary @- \
+                    "$IDENTITY_CREATION_ENDPOINT"
+                )
+  
+                if [ $HTTP_CODE -eq 200 ]; then
+                  break
+                fi
+  
+                echo "Error creating L2 system identity. The API endpoint returned $HTTP_CODE. Retrying ($RETRY/3)..."
+                sleep 2
+              done
+  
+              if [ $HTTP_CODE -ne 200 ]; then
+                exit 99
+              fi
+  
+              ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
+              if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
+                echo "Failed to create a New Relic System Identity for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
+                exit 100
+              fi
+  
+              CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.create.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
+            else
+              ############################################################
+              # Create System Identity (Legacy)
+              ############################################################
+              DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+              NAME="System Identity for $(hostname) - $DATE"
+  
+              for RETRY in 1 2 3; do
+                HTTP_CODE=$(echo '{ "query":
+                    "mutation {
+                      systemIdentityCreate(
+                        name: \"'$NAME'\",
+                        organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
+                        publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
+                      ) {
+                        clientId,
+                        name
+                      }
+                    }"
+                  }' | tr -d $'\n' | curl \
+                    -s -w "%{http_code}" \
+                    -H "Content-Type: application/json" \
+                    -H "API-Key: {{ .NEW_RELIC_API_KEY }}" \
+                    -o "$TEMPORAL_FOLDER/response.json" \
+                    --data-binary @- \
+                    "$REGISTRATION_ENDPOINT"
+                )
+  
+                if [ $HTTP_CODE -eq 200 ]; then
+                  break
+                fi
+  
+                echo "Error creating the new system identity. The API endpoint returned $HTTP_CODE. Retrying ($RETRY/3)..."
+                sleep 2
+              done
+  
+              if [ $HTTP_CODE -ne 200 ]; then
+                exit 99
+              fi
+  
+              ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
+              if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
+                echo "Failed to create a New Relic System Identity for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
+                exit 100
+              fi
+  
+              CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.systemIdentityCreate.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
             fi
-
-            ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
-            if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
-              echo "Failed to create a New Relic System Identity for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
-              exit 100
-            fi
-
-            CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.systemIdentityCreate.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
-
+            
             mv "$TEMPORAL_FOLDER/key" "/etc/newrelic-super-agent/keys/$CLIENT_ID.key"
             sed -i 's~token_url: PLACEHOLDER~token_url: '"$TOKEN_RENEWAL_ENDPOINT"'~g' /etc/newrelic-super-agent/config.yaml
             sed -i 's/client_id: PLACEHOLDER/client_id: '"$CLIENT_ID"'/g' /etc/newrelic-super-agent/config.yaml
