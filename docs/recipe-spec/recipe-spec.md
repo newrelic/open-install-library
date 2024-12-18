@@ -41,11 +41,11 @@ repository: string, required
 # dependencies:
 #   - infrastructure-agent-installer
 #
-# A special 'OR' variant for recipe dependencies involves the infrastructure and super agents. It allows the super-agent
-# to be used as an alternative recipe dependency instead of the infrastructure-agent-installer when the super-agent is a targeted install:
+# A special 'OR' variant for recipe dependencies involves the infrastructure and agent controls. It allows the agent-control
+# to be used as an alternative recipe dependency instead of the infrastructure-agent-installer when the agent-control is a targeted install:
 # ex:
 # dependencies:
-#   - infrastructure-agent-installer || super-agent
+#   - infrastructure-agent-installer || agent-control
 dependencies: list, optional
 
 # Still TBD
