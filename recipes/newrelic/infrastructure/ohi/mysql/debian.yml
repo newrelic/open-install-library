@@ -134,6 +134,12 @@ install:
             NEW_RELIC_MYSQL_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           fi
           
+          # Check the Query monitoring status in previous installation
+          QUERY_MONITORING_PREVIOUSLY_ENABLED=0
+          if [[ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]] && grep -qE '^\s*ENABLE_QUERY_MONITORING\s*:\s*true\s*$' /etc/newrelic-infra/integrations.d/mysql-config.yml; then
+            QUERY_MONITORING_PREVIOUSLY_ENABLED=1
+          fi
+          
           if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
           CONFIG_FILES=(
             "/etc/mysql/mysql.conf.d/mysqld.cnf"
@@ -151,6 +157,8 @@ install:
                 break
               fi
             done 
+          elif [[ "$QUERY_MONITORING_PREVIOUSLY_ENABLED" -eq 1 ]]; then
+            echo "This guided install can enable the performance schema of your DB system, but it cannot safely turn these off. Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired."
           fi
 
           # Check to see if default port works, or prompt if non-interactive
@@ -285,7 +293,7 @@ install:
           fi
 
           sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
-          if [[ "$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1 ]]; then
+          if [[ ("$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1) || $QUERY_MONITORING_PREVIOUSLY_ENABLED -eq 1 ]]; then
           sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<EOT
           integrations:
             - name: nri-mysql
@@ -381,7 +389,7 @@ install:
           
           echo "Created $INIT_FILE with necessary SQL commands."
           
-          printf "Restart the MySQL server after the agent installation? Selecting 'y' will automatically restart the mysql server that is detected. Selecting 'n' will require you to manually restart the process to reflect the slow query configuration changes. (y/n): "
+          printf "Should this script automatically restart the MySQL service, so that the changed settings for the Database Performance Schema become active? Selecting 'y' will automatically restart the MySQL database. Selecting 'n' will require you to manually restart the DB process at a later state. (y/n)"
           read -r APPLICATION_RESTART
           APPLICATION_RESTART=${APPLICATION_RESTART:-y}
           
@@ -390,7 +398,7 @@ install:
             sudo systemctl restart mysqld
             echo "MySQL server restarted to apply changes."
           else  
-            echo "Warning: Slow query configuration changes will be applied the next time you restart your MySQL server."
+            echo "Warning: The Performance Schema configuration changes of the database will become active the next time you restart your MySQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details."
           fi     
           }
           
@@ -399,7 +407,7 @@ install:
               update_mysql_config "$config"
               create_init_sql
             else
-              echo "Error: No MySQL configuration file found in ${CONFIG_FILES[@]}. Slow query configuration changes will not be applied."
+              echo "The database settings could not be checked or amended to enable the required Performance Schema. The rest of the installation will continue, to make sure we collect the basic telemetry data for MySQL, but these database configuration steps will need to be done manually. Instructions can be found (soon) on the documentation page for the MySQL Integration."
             fi
           fi
 
