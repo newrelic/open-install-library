@@ -227,10 +227,11 @@ install:
               read -r USERNAME
               USERNAME=${USERNAME:-root}
           
-              printf "\nEnter password: "
+              printf "Enter password: "
               stty -echo
               read -r NEW_RELIC_MYSQL_ROOT_PASSWORD
               stty echo
+              printf "\n"
               
               sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
@@ -325,36 +326,38 @@ install:
           update_mysql_config() {
               local config_file="$1"
           
+              echo -e "\n--- Checking MySQL configuration settings"
+          
               # Check if the [mysqld] section is present
               if ! grep -qE '^\[mysqld\]' "$config_file"; then
                 # Append the [mysqld] section with the properties if not present
                 cp "$config_file" "$config_file.bak"
                 echo -e "\n[mysqld]\nperformance_schema=ON\ninit-file=/etc/my.cnf.d/init.sql" >> "$config_file"
-                echo "Successfully added the [mysqld] section with performance_schema=ON and init-file=/etc/my.cnf.d/init.sql to $config_file."
+                echo "[NR_CLI_SLOW_QUERY] Successfully added the [mysqld] section with performance_schema=ON and init-file=/etc/my.cnf.d/init.sql to $config_file."
               else
                 # Handle performance_schema property
                 if grep -qE '^\s*performance_schema\s*=\s*ON\s*$' "$config_file"; then
-                  echo "The performance_schema is already set to ON in $config_file. No changes made."
+                  echo "[NR_CLI_SLOW_QUERY] The performance_schema is already set to ON in $config_file. No changes made."
                 elif grep -qE '^\s*performance_schema\s*=' "$config_file"; then
                   # Update any other value to ON
                   sed -i.bak 's/^\s*performance_schema\s*=.*$/performance_schema=ON/' "$config_file"
-                  echo "Updated performance_schema to ON in $config_file."
+                  echo "[NR_CLI_SLOW_QUERY] Updated performance_schema to ON in $config_file."
                 else
                   # Append the property below the [mysqld] section if not present
                   sed -i.bak '/\[mysqld\]/a\performance_schema=ON' "$config_file"
-                    echo "Appended performance_schema=ON to $config_file."
+                    echo "[NR_CLI_SLOW_QUERY] Appended performance_schema=ON to $config_file."
                   fi
                   # Handle init-file property
                   if grep -qE '^\s*init-file\s*=\s*/etc/my.cnf.d/init.sql\s*$' "$config_file"; then
-                    echo "The init-file is already set to /etc/my.cnf.d/init.sql in $config_file. No changes made."
+                    echo "[NR_CLI_SLOW_QUERY] The init-file is already set to /etc/my.cnf.d/init.sql in $config_file. No changes made."
                   elif grep -qE '^\s*init-file\s*=' "$config_file"; then
                     # Update any other value to /etc/my.cnf.d/init.sql
                     sed -i 's|^\s*init-file\s*=.*$|init-file=/etc/my.cnf.d/init.sql|' "$config_file"
-                    echo "Updated init-file to /etc/my.cnf.d/init.sql in $config_file."
+                    echo "[NR_CLI_SLOW_QUERY] Updated init-file to /etc/my.cnf.d/init.sql in $config_file."
                   else
                     # Append the property below the [mysqld] section if not present
                     sed -i '/\[mysqld\]/a\init-file=/etc/my.cnf.d/init.sql' "$config_file"
-                    echo "Appended init-file=/etc/my.cnf.d/init.sql to $config_file."
+                    echo "[NR_CLI_SLOW_QUERY] Appended init-file=/etc/my.cnf.d/init.sql to $config_file."
                   fi
                 fi
             }
@@ -378,18 +381,19 @@ install:
           SET GLOBAL innodb_lock_wait_timeout = 120; -- Increase to 2 minutes
           EOF
           
-          echo "Created $INIT_FILE with necessary SQL commands."
+          echo "[NR_CLI_SLOW_QUERY] Created $INIT_FILE with necessary SQL commands."
           
-          printf "Should this script automatically restart the MySQL service, so that the changed settings for the Database Performance Schema become active? Selecting 'y' will automatically restart the MySQL database. Selecting 'n' will require you to manually restart the DB process at a later state. (y/n)"
+          printf "\nRestart your MySQL instance to enable the performance schema settings now? (y/n): "
           read -r APPLICATION_RESTART
           APPLICATION_RESTART=${APPLICATION_RESTART:-y}
           
           if [ "$APPLICATION_RESTART" = "y" ]; then
             # Restart MySQL service using systemd
             sudo systemctl restart mysqld
-            echo "MySQL server restarted to apply changes."
+            echo -e "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
           else  
-            echo "Warning: The Performance Schema configuration changes of the database will become active the next time you restart your MySQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details."
+            echo -e "\n\033[0;33m[Warning] The Performance Schema configuration changes of the database will become active the next time you restart your MySQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
+            printf "\n"
           fi     
           }
           
@@ -398,7 +402,7 @@ install:
               update_mysql_config "$config"
               create_init_sql
             else
-              echo "The database settings could not be checked or amended to enable the required Performance Schema. The rest of the installation will continue, to make sure we collect the basic telemetry data for MySQL, but these database configuration steps will need to be done manually. Instructions can be found (soon) on the documentation page for the MySQL Integration."
+              echo -e "\033[0;33m[Warning] The database settings could not be checked or amended to enable the required Performance Schema. The rest of the installation will continue, to make sure we collect the basic telemetry data for MySQL, but these database configuration steps will need to be done manually. Instructions can be found (soon) on the documentation page for the MySQL Integration.\033[0m" >&2
             fi
           fi
     restart:
