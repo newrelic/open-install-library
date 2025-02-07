@@ -158,7 +158,7 @@ install:
               fi
             done 
           elif [[ "$QUERY_MONITORING_PREVIOUSLY_ENABLED" -eq 1 ]]; then
-            echo "This guided install can enable the performance schema of your DB system, but it cannot safely turn these off. Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired."
+            echo -e "\033[0;33m[Warning] This guided install can enable the performance schema of your DB system, but it cannot safely turn these off. Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired.\033[0m" >&2
           fi
 
           # Check to see if default port works, or prompt if non-interactive
@@ -324,13 +324,13 @@ install:
           # Function to update or append the performance_schema and init-file properties
           update_mysql_config() {
               local config_file="$1"
-          
-              echo -e "\n--- Checking MySQL configuration settings"
+              backup_log="[NR_CLI_SLOW_QUERY] Created /etc/my.cnf.bak backup file"
           
               # Check if the [mysqld] section is present
               if ! grep -qE '^\[mysqld\]' "$config_file"; then
                 # Append the [mysqld] section with the properties if not present
                 cp "$config_file" "$config_file.bak"
+                echo "$backup_log"
                 echo -e "\n[mysqld]\nperformance_schema=ON\ninit-file=/etc/mysql/init.sql" >> "$config_file"
                 echo "[NR_CLI_SLOW_QUERY] Successfully added the [mysqld] section with performance_schema=ON and init-file=/etc/mysql/init.sql to $config_file."
               else
@@ -340,10 +340,12 @@ install:
                 elif grep -qE '^\s*performance_schema\s*=' "$config_file"; then
                   # Update any other value to ON
                   sed -i.bak 's/^\s*performance_schema\s*=.*$/performance_schema=ON/' "$config_file"
+                  echo "$backup_log"
                   echo "[NR_CLI_SLOW_QUERY] Updated performance_schema to ON in $config_file."
                 else
                   # Append the property below the [mysqld] section if not present
                   sed -i.bak '/\[mysqld\]/a\performance_schema=ON' "$config_file"
+                    echo "$backup_log"
                     echo "[NR_CLI_SLOW_QUERY] Appended performance_schema=ON to $config_file."
                   fi
                   # Handle init-file property
@@ -389,7 +391,7 @@ install:
           if [ "$APPLICATION_RESTART" = "y" ]; then
             # Restart MySQL service using systemd
             sudo systemctl restart mysqld
-            echo "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
+            echo -e "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
           else  
             echo -e "\n\033[0;33m[Warning] The Performance Schema configuration changes of the database will become active the next time you restart your MySQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
           fi     
@@ -397,6 +399,9 @@ install:
           
           if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
             if [[ $FILE_FOUND -eq 1 ]]; then
+              echo -e "\n--- Checking MySQL configuration settings"
+              echo "[NR_CLI_SLOW_QUERY] Granted PROCESS privilege to the $NEW_RELIC_MYSQL_USERNAME user"
+              echo -e "[NR_CLI_SLOW_QUERY] Updated \`ENABLE_QUERY_MONITORING: true\` in /etc/newrelic-infra/integrations.d/mysql-config.yml"
               update_mysql_config "$config"
               create_init_sql
             else

@@ -147,7 +147,7 @@ install:
               fi
             done
           elif [[ "$QUERY_MONITORING_PREVIOUSLY_ENABLED" -eq 1 ]]; then
-            echo -e "\033[0;33mThis guided install can enable the performance schema of your DB system, but it cannot safely turn these off.Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired.\033[0m" >&2
+            echo -e "\033[0;33m[Warning] This guided install can enable the performance schema of your DB system, but it cannot safely turn these off. Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired.\033[0m" >&2
           fi
 
           # Check to see if default port works, or prompt if non-interactive
@@ -315,9 +315,7 @@ install:
           # Function to update or append the performance_schema and init-file properties
           update_mysql_config() {
               local config_file="$1"
-              backup_log="[NR_CLI_SLOW_QUERY] Created my.cnf.bak backup file"
-          
-              echo -e "\n--- Checking MySQL configuration settings"
+              backup_log="[NR_CLI_SLOW_QUERY] Created /etc/my.cnf.bak backup file"
           
               # Check if the [mysqld] section is present
               if ! grep -qE '^\[mysqld\]' "$config_file"; then
@@ -393,6 +391,9 @@ install:
           
           if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
             if [[ $FILE_FOUND -eq 1 ]]; then
+              echo -e "\n--- Checking MySQL configuration settings"
+              echo "[NR_CLI_SLOW_QUERY] Granted PROCESS privilege to the $NEW_RELIC_MYSQL_USERNAME user."
+              echo -e "[NR_CLI_SLOW_QUERY] Updated \`ENABLE_QUERY_MONITORING: true\` in /etc/newrelic-infra/integrations.d/mysql-config.yml."
               update_mysql_config "$config"
               create_init_sql
             else
