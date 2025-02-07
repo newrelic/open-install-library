@@ -294,41 +294,31 @@ install:
           fi
 
           sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
+          # Defining the common config for mysql-config.yml file
+          common_config=$(cat <<EOT
+          integrations:
+            - name: nri-mysql
+              env:
+                HOSTNAME: $NEW_RELIC_MYSQL_HOSTNAME
+                PORT: $NEW_RELIC_MYSQL_PORT
+                USERNAME: $NEW_RELIC_MYSQL_USERNAME
+                PASSWORD: '$NEW_RELIC_MYSQL_PASSWORD'
+                DATABASE:
+                EXTENDED_METRICS: true
+                EXTENDED_INNODB_METRICS: true
+                EXTENDED_MYISAM_METRICS: true
+                REMOTE_MONITORING: true
+              inventory_source: config/mysql
+              interval: 30s
+          EOT
+          )
+
+          # Write the common config to the file
+          echo "$common_config" | sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null
+
+          # Enable slow query monitoring if selected by user or enabled in previous installation.
           if [[ ("$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1) || $QUERY_MONITORING_PREVIOUSLY_ENABLED -eq 1 ]]; then
-          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<EOT
-          integrations:
-            - name: nri-mysql
-              env:
-                HOSTNAME: $NEW_RELIC_MYSQL_HOSTNAME
-                PORT: $NEW_RELIC_MYSQL_PORT
-                USERNAME: $NEW_RELIC_MYSQL_USERNAME
-                PASSWORD: '$NEW_RELIC_MYSQL_PASSWORD'
-                DATABASE:
-                EXTENDED_METRICS: true
-                EXTENDED_INNODB_METRICS: true
-                EXTENDED_MYISAM_METRICS: true
-                REMOTE_MONITORING: true
-                ENABLE_QUERY_MONITORING: true
-              inventory_source: config/mysql
-              interval: 30s
-          EOT
-          else
-          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<EOT
-          integrations:
-            - name: nri-mysql
-              env:
-                HOSTNAME: $NEW_RELIC_MYSQL_HOSTNAME
-                PORT: $NEW_RELIC_MYSQL_PORT
-                USERNAME: $NEW_RELIC_MYSQL_USERNAME
-                PASSWORD: '$NEW_RELIC_MYSQL_PASSWORD'
-                DATABASE:
-                EXTENDED_METRICS: true
-                EXTENDED_INNODB_METRICS: true
-                EXTENDED_MYISAM_METRICS: true
-                REMOTE_MONITORING: true
-              inventory_source: config/mysql
-              interval: 30s
-          EOT
+            sudo sed -i '/env:/a \ \ \ \ \ \ ENABLE_QUERY_MONITORING: true' /etc/newrelic-infra/integrations.d/mysql-config.yml
           fi
           
           # Function to update or append the performance_schema and init-file properties
