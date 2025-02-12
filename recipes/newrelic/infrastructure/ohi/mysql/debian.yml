@@ -389,9 +389,15 @@ install:
           APPLICATION_RESTART=${APPLICATION_RESTART:-y}
           
           if [ "$APPLICATION_RESTART" = "y" ]; then
-            # Restart MySQL service using systemd
-            sudo systemctl restart mysqld
-            echo -e "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
+            if systemctl status mysqld >/dev/null 2>&1; then
+              # Restart mysqld service using systemd
+              sudo systemctl restart mysqld
+              echo -e "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
+            elif systemctl status mysql >/dev/null 2>&1; then
+              # Restart mysql service using systemd
+              sudo systemctl restart mysql
+              echo -e "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
+            fi
           else  
             echo -e "\n\033[0;33m[Warning] The Performance Schema configuration changes of the database will become active the next time you restart your MySQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
           fi     
