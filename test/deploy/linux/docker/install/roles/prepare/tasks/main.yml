@@ -72,88 +72,34 @@
 # Amazon Linux 2023 support for Docker installation
 ########################################
 - block:
-  - name: Amazon Linux 2023 - Update all packages to the latest version
+  # Update the system packages
+  - name: Update all system packages
     dnf:
       name: "*"
       state: latest
 
-  - name: Amazon Linux 2023 - Install required packages
+  # Install Docker
+  - name: Install Docker
     dnf:
-      name:
-        - dnf-utils
-        - device-mapper-persistent-data
-        - lvm2
+      name: docker
       state: present
 
-  - name: Amazon Linux 2023 - Add Docker repository
-    yum_repository:
-      name: docker-ce
-      description: Docker CE Stable - x86_64
-      baseurl: https://download.docker.com/linux/centos/7/x86_64/stable
-      gpgcheck: yes
-      gpgkey: https://download.docker.com/linux/centos/gpg
-
-  - name: Amazon Linux 2023 - Install Docker
-    package:
-      name: docker-ce
-      state: present
-
-  - name: Amazon Linux 2023 - Create /sys/fs/cgroup/systemd directory
-    command: sudo mkdir -p /sys/fs/cgroup/systemd
-    become: yes
-
-  - name: Amazon Linux 2023 - Mount /sys/fs/cgroup/systemd directory
-    command: sudo mount -t cgroup -o none,name=systemd cgroup /sys/fs/cgroup/systemd
-    become: yes
-
-  - name: Amazon Linux 2023 - Enable and start Docker service
+  # Start and enable Docker service
+  - name: Start and enable Docker service
     systemd:
       name: docker
       state: started
       enabled: yes
 
-  - name: Amazon Linux 2023 - Add ec2-user to the docker group
+  # Add the ec2-user to the docker group
+  - name: Add ec2-user to the docker group
     user:
       name: ec2-user
       groups: docker
       append: yes
 
-  - name: Amazon Linux 2023 - Ensure cgroup v2 is enabled
-    command: grubby --update-kernel=ALL --args="systemd.unified_cgroup_hierarchy=1"
-    register: grubby_output
-    failed_when: grubby_output.rc != 0
-    changed_when: false
-
-
-  - name: Amazon Linux 2023 - Enable Docker service
-    systemd:
-      name: docker.service
-      enabled: yes
-
-  - name: Amazon Linux 2023 - Start Docker service
-    systemd:
-      name: docker.service
-      state: started
-
-  - name: Amazon Linux 2023 - Check Docker service status
-    shell: sudo systemctl status docker.service
-    register: docker_status
-    failed_when: docker_status.rc != 0
-    changed_when: false
-
-  - name: Amazon Linux 2023 - Reboot to apply cgroup v2 changes
-    reboot:
-      msg: "Rebooting to apply cgroup v2 changes"
-      pre_reboot_delay: 0
-      post_reboot_delay: 30
-      reboot_timeout: 600
-      test_command: whoami
-
-  - name: Amazon Linux 2023 - Ensure Docker is running
-    command: docker info
-    register: docker_info
-    failed_when: docker_info.rc != 0
-    changed_when: false
+  - debug:
+      msg: "Docker installation completed successfully."
 
   when: ansible_distribution == 'Amazon' and ansible_distribution_version == '2023'
   become: yes
