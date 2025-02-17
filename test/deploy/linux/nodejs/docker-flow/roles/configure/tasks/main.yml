@@ -1,12 +1,8 @@
 ---
 - debug:
     msg: Install Node.js, Create Dockerfile, and setup Node.js application
-
-# Create myNodeApp directory
-- name: Create myNodeApp directory
-  file:
-    path: "/home/{{ ansible_user }}/myNodeApp"
-    state: directory
+# import the nodeJs sample application tasks
+- import_tasks: ../../../../nodejs/redhat/roles/configure/tasks/main.yml
 
 # create a sample Dockerfile
 - name: Create a sample Dockerfile
@@ -20,79 +16,3 @@
       CMD ["node", "app.js"]
     dest: "/home/{{ ansible_user }}/myNodeApp/Dockerfile"
     mode: "0644"
-
-# Create package.json
-- name: Create package.json
-  copy:
-    content: |
-      {
-        "name": "myNodeApp",
-        "version": "1.0.0",
-        "description": "A sample Node.js application",
-        "main": "app.js",
-        "scripts": {
-          "start": "node app.js"
-        },
-        "dependencies": {
-          "express": "^4.17.1"
-        }
-      }
-    dest: "/home/{{ ansible_user }}/myNodeApp/package.json"
-    mode: "0644"
-
-# Install Node.js using NodeSource
-- name: Install Node.js using NodeSource
-  become: yes
-  shell: curl -sL https://rpm.nodesource.com/setup_18.x | bash -
-  args:
-    executable: /bin/bash
-
-- name: Install Node.js
-  become: yes
-  yum:
-    name: nodejs
-    state: present
-
-- name: Verify Node.js installation
-  command: node -v
-  register: node_version
-  become_user: "{{ ansible_user }}"
-
-- name: Print Node.js version
-  debug:
-    msg: "Node.js version installed: {{ node_version.stdout }}"
-
-# create a node app
-- name: Create sample Node.js application
-  copy:
-    content: |
-      const http = require('http');
-
-      const hostname = '127.0.0.1';
-      const port = 3000;
-
-      const server = http.createServer((req, res) => {
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'text/plain');
-        res.end('Hello, Node.js!\n');
-      });
-
-      server.listen(port, hostname, () => {
-        console.log(`Server running at http://${hostname}:${port}/`);
-      });
-    dest: "/home/{{ ansible_user }}/myNodeApp/app.js"
-    mode: "0644"
-
-# install npm dependencies
-- name: Install npm dependencies
-  shell: npm install
-  args:
-    chdir: "/home/{{ ansible_user }}/myNodeApp"
-  become: yes
-  become_user: "{{ ansible_user }}"
-
-# Give all permissions to the app.js file
-- name: Change permissions for the app.js file
-  file:
-    path: "/home/{{ ansible_user }}/myNodeApp/app.js"
-    mode: "0755"
