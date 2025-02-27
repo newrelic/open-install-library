@@ -351,20 +351,25 @@ install:
 
       vars:
         AGENT_VERSION: "9.17.1.301"
-
+        
     install_rpm:
       cmds:
         - |
           echo -e "{{.ARROW}}Adding the New Relic PHP Agent repository{{.GRAY}}"
-          # The repo install command returns a non-zero return code if it is already installed
-          # Only attempt an install if it is needed
-          if rpm -q newrelic-repo-5-3.noarch > /dev/null; then
-            echo -e "The New Relic repository is already installed."
+          # Skip this task if the host machine is Amazon Linux 2023
+          if grep -q "Amazon Linux release 2023" /etc/system-release; then
+            echo -e "Skipping repository installation on Amazon Linux 2023. The RPM method is not supported on this version."
           else
-            echo -e "Adding the New Relic PHP Agent repository."
-            sudo rpm -Uvh http://yum.newrelic.com/pub/newrelic/el5/x86_64/newrelic-repo-5-3.noarch.rpm
+            # The repo install command returns a non-zero return code if it is already installed
+            # Only attempt an install if it is needed
+            if rpm -q newrelic-repo-5-3.noarch > /dev/null; then
+              echo -e "The New Relic repository is already installed."
+            else
+              echo -e "Adding the New Relic PHP Agent repository."
+              sudo rpm -Uvh http://yum.newrelic.com/pub/newrelic/el5/x86_64/newrelic-repo-5-3.noarch.rpm
+            fi
+            sudo yum install -y newrelic-php5
           fi
-          sudo yum install -y newrelic-php5
 
     configure:
       cmds:
