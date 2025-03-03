@@ -1,0 +1,58 @@
+---
+
+- name: Set facts for Gradle version
+  set_fact:
+    gradle_version: 8.12.1
+
+- name: Create Gradle directory
+  file:
+    path: /opt/gradle
+    state: directory
+    mode: '0755'
+  become: true
+  
+- name: Change Permissions for /opt/gradle && /etc/environment
+  shell: |
+    chown -R ec2-user:ec2-user /opt/gradle &&
+    chmod -R 755 /opt/gradle &&
+    chown -R ec2-user:ec2-user /etc/environment &&
+    chmod -R 755 /etc/environment
+    chown -R ec2-user:ec2-user /etc/profile.d &&
+    chmod -R 755 /etc/profile.d
+  become: true
+
+- name: Download Gradle
+  shell: "curl -L https://services.gradle.org/distributions/gradle-{{ gradle_version }}-bin.zip --output /tmp/gradle.zip"
+
+- name: Unpack Gradle
+  shell: "sudo unzip /tmp/gradle.zip -d /opt/gradle"
+
+- name: Remove any previous install
+  file:
+    path: "/opt/gradle/gradle-*"
+    state: absent
+  loop:
+    - "gradle-{{ gradle_version }}"
+  loop_control:
+    loop_var: item
+
+- name: Move Gradle to a consistent directory
+  shell: "sudo mv /opt/gradle/gradle-{{ gradle_version }} /opt/gradle/latest"
+
+- name: Set GRADLE_HOME environment variable
+  shell: "echo 'export GRADLE_HOME=/opt/gradle/latest' >> /etc/environment"
+  become: yes
+
+- name: Add Gradle to system PATH
+  shell: "echo 'export PATH=$PATH:$GRADLE_HOME/bin' >> /etc/profile.d/gradle.sh"
+  become: yes
+
+- name: Make script executable
+  shell: |
+    chown -R ec2-user:ec2-user /etc/profile.d/gradle.sh &&
+    chmod -R 755 /etc/profile.d/gradle.sh
+  become: true
+
+- name: Load environment variables
+  shell: "source /etc/profile.d/gradle.sh"
+  become: true
