@@ -108,7 +108,6 @@ install:
       cmds:
         - |
           # Check Env Vars
-          NEW_RELIC_ASSUME_YES="{{.NEW_RELIC_ASSUME_YES}}"
           NEW_RELIC_MYSQL_PORT="{{.NEW_RELIC_MYSQL_PORT}}"
           NEW_RELIC_MYSQL_USERNAME="{{.NEW_RELIC_MYSQL_USERNAME}}"
           NEW_RELIC_MYSQL_PASSWORD="{{.NEW_RELIC_MYSQL_PASSWORD}}"
@@ -154,7 +153,6 @@ install:
           CAN_CONNECT=$(curl $NEW_RELIC_MYSQL_HOSTNAME:$NEW_RELIC_MYSQL_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
           CAN_CONNECT=${CAN_CONNECT:-0}
           if [[ "$CAN_CONNECT" == "6" ]] || [[ "$CAN_CONNECT" == "7" ]] ; then
-            if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]] ; then
               # Get and validate Port
               TRIES=0
               while [ $TRIES -lt {{.MAX_RETRIES}} ]; do
@@ -177,19 +175,15 @@ install:
                   break
                 fi
               done
-            else
-              printf "\nThe connections for the MySql instance using the port ($NEW_RELIC_MYSQL_PORT) are being refused.\nPlease re-run this installation and enter a valid port for the MySql instance when prompted.\n" >&2
-              exit 131;
-            fi
           fi
 
           # Attempt to create required user
           SQL_CHECK_AUTH=$(echo "SELECT USER FROM mysql.user where USER in ('"$NEW_RELIC_MYSQL_USERNAME"')")
           MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
-            if [[ "$NEW_RELIC_ASSUME_YES" == "true" && -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
+            if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
               # non-interactive mode, need a valid root password
-              printf "\nThis installation requires the MySql DB root password to create the newrelic user. Please run this installation in interactive mode.\n" >&2
+              printf "\nThis installation requires the MySql DB root password to create the newrelic user.\n" >&2
               exit 131
             fi
           fi
@@ -214,7 +208,7 @@ install:
           sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-create-user.sql
           sudo sed -i 's/NEW_RELIC_MYSQL_PASSWORD/'$NEW_RELIC_MYSQL_PASSWORD'/g' /tmp/sql-create-user.sql
 
-          if [[ $MYSQL_ROOT_PASSWORD -gt 0 && "$NEW_RELIC_ASSUME_YES" != "true" ]] ; then
+          if [[ $MYSQL_ROOT_PASSWORD -gt 0 ]] ; then
             TRIES=0
             printf "MySql credential with permission to create user, and grant select/replication permission is required, please enter it below when prompted\n"
             SQL_OUTPUT_ERROR=1
