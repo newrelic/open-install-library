@@ -180,3 +180,37 @@
       msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stdout }}"
     when: validate_output is defined and output.stdout is not search(validate_output)
   when: command_should_fail == False
+########################################
+# Ubuntu 16.04 support for Python 3.6 installation
+########################################
+- block:
+    - name: Update the package list
+      apt:
+        update_cache: yes
+
+    - name: Add deadsnakes PPA
+      apt_repository:
+        repo: ppa:deadsnakes/ppa
+        state: present
+
+    - name: Install Python 3.6
+      apt:
+        name: python3.6
+        state: present
+
+    - name: Update alternatives to use Python 3.6
+      command: update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 2
+
+    - name: Set Python 3.6 as the default
+      command: update-alternatives --set python3 /usr/bin/python3.6
+
+    - name: Verify Python version
+      command: python3 --version
+      register: python_version
+
+    - name: Print Python version
+      debug:
+        msg: "Python version is {{ python_version.stdout }}"
+
+  when: ansible_distribution == 'Ubuntu' and ansible_distribution_version == '16.04'
+  become: true  
