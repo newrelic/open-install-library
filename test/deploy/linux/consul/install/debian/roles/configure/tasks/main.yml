@@ -20,12 +20,18 @@
   become: yes
 
 - name: Add official HashiCorp GPG Key
-  shell: curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-  become: true
+  shell: |
+    curl -fsSL https://apt.releases.hashicorp.com/gpg -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+  args:
+    creates: /usr/share/keyrings/hashicorp-archive-keyring.gpg
+  become: yes
 
 - name: Add official HashiCorp Linux Repository
-  shell: apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-  become: true
+  apt_repository:
+    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ ansible_facts['distribution_release'] | lower }} main"
+    state: present
+    filename: hashicorp
+  become: yes
 
 - block:
   - name: Create consul config directory
