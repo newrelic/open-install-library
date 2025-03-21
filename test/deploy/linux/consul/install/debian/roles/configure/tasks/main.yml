@@ -19,13 +19,31 @@
     state: latest
   become: yes
 
-- name: Add official HashiCorp GPG Key
-  shell: curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-  become: true
+- name: Download HashiCorp GPG key
+  shell: |
+    curl -fsSL https://apt.releases.hashicorp.com/gpg -o /tmp/hashicorp.asc
+  args:
+    creates: /tmp/hashicorp.asc
+  become: yes
 
-- name: Add official HashiCorp Linux Repository
-  shell: apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-  become: true
+- name: Add HashiCorp GPG key to APT keyring
+  shell: |
+    gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg /tmp/hashicorp.asc
+  args:
+    creates: /usr/share/keyrings/hashicorp-archive-keyring.gpg
+  become: yes
+
+- name: Add HashiCorp APT repository
+  apt_repository:
+    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ ansible_distribution_release | lower }} main"
+    state: present
+    filename: hashicorp
+  become: yes
+
+- name: Update APT cache
+  apt:
+    update_cache: yes
+  become: yes
 
 - name: Test Source List3
   shell: grep -r "apt.releases.hashicorp.com" /etc/apt/sources.list /etc/apt/sources.list.d/
