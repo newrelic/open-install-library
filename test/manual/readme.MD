@@ -156,3 +156,38 @@ Smoke test:
 ```
 vagrant up && vagrant destroy -f
 ```
+
+## Testing Local Recipe Changes
+
+To test local recipe changes with the New Relic CLI, you can use the `--recipePath` flag. This flag bypasses the default recipe execution from the CLI core bundle and instead executes the recipe specified in the provided path. Below is a detailed guide on how to perform this:
+
+Steps for Testing Local Recipe Changes
+
+1) Locate Your Local Recipe:
+    Ensure your local recipe is saved on your system. For example, assume the recipe file is located at `~/debian.yml` on an EC2 instance.
+
+2) Modify the Guided Install Command:
+    Replace the default guided install command from New Relic's UI with a custom command by specifying the actual recipe name and using the `--recipePath` flag to point to your local recipe file.
+
+Example Command:
+
+```bash
+curl -Ls https://download.newrelic.com/install/newrelic-cli/scripts/install.sh | bash && \
+sudo NEW_RELIC_API_KEY=<API-KEY> NEW_RELIC_ACCOUNT_ID=<ACC-ID> /usr/local/bin/newrelic install -n infrastructure-agent-installer --recipePath ~/debian.yml # Add --debug for verbose logging
+```
+Additionally, We can test multiple local recipe changes by using comma-separated values for targeted installs and specifying multiple paths with the `--recipePath` flag. See the example below:
+
+```bash
+curl -Ls https://download.newrelic.com/install/newrelic-cli/scripts/install.sh | bash && \
+sudo NEW_RELIC_API_KEY=<API-KEY> NEW_RELIC_ACCOUNT_ID=<ACC-ID> /usr/local/bin/newrelic install -n infrastructure-agent-installer,logs-integration --recipePath /path/to/your/local/infra-recipe/file,/path/to/your/local/logs-recipe/file # Add --debug for verbose logging
+```
+
+## Explanation of Parameters:
+
+NEW_RELIC_API_KEY: Replace <API-KEY> with your actual New Relic API key.  
+NEW_RELIC_ACCOUNT_ID: Replace <ACC-ID> with your New Relic account ID.  
+`-n <recipe-name>`: Specifies the name of the recipe (e.g., `infrastructure-agent-installer`).  
+`--recipePath /path/to/your/local/recipe/file`: Specifies the path to your local recipe file (`~/debian.yml` in this case).  
+`--debug`: Optional flag to enable verbose logging for debugging purposes.
+
+This approach allows you to test custom changes in your recipes locally before deploying them to production environments.
