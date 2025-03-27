@@ -1,0 +1,34 @@
+---
+
+- name: Perform actions for each destination
+  hosts: "{{ item }}"
+  vars:
+    destinations:
+      - microk8s1
+      - microk8s2
+      - microk8s3
+  tasks:
+    - name: Add node for microk8s1
+      shell: "microk8s add-node"
+      become: yes
+      register: add_node_output
+      when: inventory_hostname == "microk8s1"
+    
+    - name: Debug captured output
+      debug:
+        msg: "{{ add_node_output.stdout }}"
+      when: inventory_hostname == "microk8s1"
+
+    - name: Join node for microk8s2 and microk8s3
+      shell: "microk8s join {{ hostvars['microk8s1'].ansible_host }}:25000/{{ add_node_output.stdout }}"
+      become: yes
+      when: inventory_hostname in ["microk8s2", "microk8s3"]
+    
+    - name: Create a name space called store
+      shell: "microk8s kubectl create namespace store"
+      become: yes
+      when: inventory_hostname == "microk8s1"
+
+
+
+  with_items: "{{ destinations }}"
