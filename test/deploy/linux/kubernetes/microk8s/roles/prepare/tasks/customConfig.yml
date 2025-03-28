@@ -20,15 +20,36 @@
       when: inventory_hostname == "microk8s1"
 
     - name: Join node for microk8s2 and microk8s3
-      shell: "microk8s join {{ hostvars['microk8s1'].ansible_host }}:25000/{{ add_node_output.stdout }}"
+      shell: "microk8s join {{ hostvars['microk8s1'].ansible_default_ipv4.address }}:25000/{{ add_node_output.stdout }}"
       become: yes
       when: inventory_hostname in ["microk8s2", "microk8s3"]
     
-    - name: Create a name space called store
+    - name: Create a namespace called store
       shell: "microk8s kubectl create namespace store"
       become: yes
       when: inventory_hostname == "microk8s1"
 
-
-
   with_items: "{{ destinations }}"
+
+- name: Capture IP addresses of all destinations
+  hosts: all
+  gather_facts: yes
+  tasks:
+    - name: Debug the IP address of each destination
+      debug:
+        msg: "The IP address of {{ inventory_hostname }} is {{ ansible_default_ipv4.address }}"
+
+- name: Assign roles to master and worker nodes
+  hosts: microk8s1
+  tasks:
+    - name: Label microk8s1 as master
+      shell: "microk8s kubectl label node {{ hostvars['microk8s1'].ansible_default_ipv4.address }} role=node1"
+      become: yes
+
+    - name: Label microk8s2 as worker node 2
+      shell: "microk8s kubectl label node {{ hostvars['microk8s2'].ansible_default_ipv4.address }} role=node2"
+      become: yes
+
+    - name: Label microk8s3 as worker node 3
+      shell: "microk8s kubectl label node {{ hostvars['microk8s3'].ansible_default_ipv4.address }} role=node3"
+      become: yes
