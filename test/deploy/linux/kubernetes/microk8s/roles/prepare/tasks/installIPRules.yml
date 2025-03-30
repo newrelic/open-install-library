@@ -1,29 +1,18 @@
 ---
 
-- name: Install Microk8s
-  shell: "apt update && apt install snapd -y && snap install microk8s --classic"
+- name: Install iptables-persistent
+  shell: "apt update && apt install iptables-persistent -y"
   become: yes 
- 
-- name: Enable Microk8s
-  shell: "microk8s enable dns dashboard storage"
+
+- name: Allow TCP traffic on port 8081 
+  shell: "iptables -A INPUT -p tcp --dport 8081 -j ACCEPT"
   become: yes
 
-- name: Add user to microk8s group
-  shell: "usermod -a -G microk8s {{ ansible_user }} && chown -f -R {{ ansible_user }} ~/.kube"
+- name: Allow TCP traffic on port 16433 
+  shell: "iptables -A INPUT -p tcp --dport 16433 -j ACCEPT"
   become: yes
 
-- name: Apply group changes
-  shell: "newgrp microk8s"
+- name: Allow all traffic from the subnet 
+  shell: "iptables -A INPUT -s 172.31.0.0/16 -j ACCEPT"
   become: yes
 
-- name: Generate kubeconfig
-  shell: "microk8s config > ~/.kube/config"
-  become: yes
-
-- name: Add kubeconfig to env path
-  shell: "export KUBECONFIG=$HOME/.kube/microk8s-config && export KUBECONFIG=/home/ubuntu/.kube/microk8s-config && echo 'export KUBECONFIG=$KUBECONFIG:~/.kube/config' >> ~/.bashrc && source"
-  become: yes
-
-- name: Add node
-  shell: "microk8s add-node"
-  become: yes
