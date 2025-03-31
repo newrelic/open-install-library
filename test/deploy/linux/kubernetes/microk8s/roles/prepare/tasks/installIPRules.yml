@@ -1,18 +1,39 @@
 ---
-
-- name: Install iptables-persistent
-  shell: "apt update && apt install iptables-persistent -y"
-  become: yes 
-
-- name: Allow TCP traffic on port 8081 
-  shell: "iptables -A INPUT -p tcp --dport 8081 -j ACCEPT"
+- name: Configure iptables dynamically using Ansible facts
+  hosts: all
+  gather_facts: yes
   become: yes
 
-- name: Allow TCP traffic on port 16433 
-  shell: "iptables -A INPUT -p tcp --dport 16433 -j ACCEPT"
-  become: yes
+  tasks:
+    - name: Display the host's default IPv4 address
+      debug:
+        msg: "The host's IP address is {{ ansible_default_ipv4.address }}"
 
-- name: Allow all traffic from the subnet 
-  shell: "iptables -A INPUT -s 172.31.0.0/16 -j ACCEPT"
-  become: yes
+    - name: Install iptables-persistent
+      apt:
+        name: iptables-persistent
+        state: present
+
+    - name: Allow TCP traffic on port 8081
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: 8081
+        jump: ACCEPT
+
+    - name: Allow TCP traffic on port 16433
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: 16433
+        jump: ACCEPT
+
+    - name: Allow all traffic from the current host's subnet
+      iptables:
+        chain: INPUT
+        source: "{{ ansible_default_ipv4.network }}/{{ ansible_default_ipv4.netmask }}"
+        jump: ACCEPT
+
+    - name: Save iptables rules persistently
+      command: /sbin/service netfilter-persistent save
 
