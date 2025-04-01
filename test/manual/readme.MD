@@ -40,19 +40,19 @@ docker run -it \
 ```
 
 | Recipe        | Prompt Values                                                                                                                                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|---------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Apache        | Status URL: http://127.0.0.1/server-status?auto                                                                                                                                                                                 |
 | Cassandra     | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 7199                                                                                                                                           |
 | Elasticsearch | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 9200 <br>Config file: /etc/elasticsearch/elasticsearch.yml <br>Use SSL to connect? (true/false): false <br>Default the rest (just press enter) |
 | JMX (JBoss)   | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 9990 <br>Are you using SSL? (y/n): n <br>Default the rest (just press enter)                                                                   |
 | MySQL         | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 3306 <br>Database Name: MysqlSample                                                                                                            |
-| MS SQL        | Username: newrelic <br>Password: the RDP password used to logon <br>Hostname: 127.0.0.1 <br>Port: 1433                                                                                                                                           |
+| MS SQL        | Username: newrelic <br>Password: the RDP password used to logon <br>Hostname: 127.0.0.1 <br>Port: 1433                                                                                                                          |
 | Nginx         | NGINX status URL: http://127.0.0.1/status                                                                                                                                                                                       |
 | Redis         | Hostname: localhost <br>Password: Virtuoso4all! <br>Port: 6379 <br>Keyspace Metrics: '{}'                                                                                                                                       |
 
 ## Windows
 
-For the Windows host, you'll want to get the password from the AWS Console. While on the EC2 UI, right click the Windows instance, and click Connect. Then use your pem key to decrypt the password.
+For the Windows host, you'll want to get the password from the AWS Console. While on the EC2 UI, right-click the Windows instance, and click Connect. Then use your pem key to decrypt the password.
 Once you have the password, use a `Remote Desktop Connection` client with the credential `Administrator` and the password you've decrypted in AWS.
 
 ## Tearing down
@@ -100,11 +100,11 @@ Once started, there are two forms of access:
 - ssh: while in the macos-catalina folder, run: `vagrant ssh`
 - GUI: open the VirtualBox application, select the macos-catalina host and click Show (the vagrant user has password: `vagrant`)
 
-This method of running a macOS host uses a [public GitHub project](https://github.com/ramsey/macos-vagrant-box) based off [macinbox](https://github.com/bacongravy/macinbox).
+This method of running a macOS host uses a [public GitHub project](https://github.com/ramsey/macos-vagrant-box) based off [mac inbox](https://github.com/bacongravy/macinbox).
 
 ## Ansible install scripts with Vagrant
 
-Our install scripts can be used locally through the following steps.
+Our installation scripts can be used locally through the following steps.
 
 Create a working directory:
 ```
