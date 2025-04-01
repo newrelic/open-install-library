@@ -1,0 +1,40 @@
+---
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+  become: yes
+
+- name: Install snapd
+  ansible.builtin.apt:
+    name: snapd
+    state: present
+  become: yes
+
+- name: Install MicroK8s
+  ansible.builtin.command:
+    cmd: snap install microk8s --classic
+  become: yes
+  args:
+    creates: /snap/bin/microk8s  # Ensures the task is idempotent
+
+- name: Enable MicroK8s add-ons
+  ansible.builtin.command:
+    cmd: microk8s enable dns dashboard storage
+  become: yes
+
+- name: Add user to microk8s group
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: microk8s
+    append: yes
+  become: yes
+
+- name: Change ownership of kube config directory
+  ansible.builtin.file:
+    path: /home/{{ ansible_user }}/.kube
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    state: directory
+    recurse: yes
+  become: yes
