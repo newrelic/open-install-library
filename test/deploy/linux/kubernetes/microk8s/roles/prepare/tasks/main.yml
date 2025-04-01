@@ -1,5 +1,38 @@
 ---
 
-- include_tasks: installIPRules.yml
+- name: Ensure /etc/iptables directory exists
+  file:
+    path: /etc/iptables
+    state: directory
+    mode: '0755'
+  become: yes
 
+- name: Allow TCP traffic on port 8081
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: 8081
+    jump: ACCEPT
+    state: present
+  become: yes
 
+- name: Allow TCP traffic on port 16433
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: 16433
+    jump: ACCEPT
+    state: present
+  become: yes
+
+- name: Allow all traffic from the subnet
+  ansible.builtin.iptables:
+    chain: INPUT
+    source: 172.31.0.0/16
+    jump: ACCEPT
+    state: present
+  become: yes
+
+- name: Save iptables rules
+  shell: "iptables-save > /etc/iptables/rules.v4"
+  become: yes
