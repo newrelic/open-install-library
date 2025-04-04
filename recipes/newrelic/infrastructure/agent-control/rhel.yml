@@ -341,20 +341,20 @@ install:
             sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
           fi
 
-    # Add OTLP Endpoint as ENV Var for the agent-control Systemd service
+    # Add OTLP Endpoint as ENV Var for the Agent Control Systemd service
     update_otel_end_point:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
           if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/staging-otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.eu01.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            else
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            fi
+            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
+            case "${{.NEW_RELIC_REGION}}" in
+              "STAGING") url="staging.otlp.nr-data.net" ;;
+              "EU") url="otlp.eu01.nr-data.net" ;;
+              *) url="otlp.nr-data.net" ;;
+            esac
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=https://${url}:4317/" >> /etc/newrelic-agent-control/newrelic-agent-control.conf
           fi
 
     config_supervisors:
