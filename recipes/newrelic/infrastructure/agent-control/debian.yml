@@ -406,12 +406,13 @@ install:
       cmds:
         - |
           if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/staging-otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
+              echo 'OTEL_EXPORTER_OTLP_ENDPOINT=staging.otlp.nr-data.net:4317/' >> /etc/newrelic-agent-control/newrelic-agent-control.conf
             elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.eu01.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
+              echo'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.eu01.nr-data.net:4317/' >> /etc/newrelic-agent-control/newrelic-agent-control.conf
             else
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
+              echo 'OTEL_EXPORTER_OTLP_ENDPOINT=otlp.nr-data.net:4317/' >> /etc/newrelic-agent-control/newrelic-agent-control.conf
             fi
           fi
 
@@ -728,6 +729,7 @@ install:
           if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
             systemctl restart newrelic-agent-control
           else
+            if [ {{.IS_INITCTL}} -gt 0 ]; then
             if [ {{.IS_INITCTL}} -gt 0 ]; then
               initctl restart newrelic-agent-control
             else
