@@ -205,6 +205,22 @@ install:
           GRANT SELECT ON *.* TO 'newrelic'@'localhost';
           EOT
           
+          # Write the SQL commands to /tmp/sql-create-schema.sql for creating the schema and stored procedure
+          sudo tee /tmp/sql-create-schema.sql > /dev/null <<"EOT"
+          CREATE SCHEMA IF NOT EXISTS newrelic;
+          GRANT EXECUTE ON newrelic.* TO 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
+          DELIMITER $$
+          CREATE PROCEDURE IF NOT EXISTS newrelic.enable_essential_consumers_and_instruments()
+              SQL SECURITY DEFINER
+          BEGIN
+              UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name LIKE 'events_statements_%';
+              UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name LIKE 'events_waits_%';
+              UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/%' OR NAME LIKE 'statement/%' OR NAME LIKE '%lock%';
+          END $$
+          DELIMITER ;
+          GRANT EXECUTE ON PROCEDURE newrelic.enable_essential_consumers_and_instruments TO 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
+          EOT
+          
           # Conditionally append the GRANT PROCESS command if NR_CLI_SLOW_QUERY is true
           if [[ "$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1 ]]; then
             echo "GRANT PROCESS ON *.* TO 'newrelic'@'localhost';" | sudo tee -a /tmp/sql-create-user.sql > /dev/null
@@ -213,6 +229,7 @@ install:
           sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-drop-user.sql
           sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-create-user.sql
           sudo sed -i 's/NEW_RELIC_MYSQL_PASSWORD/'$NEW_RELIC_MYSQL_PASSWORD'/g' /tmp/sql-create-user.sql
+          sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-create-schema.sql
 
           if [[ $MYSQL_ROOT_PASSWORD -gt 0 && "$NEW_RELIC_ASSUME_YES" != "true" ]] ; then
             TRIES=0
@@ -255,9 +272,11 @@ install:
             if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-schema.sql &> /dev/null ||:
             else
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
+              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-schema.sql &> /dev/null ||:
             fi
             echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
             SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep -v "[Warning] Using a password" | grep "ERROR" | wc -l)
@@ -274,6 +293,7 @@ install:
           fi
           sudo rm -f /tmp/sql-create-user.sql
           sudo rm -f /tmp/sql-drop-user.sql
+          sudo rm -f /tmp/sql-create-schema.sql
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
