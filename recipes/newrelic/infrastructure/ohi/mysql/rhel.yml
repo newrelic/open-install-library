@@ -209,15 +209,13 @@ install:
           sudo tee /tmp/sql-create-schema.sql > /dev/null <<"EOT"
           CREATE SCHEMA IF NOT EXISTS newrelic;
           GRANT EXECUTE ON newrelic.* TO 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
-          DELIMITER $$
           CREATE PROCEDURE IF NOT EXISTS newrelic.enable_essential_consumers_and_instruments()
               SQL SECURITY DEFINER
           BEGIN
               UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name LIKE 'events_statements_%';
               UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name LIKE 'events_waits_%';
               UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/%' OR NAME LIKE 'statement/%' OR NAME LIKE '%lock%';
-          END $$
-          DELIMITER ;
+          END;
           GRANT EXECUTE ON PROCEDURE newrelic.enable_essential_consumers_and_instruments TO 'NEW_RELIC_MYSQL_USERNAME'@'localhost';
           EOT
           
@@ -254,6 +252,13 @@ install:
               EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
+              
+              # Execute schema creation and stored procedure if user creation succeeded
+              if [ $SQL_OUTPUT_ERROR -eq 0 ]; then
+                SCHEMA_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-schema.sql 2>&1)
+                echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+              fi
+              
               ((TRIES++))
             done
 
@@ -263,6 +268,7 @@ install:
               sudo cat /tmp/sql-create-user.sql
               sudo rm -f /tmp/sql-create-user.sql
               sudo rm -f /tmp/sql-drop-user.sql
+              sudo rm -f /tmp/sql-create-schema.sql
               printf "\n"
               echo -e "detail:"$EXEC_OUTPUT
               printf "\n"
@@ -272,11 +278,13 @@ install:
             if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
-              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-schema.sql &> /dev/null ||:
+              SCHEMA_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-schema.sql 2>&1)
+              echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
             else
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
-              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-schema.sql &> /dev/null ||:
+              SCHEMA_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-schema.sql 2>&1)
+              echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
             fi
             echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
             SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep -v "[Warning] Using a password" | grep "ERROR" | wc -l)
