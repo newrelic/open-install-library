@@ -12,9 +12,9 @@ const deprecatedOSTestFilesUS = [
     "test/definitions-eu/infra-agent/rhel/centos8-infra.json",
     "test/definitions-eu/infra-agent/rhel/centos8arm64-infra.json",
     "test/definitions-eu/logging/rhel/centos8-arm64-logs.json",
-    "test/definitions/otel/rhel/centos7-otel.json",
-    "test/definitions/otel/rhel/centos8-otel.json",
-    "test/definitions/otel/rhel/centos8arm64-otel.json",
+    "test/definitions-eu/otel/rhel/centos7-otel.json",
+    "test/definitions-eu/otel/rhel/centos8-otel.json",
+    "test/definitions-eu/otel/rhel/centos8arm64-otel.json",
   ];
   
   // Create a lookup map for US deprecated tests
