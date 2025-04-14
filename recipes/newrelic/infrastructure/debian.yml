@@ -274,7 +274,14 @@ install:
           if [ ! -z "$HTTPS_PROXY" ]; then
             OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
           fi
-          apt-get $OPTIONS install newrelic-infra -y -qq
+          # Check NEW_RELIC_FIPS_ENABLED flag
+          if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
+            echo "FIPS mode enabled. Installing newrelic-infra-fips..."
+            apt-get $OPTIONS install newrelic-infra-fips -y -qq
+          else
+            echo "FIPS mode not enabled. Installing newrelic-infra..."
+            apt-get $OPTIONS install newrelic-infra -y -qq
+          fi
           # Check the exit status of the previous command
           if [ $? -ne 0 ]; then
             echo "Error: newrelic-infra installation failed"
