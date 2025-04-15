@@ -255,8 +255,8 @@ install:
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
               
-              # Execute schema creation and stored procedure if user creation succeeded
-              if [ $SQL_OUTPUT_ERROR -eq 0 ]; then
+              # Execute schema creation and stored procedure if user creation succeeded and NR_CLI_SLOW_QUERY is true
+              if [ $SQL_OUTPUT_ERROR -eq 0 ] && [[ "$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1 ]]; then
                 SCHEMA_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-schema.sql 2>&1)
                 echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               fi
@@ -280,13 +280,21 @@ install:
             if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
-              SCHEMA_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-schema.sql 2>&1)
-              echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+
+              # Execute schema creation if NR_CLI_SLOW_QUERY is true
+              if [[ "$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1 ]]; then
+                SCHEMA_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-schema.sql 2>&1)
+                echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+              fi
             else
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
-              SCHEMA_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-schema.sql 2>&1)
-              echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+              
+              # Execute schema creation if NR_CLI_SLOW_QUERY is true
+              if [[ "$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1 ]]; then
+                SCHEMA_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-schema.sql 2>&1)
+                echo "Schema creation output: $SCHEMA_OUTPUT" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+              fi
             fi
             echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
             SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep -v "[Warning] Using a password" | grep "ERROR" | wc -l)
