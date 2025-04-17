@@ -203,9 +203,18 @@ install:
             echo "newrelic infrastructure agent is not available for this architecture "{{.ARCH}}". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
-          curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
-          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-          yum -y -q install newrelic-infra
+          # Check NEW_RELIC_FIPS_ENABLED flag
+          if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
+            echo "FIPS mode enabled. Installing newrelic-infra-fips..."
+            curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+            yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+            yum -y -q install newrelic-infra-fips
+          else
+            echo "FIPS mode not enabled. Installing newrelic-infra..."
+            curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+            yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+            yum -y -q install newrelic-infra
+          fi
       silent: true
 
     restart:
