@@ -134,15 +134,7 @@ install:
             QUERY_MONITORING_PREVIOUSLY_ENABLED=1
           fi
 
-          # If not in non-interactive mode, allow user to input custom credentials
-          # This section only executes when NR_CLI_SLOW_QUERY is NOT true
-          if [[ "$NR_CLI_SLOW_QUERY" != "true" && "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            # Original behavior without custom prompts when NR_CLI_SLOW_QUERY is not true
-            # This ensures backward compatibility with existing behavior
-            :
-          fi
-
-          # Only execute the PostgreSQL version detection and custom credential prompts when NR_CLI_SLOW_QUERY is true
+          # Only execute the PostgreSQL version detection when NR_CLI_SLOW_QUERY is true
           if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
             # Check the host's PostgreSQL version
             HOST_PG_VERSION=""
@@ -177,54 +169,23 @@ install:
                 fi
               fi
             fi
-            
-            # If not in non-interactive mode, allow user to input custom credentials
-            if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-              printf "\nPlease enter your PostgreSQL username for monitoring (default: %s): " "$NR_CLI_DB_USERNAME"
-              read -r USER_INPUT_USERNAME
-              if [[ -n "$USER_INPUT_USERNAME" ]]; then
-                NR_CLI_DB_USERNAME="$USER_INPUT_USERNAME"
-              fi
-              
-              printf "Would you like to enter a custom password? (default: auto-generated secure password) [y/N]: "
-              read -r CUSTOM_PASSWORD
-              if [[ "$CUSTOM_PASSWORD" == "y" || "$CUSTOM_PASSWORD" == "Y" ]]; then
-                stty -echo
-                printf "Please enter your PostgreSQL password: "
-                read -r USER_INPUT_PASSWORD
-                stty echo
-                printf "\n"
-                if [[ -n "$USER_INPUT_PASSWORD" ]]; then
-                  NR_CLI_DB_PASSWORD="$USER_INPUT_PASSWORD"
-                fi
-              else
-                printf "Using auto-generated password: %s\n" "$NR_CLI_DB_PASSWORD"
-              fi
-              
-              printf "Please enter your PostgreSQL database name (default: %s): " "$NR_CLI_DATABASE"
-              read -r USER_INPUT_DATABASE
-              if [[ -n "$USER_INPUT_DATABASE" ]]; then
-                NR_CLI_DATABASE="$USER_INPUT_DATABASE"
-              fi
-            fi
-          fi
-
-          # Check the Query monitoring status in previous installation
-          QUERY_MONITORING_PREVIOUSLY_ENABLED=0
-          if [[ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]] && grep -qE '^\s*ENABLE_QUERY_MONITORING\s*:\s*true\s*$' /etc/newrelic-infra/integrations.d/postgresql-config.yml; then
-            QUERY_MONITORING_PREVIOUSLY_ENABLED=1
+          else
+            echo "[INFO] Skipping additional permission granting as NR_CLI_SLOW_QUERY is not enabled."
           fi
 
           # Detect PostgreSQL version if not provided or confirm the user's choice
           if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            # Try to detect PostgreSQL version from the database
-            DETECTED_VERSION=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW server_version;" | awk '{print $1}' | cut -d'.' -f1 || echo "")
-            
-            if [[ -n "$DETECTED_VERSION" ]]; then
-              echo "[INFO] Detected PostgreSQL major version: $DETECTED_VERSION"
-              # Automatically use the detected version without prompting - using only major version number
-              NR_CLI_DB_VERSION=$DETECTED_VERSION
-              echo "[INFO] Using detected PostgreSQL major version: $NR_CLI_DB_VERSION"
+            # Instead of trying to detect version by connecting with newrelic user,
+            # we'll check if postgres admin credentials were provided earlier and use those
+            if [[ -n "$POSTGRES_USERNAME" && -n "$POSTGRES_PASSWORD" ]]; then
+              DETECTED_VERSION=$(PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW server_version;" | awk '{print $1}' | cut -d'.' -f1 || echo "")
+              
+              if [[ -n "$DETECTED_VERSION" ]]; then
+                echo "[INFO] Detected PostgreSQL major version: $DETECTED_VERSION"
+                # Automatically use the detected version without prompting - using only major version number
+                NR_CLI_DB_VERSION=$DETECTED_VERSION
+                echo "[INFO] Using detected PostgreSQL major version: $NR_CLI_DB_VERSION"
+              fi
             fi
           fi
 
@@ -261,10 +222,11 @@ install:
           DO
           \$do\$
           BEGIN
-            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE  rolname = 'newrelic') THEN
-              CREATE ROLE newrelic LOGIN PASSWORD '$GEN_PASSWORD';
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE  rolname = '$NR_CLI_DB_USERNAME') THEN
+              CREATE ROLE $NR_CLI_DB_USERNAME LOGIN PASSWORD '$NR_CLI_DB_PASSWORD';
+            ELSE
+              ALTER USER $NR_CLI_DB_USERNAME WITH PASSWORD '$NR_CLI_DB_PASSWORD';
             END IF;
-            ALTER USER newrelic WITH PASSWORD '$GEN_PASSWORD';
             GRANT SELECT ON pg_stat_database TO \"$NR_CLI_DB_USERNAME\";
             GRANT SELECT ON pg_stat_database_conflicts TO \"$NR_CLI_DB_USERNAME\";
             GRANT SELECT ON pg_stat_bgwriter TO \"$NR_CLI_DB_USERNAME\";
@@ -514,26 +476,57 @@ install:
   
             # Connect to PostgreSQL and enable extensions in the database
             echo "[INFO] Trying to enable PostgreSQL extensions in database $NR_CLI_DATABASE..."
-            # Try multiple approaches to create the extensions, but avoid using sudo -u
-            PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || \
-            PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || \
-            echo -e "\033[0;33m[WARNING] Could not create pg_stat_statements extension. This may need to be done manually.\033[0m" >&2
             
-            PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_wait_sampling;" 2>/dev/null || \
-            PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_wait_sampling;" 2>/dev/null || \
-            echo -e "\033[0;33m[WARNING] Could not create pg_wait_sampling extension. This may need to be done manually.\033[0m" >&2
+            # Use postgres admin credentials to create extensions
+            echo "Please provide PostgreSQL admin credentials to create extensions"
+            printf "PostgreSQL Admin Username (Default %s)? " "$POSTGRES_USERNAME"
+            read -r ADMIN_USERNAME
+            ADMIN_USERNAME=${ADMIN_USERNAME:-$POSTGRES_USERNAME}
             
-            PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;" 2>/dev/null || \
-            PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;" 2>/dev/null || \
-            echo -e "\033[0;33m[WARNING] Could not create pg_stat_monitor extension. This may need to be done manually.\033[0m" >&2
-  
+            stty -echo
+            printf "Enter PostgreSQL Admin Password: "
+            read -r ADMIN_PASSWORD
+            ADMIN_PASSWORD=${ADMIN_PASSWORD:-$POSTGRES_PASSWORD}
+            stty echo
+            printf "\n"
+            
+            # Create extensions using admin credentials
+            EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "[INFO] Successfully created pg_stat_statements extension"
+            else
+              echo -e "\033[0;33m[WARNING] Could not create pg_stat_statements extension: $EXTENSION_OUTPUT\033[0m" >&2
+            fi
+            
+            EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_wait_sampling;" 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "[INFO] Successfully created pg_wait_sampling extension"
+            else
+              echo -e "\033[0;33m[WARNING] Could not create pg_wait_sampling extension: $EXTENSION_OUTPUT\033[0m" >&2
+            fi
+            
+            EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;" 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "[INFO] Successfully created pg_stat_monitor extension"
+            else
+              echo -e "\033[0;33m[WARNING] Could not create pg_stat_monitor extension: $EXTENSION_OUTPUT\033[0m" >&2
+            fi
+            
             # Try to provide additional permissions if possible
             echo "[INFO] Trying to grant additional permissions to user $NR_CLI_DB_USERNAME..."
-            PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT pg_read_all_stats TO $NR_CLI_DB_USERNAME;" 2>/dev/null || \
-            echo -e "\033[0;33m[WARNING] Could not grant pg_read_all_stats to $NR_CLI_DB_USERNAME. This may need to be done manually.\033[0m" >&2
+            PERMISSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT pg_read_all_stats TO $NR_CLI_DB_USERNAME;" 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "[INFO] Successfully granted pg_read_all_stats to $NR_CLI_DB_USERNAME"
+            else
+              echo -e "\033[0;33m[WARNING] Could not grant pg_read_all_stats to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
+            fi
             
-            PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO $NR_CLI_DB_USERNAME;" 2>/dev/null || \
-            echo -e "\033[0;33m[WARNING] Could not grant table SELECT permissions to $NR_CLI_DB_USERNAME. This may need to be done manually.\033[0m" >&2
+            PERMISSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO $NR_CLI_DB_USERNAME;" 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "[INFO] Successfully granted SELECT permissions to $NR_CLI_DB_USERNAME"
+            else
+              echo -e "\033[0;33m[WARNING] Could not grant table SELECT permissions to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
+            fi
           else
             echo "[INFO] Skipping pg_stat_monitor installation to avoid potential compilation errors."
           fi
