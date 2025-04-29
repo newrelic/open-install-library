@@ -456,21 +456,32 @@ install:
   
             # Offer to restart PostgreSQL if configuration was changed
             if [ -n "$PG_CONFIG_FILE" ]; then
-              printf "\nRestart PostgreSQL to apply configuration changes? (y/n) [y]: "
-              read -r PG_RESTART
-              PG_RESTART=${PG_RESTART:-y}
+              # Ask to restart PostgreSQL only if we haven't already asked before
+              PG_RESTART_DONE="${PG_RESTART_DONE:-false}"
               
-              if [ "$PG_RESTART" = "y" ]; then
-                echo "[INFO] Restarting PostgreSQL..."
-                if systemctl status postgresql >/dev/null 2>&1; then
-                  sudo systemctl restart postgresql
-                  echo "[INFO] PostgreSQL restarted using systemctl"
+              if [[ "$PG_RESTART_DONE" != "true" ]]; then
+                printf "\nRestart your PostgreSQL instance to enable the query monitoring settings? (y/n): "
+                read -r DB_RESTART
+                DB_RESTART=${DB_RESTART:-y}
+                
+                if [ "$DB_RESTART" = "y" ]; then
+                  echo "[INFO] Restarting PostgreSQL..."
+                  if systemctl status postgresql >/dev/null 2>&1; then
+                    sudo systemctl restart postgresql
+                    echo "[INFO] PostgreSQL restarted using systemctl"
+                  else
+                    sudo service postgresql restart
+                    echo "[INFO] PostgreSQL restarted using service command"
+                  fi
+                  # Mark that we've already restarted
+                  PG_RESTART_DONE="true"
                 else
-                  sudo service postgresql restart
-                  echo "[INFO] PostgreSQL restarted using service command"
+                  echo "[INFO] Skipping PostgreSQL restart. Changes will apply after next restart."
+                  # Mark that user doesn't want to restart
+                  PG_RESTART="n"
                 fi
               else
-                echo "[INFO] Skipping PostgreSQL restart. Changes will apply after next restart."
+                echo "[INFO] PostgreSQL was already restarted earlier in the installation process."
               fi
             fi
   
@@ -585,23 +596,11 @@ install:
                   echo "[NR_CLI_SLOW_QUERY] Set pg_stat_statements.track = all"
                 fi
                 
-                # Ask to restart PostgreSQL
-                printf "\nRestart your PostgreSQL instance to enable the query monitoring settings? (y/n): "
-                read -r DB_RESTART
-                DB_RESTART=${DB_RESTART:-y}
-                
-                if [ "$DB_RESTART" = "y" ]; then
-                  # Try different ways to restart PostgreSQL
-                  if systemctl status postgresql >/dev/null 2>&1; then
-                    sudo systemctl restart postgresql
-                    echo "[NR_CLI_SLOW_QUERY] PostgreSQL server restarted to apply changes"
-                  else
-                    sudo service postgresql restart
-                    echo "[NR_CLI_SLOW_QUERY] PostgreSQL server restarted to apply changes"
-                  fi
+                # Check if we already restarted PostgreSQL earlier
+                if [[ "$PG_RESTART_DONE" == "true" ]]; then
+                  echo "[INFO] PostgreSQL was already restarted earlier in the installation process."
                   
                   # Check if pg_stat_statements extension exists in the database
-                  sleep 5 # Wait for restart to complete
                   IS_EXTENSION_EXISTS=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_extension WHERE extname = 'pg_stat_statements';" 2>/dev/null || echo "0")
                   
                   if [[ "$IS_EXTENSION_EXISTS" == "0" ]]; then
@@ -613,8 +612,45 @@ install:
                   else
                     echo "[NR_CLI_SLOW_QUERY] pg_stat_statements extension is already installed in database $NR_CLI_DATABASE"
                   fi
-                else
+                elif [[ "$PG_RESTART" == "n" ]]; then
                   echo -e "\n\033[0;33m[Warning] The query monitoring configuration changes will become active the next time you restart your PostgreSQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
+                else
+                  # We haven't restarted PostgreSQL yet, so do it now
+                  printf "\nRestart your PostgreSQL instance to enable the query monitoring settings? (y/n): "
+                  read -r DB_RESTART
+                  DB_RESTART=${DB_RESTART:-y}
+                  
+                  if [ "$DB_RESTART" = "y" ]; then
+                    # Try different ways to restart PostgreSQL
+                    if systemctl status postgresql >/dev/null 2>&1; then
+                      sudo systemctl restart postgresql
+                      echo "[NR_CLI_SLOW_QUERY] PostgreSQL server restarted to apply changes"
+                    else
+                      sudo service postgresql restart
+                      echo "[NR_CLI_SLOW_QUERY] PostgreSQL server restarted to apply changes"
+                    fi
+                    
+                    # Mark that we've already restarted PostgreSQL
+                    PG_RESTART_DONE="true"
+                    
+                    # Check if pg_stat_statements extension exists in the database
+                    sleep 5 # Wait for restart to complete
+                    IS_EXTENSION_EXISTS=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_extension WHERE extname = 'pg_stat_statements';" 2>/dev/null || echo "0")
+                    
+                    if [[ "$IS_EXTENSION_EXISTS" == "0" ]]; then
+                      # Create the extension in the database
+                      echo "[NR_CLI_SLOW_QUERY] Creating pg_stat_statements extension in database $NR_CLI_DATABASE"
+                      # Try with both the newrelic user and postgres user
+                      PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || \
+                      PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null
+                    else
+                      echo "[NR_CLI_SLOW_QUERY] pg_stat_statements extension is already installed in database $NR_CLI_DATABASE"
+                    fi
+                  else
+                    echo -e "\n\033[0;33m[Warning] The query monitoring configuration changes will become active the next time you restart your PostgreSQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
+                    # Mark that user doesn't want to restart
+                    PG_RESTART="n"
+                  fi
                 fi
               else
                 echo -e "\033[0;33m[Warning] The PostgreSQL configuration file could not be found. The query monitoring settings will need to be configured manually.\033[0m" >&2
