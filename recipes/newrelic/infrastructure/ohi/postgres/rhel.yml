@@ -106,21 +106,86 @@ install:
           NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
           NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
           NR_CLI_DATABASE="{{.NR_CLI_DATABASE}}"
+          NR_CLI_DB_VERSION="{{.NR_CLI_DB_VERSION}}"
           NR_CLI_SSL="{{.NR_CLI_SSL}}"
           NR_CLI_CLIENT_CERT_FILE="{{.NR_CLI_CLIENT_CERT_FILE}}"
           NR_CLI_CERT_KEY="{{.NR_CLI_CERT_KEY}}"
           NR_CLI_TRUST_SERVER_CERTIFICATE="{{.NR_CLI_TRUST_SERVER_CERTIFICATE}}"
           NR_CLI_CERT_AUTH_FILE="{{.NR_CLI_CERT_AUTH_FILE}}"
+          NR_CLI_SLOW_QUERY="{{.NR_CLI_SLOW_QUERY}}"
 
           # Set Defaults
           NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-'localhost'}
           NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-'5432'}
           NR_CLI_DATABASE=${NR_CLI_DATABASE:-'postgres'}
+          NR_CLI_DB_VERSION=${NR_CLI_DB_VERSION:-'12'}
           NR_CLI_SSL=${NR_CLI_SSL:='false'}
           NR_CLI_TRUST_SERVER_CERTIFICATE=${NR_CLI_TRUST_SERVER_CERTIFICATE:-'false'}
           NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-'newrelic'}
           GEN_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           NR_CLI_DB_PASSWORD=${NR_CLI_DB_PASSWORD:-"$GEN_PASSWORD"}
+
+          # Check the Query monitoring status in previous installation
+          QUERY_MONITORING_PREVIOUSLY_ENABLED=0
+          if [[ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]] && grep -qE '^\s*ENABLE_QUERY_MONITORING\s*:\s*true\s*$' /etc/newrelic-infra/integrations.d/postgresql-config.yml; then
+            QUERY_MONITORING_PREVIOUSLY_ENABLED=1
+          fi
+
+          # Only execute the PostgreSQL version detection when NR_CLI_SLOW_QUERY is true
+          if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
+            # Check the host's PostgreSQL version
+            HOST_PG_VERSION=""
+            if command -v psql &> /dev/null; then
+              # Get full PostgreSQL version but only keep the major version number (e.g., 16.8 -> 16)
+              HOST_PG_VERSION=$(psql --version | awk '{print $3}' | cut -d. -f1 || echo "")
+              if [[ -n "$HOST_PG_VERSION" ]]; then
+                echo "[INFO] Detected PostgreSQL major version on host: $HOST_PG_VERSION"
+                # Only update if not explicitly set by user
+                if [[ "$NR_CLI_DB_VERSION" == "12" ]]; then
+                  NR_CLI_DB_VERSION="$HOST_PG_VERSION"
+                  echo "[INFO] Using detected host PostgreSQL major version: $NR_CLI_DB_VERSION"
+                fi
+              fi
+            fi
+
+            # If psql command not available, try to detect from installed packages
+            if [[ -z "$HOST_PG_VERSION" ]]; then
+              if command -v rpm &> /dev/null; then
+                INSTALLED_PG=$(rpm -qa | grep postgresql-server | head -1 || echo "")
+                if [[ -n "$INSTALLED_PG" ]]; then
+                  # Extract only the major version number 
+                  HOST_PG_VERSION=$(echo "$INSTALLED_PG" | grep -oP 'postgresql-server-\K[0-9]+' || echo "")
+                  if [[ -n "$HOST_PG_VERSION" ]]; then
+                    echo "[INFO] Detected PostgreSQL major version from installed packages: $HOST_PG_VERSION"
+                    # Only update if not explicitly set by user
+                    if [[ "$NR_CLI_DB_VERSION" == "12" ]]; then
+                      NR_CLI_DB_VERSION="$HOST_PG_VERSION"
+                      echo "[INFO] Using detected installed PostgreSQL major version: $NR_CLI_DB_VERSION"
+                    fi
+                  fi
+                fi
+              fi
+            fi
+          fi
+
+          # Detect PostgreSQL version if not provided or confirm the user's choice
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            # Instead of trying to detect version by connecting with newrelic user,
+            # we'll check if postgres admin credentials were provided earlier and use those
+            if [[ -n "$POSTGRES_USERNAME" && -n "$POSTGRES_PASSWORD" ]]; then
+              DETECTED_VERSION=$(PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW server_version;" | awk '{print $1}' | cut -d'.' -f1 || echo "")
+              
+              if [[ -n "$DETECTED_VERSION" ]]; then
+                echo "[INFO] Detected PostgreSQL major version: $DETECTED_VERSION"
+                # Automatically use the detected version without prompting - using only major version number
+                NR_CLI_DB_VERSION=$DETECTED_VERSION
+                echo "[INFO] Using detected PostgreSQL major version: $NR_CLI_DB_VERSION"
+              fi
+            fi
+          fi
+
+          # Add to config debug output
+          echo "[INFO] Using PostgreSQL version: $NR_CLI_DB_VERSION" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
 
           # Check default connect
           CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
@@ -236,10 +301,218 @@ install:
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
           sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
           sudo yum install nri-postgresql -y
+          
+          # Only install and configure pg_wait_sampling and pg_stat_monitor when slow query flag is enabled
+          if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
+            # Install pg_wait_sampling and pg_stat_monitor for PostgreSQL based on detected major version
+            if [[ -n "$NR_CLI_DB_VERSION" ]]; then
+              echo "[INFO] Installing pg_wait_sampling_${NR_CLI_DB_VERSION} package for PostgreSQL ${NR_CLI_DB_VERSION}"
+              sudo dnf install -y pg_wait_sampling_${NR_CLI_DB_VERSION} || echo "[WARNING] Failed to install pg_wait_sampling_${NR_CLI_DB_VERSION}. This package may not be available in your repositories."
+              
+              echo "[INFO] Installing pg_stat_monitor_${NR_CLI_DB_VERSION} package for PostgreSQL ${NR_CLI_DB_VERSION}"
+              sudo dnf install -y pg_stat_monitor_${NR_CLI_DB_VERSION} || echo "[WARNING] Failed to install pg_stat_monitor_${NR_CLI_DB_VERSION}. This package may not be available in your repositories."
+            fi
+            
+            echo "[INFO] NR_CLI_SLOW_QUERY is enabled. Setting up PostgreSQL for query monitoring..."
+            
+            # Find PostgreSQL configuration directory and file
+            PG_CONFIG_DIR="/var/lib/pgsql/${NR_CLI_DB_VERSION}/data"
+            PG_CONFIG_FILE="${PG_CONFIG_DIR}/postgresql.conf"
+            
+            # If the standard path doesn't exist, try to find it
+            if [ ! -d "$PG_CONFIG_DIR" ]; then
+              echo "[INFO] Searching for PostgreSQL configuration directory..."
+              # Try alternative locations
+              for dir in /var/lib/pgsql/*/data /var/lib/postgresql/*/data; do
+                if [ -d "$dir" ]; then
+                  PG_CONFIG_DIR="$dir"
+                  PG_CONFIG_FILE="${PG_CONFIG_DIR}/postgresql.conf"
+                  echo "[INFO] Found PostgreSQL configuration directory: $PG_CONFIG_DIR"
+                  break
+                fi
+              done
+            fi
+            
+            if [ -f "$PG_CONFIG_FILE" ]; then
+              echo "[INFO] Found PostgreSQL configuration file: $PG_CONFIG_FILE"
+              
+              # Create backup of the configuration file
+              sudo cp "$PG_CONFIG_FILE" "$PG_CONFIG_FILE.bak"
+              echo "[INFO] Created backup of PostgreSQL configuration at $PG_CONFIG_FILE.bak"
+              
+              # Check if shared_preload_libraries is already configured
+              if grep -q "^shared_preload_libraries" "$PG_CONFIG_FILE"; then
+                echo "[INFO] shared_preload_libraries already configured in $PG_CONFIG_FILE"
+                # Check if it includes all the extensions we need
+                if ! grep -q "shared_preload_libraries.*pg_stat_statements.*pg_wait_sampling.*pg_stat_monitor" "$PG_CONFIG_FILE"; then
+                  echo "[INFO] Updating shared_preload_libraries to include all required extensions"
+                  sudo sed -i 's/^shared_preload_libraries.*/shared_preload_libraries = '\''pg_stat_statements, pg_wait_sampling, pg_stat_monitor'\''/' "$PG_CONFIG_FILE"
+                fi
+              elif grep -q "^#shared_preload_libraries" "$PG_CONFIG_FILE"; then
+                echo "[INFO] Uncommenting and setting shared_preload_libraries"
+                sudo sed -i 's/^#shared_preload_libraries.*/shared_preload_libraries = '\''pg_stat_statements, pg_wait_sampling, pg_stat_monitor'\''/' "$PG_CONFIG_FILE"
+              else
+                echo "[INFO] Adding shared_preload_libraries configuration"
+                echo "shared_preload_libraries = 'pg_stat_statements, pg_wait_sampling, pg_stat_monitor'" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
+              fi
+              
+              # Add pg_stat_statements settings if not already present
+              if ! grep -q "^pg_stat_statements.max" "$PG_CONFIG_FILE"; then
+                echo "pg_stat_statements.max = 10000" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
+                echo "[INFO] Added pg_stat_statements.max = 10000"
+              fi
+              
+              if ! grep -q "^pg_stat_statements.track" "$PG_CONFIG_FILE"; then
+                echo "pg_stat_statements.track = all" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
+                echo "[INFO] Added pg_stat_statements.track = all"
+              fi
+              
+              if ! grep -q "^pg_stat_statements.save" "$PG_CONFIG_FILE"; then
+                echo "pg_stat_statements.save = on" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
+                echo "[INFO] Added pg_stat_statements.save = on"
+              fi
+              
+              # Notify user about the need to restart PostgreSQL
+              echo -e "\n[IMPORTANT] PostgreSQL configuration has been updated. You need to restart PostgreSQL to apply these changes."
+              echo "[INFO] You can restart PostgreSQL with: sudo systemctl restart postgresql-${NR_CLI_DB_VERSION}"
+              
+              # Offer to restart PostgreSQL
+              if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+                printf "\nRestart your PostgreSQL instance to enable the query monitoring settings? (y/n): "
+                read -r DB_RESTART
+                DB_RESTART=${DB_RESTART:-y}
+                
+                if [ "$DB_RESTART" = "y" ]; then
+                  echo "[INFO] Restarting PostgreSQL..."
+                  if systemctl status postgresql-${NR_CLI_DB_VERSION} >/dev/null 2>&1; then
+                    sudo systemctl restart postgresql-${NR_CLI_DB_VERSION}
+                    echo "[INFO] PostgreSQL restarted using systemctl"
+                  elif systemctl status postgresql >/dev/null 2>&1; then
+                    sudo systemctl restart postgresql
+                    echo "[INFO] PostgreSQL restarted using systemctl"
+                  else
+                    sudo service postgresql restart
+                    echo "[INFO] PostgreSQL restarted using service command"
+                  fi
+                  PG_RESTART_DONE="true"
+                else
+                  echo "[INFO] Skipping PostgreSQL restart. Changes will apply after next restart."
+                  PG_RESTART="n"
+                fi
+              fi
+            else
+              echo "[WARNING] Could not find PostgreSQL configuration file. Please manually update your PostgreSQL configuration."
+              echo "[INFO] You need to add the following to your postgresql.conf file:"
+              echo "shared_preload_libraries = 'pg_stat_statements, pg_wait_sampling, pg_stat_monitor'"
+              echo "pg_stat_statements.max = 10000"
+              echo "pg_stat_statements.track = all"
+              echo "pg_stat_statements.save = on"
+            fi
+            
+            # Create extensions in the database if we have admin access
+            if [[ -n "$POSTGRES_USERNAME" && -n "$POSTGRES_PASSWORD" ]]; then
+              echo "[INFO] Trying to create PostgreSQL extensions in database $NR_CLI_DATABASE..."
+              
+              # Create extensions using admin credentials
+              EXTENSION_OUTPUT=$(PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully created pg_stat_statements extension"
+              else
+                echo -e "\033[0;33m[WARNING] Could not create pg_stat_statements extension: $EXTENSION_OUTPUT\033[0m" >&2
+              fi
+              
+              EXTENSION_OUTPUT=$(PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_wait_sampling;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully created pg_wait_sampling extension"
+              else
+                echo -e "\033[0;33m[WARNING] Could not create pg_wait_sampling extension: $EXTENSION_OUTPUT\033[0m" >&2
+              fi
+              
+              EXTENSION_OUTPUT=$(PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully created pg_stat_monitor extension"
+              else
+                echo -e "\033[0;33m[WARNING] Could not create pg_stat_monitor extension: $EXTENSION_OUTPUT\033[0m" >&2
+              fi
+              
+              # Grant additional permissions to the newrelic user
+              echo "[INFO] Granting additional permissions to user $NR_CLI_DB_USERNAME..."
+              PERMISSION_OUTPUT=$(PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT pg_read_all_stats TO $NR_CLI_DB_USERNAME;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully granted pg_read_all_stats to $NR_CLI_DB_USERNAME"
+              else
+                echo -e "\033[0;33m[WARNING] Could not grant pg_read_all_stats to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
+              fi
+            else
+              # Connect to PostgreSQL and enable extensions in the database
+              echo "[INFO] Trying to enable PostgreSQL extensions in database $NR_CLI_DATABASE..."
+              
+              # Use postgres admin credentials to create extensions
+              echo "Please provide PostgreSQL admin credentials to create extensions"
+              printf "PostgreSQL Admin Username (Default postgres)? "
+              read -r ADMIN_USERNAME
+              ADMIN_USERNAME=${ADMIN_USERNAME:-postgres}
+              
+              stty -echo
+              printf "Enter PostgreSQL Admin Password: "
+              read -r ADMIN_PASSWORD
+              stty echo
+              printf "\n"
+              
+              # Create extensions using admin credentials
+              EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully created pg_stat_statements extension"
+              else
+                echo -e "\033[0;33m[WARNING] Could not create pg_stat_statements extension: $EXTENSION_OUTPUT\033[0m" >&2
+              fi
+              
+              EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_wait_sampling;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully created pg_wait_sampling extension"
+              else
+                echo -e "\033[0;33m[WARNING] Could not create pg_wait_sampling extension: $EXTENSION_OUTPUT\033[0m" >&2
+              fi
+              
+              EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully created pg_stat_monitor extension"
+              else
+                echo -e "\033[0;33m[WARNING] Could not create pg_stat_monitor extension: $EXTENSION_OUTPUT\033[0m" >&2
+              fi
+              
+              # Try to provide additional permissions if possible
+              echo "[INFO] Trying to grant additional permissions to user $NR_CLI_DB_USERNAME..."
+              PERMISSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT pg_read_all_stats TO $NR_CLI_DB_USERNAME;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully granted pg_read_all_stats to $NR_CLI_DB_USERNAME"
+              else
+                echo -e "\033[0;33m[WARNING] Could not grant pg_read_all_stats to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
+              fi
+              
+              PERMISSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO $NR_CLI_DB_USERNAME;" 2>&1)
+              if [ $? -eq 0 ]; then
+                echo "[INFO] Successfully granted SELECT permissions to $NR_CLI_DB_USERNAME"
+              else
+                echo -e "\033[0;33m[WARNING] Could not grant table SELECT permissions to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
+              fi
+            fi
+          fi
+          
           if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
           fi
           sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
+
+          # Conditionally enable query monitoring
+          ENABLE_QUERY_MONITORING=""
+          if [[ "$NR_CLI_SLOW_QUERY" == "true" || $QUERY_MONITORING_PREVIOUSLY_ENABLED -eq 1 ]]; then
+            ENABLE_QUERY_MONITORING="ENABLE_QUERY_MONITORING: true"
+            
+            if [[ "$QUERY_MONITORING_PREVIOUSLY_ENABLED" -eq 1 ]]; then
+              echo -e "\033[0;33m[Warning] Query monitoring was previously enabled. This guided install will keep this setting, but cannot safely turn these off if needed. Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired.\033[0m" >&2
+            fi
+          fi
 
           if [ "$NR_CLI_SSL" == "true" ]; then
             sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<EOT
@@ -259,6 +532,7 @@ install:
                 SSL_CERT_LOCATION: $NR_CLI_CLIENT_CERT_FILE
                 SSL_KEY_LOCATION: $NR_CLI_CERT_KEY
                 TIMEOUT: 10
+                $ENABLE_QUERY_MONITORING
               inventory_source: config/postgresql
               interval: 15s
           EOT
@@ -276,6 +550,7 @@ install:
                 COLLECT_DB_LOCK_METRICS: false
                 ENABLE_SSL: false
                 TIMEOUT: 10
+                $ENABLE_QUERY_MONITORING
               inventory_source: config/postgresql
               interval: 15s
           EOT
