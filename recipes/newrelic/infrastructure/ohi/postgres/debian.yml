@@ -489,10 +489,8 @@ install:
             
             # Use postgres admin credentials to create extensions
             echo "Please provide PostgreSQL admin credentials to create extensions"
-            printf "PostgreSQL Admin Username (Default %s)? " "$POSTGRES_USERNAME"
-            read -r ADMIN_USERNAME
-            ADMIN_USERNAME=${ADMIN_USERNAME:-$POSTGRES_USERNAME}
-            
+            printf "PostgreSQL Admin Username? "
+            read -r ADMIN_USERNAME            
             stty -echo
             printf "Enter PostgreSQL Admin Password: "
             read -r ADMIN_PASSWORD
@@ -501,27 +499,101 @@ install:
             printf "\n"
             
             # Create extensions using admin credentials
-            EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>&1)
-            if [ $? -eq 0 ]; then
-              echo "[INFO] Successfully created pg_stat_statements extension"
-            else
-              echo -e "\033[0;33m[WARNING] Could not create pg_stat_statements extension: $EXTENSION_OUTPUT\033[0m" >&2
-            fi
+            echo "[INFO] Attempting to create PostgreSQL extensions..."
             
-            EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_wait_sampling;" 2>&1)
-            if [ $? -eq 0 ]; then
-              echo "[INFO] Successfully created pg_wait_sampling extension"
-            else
-              echo -e "\033[0;33m[WARNING] Could not create pg_wait_sampling extension: $EXTENSION_OUTPUT\033[0m" >&2
-            fi
-            
-            EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;" 2>&1)
-            if [ $? -eq 0 ]; then
-              echo "[INFO] Successfully created pg_stat_monitor extension"
-            else
-              echo -e "\033[0;33m[WARNING] Could not create pg_stat_monitor extension: $EXTENSION_OUTPUT\033[0m" >&2
-            fi
-            
+            # Function to verify extension status
+            verify_extension() {
+                local ext_name=$1
+                echo "[INFO] Verifying extension: $ext_name"
+                
+                # Check if extension exists in pg_extension
+                local EXT_CHECK=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT extname, extversion, extowner::regrole FROM pg_extension WHERE extname = '$ext_name';" 2>&1)
+                local STATUS=$?
+                
+                if [ $STATUS -eq 0 ] && [ ! -z "$EXT_CHECK" ]; then
+                    # Extension exists, get details
+                    local VERSION=$(echo "$EXT_CHECK" | cut -d'|' -f2)
+                    local OWNER=$(echo "$EXT_CHECK" | cut -d'|' -f3)
+                    echo "[SUCCESS] Extension $ext_name is properly installed:"
+                    echo "  Version: $VERSION"
+                    echo "  Owner: $OWNER"
+                    
+                    # Verify if it's in shared_preload_libraries
+                    local PRELOAD_CHECK=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW shared_preload_libraries;" 2>/dev/null)
+                    if [[ "$PRELOAD_CHECK" == *"$ext_name"* ]]; then
+                        echo "  Loaded in shared_preload_libraries: Yes"
+                    else
+                        echo -e "\033[0;33m[WARNING] Extension $ext_name is installed but not found in shared_preload_libraries\033[0m" >&2
+                        echo -e "\033[0;33mAdd '$ext_name' to shared_preload_libraries in postgresql.conf and restart PostgreSQL\033[0m" >&2
+                    fi
+                    
+                    # Try to verify if extension is actually functional
+                    local IS_FUNCTIONAL=false
+                    case "$ext_name" in
+                        "pg_stat_statements")
+                            if PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_stat_statements LIMIT 1;" >/dev/null 2>&1; then
+                                IS_FUNCTIONAL=true
+                            fi
+                            ;;
+                        "pg_wait_sampling")
+                            if PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_wait_sampling_current LIMIT 1;" >/dev/null 2>&1; then
+                                IS_FUNCTIONAL=true
+                            fi
+                            ;;
+                        "pg_stat_monitor")
+                            if PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_stat_monitor LIMIT 1;" >/dev/null 2>&1; then
+                                IS_FUNCTIONAL=true
+                            fi
+                            ;;
+                    esac
+                    
+                    if [ "$IS_FUNCTIONAL" = true ]; then
+                        echo "  Extension is functional: Yes"
+                    else
+                        echo -e "\033[0;33m[WARNING] Extension $ext_name is installed but may not be functional\033[0m" >&2
+                        echo -e "\033[0;33mMake sure it's properly configured in postgresql.conf and the database was restarted\033[0m" >&2
+                    fi
+                else
+                    echo -e "\033[0;31m[ERROR] Extension $ext_name is NOT installed in database $NR_CLI_DATABASE\033[0m" >&2
+                    echo -e "\033[0;33mTo install it, run:\033[0m" >&2
+                    echo -e "\033[0;33m    CREATE EXTENSION $ext_name;\033[0m" >&2
+                    return 1
+                fi
+            }
+
+            # Try to create each extension and verify its status
+            echo "[INFO] Checking current extensions in database $NR_CLI_DATABASE..."
+            echo "----------------------------------------"
+            PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -x -c "SELECT * FROM pg_extension;" 2>&1
+            echo "----------------------------------------"
+
+            # Try to create and verify each extension
+            for ext in "pg_stat_statements" "pg_wait_sampling" "pg_stat_monitor"; do
+                echo "[INFO] Creating extension $ext..."
+                EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS $ext;" 2>&1)
+                CREATE_STATUS=$?
+                
+                if [ $CREATE_STATUS -eq 0 ]; then
+                    # Verify the extension was actually created and is working
+                    verify_extension "$ext"
+                    VERIFY_STATUS=$?
+                    
+                    if [ $VERIFY_STATUS -ne 0 ]; then
+                        echo -e "\033[0;31m[ERROR] Failed to verify extension $ext after creation attempt\033[0m" >&2
+                    fi
+                else
+                    echo -e "\033[0;31m[ERROR] Failed to create extension $ext: $EXTENSION_OUTPUT\033[0m" >&2
+                fi
+                echo ""
+            done
+
+            # Final verification of all extensions
+            echo "[INFO] Final verification of all extensions..."
+            echo "----------------------------------------"
+            echo "Current state of all extensions in database $NR_CLI_DATABASE:"
+            PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -x -c "SELECT * FROM pg_extension WHERE extname IN ('pg_stat_statements', 'pg_wait_sampling', 'pg_stat_monitor');" 2>&1
+            echo "----------------------------------------"
+
             # Try to provide additional permissions if possible
             echo "[INFO] Trying to grant additional permissions to user $NR_CLI_DB_USERNAME..."
             PERMISSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT pg_read_all_stats TO $NR_CLI_DB_USERNAME;" 2>&1)
@@ -559,7 +631,7 @@ install:
               echo -e "\n--- Setting up PostgreSQL query monitoring"
               
               # Check if pg_stat_statements is loaded
-              IS_PG_STAT_STATEMENTS_LOADED=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_extension WHERE extname = 'pg_stat_statements';" 2>/dev/null || echo "0")
+              IS_PG_STAT_STATEMENTS_LOADED=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_stat_statements LIMIT 1;" 2>/dev/null || echo "0")
               
               # Find PostgreSQL config directory and main configuration file
               if [ -n "$PG_CONFIG_DIR" ] && [ -n "$PG_CONFIG_FILE" ]; then
