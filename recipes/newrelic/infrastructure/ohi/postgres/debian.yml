@@ -134,61 +134,6 @@ install:
             QUERY_MONITORING_PREVIOUSLY_ENABLED=1
           fi
 
-          # Only execute the PostgreSQL version detection when NR_CLI_SLOW_QUERY is true
-          if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
-            # Check the host's PostgreSQL version
-            HOST_PG_VERSION=""
-            if command -v psql &> /dev/null; then
-              # Get full PostgreSQL version but only keep the major version number (e.g., 16.8 -> 16)
-              HOST_PG_VERSION=$(psql --version | awk '{print $3}' | cut -d. -f1 || echo "")
-              if [[ -n "$HOST_PG_VERSION" ]]; then
-                echo "[INFO] Detected PostgreSQL major version on host: $HOST_PG_VERSION"
-                # Only update if not explicitly set by user
-                if [[ "$NR_CLI_DB_VERSION" == "12" ]]; then
-                  NR_CLI_DB_VERSION="$HOST_PG_VERSION"
-                  echo "[INFO] Using detected host PostgreSQL major version: $NR_CLI_DB_VERSION"
-                fi
-              fi
-            fi
-
-            # If psql command not available, try to detect from installed packages
-            if [[ -z "$HOST_PG_VERSION" ]]; then
-              if command -v dpkg &> /dev/null; then
-                INSTALLED_PG=$(dpkg -l | grep postgresql-[0-9] | head -1 | awk '{print $2}' || echo "")
-                if [[ -n "$INSTALLED_PG" ]]; then
-                  # Extract only the major version number (e.g., postgresql-16.8 -> 16)
-                  HOST_PG_VERSION=$(echo "$INSTALLED_PG" | grep -oP '(?<=postgresql-)[0-9]+' || echo "")
-                  if [[ -n "$HOST_PG_VERSION" ]]; then
-                    echo "[INFO] Detected PostgreSQL major version from installed packages: $HOST_PG_VERSION"
-                    # Only update if not explicitly set by user
-                    if [[ "$NR_CLI_DB_VERSION" == "12" ]]; then
-                      NR_CLI_DB_VERSION="$HOST_PG_VERSION"
-                      echo "[INFO] Using detected installed PostgreSQL major version: $NR_CLI_DB_VERSION"
-                    fi
-                  fi
-                fi
-              fi
-            fi
-          else
-            echo "[INFO] Skipping additional permission granting as NR_CLI_SLOW_QUERY is not enabled."
-          fi
-
-          # Detect PostgreSQL version if not provided or confirm the user's choice
-          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
-            # Instead of trying to detect version by connecting with newrelic user,
-            # we'll check if postgres admin credentials were provided earlier and use those
-            if [[ -n "$POSTGRES_USERNAME" && -n "$POSTGRES_PASSWORD" ]]; then
-              DETECTED_VERSION=$(PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW server_version;" | awk '{print $1}' | cut -d'.' -f1 || echo "")
-              
-              if [[ -n "$DETECTED_VERSION" ]]; then
-                echo "[INFO] Detected PostgreSQL major version: $DETECTED_VERSION"
-                # Automatically use the detected version without prompting - using only major version number
-                NR_CLI_DB_VERSION=$DETECTED_VERSION
-                echo "[INFO] Using detected PostgreSQL major version: $NR_CLI_DB_VERSION"
-              fi
-            fi
-          fi
-
           # Add to config debug output
           echo "[INFO] Using PostgreSQL version: $NR_CLI_DB_VERSION" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
 
@@ -302,65 +247,9 @@ install:
             printf "\n[OK] All checks passed. Installing Postgres Integration...\n\n"
           fi
 
-          # Prerequisites
-          # Before enabling the extensions, make sure you have the following installed:
-          sudo apt update
-          sudo apt install -y golang-go gcc make
-          
           # Check if slow query monitoring is enabled
           if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
-            # Install the PostgreSQL server dev package with proper version
-            echo "[INFO] Installing PostgreSQL development package (postgresql-server-dev-$NR_CLI_DB_VERSION)..."
-            sudo apt-get install -y postgresql-server-dev-$NR_CLI_DB_VERSION
-            
-            # Verify the PostgreSQL dev package is properly installed
-            if [ ! -f "/usr/include/postgresql/$NR_CLI_DB_VERSION/server/postgres.h" ] && [ ! -f "/usr/include/postgresql/server/postgres.h" ]; then
-              echo -e "\033[0;31m[ERROR] PostgreSQL development headers not found. Cannot compile extensions.\033[0m" >&2
-              echo -e "\033[0;33m[WARNING] Continuing installation without pg_wait_sampling and pg_stat_monitor extensions.\033[0m" >&2
-            else
-              # Configure PG_CONFIG if needed
-              if [ -f "/usr/lib/postgresql/$NR_CLI_DB_VERSION/bin/pg_config" ]; then
-                export PG_CONFIG="/usr/lib/postgresql/$NR_CLI_DB_VERSION/bin/pg_config"
-              elif [ -f "/usr/bin/pg_config" ]; then
-                export PG_CONFIG="/usr/bin/pg_config"
-              fi
-              
-              # Enable the pg_wait_sampling extension
-              echo "[INFO] Cloning and compiling pg_wait_sampling extension..."
-              if [ -d "pg_wait_sampling" ]; then
-                rm -rf pg_wait_sampling
-              fi
-              git clone https://github.com/postgrespro/pg_wait_sampling.git
-              cd pg_wait_sampling
-              
-              # If PG_CONFIG was found, use it explicitly
-              if [ -n "$PG_CONFIG" ]; then
-                sudo make USE_PGXS=1 PG_CONFIG=$PG_CONFIG || echo -e "\033[0;33m[WARNING] Failed to compile pg_wait_sampling, continuing installation.\033[0m" >&2
-                sudo make USE_PGXS=1 PG_CONFIG=$PG_CONFIG install || echo -e "\033[0;33m[WARNING] Failed to install pg_wait_sampling, continuing installation.\033[0m" >&2
-              else
-                sudo make USE_PGXS=1 || echo -e "\033[0;33m[WARNING] Failed to compile pg_wait_sampling, continuing installation.\033[0m" >&2
-                sudo make USE_PGXS=1 install || echo -e "\033[0;33m[WARNING] Failed to install pg_wait_sampling, continuing installation.\033[0m" >&2
-              fi
-              cd ..
-              
-              # Enable the pg_stat_monitor extension
-              echo "[INFO] Cloning and compiling pg_stat_monitor extension..."
-              if [ -d "pg_stat_monitor" ]; then
-                rm -rf pg_stat_monitor
-              fi
-              git clone https://github.com/percona/pg_stat_monitor.git
-              cd pg_stat_monitor
-              
-              # If PG_CONFIG was found, use it explicitly
-              if [ -n "$PG_CONFIG" ]; then
-                sudo make USE_PGXS=1 PG_CONFIG=$PG_CONFIG || echo -e "\033[0;33m[WARNING] Failed to compile pg_stat_monitor, continuing installation.\033[0m" >&2
-                sudo make USE_PGXS=1 PG_CONFIG=$PG_CONFIG install || echo -e "\033[0;33m[WARNING] Failed to install pg_stat_monitor, continuing installation.\033[0m" >&2
-              else
-                sudo make USE_PGXS=1 || echo -e "\033[0;33m[WARNING] Failed to compile pg_stat_monitor, continuing installation.\033[0m" >&2
-                sudo make USE_PGXS=1 install || echo -e "\033[0;33m[WARNING] Failed to install pg_stat_monitor, continuing installation.\033[0m" >&2
-              fi
-              cd ..
-            fi
+            echo "[INFO] Setting up PostgreSQL query monitoring..."
             
             # Find PostgreSQL configuration directory
             echo "[INFO] Looking for PostgreSQL configuration directory..."
@@ -377,111 +266,21 @@ install:
                   # Extract the version from the path
                   PG_VERSION_FROM_DIR=$(echo "$dir" | sed -E 's|/etc/postgresql/([^/]+)/main|\1|')
                   echo "[INFO] Found PostgreSQL configuration directory for version $PG_VERSION_FROM_DIR: $dir"
-                  # Update NR_CLI_DB_VERSION if it was different
-                  if [ "$PG_VERSION_FROM_DIR" != "$NR_CLI_DB_VERSION" ]; then
-                    echo "[INFO] Updating detected PostgreSQL version from $NR_CLI_DB_VERSION to $PG_VERSION_FROM_DIR"
-                    NR_CLI_DB_VERSION="$PG_VERSION_FROM_DIR"
-                  fi
-                  break
+                                    break
                 fi
               done
             fi
             
             if [ -z "$PG_CONFIG_DIR" ]; then
-              echo -e "\033[0;33m[WARNING] Could not find PostgreSQL configuration directory. Some features may not work properly.\033[0m" >&2
-            else
-              echo "[INFO] Using PostgreSQL configuration directory: $PG_CONFIG_DIR"
+              echo -e "\033[0;31m[ERROR] Could not find PostgreSQL configuration directory.\033[0m" >&2
+            exit 1
             fi
             
-            # Define the config file path
-            PG_CONFIG_FILE=""
-            if [ -n "$PG_CONFIG_DIR" ]; then
-              if [ -f "$PG_CONFIG_DIR/postgresql.conf" ]; then
+            # Define the config file path and check if it exists
                 PG_CONFIG_FILE="$PG_CONFIG_DIR/postgresql.conf"
-              elif [ -f "$PG_CONFIG_DIR/postgres.conf" ]; then
-                PG_CONFIG_FILE="$PG_CONFIG_DIR/postgres.conf"
-              fi
-            fi
-            
-            if [ -z "$PG_CONFIG_FILE" ]; then
-              echo -e "\033[0;33m[WARNING] Could not find PostgreSQL configuration file. Some features may not work properly.\033[0m" >&2
-            else
-              echo "[INFO] Using PostgreSQL configuration file: $PG_CONFIG_FILE"
-            fi
-  
-            # Enable the pg_stat_statement extension
-            if [ -n "$PG_CONFIG_FILE" ]; then
-              # Create backup of the configuration file
-              sudo cp "$PG_CONFIG_FILE" "$PG_CONFIG_FILE.bak"
-              echo "[INFO] Created backup of PostgreSQL configuration at $PG_CONFIG_FILE.bak"
-              
-              # Add extensions to shared_preload_libraries in postgresql.conf
-              if grep -q "^#shared_preload_libraries" "$PG_CONFIG_FILE"; then
-                sudo sed -i "/^#shared_preload_libraries/c\shared_preload_libraries = 'pg_stat_statements, pg_wait_sampling, pg_stat_monitor'" "$PG_CONFIG_FILE"
-                echo "[INFO] Enabled shared_preload_libraries in $PG_CONFIG_FILE"
-              elif ! grep -q "shared_preload_libraries" "$PG_CONFIG_FILE"; then
-                echo "shared_preload_libraries = 'pg_stat_statements, pg_wait_sampling, pg_stat_monitor'" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
-                echo "[INFO] Added shared_preload_libraries to $PG_CONFIG_FILE"
-              else
-                echo "[INFO] shared_preload_libraries already configured in $PG_CONFIG_FILE"
-              fi
-              
-              if grep -q "^#pg_stat_statements.max" "$PG_CONFIG_FILE"; then
-                sudo sed -i "/^#pg_stat_statements.max/c\pg_stat_statements.max = 10000" "$PG_CONFIG_FILE"
-                echo "[INFO] Enabled pg_stat_statements.max in $PG_CONFIG_FILE"
-              elif ! grep -q "pg_stat_statements.max" "$PG_CONFIG_FILE"; then
-                echo "pg_stat_statements.max = 10000" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
-                echo "[INFO] Added pg_stat_statements.max to $PG_CONFIG_FILE"
-              fi
-              
-              if grep -q "^#pg_stat_statements.track" "$PG_CONFIG_FILE"; then
-                sudo sed -i "/^#pg_stat_statements.track/c\pg_stat_statements.track = all" "$PG_CONFIG_FILE"
-                echo "[INFO] Enabled pg_stat_statements.track in $PG_CONFIG_FILE"
-              elif ! grep -q "pg_stat_statements.track" "$PG_CONFIG_FILE"; then
-                echo "pg_stat_statements.track = all" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
-                echo "[INFO] Added pg_stat_statements.track to $PG_CONFIG_FILE"
-              fi
-              
-              if grep -q "^#pg_stat_statements.save" "$PG_CONFIG_FILE"; then
-                sudo sed -i "/^#pg_stat_statements.save/c\pg_stat_statements.save = on" "$PG_CONFIG_FILE"
-                echo "[INFO] Enabled pg_stat_statements.save in $PG_CONFIG_FILE"
-              elif ! grep -q "pg_stat_statements.save" "$PG_CONFIG_FILE"; then
-                echo "pg_stat_statements.save = on" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
-                echo "[INFO] Added pg_stat_statements.save to $PG_CONFIG_FILE"
-              fi
-            else
-              echo -e "\033[0;33m[WARNING] Could not find PostgreSQL configuration file to configure statistics extensions. You may need to manually configure these.\033[0m" >&2
-            fi
-  
-            # Offer to restart PostgreSQL if configuration was changed
-            if [ -n "$PG_CONFIG_FILE" ]; then
-              # Ask to restart PostgreSQL only if we haven't already asked before
-              PG_RESTART_DONE="${PG_RESTART_DONE:-false}"
-              
-              if [[ "$PG_RESTART_DONE" != "true" ]]; then
-                printf "\nRestart your PostgreSQL instance to enable the query monitoring settings? (y/n): "
-                read -r DB_RESTART
-                DB_RESTART=${DB_RESTART:-y}
-                
-                if [ "$DB_RESTART" = "y" ]; then
-                  echo "[INFO] Restarting PostgreSQL..."
-                  if systemctl status postgresql >/dev/null 2>&1; then
-                    sudo systemctl restart postgresql
-                    echo "[INFO] PostgreSQL restarted using systemctl"
-                  else
-                    sudo service postgresql restart
-                    echo "[INFO] PostgreSQL restarted using service command"
-                  fi
-                  # Mark that we've already restarted
-                  PG_RESTART_DONE="true"
-                else
-                  echo "[INFO] Skipping PostgreSQL restart. Changes will apply after next restart."
-                  # Mark that user doesn't want to restart
-                  PG_RESTART="n"
-                fi
-              else
-                echo "[INFO] PostgreSQL was already restarted earlier in the installation process."
-              fi
+              if [ ! -f "$PG_CONFIG_FILE" ]; then
+              echo -e "\033[0;31m[ERROR] PostgreSQL configuration file not found at $PG_CONFIG_FILE\033[0m" >&2
+              exit 1
             fi
   
             # Connect to PostgreSQL and enable extensions in the database
@@ -519,9 +318,11 @@ install:
                     echo "  Owner: $OWNER"
                     
                     # Verify if it's in shared_preload_libraries
-                    local PRELOAD_CHECK=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW shared_preload_libraries;" 2>/dev/null)
+                    local PRELOAD_CHECK=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW shared_preload_libraries;" 2>/dev/null | tr -d ' ')
+                    local IS_IN_PRELOAD=false
                     if [[ "$PRELOAD_CHECK" == *"$ext_name"* ]]; then
                         echo "  Loaded in shared_preload_libraries: Yes"
+                        IS_IN_PRELOAD=true
                     else
                         echo -e "\033[0;33m[WARNING] Extension $ext_name is installed but not found in shared_preload_libraries\033[0m" >&2
                         echo -e "\033[0;33mAdd '$ext_name' to shared_preload_libraries in postgresql.conf and restart PostgreSQL\033[0m" >&2
@@ -547,11 +348,16 @@ install:
                             ;;
                     esac
                     
-                    if [ "$IS_FUNCTIONAL" = true ]; then
+                    if [ "$IS_FUNCTIONAL" = true ] && [ "$IS_IN_PRELOAD" = true ]; then
                         echo "  Extension is functional: Yes"
                     else
-                        echo -e "\033[0;33m[WARNING] Extension $ext_name is installed but may not be functional\033[0m" >&2
-                        echo -e "\033[0;33mMake sure it's properly configured in postgresql.conf and the database was restarted\033[0m" >&2
+                        echo -e "\033[0;33m[WARNING] Extension $ext_name is installed but may not be fully functional\033[0m" >&2
+                        if [ "$IS_IN_PRELOAD" = false ]; then
+                            echo -e "\033[0;33m  - Add '$ext_name' to shared_preload_libraries in postgresql.conf\033[0m" >&2
+                        fi
+                        echo -e "\033[0;33m  - Make sure all settings are properly configured in postgresql.conf\033[0m" >&2
+                        echo -e "\033[0;33m  - Restart PostgreSQL after making configuration changes\033[0m" >&2
+                        return 1
                     fi
                 else
                     echo -e "\033[0;31m[ERROR] Extension $ext_name is NOT installed in database $NR_CLI_DATABASE\033[0m" >&2
@@ -560,6 +366,37 @@ install:
                     return 1
                 fi
             }
+
+            # Check for required shared_preload_libraries configuration
+            echo "[INFO] Checking PostgreSQL configuration..."
+            
+            # Read current shared_preload_libraries setting
+            CURRENT_PRELOAD=$(grep "^shared_preload_libraries" "$PG_CONFIG_FILE" | sed "s/.*=\s*'\([^']*\)'.*/\1/" || echo "")
+            
+            # Check if all required libraries are present
+            REQUIRED_LIBRARIES=("pg_stat_statements" "pg_wait_sampling" "pg_stat_monitor")
+            MISSING_LIBRARIES=()
+            
+            for lib in "${REQUIRED_LIBRARIES[@]}"; do
+              if [[ ! "$CURRENT_PRELOAD" =~ $lib ]]; then
+                MISSING_LIBRARIES+=("$lib")
+              else
+                if [ "$lib" == "pg_stat_statements" ]; then
+                  echo "[NR_CLI_SLOW_QUERY] pg_stat_statements is already in shared_preload_libraries"
+                fi
+              fi
+            done
+            
+            if [ ${#MISSING_LIBRARIES[@]} -gt 0 ]; then
+              echo -e "\033[0;33m[WARNING] Some recommended shared_preload_libraries configuration options are missing.\033[0m" >&2
+              echo -e "\033[0;33mThe following libraries are not configured: ${MISSING_LIBRARIES[*]}\033[0m" >&2
+              echo -e "\033[0;33mFor optimal monitoring, consider adding the following to $PG_CONFIG_FILE and restart PostgreSQL:\033[0m" >&2
+              echo -e "\033[0;33mshared_preload_libraries = 'pg_stat_statements, pg_wait_sampling, pg_stat_monitor'\033[0m" >&2
+              echo -e "\033[0;33mpg_stat_statements.max = 10000\033[0m" >&2
+              echo -e "\033[0;33mpg_stat_statements.track = all\033[0m" >&2
+              echo -e "\033[0;33mpg_stat_statements.save = on\033[0m" >&2
+              echo -e "\033[0;33mContinuing with installation, but some monitoring features may be limited.\033[0m" >&2
+            fi
 
             # Try to create each extension and verify its status
             echo "[INFO] Checking current extensions in database $NR_CLI_DATABASE..."
@@ -609,8 +446,6 @@ install:
             else
               echo -e "\033[0;33m[WARNING] Could not grant table SELECT permissions to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
             fi
-          else
-            echo "[INFO] Skipping pg_stat_monitor installation to avoid potential compilation errors."
           fi
 
           # Install the integration
@@ -628,7 +463,7 @@ install:
             ENABLE_QUERY_MONITORING="ENABLE_QUERY_MONITORING: true"
             
             if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
-              echo -e "\n--- Setting up PostgreSQL query monitoring"
+              echo "[INFO] Setting up PostgreSQL query monitoring..."
               
               # Check if pg_stat_statements is loaded
               IS_PG_STAT_STATEMENTS_LOADED=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_stat_statements LIMIT 1;" 2>/dev/null || echo "0")
@@ -642,92 +477,17 @@ install:
                 echo "[NR_CLI_SLOW_QUERY] Created backup at $PG_CONFIG_FILE.bak"
                 
                 # Check if shared_preload_libraries includes pg_stat_statements
+                # Check if pg_stat_statements is in shared_preload_libraries but don't modify it
                 if grep -q "shared_preload_libraries.*pg_stat_statements" "$PG_CONFIG_FILE"; then
-                  echo "[NR_CLI_SLOW_QUERY] pg_stat_statements is already in shared_preload_libraries"
+                  echo "[NR_CLI_SLOW_QUERY] pg_stat_statements is in shared_preload_libraries"
                 else
-                  # Update shared_preload_libraries to include pg_stat_statements
-                  if grep -q "^shared_preload_libraries" "$PG_CONFIG_FILE"; then
-                    # Append to existing setting if present but not including pg_stat_statements
-                    sudo sed -i "/^shared_preload_libraries/s/=\(.*\)/= \1, 'pg_stat_statements'/" "$PG_CONFIG_FILE"
-                  else
-                    # Add the setting if not present
-                    echo "shared_preload_libraries = 'pg_stat_statements'" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
-                  fi
-                  echo "[NR_CLI_SLOW_QUERY] Added pg_stat_statements to shared_preload_libraries"
-                fi
-                
-                # Configure pg_stat_statements settings
-                if ! grep -q "^pg_stat_statements.max" "$PG_CONFIG_FILE"; then
-                  echo "pg_stat_statements.max = 10000" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
-                  echo "[NR_CLI_SLOW_QUERY] Set pg_stat_statements.max = 10000"
-                fi
-                
-                if ! grep -q "^pg_stat_statements.track" "$PG_CONFIG_FILE"; then
-                  echo "pg_stat_statements.track = all" | sudo tee -a "$PG_CONFIG_FILE" > /dev/null
-                  echo "[NR_CLI_SLOW_QUERY] Set pg_stat_statements.track = all"
-                fi
-                
-                # Check if we already restarted PostgreSQL earlier
-                if [[ "$PG_RESTART_DONE" == "true" ]]; then
-                  echo "[INFO] PostgreSQL was already restarted earlier in the installation process."
-                  
-                  # Check if pg_stat_statements extension exists in the database
-                  IS_EXTENSION_EXISTS=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_extension WHERE extname = 'pg_stat_statements';" 2>/dev/null || echo "0")
-                  
-                  if [[ "$IS_EXTENSION_EXISTS" == "0" ]]; then
-                    # Create the extension in the database
-                    echo "[NR_CLI_SLOW_QUERY] Creating pg_stat_statements extension in database $NR_CLI_DATABASE"
-                    # Try with both the newrelic user and postgres user
-                    PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || \
-                    PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null
-                  else
-                    echo "[NR_CLI_SLOW_QUERY] pg_stat_statements extension is already installed in database $NR_CLI_DATABASE"
-                  fi
-                elif [[ "$PG_RESTART" == "n" ]]; then
-                  echo -e "\n\033[0;33m[Warning] The query monitoring configuration changes will become active the next time you restart your PostgreSQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
-                else
-                  # We haven't restarted PostgreSQL yet, so do it now
-                  printf "\nRestart your PostgreSQL instance to enable the query monitoring settings? (y/n): "
-                  read -r DB_RESTART
-                  DB_RESTART=${DB_RESTART:-y}
-                  
-                  if [ "$DB_RESTART" = "y" ]; then
-                    # Try different ways to restart PostgreSQL
-                    if systemctl status postgresql >/dev/null 2>&1; then
-                      sudo systemctl restart postgresql
-                      echo "[NR_CLI_SLOW_QUERY] PostgreSQL server restarted to apply changes"
-                    else
-                      sudo service postgresql restart
-                      echo "[NR_CLI_SLOW_QUERY] PostgreSQL server restarted to apply changes"
-                    fi
-                    
-                    # Mark that we've already restarted PostgreSQL
-                    PG_RESTART_DONE="true"
-                    
-                    # Check if pg_stat_statements extension exists in the database
-                    sleep 5 # Wait for restart to complete
-                    IS_EXTENSION_EXISTS=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_extension WHERE extname = 'pg_stat_statements';" 2>/dev/null || echo "0")
-                    
-                    if [[ "$IS_EXTENSION_EXISTS" == "0" ]]; then
-                      # Create the extension in the database
-                      echo "[NR_CLI_SLOW_QUERY] Creating pg_stat_statements extension in database $NR_CLI_DATABASE"
-                      # Try with both the newrelic user and postgres user
-                      PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || \
-                      PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null
-                    else
-                      echo "[NR_CLI_SLOW_QUERY] pg_stat_statements extension is already installed in database $NR_CLI_DATABASE"
-                    fi
-                  else
-                    echo -e "\n\033[0;33m[Warning] The query monitoring configuration changes will become active the next time you restart your PostgreSQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
-                    # Mark that user doesn't want to restart
-                    PG_RESTART="n"
-                  fi
+                  echo -e "\033[0;33m[WARNING] pg_stat_statements should be added to shared_preload_libraries in postgresql.conf manually if needed\033[0m" >&2
                 fi
               else
                 echo -e "\033[0;33m[Warning] The PostgreSQL configuration file could not be found. The query monitoring settings will need to be configured manually.\033[0m" >&2
               fi
             elif [[ "$QUERY_MONITORING_PREVIOUSLY_ENABLED" -eq 1 ]]; then
-              echo -e "\033[0;33m[Warning] Query monitoring was previously enabled. This guided install will keep this setting, but cannot safely turn these off if needed. Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired.\033[0m" >&2
+              echo -e "\033[0;33m[Warning] Query monitoring was previously enabled. This guided install will keep this setting.\033[0m" >&2
             fi
           fi
 
