@@ -13,13 +13,20 @@ installTargets:
     platformVersion: "2"
   - type: host
     os: linux
+    platform: "amazon"
+    platformVersion: "2023"  # Added support for Amazon Linux 2023
+  - type: host
+    os: linux
     platform: "redhat"
+    platformVersion: "(7|8|9)\\.*"  # Using regex to match RHEL 7, 8, and 9 with any subversion
   - type: host
     os: linux
     platform: "centos"
+    platformVersion: "(7|8)\\.*"  # Using regex to match CentOS 7 and 8 with any subversion
   - type: host
     os: linux
     platformFamily: rhel
+    platformVersion: "(7|8|9)\\.*"  # General catch-all for RHEL family with versions 7, 8, and 9
 
 # keyword convention for dealing with search terms that could land someone on this instrumentation project
 keywords:
@@ -111,6 +118,8 @@ install:
           NR_CLI_CERT_KEY="{{.NR_CLI_CERT_KEY}}"
           NR_CLI_TRUST_SERVER_CERTIFICATE="{{.NR_CLI_TRUST_SERVER_CERTIFICATE}}"
           NR_CLI_CERT_AUTH_FILE="{{.NR_CLI_CERT_AUTH_FILE}}"
+          NR_CLI_SLOW_QUERY="{{.NR_CLI_SLOW_QUERY}}"
+          NR_CLI_RDS_SLOW_QUERY="{{.NR_CLI_RDS_SLOW_QUERY}}"
 
           # Set Defaults
           NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-'localhost'}
@@ -121,6 +130,34 @@ install:
           NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-'newrelic'}
           GEN_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           NR_CLI_DB_PASSWORD=${NR_CLI_DB_PASSWORD:-"$GEN_PASSWORD"}
+          
+          # Initialize PostgreSQL admin credentials - these will be set when first requested
+          # and reused throughout the script
+          POSTGRES_ADMIN_USERNAME=""
+          POSTGRES_ADMIN_PASSWORD=""
+          
+          # Ask for hostname upfront if not in automatic mode and either RDS or slow query is enabled
+          if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+            if [[ "$NR_CLI_RDS_SLOW_QUERY" == "true" ]]; then
+              printf "\nPlease enter the hostname for your PostgreSQL RDS instance: "
+              read -r ENTERED_HOSTNAME
+              if [[ -n "$ENTERED_HOSTNAME" ]]; then
+                NR_CLI_DB_HOSTNAME=$ENTERED_HOSTNAME
+              fi
+              
+              # Ensure hostname is provided for RDS
+              while [[ -z "$NR_CLI_DB_HOSTNAME" ]]; do
+                printf "\nHostname cannot be empty. Please enter the hostname for your PostgreSQL RDS instance: "
+                read -r NR_CLI_DB_HOSTNAME
+              done
+            elif [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
+              printf "\nPlease enter the hostname for your PostgreSQL instance (Default localhost): "
+              read -r ENTERED_HOSTNAME
+              if [[ -n "$ENTERED_HOSTNAME" ]]; then
+                NR_CLI_DB_HOSTNAME=$ENTERED_HOSTNAME
+              fi
+            fi
+          fi
 
           # Check default connect
           CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
@@ -200,12 +237,25 @@ install:
               stty echo
               echo ""
 
-              sudo PGPASSWORD=$POSTGRES_PASSWORD -u $POSTGRES_USERNAME psql -t -A -c "${sql}" > /dev/null 2>&1 || true
-              sudo rm -f .nr_script.sql > /dev/null 2>&1
+              # Debug: Show what command we're about to run
+              echo "[DEBUG] Running: PGPASSWORD=*** psql -U $POSTGRES_USERNAME -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -d $NR_CLI_DATABASE -c \"...sql...\""
+
+              # Use PGPASSWORD directly with psql instead of using sudo with -u which is incorrect
+              PGPASSWORD=$POSTGRES_PASSWORD psql -U $POSTGRES_USERNAME -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -d $NR_CLI_DATABASE -c "${sql}" > /dev/null 2>&1
+              SQL_STATUS=$?
+              
+              if [[ $SQL_STATUS -ne 0 ]]; then
+                echo "[DEBUG] Failed to execute SQL to create newrelic user: exit code $SQL_STATUS"
+              fi
+              
               IS_DATABASE_VALID=$(PGPASSWORD=$NR_CLI_DB_PASSWORD psql -U $NR_CLI_DB_USERNAME -w $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "select version();" 2>&1 | grep -i PostgreSQL | grep -v grep | wc -l)
               IS_DATABASE_VALID=${IS_DATABASE_VALID:-0}
 
               if [[ $IS_DATABASE_VALID -gt "0" ]]; then 
+                echo "[SUCCESS] Successfully created and verified newrelic user"
+                # Store credentials for later use in the script
+                POSTGRES_ADMIN_USERNAME=$POSTGRES_USERNAME
+                POSTGRES_ADMIN_PASSWORD=$POSTGRES_PASSWORD
                 break
               else
                 printf "\n\nUnable to create the required newrelic user.  PostgreSQL account information is required.  Please try again.\n\n" >&3
@@ -240,6 +290,388 @@ install:
             sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
           fi
           sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
+
+          # Helper function to grant admin permissions
+          grant_admin_permissions() {
+            local username=$1
+            local password=$2
+            local database=$3
+            local hostname=$4
+            local port=$5
+            
+            echo "[INFO] Granting required permissions to admin user $username..."
+            
+            # Grant pg_read_all_stats role to admin user
+            echo "[INFO] Granting pg_read_all_stats role to admin user..."
+            PERMISSION_OUTPUT=$(PGPASSWORD=$password psql -U $username -d $database -h $hostname -p $port -c "GRANT pg_read_all_stats TO $NR_CLI_DB_USERNAME;" 2>&1)
+            if [ $? -eq 0 ]; then
+                echo "[SUCCESS] Successfully granted pg_read_all_stats to $NR_CLI_DB_USERNAME"
+            else
+                echo -e "\033[0;33m[WARNING] Could not grant pg_read_all_stats to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
+            fi
+            
+            # Grant SELECT on all tables in public schema to admin user
+            echo "[INFO] Granting SELECT permissions on public schema to admin user..."
+            PERMISSION_OUTPUT=$(PGPASSWORD=$password psql -U $username -d $database -h $hostname -p $port -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO $NR_CLI_DB_USERNAME;" 2>&1)
+            if [ $? -eq 0 ]; then
+                echo "[SUCCESS] Successfully granted SELECT permissions to $NR_CLI_DB_USERNAME"
+            else
+                echo -e "\033[0;33m[WARNING] Could not grant table SELECT permissions to $NR_CLI_DB_USERNAME: $PERMISSION_OUTPUT\033[0m" >&2
+            fi
+          }
+          
+          # Function to verify extension status
+          verify_extension() {
+              local ext_name=$1
+              echo "[INFO] Verifying extension: $ext_name"
+              
+              # Check if extension exists in pg_extension
+              local EXT_CHECK=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT extname, extversion, extowner::regrole FROM pg_extension WHERE extname = '$ext_name';" 2>&1)
+              local STATUS=$?
+              
+              if [ $STATUS -eq 0 ] && [ ! -z "$EXT_CHECK" ]; then
+                  # Extension exists, get details
+                  local VERSION=$(echo "$EXT_CHECK" | cut -d'|' -f2)
+                  local OWNER=$(echo "$EXT_CHECK" | cut -d'|' -f3)
+                  echo "[SUCCESS] Extension $ext_name is properly installed:"
+                  echo "  Version: $VERSION"
+                  echo "  Owner: $OWNER"
+                  
+                  # Verify if it's in shared_preload_libraries
+                  local PRELOAD_CHECK=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW shared_preload_libraries;" 2>/dev/null)
+                  if [[ "$PRELOAD_CHECK" == *"$ext_name"* ]]; then
+                      echo "  Loaded in shared_preload_libraries: Yes"
+                  else
+                      echo -e "\033[0;33m[WARNING] Extension $ext_name is installed but not found in shared_preload_libraries\033[0m" >&2
+                      echo -e "\033[0;33mAdd '$ext_name' to shared_preload_libraries in postgresql.conf and restart PostgreSQL\033[0m" >&2
+                  fi
+                  
+                  # Try to verify if extension is actually functional
+                  local IS_FUNCTIONAL=false
+                  case "$ext_name" in
+                      "pg_stat_statements")
+                          if PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_stat_statements LIMIT 1;" >/dev/null 2>&1; then
+                              IS_FUNCTIONAL=true
+                          fi
+                          ;;
+                      "pg_wait_sampling")
+                          if PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_wait_sampling_current LIMIT 1;" >/dev/null 2>&1; then
+                              IS_FUNCTIONAL=true
+                          fi
+                          ;;
+                      "pg_stat_monitor")
+                          if PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_stat_monitor LIMIT 1;" >/dev/null 2>&1; then
+                              IS_FUNCTIONAL=true
+                          fi
+                          ;;
+                  esac
+                  
+                  if [ "$IS_FUNCTIONAL" = true ]; then
+                      echo "  Extension is functional: Yes"
+                  else
+                      echo -e "\033[0;33m[WARNING] Extension $ext_name is installed but may not be functional\033[0m" >&2
+                      echo -e "\033[0;33mMake sure it's properly configured in postgresql.conf and the database was restarted\033[0m" >&2
+                  fi
+              else
+                  echo -e "\033[0;33m[WARNING] Extension $ext_name is NOT installed in database $NR_CLI_DATABASE\033[0m" >&2
+                  echo -e "\033[0;33m[INFO] Continuing with installation without $ext_name extension\033[0m" >&2
+                  return 0 # Return success so installation continues
+              fi
+          }
+
+          # Check if RDS slow query monitoring is enabled
+          if [[ "$NR_CLI_RDS_SLOW_QUERY" == "true" ]]; then
+            echo "[INFO] Setting up PostgreSQL RDS query monitoring..."
+            
+            # Hostname was already requested at the beginning of the script,
+            # but we need to ensure it's not empty for RDS
+            if [[ -z "$NR_CLI_DB_HOSTNAME" ]]; then
+              if [[ "$NEW_RELIC_ASSUME_YES" != "true" ]]; then
+                printf "\nHostname cannot be empty. Please enter the hostname for your PostgreSQL RDS instance: "
+                read -r NR_CLI_DB_HOSTNAME
+              else
+                echo "Hostname is required for RDS monitoring but was not provided."
+                exit 1
+              fi
+            fi
+            
+            # Check connection
+            CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+            CAN_CONNECT=${CAN_CONNECT:-0}
+            
+            if [[ "$CAN_CONNECT" == "7" ]]; then
+              echo -e "\033[0;31m[ERROR] Unable to connect to PostgreSQL RDS instance at $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT\033[0m" >&2
+              exit 7
+            fi
+
+            # Use stored postgres admin credentials if available, or prompt if not
+            if [[ -n "$POSTGRES_ADMIN_USERNAME" && -n "$POSTGRES_ADMIN_PASSWORD" ]]; then
+                echo "Using previously provided PostgreSQL admin credentials"
+                ADMIN_USERNAME=$POSTGRES_ADMIN_USERNAME
+                ADMIN_PASSWORD=$POSTGRES_ADMIN_PASSWORD
+            else
+                echo "Please provide PostgreSQL admin credentials to create extension and grant permissions"
+                printf "PostgreSQL Admin Username? "
+                read -r ADMIN_USERNAME
+                stty -echo
+                printf "Enter PostgreSQL Admin Password: "
+                read -r ADMIN_PASSWORD
+                stty echo
+                printf "\n"
+                
+                # Store credentials for reuse
+                POSTGRES_ADMIN_USERNAME=$ADMIN_USERNAME
+                POSTGRES_ADMIN_PASSWORD=$ADMIN_PASSWORD
+            fi
+
+            # Define function to verify RDS extension
+            verify_rds_extension() {
+                    echo "[INFO] Verifying extension: pg_stat_statements"
+                    
+                    # Check if extension exists in pg_extension
+                    local EXT_CHECK=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT extname, extversion, extowner::regrole FROM pg_extension WHERE extname = 'pg_stat_statements';" 2>&1)
+                    local STATUS=$?
+                    
+                    if [ $STATUS -eq 0 ] && [ ! -z "$EXT_CHECK" ]; then
+                        # Extension exists, get details
+                        local VERSION=$(echo "$EXT_CHECK" | cut -d'|' -f2)
+                        local OWNER=$(echo "$EXT_CHECK" | cut -d'|' -f3)
+                        echo "[SUCCESS] Extension pg_stat_statements is properly installed:"
+                        echo "  Version: $VERSION"
+                        echo "  Owner: $OWNER"
+                        
+                        # Try to verify if extension is functional
+                        if PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SELECT count(*) FROM pg_stat_statements LIMIT 1;" >/dev/null 2>&1; then
+                            echo "  Extension is functional: Yes"
+                            
+                            # Check RDS parameter group settings
+                            echo "[INFO] Verifying RDS parameter settings for pg_stat_statements..."
+                            local SETTINGS_VERIFIED=true
+                            
+                            # Query for pg_stat_statements.max
+                            local MAX_SETTING=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW pg_stat_statements.max;" 2>/dev/null || echo "")
+                            if [ -z "$MAX_SETTING" ] || [ "$MAX_SETTING" -lt 10000 ]; then
+                                echo -e "\033[0;33m[WARNING] RDS parameter pg_stat_statements.max is not set to at least 10000\033[0m" >&2
+                                SETTINGS_VERIFIED=false
+                            fi
+                            
+                            # Query for pg_stat_statements.track
+                            local TRACK_SETTING=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW pg_stat_statements.track;" 2>/dev/null | tr -d ' ' || echo "")
+                            if [ "$TRACK_SETTING" != "all" ]; then
+                                echo -e "\033[0;33m[WARNING] RDS parameter pg_stat_statements.track is not set to 'all'\033[0m" >&2
+                                SETTINGS_VERIFIED=false
+                            fi
+                            
+                            # Query for pg_stat_statements.save
+                            local SAVE_SETTING=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -t -c "SHOW pg_stat_statements.save;" 2>/dev/null | tr -d ' ' || echo "")
+                            if [ "$SAVE_SETTING" != "on" ]; then
+                                echo -e "\033[0;33m[WARNING] RDS parameter pg_stat_statements.save is not set to 'on'\033[0m" >&2
+                                SETTINGS_VERIFIED=false
+                            fi
+                            
+                            if [ "$SETTINGS_VERIFIED" = false ]; then
+                                echo -e "\033[0;33m[IMPORTANT] Please update your RDS parameter group with the following settings:\033[0m" >&2
+                                echo -e "\033[0;33m  shared_preload_libraries = 'pg_stat_statements'\033[0m" >&2
+                                echo -e "\033[0;33m  pg_stat_statements.max = 10000    # Maximum number of statements tracked\033[0m" >&2
+                                echo -e "\033[0;33m  pg_stat_statements.track = all    # Track all statements\033[0m" >&2
+                                echo -e "\033[0;33m  pg_stat_statements.save = on      # Save statistics across server restarts\033[0m" >&2
+                                echo -e "\033[0;33mAfter updating the parameter group, you will need to reboot your RDS instance.\033[0m" >&2
+                            fi
+                            
+                            return 0
+                        else
+                            echo -e "\033[0;33m[WARNING] pg_stat_statements is installed but may not be functional\033[0m" >&2
+                            echo -e "\033[0;33m[IMPORTANT] Please ensure your RDS parameter group has the following settings:\033[0m" >&2
+                            echo -e "\033[0;33m  shared_preload_libraries = 'pg_stat_statements'\033[0m" >&2
+                            echo -e "\033[0;33m  pg_stat_statements.max = 10000    # Maximum number of statements tracked\033[0m" >&2
+                            echo -e "\033[0;33m  pg_stat_statements.track = all    # Track all statements\033[0m" >&2
+                            echo -e "\033[0;33m  pg_stat_statements.save = on      # Save statistics across server restarts\033[0m" >&2
+                            echo -e "\033[0;33mAfter updating the parameter group, you will need to reboot your RDS instance.\033[0m" >&2
+                            echo -e "\033[0;33m[INFO] Continuing with installation despite incomplete configuration\033[0m" >&2
+                            return 0 # Return success so installation continues
+                        fi
+                    else
+                        echo -e "\033[0;33m[WARNING] Extension pg_stat_statements is NOT installed in database $NR_CLI_DATABASE\033[0m" >&2
+                        echo -e "\033[0;33m[IMPORTANT] Please update your RDS parameter group with the following settings:\033[0m" >&2
+                        echo -e "\033[0;33m  shared_preload_libraries = 'pg_stat_statements'\033[0m" >&2
+                        echo -e "\033[0;33m  pg_stat_statements.max = 10000    # Maximum number of statements tracked\033[0m" >&2
+                        echo -e "\033[0;33m  pg_stat_statements.track = all    # Track all statements\033[0m" >&2
+                        echo -e "\033[0;33m  pg_stat_statements.save = on      # Save statistics across server restarts\033[0m" >&2
+                        echo -e "\033[0;33mAfter updating the parameter group, you will need to reboot your RDS instance.\033[0m" >&2
+                        echo -e "\033[0;33m[INFO] Continuing with installation without pg_stat_statements extension\033[0m" >&2
+                        return 0 # Return success so installation continues
+                    fi
+                }
+
+            # Create pg_stat_statements extension
+            echo "[INFO] Creating pg_stat_statements extension..."
+            EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>&1)
+            CREATE_STATUS=$?
+            
+            if [ $CREATE_STATUS -eq 0 ]; then
+                echo "[SUCCESS] Successfully created pg_stat_statements extension"
+                verify_rds_extension || true
+            else
+                echo -e "\033[0;33m[WARNING] Failed to create pg_stat_statements extension: $EXTENSION_OUTPUT\033[0m" >&2
+            fi
+
+            # Call helper function to grant all required permissions
+            grant_admin_permissions "$ADMIN_USERNAME" "$ADMIN_PASSWORD" "$NR_CLI_DATABASE" "$NR_CLI_DB_HOSTNAME" "$NR_CLI_DB_PORT"
+
+            # Additionally, grant specific SELECT permissions on pg_stat_statements
+            echo "[INFO] Granting SELECT permissions on pg_stat_statements..."
+            PERMISSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "GRANT SELECT ON pg_stat_statements TO $NR_CLI_DB_USERNAME;" 2>&1)
+            if [ $? -eq 0 ]; then
+                echo "[SUCCESS] Successfully granted SELECT permissions on pg_stat_statements"
+            else
+                echo -e "\033[0;33m[WARNING] Failed to grant SELECT permissions on pg_stat_statements: $PERMISSION_OUTPUT\033[0m" >&2
+            fi
+
+          # Only check configuration when slow query flag is enabled
+          elif [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
+            echo "[INFO] NR_CLI_SLOW_QUERY is enabled. Checking PostgreSQL configuration..."
+
+            # Hostname was already requested at the beginning of the script
+            
+            # Check connection
+            CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
+            CAN_CONNECT=${CAN_CONNECT:-0}
+            
+            if [[ "$CAN_CONNECT" == "7" ]]; then
+              echo -e "\033[0;31m[ERROR] Unable to connect to PostgreSQL instance at $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT\033[0m" >&2
+              exit 7
+            fi
+
+            # Use stored postgres admin credentials if available, or prompt if not
+            if [[ -n "$POSTGRES_ADMIN_USERNAME" && -n "$POSTGRES_ADMIN_PASSWORD" ]]; then
+                echo "Using previously provided PostgreSQL admin credentials"
+                ADMIN_USERNAME=$POSTGRES_ADMIN_USERNAME
+                ADMIN_PASSWORD=$POSTGRES_ADMIN_PASSWORD
+            else
+                echo "Please provide PostgreSQL admin credentials to create extensions"
+                printf "PostgreSQL Admin Username? "
+                read -r ADMIN_USERNAME
+                stty -echo
+                printf "Enter PostgreSQL Admin Password: "
+                read -r ADMIN_PASSWORD
+                stty echo
+                printf "\n"
+                
+                # Store credentials for reuse
+                POSTGRES_ADMIN_USERNAME=$ADMIN_USERNAME
+                POSTGRES_ADMIN_PASSWORD=$ADMIN_PASSWORD
+            fi
+            
+            # Create extensions using admin credentials
+            echo "[INFO] Attempting to create PostgreSQL extensions..."
+            
+            echo "[INFO] Setting up PostgreSQL query monitoring..."
+            
+            # Find PostgreSQL configuration directory and file
+            PG_CONFIG_DIR="/var/lib/pgsql/${NR_CLI_DB_VERSION}/data"
+            PG_CONFIG_FILE="${PG_CONFIG_DIR}/postgresql.conf"
+            
+            # If the standard path doesn't exist, try to find it
+            if [ ! -d "$PG_CONFIG_DIR" ]; then
+              echo "[INFO] Searching for PostgreSQL configuration directory..."
+              # Try alternative locations
+              for dir in /var/lib/pgsql/*/data /var/lib/postgresql/*/data; do
+                if [ -d "$dir" ]; then
+                  PG_CONFIG_DIR="$dir"
+                  PG_CONFIG_FILE="${PG_CONFIG_DIR}/postgresql.conf"
+                  echo "[NR_CLI_SLOW_QUERY] Found PostgreSQL configuration file at $PG_CONFIG_FILE"
+                  
+                  # Create backup of postgresql.conf
+                  sudo cp "$PG_CONFIG_FILE" "${PG_CONFIG_FILE}.bak"
+                  echo "[NR_CLI_SLOW_QUERY] Created backup at ${PG_CONFIG_FILE}.bak"
+                  break
+                fi
+              done
+            fi
+
+            if [ ! -f "$PG_CONFIG_FILE" ]; then
+              echo -e "\033[0;31m[ERROR] PostgreSQL configuration file not found at $PG_CONFIG_FILE\033[0m" >&2
+              exit 1
+            fi
+
+            # Check for required shared_preload_libraries configuration
+            echo "[INFO] Checking PostgreSQL configuration..."
+            
+            # Read current shared_preload_libraries setting
+            CURRENT_PRELOAD=$(grep "^shared_preload_libraries" "$PG_CONFIG_FILE" | sed "s/.*=\s*'\([^']*\)'.*/\1/" || echo "")
+            
+            # Check if all required libraries are present
+            REQUIRED_LIBRARIES=("pg_stat_statements" "pg_wait_sampling" "pg_stat_monitor")
+            MISSING_LIBRARIES=()
+            
+            for lib in "${REQUIRED_LIBRARIES[@]}"; do
+              if [[ ! "$CURRENT_PRELOAD" =~ $lib ]]; then
+                MISSING_LIBRARIES+=("$lib")
+              else
+                if [ "$lib" == "pg_stat_statements" ]; then
+                  echo "[NR_CLI_SLOW_QUERY] pg_stat_statements is already in shared_preload_libraries"
+                fi
+              fi
+            done
+            
+            if [ ${#MISSING_LIBRARIES[@]} -gt 0 ]; then
+              echo -e "\033[0;33m[WARNING] Some recommended shared_preload_libraries configuration options are missing.\033[0m" >&2
+              echo -e "\033[0;33mThe following libraries are not configured: ${MISSING_LIBRARIES[*]}\033[0m" >&2
+              echo -e "\033[0;33mFor optimal monitoring, consider adding the following to $PG_CONFIG_FILE and restart PostgreSQL:\033[0m" >&2
+              echo -e "\033[0;33mshared_preload_libraries = 'pg_stat_statements, pg_wait_sampling, pg_stat_monitor'\033[0m" >&2
+              echo -e "\033[0;33mpg_stat_statements.max = 10000\033[0m" >&2
+              echo -e "\033[0;33mpg_stat_statements.track = all\033[0m" >&2
+              echo -e "\033[0;33mpg_stat_statements.save = on\033[0m" >&2
+              echo -e "\033[0;33mContinuing with installation, but some monitoring features may be limited.\033[0m" >&2
+            fi
+
+            # Try to create each extension and verify its status
+            echo "[INFO] Checking current extensions in database $NR_CLI_DATABASE..."
+            echo "----------------------------------------"
+            PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -x -c "SELECT * FROM pg_extension;" 2>&1
+            echo "----------------------------------------"
+
+            # Try to create and verify each extension
+            for ext in "pg_stat_statements" "pg_wait_sampling" "pg_stat_monitor"; do
+                echo "[INFO] Creating extension $ext..."
+                EXTENSION_OUTPUT=$(PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -c "CREATE EXTENSION IF NOT EXISTS $ext;" 2>&1)
+                CREATE_STATUS=$?
+                
+                if [ $CREATE_STATUS -eq 0 ]; then
+                    # Verify the extension was actually created and is working
+                    verify_extension "$ext" || true  # Continue even if verification fails
+                else
+                    echo -e "\033[0;31m[ERROR] Failed to create extension $ext: $EXTENSION_OUTPUT\033[0m" >&2
+                fi
+                echo ""
+            done
+
+            # Final verification of all extensions
+            echo "[INFO] Final verification of all extensions..."
+            echo "----------------------------------------"
+            echo "Current state of all extensions in database $NR_CLI_DATABASE:"
+            PGPASSWORD=$ADMIN_PASSWORD psql -U $ADMIN_USERNAME -d $NR_CLI_DATABASE -h $NR_CLI_DB_HOSTNAME -p $NR_CLI_DB_PORT -x -c "SELECT * FROM pg_extension WHERE extname IN ('pg_stat_statements', 'pg_wait_sampling', 'pg_stat_monitor');" 2>&1
+            echo "----------------------------------------"
+
+            # Call helper function to grant all required permissions
+            echo "[INFO] Trying to grant additional permissions to user $NR_CLI_DB_USERNAME..."
+            grant_admin_permissions "$ADMIN_USERNAME" "$ADMIN_PASSWORD" "$NR_CLI_DATABASE" "$NR_CLI_DB_HOSTNAME" "$NR_CLI_DB_PORT"
+          fi
+
+          if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
+            sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
+          fi
+          sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
+
+          # Conditionally enable query monitoring
+          ENABLE_QUERY_MONITORING=""
+          if [[ "$NR_CLI_SLOW_QUERY" == "true" || "$NR_CLI_RDS_SLOW_QUERY" == "true" || $QUERY_MONITORING_PREVIOUSLY_ENABLED -eq 1 ]]; then
+            ENABLE_QUERY_MONITORING="ENABLE_QUERY_MONITORING: true"
+            
+            if [[ "$QUERY_MONITORING_PREVIOUSLY_ENABLED" -eq 1 ]]; then
+              echo -e "\033[0;33m[Warning] Query monitoring was previously enabled. This guided install will keep this setting.\033[0m" >&2
+            fi
+          fi
 
           if [ "$NR_CLI_SSL" == "true" ]; then
             sudo tee -a /etc/newrelic-infra/integrations.d/postgresql-config.yml > /dev/null <<EOT
