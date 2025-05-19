@@ -113,6 +113,7 @@ install:
           NR_CLI_DB_USERNAME="{{.NR_CLI_DB_USERNAME}}"
           NR_CLI_DB_PASSWORD="{{.NR_CLI_DB_PASSWORD}}"
           NR_CLI_DATABASE="{{.NR_CLI_DATABASE}}"
+          NR_CLI_DB_VERSION="{{.NR_CLI_DB_VERSION}}"
           NR_CLI_SSL="{{.NR_CLI_SSL}}"
           NR_CLI_CLIENT_CERT_FILE="{{.NR_CLI_CLIENT_CERT_FILE}}"
           NR_CLI_CERT_KEY="{{.NR_CLI_CERT_KEY}}"
@@ -125,6 +126,7 @@ install:
           NR_CLI_DB_HOSTNAME=${NR_CLI_DB_HOSTNAME:-'localhost'}
           NR_CLI_DB_PORT=${NR_CLI_DB_PORT:-'5432'}
           NR_CLI_DATABASE=${NR_CLI_DATABASE:-'postgres'}
+          NR_CLI_DB_VERSION=${NR_CLI_DB_VERSION:-'12'}
           NR_CLI_SSL=${NR_CLI_SSL:='false'}
           NR_CLI_TRUST_SERVER_CERTIFICATE=${NR_CLI_TRUST_SERVER_CERTIFICATE:-'false'}
           NR_CLI_DB_USERNAME=${NR_CLI_DB_USERNAME:-'newrelic'}
@@ -159,6 +161,15 @@ install:
             fi
           fi
 
+          # Check the Query monitoring status in previous installation
+          QUERY_MONITORING_PREVIOUSLY_ENABLED=0
+          if [[ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]] && grep -qE '^\s*ENABLE_QUERY_MONITORING\s*:\s*true\s*$' /etc/newrelic-infra/integrations.d/postgresql-config.yml; then
+            QUERY_MONITORING_PREVIOUSLY_ENABLED=1
+          fi
+
+          # Add to config debug output
+          echo "[INFO] Using PostgreSQL version: $NR_CLI_DB_VERSION" | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
+
           # Check default connect
           CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
           CAN_CONNECT=${CAN_CONNECT:-0}
@@ -172,15 +183,15 @@ install:
               CAN_CONNECT=${CAN_CONNECT:-0}
 
               if [ $CAN_CONNECT == "7" ]; then
-                printf "\n\nUnable to connect your PostgreSQL instance using provided port.\n" >&3
+                printf "\n\nUnable to connect your PostgreSQL instance using provided port.\n" >&2
                 if [ ! $TRIES -lt {{.MAX_RETRIES}} ]; then exit 7; fi
                 echo "Please try again"
               fi
             done
-          else
-            if [[ "$CAN_CONNECT" == "7" ]]; then
+          else 
+            if [[ "$CAN_CONNECT" == "7" ]]; then 
               printf "\n\nUnable to connect your PostgreSQL instance using provided port.\n" >&2
-              exit 7
+              exit 7 
             fi
           fi
 
@@ -284,8 +295,26 @@ install:
 
           # Install the integration
           sudo mkdir -p "/etc/newrelic-infra/integrations.d"
-          sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-          sudo yum install nri-postgresql -y
+          
+          # Check if nri-postgresql is already installed
+          PKG_INFO=$(sudo yum list installed nri-postgresql 2>/dev/null || true)
+          if [[ $PKG_INFO == *"nri-postgresql"* ]]; then
+            echo "nri-postgresql is already the newest version ($(echo "$PKG_INFO" | grep nri-postgresql | awk '{print $2}'))."
+            
+            # Show automatically installed dependencies
+            AUTO_DEPS=$(sudo yum autoremove --assumeno 2>/dev/null | grep "Removing:" || true)
+            if [ ! -z "$AUTO_DEPS" ]; then
+              echo "The following packages were automatically installed and are no longer required:"
+              echo "$AUTO_DEPS" | sed 's/Removing:/  /'
+              echo "Use 'sudo yum autoremove' to remove them."
+            fi
+            echo "0 upgraded, 0 newly installed, 0 to remove"
+          else
+            echo "Installing nri-postgresql..."
+            sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
+            sudo yum install nri-postgresql -y
+          fi
+          
           if [ -f /etc/newrelic-infra/integrations.d/postgresql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/postgresql-config.yml;
           fi
@@ -684,6 +713,7 @@ install:
                 PASSWORD: '$NR_CLI_DB_PASSWORD'
                 DATABASE: $NR_CLI_DATABASE
                 COLLECTION_LIST: 'ALL'
+                $ENABLE_QUERY_MONITORING
                 COLLECT_DB_LOCK_METRICS: false
                 ENABLE_SSL: true
                 TRUST_SERVER_CERTIFICATE: $NR_CLI_TRUST_SERVER_CERTIFICATE
@@ -705,6 +735,7 @@ install:
                 PASSWORD: '$NR_CLI_DB_PASSWORD'
                 DATABASE: $NR_CLI_DATABASE
                 COLLECTION_LIST: 'ALL'
+                $ENABLE_QUERY_MONITORING
                 COLLECT_DB_LOCK_METRICS: false
                 ENABLE_SSL: false
                 TIMEOUT: 10
