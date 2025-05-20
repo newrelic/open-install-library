@@ -692,8 +692,14 @@ install:
           fi
           sudo touch /etc/newrelic-infra/integrations.d/postgresql-config.yml;
 
-          # Conditionally enable query monitoring
+          # Conditionally enable query monitoring and set RDS flag
           ENABLE_QUERY_MONITORING=""
+          IS_RDS_FLAG="IS_RDS: false"
+          
+          if [[ "$NR_CLI_RDS_SLOW_QUERY" == "true" ]]; then
+            IS_RDS_FLAG="IS_RDS: true"
+          fi
+          
           if [[ "$NR_CLI_SLOW_QUERY" == "true" || "$NR_CLI_RDS_SLOW_QUERY" == "true" || $QUERY_MONITORING_PREVIOUSLY_ENABLED -eq 1 ]]; then
             ENABLE_QUERY_MONITORING="ENABLE_QUERY_MONITORING: true"
             
@@ -714,6 +720,7 @@ install:
                 DATABASE: $NR_CLI_DATABASE
                 COLLECTION_LIST: 'ALL'
                 $ENABLE_QUERY_MONITORING
+                $IS_RDS_FLAG
                 COLLECT_DB_LOCK_METRICS: false
                 ENABLE_SSL: true
                 TRUST_SERVER_CERTIFICATE: $NR_CLI_TRUST_SERVER_CERTIFICATE
@@ -736,6 +743,7 @@ install:
                 DATABASE: $NR_CLI_DATABASE
                 COLLECTION_LIST: 'ALL'
                 $ENABLE_QUERY_MONITORING
+                $IS_RDS_FLAG
                 COLLECT_DB_LOCK_METRICS: false
                 ENABLE_SSL: false
                 TIMEOUT: 10
