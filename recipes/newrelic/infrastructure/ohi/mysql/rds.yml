@@ -1,0 +1,645 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+# New Relic Install Recipe for RDS/Aurora MySQL Database Specific Operations
+# Assumes:
+# 1. New Relic Infrastructure Agent or Agent Control is ALREADY INSTALLED AND RUNNING on this host.
+# 2. This host has network connectivity to the RDS/Aurora instance.
+# 3. MySQL client is installed on this host.
+
+name: mysql-rds-integration
+displayName: RDS/Aurora MySQL Monitoring Setup
+description: Configures an existing New Relic agent to monitor an AWS RDS/Aurora MySQL database.
+repository: https://github.com/newrelic/nri-mysql # Underlying integration
+
+dependencies:
+  - infrastructure-agent-installer || agent-control
+
+installTargets:
+  - type: host
+    os: linux # The OS of the host where this recipe runs (agent host)
+
+keywords:
+  - Infrastructure
+  - Integration
+  - mysql
+  - rds
+  - aurora
+  - database
+
+# No 'processMatch' as mysqld is remote.
+# No 'logMatch' as RDS logs are via CloudWatch.
+
+preInstall:
+  requireAtDiscovery: |
+    echo "INFO: RDS/Aurora MySQL specific setup. Verifying prerequisites on this host."
+    exit 0
+  info: |2
+    This recipe automates the database-specific configurations required to monitor an AWS RDS or Aurora MySQL instance with New Relic.
+
+    It will guide you through:
+    1. Collecting RDS/Aurora connection details and credentials for a monitoring user. 
+       (The password for the New Relic monitoring user can be provided or auto-generated.)
+    2. Connecting to your RDS/Aurora instance using the provided database admin credentials.
+       (If admin credentials fail during interactive setup, you will be prompted to re-enter them.)
+    3. Creating a dedicated MySQL user (default: '${NR_MONITOR_USER}') with the necessary permissions for monitoring. The connection host for this user will default to the private IP of this machine. If the user already exists, its password will be updated to the one specified or auto-generated in this run.
+    4. Optionally, assisting with the configuration of Performance Schema settings for enhanced metrics, such as query digests. This includes choosing an activation method for Performance Schema consumers.
+    5. Generating the nri-mysql integration's YAML configuration file for the New Relic agent. If an existing configuration is found, it will be backed up.
+
+    IMPORTANT PREREQUISITES & ASSUMPTIONS:
+    - CRITICAL: The New Relic Infrastructure Agent (or Agent Control) must already be installed and running on this host.
+    - CRITICAL: Ensure the MySQL client is installed on your host system before proceeding with this configuration. 
+      This is required to execute SQL commands against your database instance.
+    - Network connectivity must exist from this host to your target AWS RDS/Aurora MySQL instance endpoint and port.
+    - AWS PARAMETER GROUPS: You are responsible for managing DB Parameter Groups for your RDS/Aurora instances.
+        - IMPORTANT: Ensure you have a custom DB parameter group configured for your MySQL Aurora RDS instance. 
+          For guidance, refer to the AWS documentation on Aurora parameter groups: 
+          https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/USER_WorkingWithParamGroups.html
+        - IMPORTANT: Ensure you have a custom DB parameter group configured for your standard MySQL RDS instance. 
+          For guidance, refer to the AWS documentation on RDS parameter groups: 
+          https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithParamGroups.html
+    - PERFORMANCE SCHEMA: To enable comprehensive Performance Schema metrics (for query digests and other detailed insights), 
+      specific parameters must be configured in your custom DB Parameter Group. Key parameters typically include:
+        - performance_schema = ON
+        - (Refer to the New Relic MySQL integration documentation for a complete list of recommended parameter settings: 
+          https://docs.newrelic.com/install/mysql)
+    - AWS REBOOTS: If you modify DB Parameter Groups, remember that an instance reboot is often required by AWS 
+      for changes to take full effect.
+
+validationIntegration: mysql # The name of the integration being configured
+
+successLinkConfig:
+  type: EXPLORER # Link to New Relic Explorer after successful setup
+
+install:
+  version: "3"
+  silent: true # Set to false only for deep debugging by recipe developers
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_infra 
+        - task: verify_mysql_client
+        - task: install_nri_mysql_package
+        - task: get_connection_details
+        - task: create_monitoring_user
+        - task: setup_performance_schema_on_rds
+        - task: generate_nri_mysql_config
+        - task: final_metadata_collection
+      vars:
+        MAX_RETRIES: 3 # Number of retries for critical operations like DB connection and credential input
+
+    assert_infra: 
+      displayName: "Verifying New Relic Agent or Agent Control Status"
+      cmds:
+        - |
+          IS_INFRA_INSTALLED=$(sudo ps aux | grep newrelic-infra-service | grep -v grep | wc -l)
+          IS_AGENT_CONTROL_INSTALLED=$(sudo ps aux | grep newrelic-agent-control | grep -v grep | wc -l)
+          if [ $IS_INFRA_INSTALLED -eq 0 ] && [ $IS_AGENT_CONTROL_INSTALLED -eq 0 ] ; then
+            echo "ERROR: The New Relic Infrastructure Agent or Agent Control is required to install this integration." >&2
+            echo "We recommend going through our guided install path for this pre-requisite which can be found at: https://docs.newrelic.com/docs/full-stack-observability/observe-everything/get-started/new-relic-guided-install-overview" >&2
+            exit 1
+          fi
+          echo "INFO: New Relic Infrastructure Agent or Agent Control is running."
+
+    verify_mysql_client:
+      displayName: "Verifying MySQL Client Presence"
+      cmds:
+        - |
+          if ! which mysql >/dev/null 2>&1; then
+            echo "ERROR: MySQL client is not installed or not in PATH. It's required to connect to RDS for setup." >&2
+            exit 45
+          fi
+          echo "INFO: MySQL client found."
+
+    install_nri_mysql_package:
+      displayName: "Installing nri-mysql Integration Package"
+      cmds:
+        - |
+          echo "INFO: Attempting to install nri-mysql package..."
+          # Attempt package installation using common Linux package managers
+          if command -v apt-get > /dev/null; then
+            sudo apt-get update -yq && sudo apt-get install nri-mysql -yq
+          elif command -v yum > /dev/null; then
+            sudo yum install nri-mysql -yq
+          elif command -v dnf > /dev/null; then
+            sudo dnf install nri-mysql -yq
+          elif command -v zypper > /dev/null; then
+            sudo zypper --non-interactive install nri-mysql
+          else
+            echo "ERROR: Unsupported package manager. Cannot install nri-mysql automatically." >&2
+            echo "Please install nri-mysql manually (e.g., from https://github.com/newrelic/nri-mysql/releases) and re-run." >&2
+            exit 1
+          fi
+
+          # Verify installation by checking for the binary
+          if [ ! -f "/var/db/newrelic-infra/newrelic-integrations/bin/nri-mysql" ]; then
+            echo "ERROR: nri-mysql binary not found after attempting installation." >&2
+            echo "Please check the package installation logs or try installing manually." >&2
+            exit 1
+          fi
+          echo "INFO: nri-mysql package installed successfully."
+
+    get_connection_details:
+      displayName: "Collecting RDS & Monitoring User Details"
+      cmds:
+        - |
+          # Initialize from environment variables OR from CLI -v variables (via templating)
+          _rds_endpoint_tpl="{{.NEW_RELIC_RDS_ENDPOINT}}"
+          RDS_ENDPOINT="${NEW_RELIC_RDS_ENDPOINT:-$_rds_endpoint_tpl}"
+
+          _mysql_port_tpl="{{.NEW_RELIC_MYSQL_PORT}}"
+          RDS_PORT="${NEW_RELIC_MYSQL_PORT:-$_mysql_port_tpl}"
+
+          _rds_admin_user_tpl="{{.NEW_RELIC_RDS_ADMIN_USERNAME}}"
+          RDS_ADMIN_USER="${NEW_RELIC_RDS_ADMIN_USERNAME:-$_rds_admin_user_tpl}"
+
+          _rds_admin_pass_tpl="{{.NEW_RELIC_RDS_ADMIN_PASSWORD}}"
+          RDS_ADMIN_PASS="${NEW_RELIC_RDS_ADMIN_PASSWORD:-$_rds_admin_pass_tpl}"
+
+          _nr_monitor_user_tpl="{{.NEW_RELIC_MYSQL_MONITORING_USERNAME}}"
+          NR_MONITOR_USER="${NEW_RELIC_MYSQL_MONITORING_USERNAME:-$_nr_monitor_user_tpl}"
+
+          _nr_monitor_pass_tpl="{{.NEW_RELIC_MYSQL_MONITORING_PASSWORD}}"
+          NR_MONITOR_PASS="${NEW_RELIC_MYSQL_MONITORING_PASSWORD:-$_nr_monitor_pass_tpl}"
+
+          _nr_monitor_host_tpl="{{.NEW_RELIC_MYSQL_MONITORING_USER_HOST}}"
+          NR_MONITOR_HOST="${NEW_RELIC_MYSQL_MONITORING_USER_HOST:-$_nr_monitor_host_tpl}"
+
+          _enable_perf_schema_tpl="{{.NR_CLI_SLOW_QUERY}}"
+          ENABLE_PERFORMANCE_SCHEMA="${NR_CLI_SLOW_QUERY:-$_enable_perf_schema_tpl}"
+
+          DETECTED_PRIVATE_IP=""
+          if command -v hostname >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
+            DETECTED_PRIVATE_IP=$(hostname -I | awk '{print $1}')
+          fi
+
+          RDS_PORT_EFFECTIVE="${RDS_PORT:-3306}"
+          NR_MONITOR_USER_EFFECTIVE="${NR_MONITOR_USER:-newrelic}"
+          if [[ -n "$DETECTED_PRIVATE_IP" && -z "$NR_MONITOR_HOST" ]]; then
+            NR_MONITOR_HOST_DEFAULT="$DETECTED_PRIVATE_IP"
+            echo "INFO: Auto-detected private IP for monitoring host: $DETECTED_PRIVATE_IP"
+          else
+            NR_MONITOR_HOST_DEFAULT="%"
+            if [[ -z "$NR_MONITOR_HOST" ]]; then
+                 echo "INFO: Could not auto-detect private IP or NEW_RELIC_MYSQL_MONITORING_USER_HOST is set. Defaulting monitoring host to '%' if not overridden."
+            fi
+          fi
+          NR_MONITOR_HOST_EFFECTIVE="${NR_MONITOR_HOST:-$NR_MONITOR_HOST_DEFAULT}"
+          ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE="${ENABLE_PERFORMANCE_SCHEMA:-false}"
+          # NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE will be set based on logic below
+
+          RDS_ENDPOINT_EFFECTIVE="$RDS_ENDPOINT"
+          RDS_ADMIN_USER_EFFECTIVE="$RDS_ADMIN_USER"
+          RDS_ADMIN_PASS_EFFECTIVE="$RDS_ADMIN_PASS"
+          # NR_MONITOR_PASS_EFFECTIVE will be set based on logic below, initialize from env var if present
+          NR_MONITOR_PASS_EFFECTIVE="$NR_MONITOR_PASS" 
+
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+            echo -e "\033[0;33m[IMPORTANT] Ensure MySQL client is installed on your host system. This is required to execute SQL commands against your database instance.\033[0m" >&2
+            echo -e "\033[0;33mEnsure you have a custom DB parameter group configured for your MySQL Aurora RDS instance.\033[0m" >&2
+            echo -e "\033[0;33mFor guidance, refer to AWS documentation: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/USER_WorkingWithParamGroups.html\033[0m" >&2
+            echo -e "\033[0;33mEnsure you have a custom DB parameter group configured for your MySQL Standard RDS instance.\033[0m" >&2
+            echo -e "\033[0;33mFor guidance, refer to AWS documentation: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithParamGroups.html\033[0m" >&2
+            echo -e "\033[0;33mAfter updating the parameter group, a reboot of your RDS instance is typically required for changes to take effect.\033[0m" >&2
+            
+            echo "--- RDS/Aurora Connection Details ---"
+            if [[ -z "$RDS_ENDPOINT" ]]; then read -rp "Enter AWS RDS/Aurora MySQL endpoint: " RDS_ENDPOINT_EFFECTIVE; fi
+            if [[ -z "$RDS_PORT" ]]; then read -rp "Enter RDS/Aurora MySQL port (default $RDS_PORT_EFFECTIVE): " TEMP_PORT; RDS_PORT_EFFECTIVE=${TEMP_PORT:-$RDS_PORT_EFFECTIVE}; fi
+            
+            if [[ -z "$RDS_ADMIN_USER" ]]; then read -rp "Enter RDS/Aurora admin username (e.g., your RDS master username): " RDS_ADMIN_USER_EFFECTIVE; fi
+            if [[ -z "$RDS_ADMIN_PASS" ]]; then
+              printf "Enter password for RDS admin user '$RDS_ADMIN_USER_EFFECTIVE': "
+              stty -echo; read -r RDS_ADMIN_PASS_EFFECTIVE; stty echo; printf "\n"
+            fi
+
+            MAX_RETRIES_INPUT="${MAX_RETRIES:-3}" 
+            RETRY_COUNT_INPUT=0
+            ADMIN_CONNECT_SUCCESS_INPUT=false
+            CONNECT_OUTPUT_INPUT=""
+            echo "INFO: Verifying initial connectivity to RDS with admin credentials..."
+            while [ $RETRY_COUNT_INPUT -lt $MAX_RETRIES_INPUT ]; do
+              echo "INFO: Attempting to connect to ${RDS_ENDPOINT_EFFECTIVE}:${RDS_PORT_EFFECTIVE} as admin user '${RDS_ADMIN_USER_EFFECTIVE}' (attempt $((RETRY_COUNT_INPUT + 1))/$MAX_RETRIES_INPUT)..."
+              CONNECT_OUTPUT_INPUT=$(MYSQL_PWD="${RDS_ADMIN_PASS_EFFECTIVE}" mysql --host="${RDS_ENDPOINT_EFFECTIVE}" --port="${RDS_PORT_EFFECTIVE}" --user="${RDS_ADMIN_USER_EFFECTIVE}" -N -s -e "SELECT 1;" 2>&1)
+              CONNECT_STATUS_INPUT=$?
+              if [ $CONNECT_STATUS_INPUT -eq 0 ] && ! echo "${CONNECT_OUTPUT_INPUT}" | grep -Eiq 'Access denied for user|ERROR [0-9]{4}|Unknown MySQL server host'; then
+                ADMIN_CONNECT_SUCCESS_INPUT=true
+                echo "INFO: Initial admin connectivity to RDS instance successful."
+                break
+              fi
+              RETRY_COUNT_INPUT=$((RETRY_COUNT_INPUT + 1))
+              echo "WARN: Failed to connect to RDS with admin credentials on attempt $RETRY_COUNT_INPUT/$MAX_RETRIES_INPUT. MySQL Client Exit Status: $CONNECT_STATUS_INPUT." >&2
+              echo "WARN: RDS Connection Output: ${CONNECT_OUTPUT_INPUT}" >&2 
+              if [ $RETRY_COUNT_INPUT -lt $MAX_RETRIES_INPUT ]; then 
+                echo "INFO: Please verify your RDS admin credentials and try again."
+                read -rp "Re-enter RDS/Aurora admin username (current: '$RDS_ADMIN_USER_EFFECTIVE', press Enter to keep): " TEMP_ADMIN_USER
+                RDS_ADMIN_USER_EFFECTIVE=${TEMP_ADMIN_USER:-$RDS_ADMIN_USER_EFFECTIVE}
+                printf "Re-enter password for RDS admin user '$RDS_ADMIN_USER_EFFECTIVE': "
+                stty -echo; read -r RDS_ADMIN_PASS_EFFECTIVE; stty echo; printf "\n"
+              fi
+            done
+            if [ "$ADMIN_CONNECT_SUCCESS_INPUT" != "true" ]; then
+              echo "ERROR: Failed to connect to RDS with admin credentials after $MAX_RETRIES_INPUT attempts." >&2
+              echo "ERROR: Last RDS Connection Output was: ${CONNECT_OUTPUT_INPUT}" >&2 
+              echo "Please check your RDS endpoint, port, admin username, and password. If these are correct, ensure network connectivity and RDS instance status." >&2
+              exit 134 
+            fi
+
+            echo "--- New Relic Monitoring User Details ---"
+            if [[ -z "$NR_MONITOR_USER" ]]; then read -rp "Enter username for New Relic monitoring user (default: $NR_MONITOR_USER_EFFECTIVE): " TEMP_USER; NR_MONITOR_USER_EFFECTIVE=${TEMP_USER:-$NR_MONITOR_USER_EFFECTIVE}; fi
+            
+            echo "INFO: Checking if monitoring user '${NR_MONITOR_USER_EFFECTIVE}'@'${NR_MONITOR_HOST_EFFECTIVE}' already exists..."
+            TEMP_USER_EXISTS_COUNT=$(MYSQL_PWD="${RDS_ADMIN_PASS_EFFECTIVE}" mysql --host="${RDS_ENDPOINT_EFFECTIVE}" --port="${RDS_PORT_EFFECTIVE}" --user="${RDS_ADMIN_USER_EFFECTIVE}" -N -s -e "SELECT COUNT(*) FROM mysql.user WHERE User = '${NR_MONITOR_USER_EFFECTIVE}' AND Host = '${NR_MONITOR_HOST_EFFECTIVE}';" 2>&1)
+            TEMP_USER_EXISTS_STATUS=$?
+            MONITOR_USER_ALREADY_EXISTS=false
+            if [ $TEMP_USER_EXISTS_STATUS -eq 0 ] && [[ "$TEMP_USER_EXISTS_COUNT" =~ ^[0-9]+$ ]] && [ "$TEMP_USER_EXISTS_COUNT" -gt 0 ]; then
+                MONITOR_USER_ALREADY_EXISTS=true
+                echo "INFO: Monitoring user '${NR_MONITOR_USER_EFFECTIVE}'@'${NR_MONITOR_HOST_EFFECTIVE}' already exists."
+            elif [ $TEMP_USER_EXISTS_STATUS -ne 0 ]; then
+                echo "WARN: Could not determine if monitoring user exists due to DB error. Will proceed assuming user does not exist. MySQL output: $TEMP_USER_EXISTS_COUNT" >&2
+            fi
+
+            if [[ -z "$NR_MONITOR_PASS" ]]; then # True if NEW_RELIC_MYSQL_MONITORING_PASSWORD env var is not set
+                if [[ "$MONITOR_USER_ALREADY_EXISTS" == "true" ]]; then
+                    echo -e "\033[0;33m[Warning] Monitoring user '${NR_MONITOR_USER_EFFECTIVE}' already exists.\033[0m" >&2
+                    printf "Enter a NEW password for '$NR_MONITOR_USER_EFFECTIVE' to ensure it's synchronized, or leave blank to auto-generate a new password: "
+                    stty -echo; read -r TEMP_USER_ENTERED_NR_PASS; stty echo; printf "\n"
+                    if [[ -n "$TEMP_USER_ENTERED_NR_PASS" ]]; then
+                        NR_MONITOR_PASS_EFFECTIVE="$TEMP_USER_ENTERED_NR_PASS"
+                        NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="true"
+                        echo "INFO: Using user-provided new password for existing user '$NR_MONITOR_USER_EFFECTIVE'. This password will be updated in the database."
+                    else
+                        echo "INFO: Auto-generating a new password for existing user '$NR_MONITOR_USER_EFFECTIVE'. This password will be updated in the database."
+                        _generated_prefix=$(date +%s | sha256sum | tr -dc 'a-zA-Z0-9' | head -c 16)
+                        NR_MONITOR_PASS_EFFECTIVE="${_generated_prefix}Aa1" 
+                        NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="false" 
+                        echo "INFO: Auto-generated new password for '$NR_MONITOR_USER_EFFECTIVE': $NR_MONITOR_PASS_EFFECTIVE"
+                        echo "IMPORTANT: Please save this generated password securely."
+                    fi
+                else 
+                    printf "Enter password for New Relic monitoring user '$NR_MONITOR_USER_EFFECTIVE' (leave blank to auto-generate): "
+                    stty -echo; read -r TEMP_USER_ENTERED_NR_PASS; stty echo; printf "\n"
+                    if [[ -n "$TEMP_USER_ENTERED_NR_PASS" ]]; then
+                        NR_MONITOR_PASS_EFFECTIVE="$TEMP_USER_ENTERED_NR_PASS"
+                        NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="true"
+                        echo "INFO: Using user-provided password for new user '$NR_MONITOR_USER_EFFECTIVE'."
+                    else
+                        echo "INFO: Auto-generating password for new user '$NR_MONITOR_USER_EFFECTIVE'."
+                        _generated_prefix=$(date +%s | sha256sum | tr -dc 'a-zA-Z0-9' | head -c 16)
+                        NR_MONITOR_PASS_EFFECTIVE="${_generated_prefix}Aa1" 
+                        NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="false" 
+                        echo "INFO: Auto-generated password for '$NR_MONITOR_USER_EFFECTIVE': $NR_MONITOR_PASS_EFFECTIVE"
+                        echo "IMPORTANT: Please save this generated password securely."
+                    fi
+                fi
+            else 
+                NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="true"
+                NR_MONITOR_PASS_EFFECTIVE="$NR_MONITOR_PASS" 
+                echo "INFO: Using pre-set password (from NEW_RELIC_MYSQL_MONITORING_PASSWORD) for '$NR_MONITOR_USER_EFFECTIVE'. This will be set in the database if the user exists."
+            fi
+            
+            if [[ -z "$NR_MONITOR_HOST" ]]; then 
+                read -rp "Enter connection host for '$NR_MONITOR_USER_EFFECTIVE' (default: ${NR_MONITOR_HOST_EFFECTIVE}): " TEMP_HOST 
+                NR_MONITOR_HOST_EFFECTIVE=${TEMP_HOST:-$NR_MONITOR_HOST_EFFECTIVE}
+            fi
+            
+            echo "--- Performance Schema ---"
+            echo -e "\033[0;33m[Warning] This recipe NO LONGER automatically grants SELECT permissions on 'performance_schema.*' tables to the monitoring user.\033[0m" >&2
+            echo -e "\033[0;33mIf you enable Performance Schema monitoring below, you MUST ensure the user '${NR_MONITOR_USER_EFFECTIVE}' has the necessary SELECT grants manually, or monitoring of these metrics will fail.\033[0m" >&2
+            echo -e "\033[0;33mRefer to New Relic documentation for required grants if enabling Performance Schema.\033[0m" >&2
+            if [[ -z "$ENABLE_PERFORMANCE_SCHEMA" ]]; then
+                 read -rp "Enable Performance Schema metrics (slow queries, digests)? (true/false, default: $ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE): " TEMP_SLOW
+                 ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE=${TEMP_SLOW:-$ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE}
+            fi
+          else # Non-interactive mode
+            if [[ -z "$RDS_ADMIN_PASS_EFFECTIVE" ]]; then
+                echo "ERROR: In non-interactive mode (NEW_RELIC_ASSUME_YES=true), an admin password for RDS (NEW_RELIC_RDS_ADMIN_PASSWORD) must be provided." >&2
+                exit 133 
+            fi
+            if [[ -z "$NR_MONITOR_PASS_EFFECTIVE" ]]; then 
+                echo "INFO: Auto-generating password for '$NR_MONITOR_USER_EFFECTIVE' in non-interactive mode."
+                _generated_prefix=$(date +%s | sha256sum | tr -dc 'a-zA-Z0-9' | head -c 16)
+                NR_MONITOR_PASS_EFFECTIVE="${_generated_prefix}Aa1"
+                NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="false"
+                echo "INFO: Auto-generated password for '$NR_MONITOR_USER_EFFECTIVE': $NR_MONITOR_PASS_EFFECTIVE"
+            else 
+                NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="true"
+            fi
+          fi
+
+          if [[ -z "$RDS_ENDPOINT_EFFECTIVE" || -z "$RDS_ADMIN_USER_EFFECTIVE" || -z "$RDS_ADMIN_PASS_EFFECTIVE" || -z "$NR_MONITOR_USER_EFFECTIVE" || -z "$NR_MONITOR_PASS_EFFECTIVE" ]]; then
+            echo "ERROR: RDS Endpoint, Admin Username, Admin Password, Monitoring Username, and Monitoring Password are all mandatory." >&2
+            exit 132
+          fi
+
+          echo "RDS_ENDPOINT='$RDS_ENDPOINT_EFFECTIVE'" > /tmp/nr_rds_params.tmp
+          echo "RDS_PORT='$RDS_PORT_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "RDS_ADMIN_USER='$RDS_ADMIN_USER_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "RDS_ADMIN_PASS='$RDS_ADMIN_PASS_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "NR_MONITOR_USER='$NR_MONITOR_USER_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "NR_MONITOR_PASS='$NR_MONITOR_PASS_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "NR_MONITOR_HOST='$NR_MONITOR_HOST_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "ENABLE_PERFORMANCE_SCHEMA='$ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "NR_MONITOR_PASS_IS_USER_PROVIDED='$NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE'" >> /tmp/nr_rds_params.tmp
+          echo "INFO: Connection details collected and staged for subsequent tasks."
+
+    create_monitoring_user:
+      displayName: "Creating/Updating Monitoring User on RDS"
+      cmds:
+        - |
+          if [ ! -f /tmp/nr_rds_params.tmp ]; then
+            echo "ERROR: Staged parameters file (/tmp/nr_rds_params.tmp) not found. Aborting." >&2
+            exit 1
+          fi
+          source /tmp/nr_rds_params.tmp 
+
+          execute_sql_on_rds() {
+            local sql_command="$1"
+            local operation_description="$2" 
+            local expected_to_succeed_msg="$3" 
+            local error_exit_code="$4"
+            echo "INFO: Executing SQL for: ${operation_description}"
+            CMD_OUTPUT=$(MYSQL_PWD="${RDS_ADMIN_PASS}" mysql --host="${RDS_ENDPOINT}" --port="${RDS_PORT}" --user="${RDS_ADMIN_USER}" -Be "${sql_command}" 2>&1)
+            CMD_STATUS=$?
+            if [[ $CMD_STATUS -ne 0 || $(echo "${CMD_OUTPUT}" | grep -Eiq 'ERROR [0-9]+ \([0-9A-Za-z]+\):') ]]; then
+                 echo "ERROR: SQL execution for '${operation_description}' failed. Exit Status: $CMD_STATUS." >&2
+                 echo "SQL Output: ${CMD_OUTPUT}" >&2
+                 exit "$error_exit_code"
+            fi
+            echo "INFO: ${expected_to_succeed_msg}"
+          }
+
+          echo "INFO: Setting up monitoring user '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}' on RDS instance '${RDS_ENDPOINT}'."
+          if [[ -z "$RDS_ADMIN_USER" || -z "$RDS_ADMIN_PASS" ]]; then
+            echo "ERROR: RDS admin username or password not loaded. Aborting." >&2
+            exit 133
+          fi
+
+          MAX_RETRIES_EFFECTIVE="${MAX_RETRIES:-3}" 
+          RETRY_COUNT=0
+          ADMIN_CONNECT_SUCCESS=false
+          CONNECT_OUTPUT="" 
+          echo "INFO: Verifying admin connectivity to ${RDS_ENDPOINT}:${RDS_PORT} as '${RDS_ADMIN_USER}'..."
+          while [ $RETRY_COUNT -lt $MAX_RETRIES_EFFECTIVE ]; do
+            CONNECT_OUTPUT=$(MYSQL_PWD="${RDS_ADMIN_PASS}" mysql --host="${RDS_ENDPOINT}" --port="${RDS_PORT}" --user="${RDS_ADMIN_USER}" -N -s -e "SELECT 1;" 2>&1)
+            CONNECT_STATUS=$?
+            if [ $CONNECT_STATUS -eq 0 ] && ! echo "${CONNECT_OUTPUT}" | grep -Eiq 'Access denied for user|ERROR [0-9]{4}|Unknown MySQL server host'; then
+              ADMIN_CONNECT_SUCCESS=true
+              echo "INFO: Admin connectivity successful on attempt $((RETRY_COUNT + 1))."
+              break 
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "WARN: Admin connection failed on attempt $RETRY_COUNT/$MAX_RETRIES_EFFECTIVE. Status: $CONNECT_STATUS. Output: ${CONNECT_OUTPUT}" >&2
+            if [ $RETRY_COUNT -lt $MAX_RETRIES_EFFECTIVE ]; then sleep 5; fi
+          done
+          if [ "$ADMIN_CONNECT_SUCCESS" != "true" ]; then
+            echo "ERROR: Final admin connection verification failed after $MAX_RETRIES_EFFECTIVE attempts." >&2
+            exit 134 
+          fi
+          
+          USER_EXISTS_COUNT=$(MYSQL_PWD="${RDS_ADMIN_PASS}" mysql --host="${RDS_ENDPOINT}" --port="${RDS_PORT}" --user="${RDS_ADMIN_USER}" -N -s -e "SELECT COUNT(*) FROM mysql.user WHERE User = '${NR_MONITOR_USER}' AND Host = '${NR_MONITOR_HOST}';" 2>&1)
+          USER_EXISTS_STATUS=$?
+          if [ $USER_EXISTS_STATUS -ne 0 ]; then
+            echo "ERROR: Failed to check if monitoring user exists. Output: ${USER_EXISTS_COUNT}" >&2
+            exit 1 
+          fi
+          if ! [[ "$USER_EXISTS_COUNT" =~ ^[0-9]+$ ]]; then
+              echo "WARN: Could not determine if user exists, assuming user does not exist. MySQL output: $USER_EXISTS_COUNT" >&2
+              USER_EXISTS_COUNT=0
+          fi
+
+          if [ "$USER_EXISTS_COUNT" -gt 0 ]; then
+            echo "INFO: Monitoring user '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}' already exists. Updating its password to the one configured for this run."
+            SQL_SET_PASSWORD_CMD="ALTER USER '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}' IDENTIFIED BY '${NR_MONITOR_PASS}';"
+            execute_sql_on_rds "${SQL_SET_PASSWORD_CMD}" "Updating password for existing user" "Password for existing user updated/ensured." 1351
+          else
+            echo "INFO: Monitoring user '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}' does not exist. Creating new user."
+            SQL_CREATE_USER_CMD="CREATE USER '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}' IDENTIFIED BY '${NR_MONITOR_PASS}';"
+            execute_sql_on_rds "${SQL_CREATE_USER_CMD}" "Creating new monitoring user" "New monitoring user created." 1350
+          fi
+          
+          SQL_BASE_GRANTS="GRANT SELECT, REPLICATION CLIENT, PROCESS, SHOW DATABASES, SHOW VIEW ON *.* TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';"
+          SQL_INFO_SCHEMA_GRANTS="GRANT SELECT ON information_schema.* TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';"
+          
+          execute_sql_on_rds "${SQL_BASE_GRANTS}" "Granting comprehensive permissions" "Comprehensive permissions granted." 136
+          execute_sql_on_rds "${SQL_INFO_SCHEMA_GRANTS}" "Granting SELECT on information_schema.*" "Information Schema access granted." 138
+          
+          echo "INFO: Monitoring user '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}' setup on RDS completed successfully."
+
+    setup_performance_schema_on_rds:
+      displayName: "Configuring Performance Schema (Optional)"
+      cmds:
+        - |
+          source /tmp/nr_rds_params.tmp 
+          if [[ "$ENABLE_PERFORMANCE_SCHEMA" != "true" ]]; then
+            echo "INFO: Performance Schema metrics (slow queries, digests) are NOT enabled by user choice. Skipping this setup."
+            exit 0
+          fi
+
+          execute_sql_on_rds() {
+            local sql_command="$1"
+            local operation_description="$2" 
+            local expected_to_succeed_msg="$3" 
+            local error_exit_code="$4"
+            echo "INFO: Executing SQL for: ${operation_description}"
+            CMD_OUTPUT=$(MYSQL_PWD="${RDS_ADMIN_PASS}" mysql --host="${RDS_ENDPOINT}" --port="${RDS_PORT}" --user="${RDS_ADMIN_USER}" -Be "${sql_command}" 2>&1)
+            CMD_STATUS=$?
+            if [[ $CMD_STATUS -ne 0 || $(echo "${CMD_OUTPUT}" | grep -Eiq 'ERROR [0-9]+ \([0-9A-Za-z]+\):') ]]; then
+                 echo "ERROR: SQL execution for '${operation_description}' failed. Exit Status: $CMD_STATUS." >&2
+                 echo "SQL Output: ${CMD_OUTPUT}" >&2
+                 exit "$error_exit_code"
+            fi
+            echo "INFO: ${expected_to_succeed_msg}"
+          }
+          
+          echo -e "\033[0;33m[INFO] For enabling Performance Schema consumers and instruments at runtime, the New Relic agent supports two methods:\033[0m" >&2
+          echo -e "\033[0;33m  1. Stored Procedure: The agent calls a secure stored procedure (created by this script) which runs with elevated permissions to enable consumers/instruments.\033[0m" >&2
+          echo -e "\033[0;33m  2. Direct Update Privileges: The agent executes SQL UPDATE statements directly on Performance Schema tables. This requires granting UPDATE privileges on specific tables to the monitoring user.\033[0m" >&2
+          echo -e "\033[0;33mYou can choose either approach. Both methods are used by the agent automatically during its monitoring cycle once configured.\033[0m" >&2
+          echo -e "\033[0;33mFor detailed configuration guidance, refer to the New Relic MySQL documentation: https://docs.newrelic.com/install/mysql\033[0m" >&2
+          echo -e "\033[0;33m[IMPORTANT] This recipe no longer grants SELECT on performance_schema tables. If you enable Performance Schema, ensure the monitoring user has these SELECT grants applied manually for data collection.\033[0m" >&2
+          
+          ACTIVATION_METHOD=""
+          if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
+            RETRY_METHOD_CHOICE=0
+            MAX_RETRIES_METHOD_CHOICE="${MAX_RETRIES:-3}" 
+            while [ $RETRY_METHOD_CHOICE -lt $MAX_RETRIES_METHOD_CHOICE ]; do
+              read -rp "Select Method of Activation for Consumers and Instruments (1 for Stored Procedure, 2 for Direct Update Privileges) [1]: " ACTIVATION_METHOD_INPUT
+              ACTIVATION_METHOD=${ACTIVATION_METHOD_INPUT:-1} 
+              if [[ "$ACTIVATION_METHOD" == "1" || "$ACTIVATION_METHOD" == "2" ]]; then
+                break
+              else
+                echo "ERROR: Invalid selection. Please enter 1 or 2." >&2
+                RETRY_METHOD_CHOICE=$((RETRY_METHOD_CHOICE + 1))
+                if [ $RETRY_METHOD_CHOICE -ge $MAX_RETRIES_METHOD_CHOICE ]; then
+                  echo "ERROR: Too many invalid attempts. Defaulting to Stored Procedure method (1)." >&2
+                  ACTIVATION_METHOD="1" 
+                  break
+                fi
+              fi
+            done
+          else
+            echo "INFO: Non-interactive mode. Defaulting Performance Schema activation method to Stored Procedure (1)."
+            ACTIVATION_METHOD="1"
+          fi
+
+          if [[ "$ACTIVATION_METHOD" == "1" ]]; then
+            echo "INFO: Using Stored Procedure method for Performance Schema activation."
+            SQL_PROCEDURE_SETUP="CREATE SCHEMA IF NOT EXISTS newrelic;
+            GRANT EXECUTE ON newrelic.* TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';
+
+            DELIMITER \\\$\$
+            CREATE PROCEDURE IF NOT EXISTS newrelic.enable_essential_consumers_and_instruments()
+                SQL SECURITY DEFINER
+            BEGIN
+                UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name LIKE 'events_statements_%';
+                UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name LIKE 'events_waits_%';
+                UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/%';
+                UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'statement/%';
+                UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%lock%';
+            END \\\$\$
+            DELIMITER ;
+
+            GRANT EXECUTE ON PROCEDURE newrelic.enable_essential_consumers_and_instruments TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';
+            CALL newrelic.enable_essential_consumers_and_instruments();"
+            
+            SP_SETUP_OUTPUT=$(MYSQL_PWD="${RDS_ADMIN_PASS}" mysql --host="${RDS_ENDPOINT}" --port="${RDS_PORT}" --user="${RDS_ADMIN_USER}" -e "${SQL_PROCEDURE_SETUP}" 2>&1)
+            SP_SETUP_STATUS=$?
+
+            if [[ $SP_SETUP_STATUS -ne 0 || "$SP_SETUP_OUTPUT" == *"ERROR"* ]]; then
+                echo "WARNING: Setting up RDS Performance Schema stored procedures encountered an issue (Exit Status: $SP_SETUP_STATUS)." >&2
+                echo "Performance Schema Setup Output: $SP_SETUP_OUTPUT" >&2
+            else
+                echo "INFO: RDS Performance Schema stored procedures configured successfully."
+            fi
+          elif [[ "$ACTIVATION_METHOD" == "2" ]]; then
+            echo "INFO: Using Direct Update Privileges method for Performance Schema activation."
+            SQL_GRANT_UPDATE_CONSUMERS="GRANT UPDATE ON performance_schema.setup_consumers TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';"
+            SQL_GRANT_UPDATE_INSTRUMENTS="GRANT UPDATE ON performance_schema.setup_instruments TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';"
+            
+            execute_sql_on_rds "${SQL_GRANT_UPDATE_CONSUMERS}" "Granting UPDATE on performance_schema.setup_consumers" "UPDATE on setup_consumers granted." 1402
+            execute_sql_on_rds "${SQL_GRANT_UPDATE_INSTRUMENTS}" "Granting UPDATE on performance_schema.setup_instruments" "UPDATE on setup_instruments granted." 1403
+            echo "INFO: Direct Update Privileges for Performance Schema configured."
+          fi
+
+    generate_nri_mysql_config:
+      displayName: "Generating nri-mysql Configuration File"
+      cmds:
+        - |
+          source /tmp/nr_rds_params.tmp 
+          echo "INFO: Creating nri-mysql configuration file for RDS endpoint '${RDS_ENDPOINT}'."
+          CONFIG_DIR="/etc/newrelic-infra/integrations.d"
+          CONFIG_FILE="${CONFIG_DIR}/mysql-config.yml"
+          CONFIG_FILE_BAK="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+
+          if [ -f "${CONFIG_FILE}" ]; then
+            echo "INFO: Existing configuration file found at ${CONFIG_FILE}. Backing it up to ${CONFIG_FILE_BAK}."
+            sudo cp "${CONFIG_FILE}" "${CONFIG_FILE_BAK}"
+            if [ $? -ne 0 ]; then
+                echo "WARN: Failed to create backup of existing configuration file. Proceeding with overwrite." >&2
+            fi
+          fi
+
+          if ! sudo mkdir -p "$CONFIG_DIR"; then
+            echo "ERROR: Failed to create configuration directory $CONFIG_DIR." >&2
+            exit 137
+          fi
+          sudo chmod 755 "$CONFIG_DIR"
+          
+          INTEGRATION_CONFIG=$(cat <<EOT
+          integrations:
+            - name: nri-mysql
+              env:
+                HOSTNAME: ${RDS_ENDPOINT}
+                PORT: ${RDS_PORT}
+                USERNAME: ${NR_MONITOR_USER}
+                PASSWORD: '${NR_MONITOR_PASS}'
+                DATABASE: "" 
+                EXTENDED_METRICS: true
+                EXTENDED_INNODB_METRICS: true 
+                REMOTE_MONITORING: true
+                ENABLE_QUERY_MONITORING: ${ENABLE_PERFORMANCE_SCHEMA}
+              inventory_source: config/mysql 
+              interval: 30s
+          EOT
+          )
+          
+          if ! echo "${INTEGRATION_CONFIG}" | sudo tee "${CONFIG_FILE}" > /dev/null; then
+            echo "ERROR: Failed to write configuration to ${CONFIG_FILE}." >&2
+            exit 138
+          fi
+          
+          sudo chmod 644 "${CONFIG_FILE}"
+          if [[ $? -eq 0 ]]; then
+            echo "INFO: nri-mysql configuration successfully written to ${CONFIG_FILE}."
+            echo "INFO: Attempting to restart New Relic Infrastructure agent..."
+            if command -v systemctl >/dev/null 2>&1 && systemctl is-active newrelic-infra >/dev/null 2>&1; then
+              sudo systemctl restart newrelic-infra
+            elif command -v service >/dev/null 2>&1; then
+              sudo service newrelic-infra restart
+            elif [ -f /etc/init.d/newrelic-infra ]; then
+              sudo /etc/init.d/newrelic-infra restart
+            else
+              echo "INFO: Could not automatically restart agent. Please restart it manually."
+            fi
+            if [ $? -eq 0 ]; then echo "INFO: Agent restart initiated."; else echo "WARN: Agent restart failed or not applicable."; fi
+          else
+            echo "ERROR: Failed to set permissions on ${CONFIG_FILE}." >&2 
+            exit 138 
+          fi
+
+    validate_integration: 
+      displayName: "Validating MySQL Integration"
+      cmds:
+        - |
+          echo "INFO: Waiting 20 seconds for integration to start sending data..."
+          sleep 20
+          if command -v newrelic-infra-ctl >/dev/null 2>&1; then
+            echo "INFO: Checking integration status using newrelic-infra-ctl..."
+            INTEGRATION_STATUS=$(sudo newrelic-infra-ctl integration list 2>/dev/null | grep -i mysql || echo "")
+            if [ -n "$INTEGRATION_STATUS" ]; then
+              echo "INFO: MySQL integration appears to be active: $INTEGRATION_STATUS"
+            else
+              echo "WARN: MySQL integration may not be running yet via ctl. Check logs." >&2
+            fi
+          else
+            echo "INFO: newrelic-infra-ctl not available."
+          fi
+          echo "INFO: Check New Relic UI and integration logs for final validation: /var/log/newrelic-infra/integrations/mysql/"
+
+    final_metadata_collection:
+      displayName: "Collecting Final Setup Metadata"
+      cmds:
+        - |
+          json_output="{\"Metadata\": {\"recipe_name\":\"{{.NAME}}\", \"setup_phase\":\"final_collection\", \"description\":\"RDS/Aurora MySQL specific setup tasks have been executed. New Relic agent will use the generated configuration.\", \"status_note\":\"Awaiting final validation by New Relic CLI.\"}}"
+          echo "INFO: Writing final metadata output for recipe completion."
+          echo "$json_output" | sudo tee "{{.NR_CLI_OUTPUT}}" > /dev/null
+          
+          if [ -f /tmp/nr_rds_params.tmp ]; then
+            sudo rm -f /tmp/nr_rds_params.tmp
+            echo "INFO: Temporary parameter file /tmp/nr_rds_params.tmp cleaned up."
+          fi
+
+info: |2
+  ✅ RDS/Aurora MySQL specific setup operations completed.
+  ⚙️ New Relic nri-mysql configuration file generated at: /etc/newrelic-infra/integrations.d/mysql-config.yml
+  
+  🔄 The agent has been automatically restarted to apply changes.
+  
+  📊 Data should begin appearing in New Relic within a few minutes:
+     - MySQL data will appear in the Infrastructure > Third-party services section
+     - Look for "MySQL" or "MySQL (db: <your_db_name>)" entities
+  
+  🔑 If a password was auto-generated for the monitoring user, make sure to save it for future reference.
+  
+  🔍 Troubleshooting steps if data doesn't appear after 5 minutes:
+     1. Check integration logs: sudo cat /var/log/newrelic-infra/integrations/mysql/*.log
+     2. Verify monitoring user connection: mysql -u${NR_MONITOR_USER} -p'<YOUR_MONITOR_USER_PASSWORD>' -h ${RDS_ENDPOINT}
+     3. Check agent status: sudo systemctl status newrelic-infra
+     4. Restart agent if needed: sudo systemctl restart newrelic-infra
+     
+  📝 For more information, see the MySQL integration documentation:
+     https://docs.newrelic.com/docs/infrastructure/host-integrations/host-integrations-list/mysql-monitoring-integration/
+  💡 For Performance Schema metrics (query digests), if you enabled this feature, ensure 'performance_schema=ON' is set in your AWS RDS Parameter Group and the instance was rebooted.
+     Also, since this recipe no longer grants SELECT on performance_schema tables, you must apply these grants manually for the '${NR_MONITOR_USER}' user if you wish to collect these detailed metrics.
+     The chosen activation method (Stored Procedure or Direct Privileges) for consumers/instruments has been configured.
