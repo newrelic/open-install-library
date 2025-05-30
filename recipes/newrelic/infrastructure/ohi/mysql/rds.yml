@@ -196,13 +196,11 @@ install:
 
           if [[ -n "$NR_MONITOR_PASS" ]]; then 
             NR_MONITOR_PASS_EFFECTIVE="$NR_MONITOR_PASS"
-            NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="true"
             echo "INFO: Using pre-set password (from NEW_RELIC_MYSQL_MONITORING_PASSWORD) for monitoring user '$NR_MONITOR_USER_EFFECTIVE'."
           else 
             echo "INFO: Auto-generating password for monitoring user '$NR_MONITOR_USER_EFFECTIVE'."
             _generated_prefix=$(date +%s | sha256sum | tr -dc 'a-zA-Z0-9' | head -c 16)
             NR_MONITOR_PASS_EFFECTIVE="${_generated_prefix}Aa1" 
-            NR_MONITOR_PASS_IS_USER_PROVIDED_EFFECTIVE="false" 
             echo "INFO: Auto-generated password for '$NR_MONITOR_USER_EFFECTIVE': $NR_MONITOR_PASS_EFFECTIVE"
             echo "IMPORTANT: Please save this generated password securely."
           fi
@@ -277,7 +275,6 @@ install:
             echo "INFO: Monitoring user host set to '$NR_MONITOR_HOST_EFFECTIVE'."
 
             echo "--- Performance Schema ---"
-            # Removed specific warning about manual SELECT grants for P_S here, as recipe now relies on SELECT ON *.*
             if [[ -z "$ENABLE_PERFORMANCE_SCHEMA" ]]; then 
                  read -rp "Enable Performance Schema metrics (slow queries, digests)? (true/false, default: $ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE): " TEMP_SLOW
                  ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE=${TEMP_SLOW:-$ENABLE_PERFORMANCE_SCHEMA_EFFECTIVE}
@@ -432,8 +429,8 @@ install:
           echo -e "\033[0;33m  2. Direct Update Privileges: The agent executes SQL UPDATE statements directly on Performance Schema tables. This requires granting UPDATE privileges on specific tables to the monitoring user.\033[0m" >&2
           echo -e "\033[0;33mYou can choose either approach. Both methods are used by the agent automatically during its monitoring cycle once configured.\033[0m" >&2
           echo -e "\033[0;33mFor detailed configuration guidance, refer to the New Relic MySQL documentation: https://docs.newrelic.com/install/mysql\033[0m" >&2
-          # Warning about manual SELECT grants for P_S removed as per user feedback, relying on *.* grant.
           
+
           # Default to activation method 1 (Stored Procedure)
           ACTIVATION_METHOD="1"
           if [[ "{{.NEW_RELIC_ASSUME_YES}}" != "true" ]]; then
@@ -441,7 +438,7 @@ install:
             MAX_RETRIES_METHOD_CHOICE="${MAX_RETRIES:-3}" 
             echo "INFO: Default activation method is Stored Procedure (1)."
             while [ $RETRY_METHOD_CHOICE -lt $MAX_RETRIES_METHOD_CHOICE ]; do
-              read -rp "Select Method of Activation for Consumers and Instruments (1 for Stored Procedure, 2 for Direct Update Privileges): " ACTIVATION_METHOD_INPUT
+              read -rp "Select Method of Activation for Consumers and Instruments (1 for Stored Procedure, 2 for Direct Update Privileges) [1]: " ACTIVATION_METHOD_INPUT
               ACTIVATION_METHOD=${ACTIVATION_METHOD_INPUT:-1} 
               if [[ "$ACTIVATION_METHOD" == "1" || "$ACTIVATION_METHOD" == "2" ]]; then
                 break
@@ -456,14 +453,14 @@ install:
               fi
             done
           else
-            echo "INFO: Non-interactive mode. Using default Performance Schema activation method: Stored Procedure (1)."
+            echo "INFO: Non-interactive mode. Defaulting Performance Schema activation method to Stored Procedure (1)."
+            ACTIVATION_METHOD="1"
           fi
 
           if [[ "$ACTIVATION_METHOD" == "1" ]]; then
             echo "INFO: Using Stored Procedure method for Performance Schema activation."
             SQL_PROCEDURE_SETUP="CREATE SCHEMA IF NOT EXISTS newrelic;
             GRANT EXECUTE ON newrelic.* TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';
-            GRANT EXECUTE ON PROCEDURE newrelic.enable_essential_consumers_and_instruments TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';
 
             DELIMITER \\\$\$
             CREATE PROCEDURE IF NOT EXISTS newrelic.enable_essential_consumers_and_instruments()
@@ -476,6 +473,8 @@ install:
                 UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%lock%';
             END \\\$\$
             DELIMITER ;
+
+            GRANT EXECUTE ON PROCEDURE newrelic.enable_essential_consumers_and_instruments TO '${NR_MONITOR_USER}'@'${NR_MONITOR_HOST}';
             CALL newrelic.enable_essential_consumers_and_instruments();"
             
             SP_SETUP_OUTPUT=$(MYSQL_PWD="${RDS_ADMIN_PASS}" mysql --host="${RDS_ENDPOINT}" --port="${RDS_PORT}" --user="${RDS_ADMIN_USER}" -e "${SQL_PROCEDURE_SETUP}" 2>&1)
