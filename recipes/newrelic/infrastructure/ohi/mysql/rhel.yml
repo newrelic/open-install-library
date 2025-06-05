@@ -31,6 +31,7 @@ keywords:
 # Examine Infrastructure events for correlated data
 processMatch:
   - mysqld
+  - mariadbd
 
 preInstall:
   requireAtDiscovery: |
@@ -227,14 +228,23 @@ install:
               read -r USERNAME
               USERNAME=${USERNAME:-root}
           
-              printf "Enter password: "
+              printf "Enter password (leave blank if none): "
               stty -echo
               read -r NEW_RELIC_MYSQL_ROOT_PASSWORD
               stty echo
               printf "\n"
               
-              sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
-              EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
+               # Check if the password is blank
+              if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
+                # Use socket-based authentication for MariaDB
+                sudo mysql -u "$USERNAME" < /tmp/sql-drop-user.sql &> /dev/null ||:
+                EXEC_OUTPUT=$(eval sudo mysql -u "$USERNAME" < /tmp/sql-create-user.sql 2>&1)
+              else
+                # Use password-based authentication for other cases
+                sudo mysql -u "$USERNAME" --port "$NEW_RELIC_MYSQL_PORT" -p"$NEW_RELIC_MYSQL_ROOT_PASSWORD" < /tmp/sql-drop-user.sql &> /dev/null ||:
+                EXEC_OUTPUT=$(eval sudo mysql -u "$USERNAME" --port "$NEW_RELIC_MYSQL_PORT" -p"$NEW_RELIC_MYSQL_ROOT_PASSWORD" < /tmp/sql-create-user.sql 2>&1)
+              fi
+
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
               ((TRIES++))
