@@ -123,6 +123,8 @@ install:
           if [[ "$NEW_RELIC_MYSQL_PASSWORD" == "" ]]; then
             NEW_RELIC_MYSQL_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           fi
+          # Detect if MariaDB is being used
+          IS_MARIADB=$(mysql --version | grep -i mariadb | wc -l)
           
           # Check the Query monitoring status in previous installation
           QUERY_MONITORING_PREVIOUSLY_ENABLED=0
@@ -234,8 +236,9 @@ install:
               stty echo
               printf "\n"
               
-               # Check if the password is blank
-              if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
+              # Defaults to socket-based authentication for MariaDB if no password is provided, otherwise uses password-based authentication.
+              # For more details, see: https://mariadb.com/kb/en/authentication-plugin-unix-socket/
+              if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" && $IS_MARIADB -eq 1 ]]; then
                 # Use socket-based authentication for MariaDB
                 sudo mysql -u "$USERNAME" < /tmp/sql-drop-user.sql &> /dev/null ||:
                 EXEC_OUTPUT=$(eval sudo mysql -u "$USERNAME" < /tmp/sql-create-user.sql 2>&1)
