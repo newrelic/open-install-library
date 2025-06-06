@@ -23,6 +23,7 @@ keywords:
 # Examine Infrastructure events for correlated data
 processMatch:
   - mysqld
+  - mariadbd
 
 # Matches partial list of the Log forwarding parameters
 # https://docs.newrelic.com/docs/logs/enable-log-management-new-relic/enable-log-monitoring-new-relic/forward-your-logs-using-infrastructure-agent#parameters
@@ -118,6 +119,9 @@ install:
             NR_CLI_DB_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           fi
 
+          # Detect if MariaDB is being used
+          IS_MARIADB=$(mysql --version | grep -i mariadb | wc -l)
+
           # Check to see if default port works, or prompt if non-interactive
           CAN_CONNECT=$(curl $NR_CLI_DB_HOSTNAME:$NR_CLI_DB_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
           CAN_CONNECT=${CAN_CONNECT:-0}
@@ -154,7 +158,13 @@ install:
 
           # Attempt to create required user
           SQL_CHECK_AUTH=$(echo "SELECT USER FROM mysql.user where USER in ('"$NR_CLI_DB_USERNAME"')")
-          MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          if [[ $IS_MARIADB -eq 1 ]]; then
+            # For MariaDB, check connection using socket-based authentication (no port or password)
+            MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          else
+            # For MySQL, check connection using username and password
+            MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NR_CLI_DB_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          fi
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             if [[ "$NEW_RELIC_ASSUME_YES" == "true" ]]; then
               # non-interactive mode, need a valid root password
@@ -210,8 +220,16 @@ install:
             fi
           else
             if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
-              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
-              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+              if [[ $IS_MARIADB -eq 1 ]]; then
+                  # For MariaDB, use socket-based authentication (no port number)
+                  sudo mysql -u root  < /tmp/sql-drop-user.sql &> /dev/null ||:
+                  EXEC_OUTPUT=$(eval sudo mysql -u root < /tmp/sql-create-user.sql 2>&1)
+                else
+                  # For MySQL, use port-based authentication
+                  sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
+                  EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+                fi
+              
             else
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
