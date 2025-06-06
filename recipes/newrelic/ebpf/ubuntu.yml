@@ -1,0 +1,199 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: ebpf-agent-installer
+displayName: eBPF Agent
+description: New Relic install recipe for the eBPF agent
+repository: https://github.com/newrelic/newrelic-ebpf-agent
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "ubuntu"
+
+keywords:
+  - eBPF
+  - Agent
+  - Linux
+  - Ubuntu
+  - Precise
+  - Trusty
+  - Xenial
+  - Bionic
+  - Focal
+  - Jammy
+  - Noble
+
+processMatch: []
+
+preInstall:
+  requireAtDiscovery: |  
+      if [[ "$EUID" -ne 0 ]]; then
+          echo "ERROR: root privleges are required. Please use sudo."
+          exit 1
+      fi
+      PACKAGE_NAME="newrelic-ebpf-agent"
+      echo "Checking if $PACKAGE_NAME is installed..."
+      if apt list --installed 2>/dev/null | grep -qw "$PACKAGE_NAME"; then
+          echo "$PACKAGE_NAME is already installed. Please uninstall and then run the installation again."
+          echo -e "\nRun the following command to uninstall:\n\nsudo apt-get remove $PACKAGE_NAME -y\n"
+          exit 0
+      fi
+
+      CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
+      echo "Checking for newrelic-ebpf-agent.conf..."
+      if [[ -f "$CONFIG_FILE" ]]; then
+          echo "Configuration file exists at $CONFIG_FILE. Proceeding with installation."
+          source $CONFIG_FILE
+          return 0
+      else
+          echo "ERROR: Configuration file $CONFIG_FILE does not exist. Aborting installation."
+      fi
+
+      echo "Checking for mandatory config..."
+      if [[ -z "$NEW_RELIC_LICENSE_KEY" ]]; then
+          echo "ERROR: NEW_RELIC_LICENSE_KEY is not found in the config file $CONFIG_FILE. Aborting installation."
+      fi
+      if [[ -z "$DEPLOYMENT_NAME" ]]; then
+          echo "ERROR: DEPLOYMENT_NAME is not found in the config file $CONFIG_FILE. Aborting installation."
+      fi
+      echo "Required config is found."
+
+      exit 0
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        # - task: check_config_file
+        - task: update_apt
+        - task: add_gpg_key
+        - task: add_nr_source
+        - task: update_apt_nr_source
+        - task: install_linux_headers
+        - task: install_ebpf_agent
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          IS_GREP_INSTALLED=$(which grep | wc -l)
+          if [ $IS_GREP_INSTALLED -eq 0 ] ; then
+            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
+            exit 10
+          fi
+        - |
+          IS_OPENSSL_INSTALLED=$(which openssl | wc -l)
+          if [ $IS_OPENSSL_INSTALLED -eq 0 ] ; then
+            echo "openssl is required to run the newrelic install. Please install openssl and re-run the installation." >&2
+            exit 14
+          fi
+        - |
+          IS_UNAME_INSTALLED=$(which uname | wc -l)
+          if [ $IS_UNAME_INSTALLED -eq 0 ] ; then
+            echo "uname is required to run the newrelic install. Please install uname and re-run the installation." >&2
+            exit 15
+          fi
+
+    # check_config_file:
+    #   cmds:
+    #     - |
+    #       CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
+    #       if [[ -f "$CONFIG_FILE" ]]; then
+    #         echo "Configuration file exists at $CONFIG_FILE. Proceeding with installation."
+    #         source $CONFIG_FILE
+    #       else
+    #         echo "ERROR: Configuration file $CONFIG_FILE does not exist. Aborting installation." >&2
+    #         exit 1
+    #       fi
+
+
+    update_apt:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+          fi
+          apt-get $OPTIONS update -yq
+      silent: true
+      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+      ignore_error: true
+
+    add_gpg_key:
+      cmds:
+        - |
+          # Remove the key from the legacy keyring if it exists
+          sudo rm -f /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg 2>/dev/null
+          sudo rm -f /etc/apt/trusted.gpg 2>/dev/null
+          # Add the key to the correct directory
+          curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg
+      silent: true
+
+    add_nr_source:
+      cmds:
+        - |
+          ARCH="amd64"
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+          if [ $IS_ARM -gt 0 ] ; then
+            ARCH="arm64"
+          fi
+          printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}/preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-ebpf.list > /dev/null
+      vars:
+        DEBIAN_CODENAME:
+          sh: awk -F= '/DISTRIB_CODENAME/ {print $2}' /etc/lsb-release
+      silent: true
+
+    update_apt_nr_source:
+      cmds:
+        - |
+          # Get latest definitions and skip any failure because of deprecation
+          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
+          if [ ! -z "$HTTPS_PROXY" ]; then
+            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+          fi
+          apt-get $OPTIONS update -yq
+      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+      ignore_error: true
+
+    install_linux_headers:
+      cmds:
+        - |
+          # Install the linux headers for the current kernel
+          KERNEL_VERSION=$(uname -r)
+          echo "Installing linux headers for kernel version: $KERNEL_VERSION"
+          apt-get install -yq --no-install-recommends linux-headers-$KERNEL_VERSION || {
+            echo "ERROR: Failed to install linux headers for kernel version: $KERNEL_VERSION"
+            exit 1
+          }
+      silent: true
+
+    install_ebpf_agent:
+      cmds:
+        - |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get install -yq --no-install-recommends newrelic-ebpf-agent || {
+            echo "Resolving missing dependencies for the eBPF agent..."
+            apt-get update -yq || echo "ERROR: Failed to perform apt-get update."
+            apt-get install -f -yq || echo "ERROR: Failed to resolve dependencies for the eBPF agent."
+            apt-get install -yq --no-install-recommends newrelic-ebpf-agent || echo "ERROR: Failed to install the eBPF agent after resolving dependencies."
+          }
+      silent: true
+
+postInstall:
+  info: |2
+      ⚙️  The eBPF Agent configuration file can be found in /etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf
+      Edit this file to make changes or configure advanced features for the agent. See the docs for options:
+      https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/configuration/infrastructure-agent-configuration-settings
+      
+      Note: Process monitoring has been enabled by default - all other config options are left to the user.
