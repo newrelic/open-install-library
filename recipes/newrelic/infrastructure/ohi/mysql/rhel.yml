@@ -123,6 +123,7 @@ install:
           if [[ "$NEW_RELIC_MYSQL_PASSWORD" == "" ]]; then
             NEW_RELIC_MYSQL_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           fi
+          
           # Detect if MariaDB is being used
           IS_MARIADB=$(mysql --version | grep -i mariadb | wc -l)
           
@@ -188,7 +189,15 @@ install:
 
           # Attempt to create required user
           SQL_CHECK_AUTH=$(echo "SELECT USER FROM mysql.user where USER in ('"$NEW_RELIC_MYSQL_USERNAME"')")
-          MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          # Check if MariaDB is being used
+          if [[ $IS_MARIADB -eq 1 ]]; then
+            # For MariaDB, check connection using socket-based authentication (no port or password)
+            MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root  -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          else
+            # For MySQL, check connection using username and password
+            MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          fi
+          
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             if [[ "$NEW_RELIC_ASSUME_YES" == "true" && -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
               # non-interactive mode, need a valid root password
@@ -230,24 +239,14 @@ install:
               read -r USERNAME
               USERNAME=${USERNAME:-root}
           
-              printf "Enter password (leave blank if none): "
+              printf "Enter password: "
               stty -echo
               read -r NEW_RELIC_MYSQL_ROOT_PASSWORD
               stty echo
               printf "\n"
               
-              # Defaults to socket-based authentication for MariaDB if no password is provided, otherwise uses password-based authentication.
-              # For more details, see: https://mariadb.com/kb/en/authentication-plugin-unix-socket/
-              if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" && $IS_MARIADB -eq 1 ]]; then
-                # Use socket-based authentication for MariaDB
-                sudo mysql -u "$USERNAME" < /tmp/sql-drop-user.sql &> /dev/null ||:
-                EXEC_OUTPUT=$(eval sudo mysql -u "$USERNAME" < /tmp/sql-create-user.sql 2>&1)
-              else
-                # Use password-based authentication for other cases
-                sudo mysql -u "$USERNAME" --port "$NEW_RELIC_MYSQL_PORT" -p"$NEW_RELIC_MYSQL_ROOT_PASSWORD" < /tmp/sql-drop-user.sql &> /dev/null ||:
-                EXEC_OUTPUT=$(eval sudo mysql -u "$USERNAME" --port "$NEW_RELIC_MYSQL_PORT" -p"$NEW_RELIC_MYSQL_ROOT_PASSWORD" < /tmp/sql-create-user.sql 2>&1)
-              fi
-
+              sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
+              EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
               SQL_OUTPUT_ERROR=$(echo -n $EXEC_OUTPUT | grep "ERROR" | wc -l)
               ((TRIES++))
@@ -266,8 +265,15 @@ install:
             fi
           else
             if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
-              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
-              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+              if [[ $IS_MARIADB -eq 1 ]]; then
+                  # For MariaDB, use socket-based authentication (no port number)
+                  sudo mysql -u root < /tmp/sql-drop-user.sql &> /dev/null ||:
+                  EXEC_OUTPUT=$(eval sudo mysql -u root < /tmp/sql-create-user.sql 2>&1)
+                else
+                  # For MySQL, use port-based authentication
+                  sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
+                  EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+                fi
             else
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
