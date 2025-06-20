@@ -203,17 +203,33 @@ install:
             echo "newrelic infrastructure agent is not available for this architecture "{{.ARCH}}". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
-          # Check NEW_RELIC_FIPS_ENABLED flag
+
+          AGENT_VERSION={{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}
+          VERSION_SUFFIX=""
+          if [ -n "$AGENT_VERSION" ]; then
+            VERSION_SUFFIX="-$AGENT_VERSION"
+          fi
+
+          # Set up the repo
+          curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+
+          # Check NEW_RELIC_FIPS_ENABLED flag to determine package name
+          PACKAGE_NAME="newrelic-infra"
           if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
-            echo "FIPS mode enabled. Installing newrelic-infra-fips..."
-            curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
-            yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-            yum list installed newrelic-infra-fips >/dev/null 2>&1 && yum update newrelic-infra-fips -y -q || yum install newrelic-infra-fips -y -q
+            PACKAGE_NAME="newrelic-infra-fips"
+            echo "FIPS mode enabled. Installing $PACKAGE_NAME${VERSION_SUFFIX}..."
           else
-            echo "FIPS mode not enabled. Installing newrelic-infra..."
-            curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
-            yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-            yum list installed newrelic-infra >/dev/null 2>&1 && yum update newrelic-infra -y -q || yum install newrelic-infra -y -q
+            echo "FIPS mode not enabled. Installing $PACKAGE_NAME${VERSION_SUFFIX}..."
+          fi
+
+          # Install specific version if provided, otherwise install latest
+          if [ -n "$AGENT_VERSION" ]; then
+            # Install specific version (handles install/update/downgrade)
+            yum -y -q install $PACKAGE_NAME${VERSION_SUFFIX} --allowerasing
+          else
+            # No version specified - install or update to latest
+            yum list installed $PACKAGE_NAME >/dev/null 2>&1 && yum -y -q update $PACKAGE_NAME || yum -y -q install $PACKAGE_NAME
           fi
       silent: true
 
