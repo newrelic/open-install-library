@@ -31,13 +31,12 @@ validationNrql: "SELECT count(*) from MssqlInstanceSample FACET entityGuid SINCE
 preInstall:
   requireAtDiscovery: |
       powershell -command '
-        if (($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE") -or ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE")) {
+      if (($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE") -or ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE")) {
+          $azureDeploymentType = "SQL Database"
           if ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE") {
-              Write-Host "Azure SQL Managed Instance deployment type detected."
+              $azureDeploymentType = "SQL Managed Instance"
           }
-          elseif ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-              Write-Host "Azure SQL Database deployment type detected."
-          }
+         Write-Host "Azure $azureDeploymentType deployment type detected."
 
           $azureHostname = if ($env:NEW_RELIC_MSSQL_DB_HOSTNAME) { $env:NEW_RELIC_MSSQL_DB_HOSTNAME } else { $env:NR_CLI_DB_HOSTNAME }
           if ([string]::IsNullOrWhiteSpace($azureHostname)) {
@@ -90,83 +89,78 @@ preInstall:
           if ($sqlCmdExitCode -eq 0 -and $outputLines -and $outputLines.Count -ge 3) {
               $serviceName = $outputLines[2].ToString().Trim()
               if (-not [string]::IsNullOrWhiteSpace($serviceName) -and $serviceName -notlike "Msg*" -and $serviceName -notlike "Sqlcmd: Error*") {
-                  if ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-                      Write-Host "SUCCESS: Successfully connected to Azure SQL Database $connectionString and retrieved service name: $serviceName"
-                  } else {
-                      Write-Host "SUCCESS: Successfully connected to Azure SQL Managed Instance $connectionString and retrieved service name: $serviceName"
-                  }
+                  Write-Host "SUCCESS: Successfully connected to Azure $azureDeploymentType ($connectionString) and retrieved service name: $serviceName"
                   exit 0
               } else {
-                  if ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-                      Write-Host "ERROR: Connected to Azure SQL Database $connectionString but failed to retrieve a valid service name."
-                  } else {
-                      Write-Error "ERROR: Connected to Azure SQL Managed Instance $connectionString but failed to retrieve a valid service name."
-                  }
-                  exit 4
+                  Write-Error "ERROR: Connected to Azure $azureDeploymentType ($connectionString) but failed to retrieve a valid service name."
+                  exit 4 
               }
           } else {
-              if ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-                  Write-Error "ERROR: Failed to connect or execute query on Azure SQL Database $connectionString. sqlcmd exit code: $sqlCmdExitCode."
-              } else {
-                  Write-Error "ERROR: Failed to connect or execute query on Azure SQL Managed Instance $connectionString. sqlcmd exit code: $sqlCmdExitCode."
-              }
-              exit 4
+              Write-Error "ERROR: Failed to connect or execute query on Azure $azureDeploymentType ($connectionString). sqlcmd exit code: $sqlCmdExitCode."
+              exit 4 
           }
       } else {
-          $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
-          $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
+        $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
 
-          $NEW_RELIC_MSSQL_DB_HOSTNAME = if ($env:NEW_RELIC_MSSQL_DB_HOSTNAME) { $env:NEW_RELIC_MSSQL_DB_HOSTNAME } else { $env:NR_CLI_DB_HOSTNAME };
-          if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_HOSTNAME)) { $NEW_RELIC_MSSQL_DB_HOSTNAME = hostname }
-          
-          $NEW_RELIC_MSSQL_DB_PORT = if ($env:NEW_RELIC_MSSQL_DB_PORT) { $env:NEW_RELIC_MSSQL_DB_PORT } else { $env:NR_CLI_DB_PORT };
-          if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_PORT)) { $NEW_RELIC_MSSQL_DB_PORT = "1433" }
+        $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
 
-          # Loop on each instance names to see if we can connect
-          foreach ($instance in $instances) {
-              $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance},${NEW_RELIC_MSSQL_DB_PORT}"
-              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
-              If ($name.Length -ge 3) {
-                  $actualName = $name[2].ToString().Trim();
-                  If ($actualName -eq $instance) {
-                      $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
-                      if (-Not ($canLogin -eq $null)) {
-                          Write-Host "Found at least 1 instance connecting on default port"
-                          exit 0
-                      }
-                  }
+        $NEW_RELIC_MSSQL_DB_HOSTNAME = if ($env:NEW_RELIC_MSSQL_DB_HOSTNAME) { $env:NEW_RELIC_MSSQL_DB_HOSTNAME } else { $env:NR_CLI_DB_HOSTNAME };
+        if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_HOSTNAME)) {$NEW_RELIC_MSSQL_DB_HOSTNAME = hostname}
+        
+        $NEW_RELIC_MSSQL_DB_PORT = if ($env:NEW_RELIC_MSSQL_DB_PORT) { $env:NEW_RELIC_MSSQL_DB_PORT } else { $env:NR_CLI_DB_PORT };
+        if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_PORT)) {$NEW_RELIC_MSSQL_DB_PORT = "1433"}
+
+        # Loop on each instance names to see if we can connect
+        foreach ($instance in $instances) {
+          $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance},${NEW_RELIC_MSSQL_DB_PORT}"
+          $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+          If ($name.Length -ge 3) {
+            $actualName = $name[2].ToString().Trim();
+            If ($actualName -eq $instance) {
+              $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+              if (-Not ($canLogin -eq $null)) {
+                Write-Host "Found at least 1 instance connecting on default port"
+                exit 0
               }
-
-              $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance}"
-              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
-              If ($name.Length -ge 3) {
-                  $actualName = $name[2].ToString().Trim();
-                  If ($actualName -eq $instance) {
-                      $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
-                      if (-Not ($canLogin -eq $null)) {
-                          Write-Host "# Found at least 1 instance connecting"
-                          exit 0
-                      }
-                  }
-              }
-
-              $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
-              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
-              If ($name.Length -ge 3) {
-                  $actualName = $name[2].ToString().Trim();
-                  If ($actualName -eq $instance) {
-                      $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
-                      if (-Not ($canLogin -eq $null)) {
-                          Write-Host "# Found at least 1 instance connecting"
-                          exit 0
-                      }
-                  }
-              }
+            }
           }
-          exit 3 
-      }
 
+          $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance}"
+          $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+          If ($name.Length -ge 3) {
+            $actualName = $name[2].ToString().Trim();
+            If ($actualName -eq $instance) {
+              $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+              if (-Not ($canLogin -eq $null)) {
+                Write-Host "# Found at least 1 instance connecting"
+                exit 0
+              }
+            }
+          }
+
+          $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
+          $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+          If ($name.Length -ge 3) {
+            $actualName = $name[2].ToString().Trim();
+            If ($actualName -eq $instance) {
+              $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+              if (-Not ($canLogin -eq $null)) {
+                Write-Host "# Found at least 1 instance connecting"
+                exit 0
+              }
+            }
+          }
+
+        }
+        exit 3 
+      }
       '
+  info: |
+      To capture data from the Microsoft SqlServer integration, we need to create a new SqlServer user with specific permissions (CONNECT, VIEW SERVER STATE, READ).
+      The installation will create a strong randomly generated password for that new user.
+      Note, this installation requires Sql Server Authentication, also referenced as Mixed mode.
+      More information regarding the prerequisites can be found at https://docs.newrelic.com/docs/integrations/host-integrations/host-integrations-list/microsoft-sql-server-monitoring-integration#about
+
 install:
   version: "3"
   silent: true
@@ -200,7 +194,7 @@ install:
     input_install:
       cmds:
         - |
-          powershell -command '         
+          powershell -command '
           $TRIES=0
           $MAX_RETRIES=3
 
@@ -216,8 +210,8 @@ install:
 
           $NEW_RELIC_MSSQL_DB_PASSWORD = if ($env:NEW_RELIC_MSSQL_DB_PASSWORD) { $env:NEW_RELIC_MSSQL_DB_PASSWORD } else { $env:NR_CLI_DB_PASSWORD };
           if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_PASSWORD)) {
-          Add-Type -AssemblyName System.Web;
-          $NEW_RELIC_MSSQL_DB_PASSWORD = [System.Web.Security.Membership]::GeneratePassword(20,2).replace("-","");
+            Add-Type -AssemblyName System.Web;
+            $NEW_RELIC_MSSQL_DB_PASSWORD = [System.Web.Security.Membership]::GeneratePassword(20,2).replace("-","");
           }
           $NEW_RELIC_MSSQL_SQL_PASSWORD = if ($env:NEW_RELIC_MSSQL_SQL_PASSWORD) { $env:NEW_RELIC_MSSQL_SQL_PASSWORD } else { $env:NR_CLI_SQL_PASSWORD };
           $NEW_RELIC_MSSQL_SQL_USERNAME = if ($env:NEW_RELIC_MSSQL_SQL_USERNAME) { $env:NEW_RELIC_MSSQL_SQL_USERNAME } else { $env:NR_CLI_SQL_USERNAME };
@@ -228,7 +222,7 @@ install:
           $NEW_RELIC_AZURE_DEPLOYMENT_TYPE = $env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE
           $NEW_RELIC_MSSQL_AZURE_AUTH_MODE = $env:NEW_RELIC_MSSQL_AZURE_AUTH_MODE
           if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_AZURE_AUTH_MODE)) {
-          $NEW_RELIC_MSSQL_AZURE_AUTH_MODE = "SQL" # Default to SQL authentication
+              $NEW_RELIC_MSSQL_AZURE_AUTH_MODE = "SQL" # Default to SQL authentication
           }
           $NR_CLI_SLOW_QUERY = $env:NR_CLI_SLOW_QUERY
           if ([string]::IsNullOrWhiteSpace($NR_CLI_SLOW_QUERY)) {$NR_CLI_SLOW_QUERY = "false"}
@@ -238,66 +232,66 @@ install:
 
           # Write config function
           function Write-OhiConfig {
-          param (
-          [Parameter(Mandatory=$false, Position=0)]
-          [string] $InstanceName,
-          [Parameter(Mandatory=$false, Position=1)]
-          [string] $Port
-          )
+            param (
+              [Parameter(Mandatory=$false, Position=0)]
+              [string] $InstanceName,
+              [Parameter(Mandatory=$false, Position=1)]
+              [string] $Port
+            )
 
-          if($CreateConfig){
-          # Remove any previous config
-          if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
+            if($CreateConfig){
+            # Remove any previous config
+            if (Test-Path $OhiConfig) { Remove-Item $OhiConfig };
 
-          Add-Content -Path $OhiConfig -Value @"
+           Add-Content -Path $OhiConfig -Value @"
           integrations:
           "@ -Force | Out-Null;
-          $CreateConfig=0
-          }
+              $CreateConfig=0
+            }
 
-          Add-Content -Path $OhiConfig -Value "  - name`:` nri-mssql" -Force | Out-Null;
-          Add-Content -Path $OhiConfig -Value "    env`:` " -Force | Out-Null;
-          Add-Content -Path $OhiConfig -Value "      HOSTNAME`:` ${NEW_RELIC_MSSQL_DB_HOSTNAME}" -Force | Out-Null;
-          Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NEW_RELIC_MSSQL_DB_USERNAME}" -Force | Out-Null;
-          Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NEW_RELIC_MSSQL_DB_PASSWORD}`"" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "  - name`:` nri-mssql" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "    env`:` " -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      HOSTNAME`:` ${NEW_RELIC_MSSQL_DB_HOSTNAME}" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NEW_RELIC_MSSQL_DB_USERNAME}" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NEW_RELIC_MSSQL_DB_PASSWORD}`"" -Force | Out-Null;
 
-          if ($NR_ENABLE_BUFFER_METRICS -eq "0") {
-          Add-Content -Path $OhiConfig -Value "      ENABLE_BUFFER_METRICS`:` false" -Force | Out-Null;
-          }
+            if ($NR_ENABLE_BUFFER_METRICS -eq "0") {
+            Add-Content -Path $OhiConfig -Value "      ENABLE_BUFFER_METRICS`:` false" -Force | Out-Null;
+            }
 
-          if ($NR_ENABLE_DATABASE_RESERVE_METRICS -eq "0") {
-          Add-Content -Path $OhiConfig -Value "      ENABLE_DATABASE_RESERVE_METRICS`:` false" -Force | Out-Null;
-          }
+            if ($NR_ENABLE_DATABASE_RESERVE_METRICS -eq "0") {
+            Add-Content -Path $OhiConfig -Value "      ENABLE_DATABASE_RESERVE_METRICS`:` false" -Force | Out-Null;
+            }
 
-          if ([string]::IsNullOrWhiteSpace($Port)) {
-          Add-Content -Path $OhiConfig -Value "      INSTANCE`:` ${InstanceName}" -Force | Out-Null;
-          } else {
-          Add-Content -Path $OhiConfig -Value "      PORT`:` ${Port}" -Force | Out-Null;
-          }
+            if ([string]::IsNullOrWhiteSpace($Port)) {
+              Add-Content -Path $OhiConfig -Value "      INSTANCE`:` ${InstanceName}" -Force | Out-Null;
+            } else {
+              Add-Content -Path $OhiConfig -Value "      PORT`:` ${Port}" -Force | Out-Null;
+            }
 
-          if ($NR_CLI_SLOW_QUERY -eq "true") {
-          Add-Content -Path $OhiConfig -Value "      ENABLE_QUERY_MONITORING`:` true" -Force | Out-Null;
-          }
+            if ($NR_CLI_SLOW_QUERY -eq "true") {
+            Add-Content -Path $OhiConfig -Value "      ENABLE_QUERY_MONITORING`:` true" -Force | Out-Null;
+            }
 
-          Add-Content -Path $OhiConfig -Value "    inventory_source`:` config/mssql" -Force | Out-Null;
-          Add-Content -Path $OhiConfig -Value "    interval`:` 15" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "    inventory_source`:` config/mssql" -Force | Out-Null;
+            Add-Content -Path $OhiConfig -Value "    interval`:` 15" -Force | Out-Null;
           }
 
           # Enable Query Store function
           function Enable-QueryStore {
-          param (
-          [Parameter(Mandatory=$true, Position=0)]
-          [string] $connection,
-          [Parameter(Mandatory=$false, Position=1)]
-          [string] $InstanceName,
-          [Parameter(Mandatory=$false, Position=2)]
-          [string] $Port
-          )
+            param (
+              [Parameter(Mandatory=$true, Position=0)]
+              [string] $connection,
+              [Parameter(Mandatory=$false, Position=1)]
+              [string] $InstanceName,
+              [Parameter(Mandatory=$false, Position=2)]
+              [string] $Port
+            )
 
-          Write-Host "Attempting to enable Query Store for all non default databases..."
-          Write-Host "Using SQL Server connection target: $connection"
+            Write-Host "Attempting to enable Query Store for all non default databases..."
+            Write-Host "Using SQL Server connection target: $connection"
 
-          $SQL=@"
+            $SQL=@"
           SET QUOTED_IDENTIFIER OFF;
           DECLARE @name SYSNAME
           DECLARE db_user_cursor CURSOR
@@ -306,63 +300,63 @@ install:
           OPEN db_user_cursor
           FETCH NEXT FROM db_user_cursor INTO @name WHILE @@FETCH_STATUS = 0
           BEGIN
-          BEGIN TRY
-          EXECUTE(`"USE [`" + @name + `"]; ALTER DATABASE [`" + @name + `"] SET QUERY_STORE = ON ( QUERY_CAPTURE_MODE = ALL, DATA_FLUSH_INTERVAL_SECONDS = 900 );`")
-          END TRY
-          BEGIN CATCH
-          END CATCH
-          FETCH next FROM db_user_cursor INTO @name
+            BEGIN TRY
+              EXECUTE(`"USE [`" + @name + `"]; ALTER DATABASE [`" + @name + `"] SET QUERY_STORE = ON ( QUERY_CAPTURE_MODE = ALL, DATA_FLUSH_INTERVAL_SECONDS = 900 );`")
+            END TRY
+            BEGIN CATCH
+            END CATCH
+              FETCH next FROM db_user_cursor INTO @name
           END
           CLOSE db_user_cursor
           DEALLOCATE db_user_cursor
           "@
 
-          $NriSqlFile = "$env:TEMP\nri-sql.sql"
+            $NriSqlFile = "$env:TEMP\nri-sql.sql"
 
-          # Delete user and login if exist
-          # Then create new login and user
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          Add-Content -Path $NriSqlFile -Value $SQL -Force 2>&1
-          $sqlCmdExitCode = -1 # Initialize
+            # Delete user and login if exist
+            # Then create new login and user
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            Add-Content -Path $NriSqlFile -Value $SQL -Force 2>&1
+            $sqlCmdExitCode = -1 # Initialize
 
-          # Attempt with explicit SQL credentials if NEW_RELIC_MSSQL_AZURE_AUTH_MODE is SQL and credentials are provided
-          if ($env:NEW_RELIC_MSSQL_SQL_USERNAME -and $env:NEW_RELIC_MSSQL_SQL_PASSWORD -and $NEW_RELIC_MSSQL_AZURE_AUTH_MODE -eq "SQL") {
-          Write-Host "Attempting to enable Query Store using SQL credentials."
-          $SqlOutput=(sqlcmd -U $NEW_RELIC_MSSQL_SQL_USERNAME -P $NEW_RELIC_MSSQL_SQL_PASSWORD -S $connection -i $NriSqlFile 2>&1)
-          $sqlCmdExitCode = $LASTEXITCODE
-          }
+            # Attempt with explicit SQL credentials if NEW_RELIC_MSSQL_AZURE_AUTH_MODE is SQL and credentials are provided
+            if ($env:NEW_RELIC_MSSQL_SQL_USERNAME -and $env:NEW_RELIC_MSSQL_SQL_PASSWORD -and $NEW_RELIC_MSSQL_AZURE_AUTH_MODE -eq "SQL") {
+              Write-Host "Attempting to enable Query Store using SQL credentials."
+              $SqlOutput=(sqlcmd -U $NEW_RELIC_MSSQL_SQL_USERNAME -P $NEW_RELIC_MSSQL_SQL_PASSWORD -S $connection -i $NriSqlFile 2>&1)
+              $sqlCmdExitCode = $LASTEXITCODE
+            }
 
-          if ([string]::IsNullOrWhiteSpace($env:NEW_RELIC_MSSQL_SQL_USERNAME)){
-          Write-Host "Attempting to enable Query Store using SQL with no credentials."
-          $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
-          $sqlCmdExitCode = $LASTEXITCODE
-          }
+            if ([string]::IsNullOrWhiteSpace($env:NEW_RELIC_MSSQL_SQL_USERNAME)){
+              Write-Host "Attempting to enable Query Store using SQL with no credentials."
+              $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
+              $sqlCmdExitCode = $LASTEXITCODE
+            }
 
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
 
-          if ($sqlCmdExitCode -eq 0) {
-          Write-Host "SUCCESS: Query Store enabled for all non default databases."
-          } else {
-          Write-Error "FAILURE: Failed to enable Query Store for databases. Exit Code: $sqlCmdExitCode."
-          return $false
-          }
-          return $true
+            if ($sqlCmdExitCode -eq 0) {
+              Write-Host "SUCCESS: Query Store enabled for all non default databases."
+            } else {
+              Write-Error "FAILURE: Failed to enable Query Store for databases. Exit Code: $sqlCmdExitCode."
+              return $false
+            }
+            return $true
           }
 
           # Create SQL user function
           function Create-SqlUser {
-          param (
-          [Parameter(Mandatory=$true, Position=0)]
-          [string] $connection,
-          [Parameter(Mandatory=$false, Position=1)]
-          [string] $InstanceName,
-          [Parameter(Mandatory=$false, Position=2)]
-          [string] $Port
-          )
+            param (
+              [Parameter(Mandatory=$true, Position=0)]
+              [string] $connection,
+              [Parameter(Mandatory=$false, Position=1)]
+              [string] $InstanceName,
+              [Parameter(Mandatory=$false, Position=2)]
+              [string] $Port
+            )
 
-          Write-Host "Using SQL Server connection target: $connection"
+            Write-Host "Using SQL Server connection target: $connection"
 
-          $SQL=@"
+            $SQL=@"
           SET QUOTED_IDENTIFIER OFF;
           DECLARE @name SYSNAME
           DECLARE db_user_cursor CURSOR
@@ -371,32 +365,32 @@ install:
           OPEN db_user_cursor
           FETCH NEXT FROM db_user_cursor INTO @name WHILE @@FETCH_STATUS = 0
           BEGIN
-          BEGIN TRY
-          EXECUTE(`"USE [`" + @name + `"]; IF EXISTS(select top 1 name from sys.syslogins where name = `"`"${NEW_RELIC_MSSQL_DB_USERNAME}`"`") DROP USER ${NEW_RELIC_MSSQL_DB_USERNAME};`" )
-          END TRY
-          BEGIN CATCH
-          END CATCH
-          FETCH next FROM db_user_cursor INTO @name
+            BEGIN TRY
+              EXECUTE(`"USE [`" + @name + `"]; IF EXISTS(select top 1 name from sys.syslogins where name = `"`"${NEW_RELIC_MSSQL_DB_USERNAME}`"`") DROP USER ${NEW_RELIC_MSSQL_DB_USERNAME};`" )
+            END TRY
+            BEGIN CATCH
+            END CATCH
+              FETCH next FROM db_user_cursor INTO @name
           END
           CLOSE db_user_cursor
           DEALLOCATE db_user_cursor
 
           IF EXISTS(select top 1 name from sys.syslogins where name = `"${NEW_RELIC_MSSQL_DB_USERNAME}`")
           BEGIN
-          DECLARE @session_id INT
-          DECLARE db_login_cursor CURSOR
-          READ_ONLY FORWARD_ONLY
-          FOR SELECT session_id FROM sys.dm_exec_sessions WHERE login_name = `"${NEW_RELIC_MSSQL_DB_USERNAME}`"
-          OPEN db_login_cursor
-          FETCH NEXT FROM db_login_cursor  INTO @session_id WHILE @@FETCH_STATUS = 0
-          BEGIN
-          EXECUTE(`"KILL `" + @session_id )
-          FETCH next FROM db_login_cursor  INTO @session_id
-          END
-          CLOSE db_login_cursor
-          DEALLOCATE db_login_cursor
+            DECLARE @session_id INT
+            DECLARE db_login_cursor CURSOR
+            READ_ONLY FORWARD_ONLY
+            FOR SELECT session_id FROM sys.dm_exec_sessions WHERE login_name = `"${NEW_RELIC_MSSQL_DB_USERNAME}`"
+            OPEN db_login_cursor
+            FETCH NEXT FROM db_login_cursor  INTO @session_id WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXECUTE(`"KILL `" + @session_id )
+                FETCH next FROM db_login_cursor  INTO @session_id
+            END
+            CLOSE db_login_cursor
+            DEALLOCATE db_login_cursor
 
-          DROP LOGIN ${NEW_RELIC_MSSQL_DB_USERNAME}
+            DROP LOGIN ${NEW_RELIC_MSSQL_DB_USERNAME}
           END
 
           CREATE LOGIN ${NEW_RELIC_MSSQL_DB_USERNAME} WITH PASSWORD = `"${NEW_RELIC_MSSQL_DB_PASSWORD}`"
@@ -408,12 +402,12 @@ install:
           OPEN db_create_cursor
           FETCH NEXT FROM db_create_cursor INTO @name WHILE @@FETCH_STATUS = 0
           BEGIN
-          BEGIN TRY
-          EXECUTE(`"USE [`" + @name + `"]; IF NOT EXISTS(SELECT name from sys.database_principals where name = `"`"${NEW_RELIC_MSSQL_DB_USERNAME}`"`") BEGIN CREATE USER ${NEW_RELIC_MSSQL_DB_USERNAME} FOR LOGIN ${NEW_RELIC_MSSQL_DB_USERNAME}; END`" )
-          END TRY
-          BEGIN CATCH
-          END CATCH
-          FETCH next FROM db_create_cursor INTO @name
+            BEGIN TRY
+              EXECUTE(`"USE [`" + @name + `"]; IF NOT EXISTS(SELECT name from sys.database_principals where name = `"`"${NEW_RELIC_MSSQL_DB_USERNAME}`"`") BEGIN CREATE USER ${NEW_RELIC_MSSQL_DB_USERNAME} FOR LOGIN ${NEW_RELIC_MSSQL_DB_USERNAME}; END`" )
+            END TRY
+            BEGIN CATCH
+            END CATCH
+              FETCH next FROM db_create_cursor INTO @name
           END
           CLOSE db_create_cursor
           DEALLOCATE db_create_cursor
@@ -421,49 +415,49 @@ install:
           select name from sys.syslogins where name = `"${NEW_RELIC_MSSQL_DB_USERNAME}`"
           "@
 
-          $NriSqlFile = "$env:TEMP\nri-sql.sql"
+            $NriSqlFile = "$env:TEMP\nri-sql.sql"
 
-          # Delete user and login if exist
-          # Then create new login and user
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          Add-Content -Path $NriSqlFile -Value $SQL -Force 2>&1
-          # Try with env if passed in
-          if ($NEW_RELIC_MSSQL_SQL_USERNAME -and $NEW_RELIC_MSSQL_SQL_PASSWORD -and $NEW_RELIC_MSSQL_AZURE_AUTH_MODE -eq "SQL") {
-          Write-Host "sqlcmd with credentials"
-          $SqlOutput=(sqlcmd -U $NEW_RELIC_MSSQL_SQL_USERNAME -P $NEW_RELIC_MSSQL_SQL_PASSWORD -S $connection -i $NriSqlFile 2>&1)
-          }
-          # Env failed or blank, try with default
-          if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_SQL_USERNAME) -or ($SqlOutput.Length -lt 3)){
-          Write-Host "sqlcmd with no credentials"
-          $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
-          }
+            # Delete user and login if exist
+            # Then create new login and user
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            Add-Content -Path $NriSqlFile -Value $SQL -Force 2>&1
+             # Try with env if passed in
+            if ($NEW_RELIC_MSSQL_SQL_USERNAME -and $NEW_RELIC_MSSQL_SQL_PASSWORD -and $NEW_RELIC_MSSQL_AZURE_AUTH_MODE -eq "SQL") {
+               Write-Host "sqlcmd with credentials"
+               $SqlOutput=(sqlcmd -U $NEW_RELIC_MSSQL_SQL_USERNAME -P $NEW_RELIC_MSSQL_SQL_PASSWORD -S $connection -i $NriSqlFile 2>&1)
+            }
+            # Env failed or blank, try with default
+            if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_SQL_USERNAME) -or ($SqlOutput.Length -lt 3)){
+               Write-Host "sqlcmd with no credentials"
+               $SqlOutput=(sqlcmd -S $connection -i $NriSqlFile 2>&1)
+            }
 
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          try {
-          $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
-          }
-          catch { }
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            try {
+              $LogOutput=(Add-Content -Path "{{.NEW_RELIC_CLI_LOG_FILE_PATH}}" -Value "SqlOutput`:` ${SqlOutput}" -Force 2>&1)
+            }
+            catch { }
 
-          If ($SqlOutput.Length -ge 3) {
-          $userName = $SqlOutput[2].ToString().Trim();
-          If ($userName -eq ${NEW_RELIC_MSSQL_DB_USERNAME}) {
-          # User created successfully
-          return $true
-          }
-          }
-          return $false
+            If ($SqlOutput.Length -ge 3) {
+              $userName = $SqlOutput[2].ToString().Trim();
+              If ($userName -eq ${NEW_RELIC_MSSQL_DB_USERNAME}) {
+                # User created successfully
+                return $true
+              }
+            }
+            return $false
           }
 
           function Create-User-AzureSqlDatabase {
-          param (
-          [Parameter(Mandatory=$true, Position=0)]
-          [string] $ConnectionString,
-          [Parameter(Mandatory=$true, Position=1)]
-          [string] $Username,
-          [Parameter(Mandatory=$true, Position=2)]
-          [string] $Password
-          )
-          Write-Host "Connecting to Azure SQL Database master database to fetch all databases..."
+            param (
+              [Parameter(Mandatory=$true, Position=0)]
+              [string] $ConnectionString,
+              [Parameter(Mandatory=$true, Position=1)]
+              [string] $Username,
+              [Parameter(Mandatory=$true, Position=2)]
+              [string] $Password
+            )
+            Write-Host "Connecting to Azure SQL Database master database to fetch all databases..."
 
 
           # Query to fetch databases
@@ -471,17 +465,17 @@ install:
           SET QUOTED_IDENTIFIER OFF;
           SELECT name FROM master.sys.databases WHERE name NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`") and state =0
           "@
-          # Write the query to a temporary file
-          $NriSqlFile = "$env:TEMP\nri-sql.sql"
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          Add-Content -Path $NriSqlFile -Value $FetchDatabasesQuery -Force
+            # Write the query to a temporary file
+            $NriSqlFile = "$env:TEMP\nri-sql.sql"
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            Add-Content -Path $NriSqlFile -Value $FetchDatabasesQuery -Force
 
-          # Execute the query
-          $Databases = sqlcmd -S $ConnectionString -U $Username -P $Password -i $NriSqlFile -h -1 2>&1
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          if ($Databases -like "*Msg*") {
-          Write-Error "Failed to fetch databases: $Databases"
-          return $false
+            # Execute the query
+            $Databases = sqlcmd -S $ConnectionString -U $Username -P $Password -i $NriSqlFile -h -1 2>&1
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            if ($Databases -like "*Msg*") {
+            Write-Error "Failed to fetch databases: $Databases"
+            return $false
           }
 
 
@@ -498,19 +492,19 @@ install:
           DROP USER [${NEW_RELIC_MSSQL_DB_USERNAME}];
           END;
           "@
-          # Write the query to the temporary file
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          Add-Content -Path $NriSqlFile -Value $DropUserSQL -Force
+            # Write the query to the temporary file
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            Add-Content -Path $NriSqlFile -Value $DropUserSQL -Force
 
-          # Execute the query
-          $DropUserOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -d $Database -i $NriSqlFile -h -1 2>&1
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            # Execute the query
+            $DropUserOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -d $Database -i $NriSqlFile -h -1 2>&1
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
 
-          if ($DropUserOutput -like "*Msg*") {
-          Write-Error "Failed to drop user in database ${Database}: ${DropUserOutput}"
-          } else {
-          Write-Host "Successfully dropped user in database: $Database"
-          }
+            if ($DropUserOutput -like "*Msg*") {
+              Write-Error "Failed to drop user in database ${Database}: ${DropUserOutput}"
+            } else {
+              Write-Host "Successfully dropped user in database: $Database"
+            }
           }
 
           # Query to drop the login
@@ -535,19 +529,19 @@ install:
           END
 
           "@
-          # Write the query to the temporary file
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          Add-Content -Path $NriSqlFile -Value $DropLoginSQL -Force
+            # Write the query to the temporary file
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            Add-Content -Path $NriSqlFile -Value $DropLoginSQL -Force
 
-          # Execute the query
-          $DropOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -i $NriSqlFile -h -1 2>&1
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            # Execute the query
+            $DropOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -i $NriSqlFile -h -1 2>&1
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
 
-          if ($DropOutput -like "*Msg*") {
-          Write-Error "Failed to drop login: $DropOutput"
-          } else {
-          Write-Host "Successfully dropped login: ${NEW_RELIC_MSSQL_DB_USERNAME}"
-          }
+            if ($DropOutput -like "*Msg*") {
+              Write-Error "Failed to drop login: $DropOutput"
+            } else {
+              Write-Host "Successfully dropped login: ${NEW_RELIC_MSSQL_DB_USERNAME}"
+            }
 
           # Query to create the login
           $CreateLoginSQL = @"
@@ -557,23 +551,23 @@ install:
           ALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER ${NEW_RELIC_MSSQL_DB_USERNAME}
           ALTER SERVER ROLE ##MS_DefinitionReader## ADD MEMBER ${NEW_RELIC_MSSQL_DB_USERNAME}
           "@
-          # Write the query to the temporary file
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          Add-Content -Path $NriSqlFile -Value $CreateLoginSQL -Force
+            # Write the query to the temporary file
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            Add-Content -Path $NriSqlFile -Value $CreateLoginSQL -Force
 
-          # Execute the query
-          $CreateLoginOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -i $NriSqlFile -h -1 2>&1
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          if ($CreateLoginOutput -like "*Msg*") {
-          Write-Error "Failed to create login: $CreateLoginOutput"
-          return $false
-          } else {
-          Write-Host "Successfully created login: ${NEW_RELIC_MSSQL_DB_USERNAME}"
-          }
+            # Execute the query
+            $CreateLoginOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -i $NriSqlFile -h -1 2>&1
+            if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+            if ($CreateLoginOutput -like "*Msg*") {
+              Write-Error "Failed to create login: $CreateLoginOutput"
+              return $false
+            } else {
+                Write-Host "Successfully created login: ${NEW_RELIC_MSSQL_DB_USERNAME}"
+            }
 
-          # Iterate over each database and create the user and grant permissions
-          foreach ($Database in $Databases) {
-          Write-Host "Configuring database: $Database"
+            # Iterate over each database and create the user and grant permissions
+            foreach ($Database in $Databases) {
+              Write-Host "Configuring database: $Database"
 
           # Query to create the user and grant permissions
           $SQL = @"
@@ -584,227 +578,222 @@ install:
             END
             select name from sys.database_principals where name = `"${NEW_RELIC_MSSQL_DB_USERNAME}`"
           "@
-          # Write the query to the temporary file
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          Add-Content -Path $NriSqlFile -Value $SQL -Force
+              # Write the query to the temporary file
+              if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+              Add-Content -Path $NriSqlFile -Value $SQL -Force
 
-          # Execute the query
-          $SqlOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -d $Database -i $NriSqlFile -h -1 2>&1
-          if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
-          if ($SqlOutput -like "*Msg*") {
-              Write-Error "Failed to configure database ${Database}: ${SqlOutput}"
-          } else {
-              Write-Host "Successfully configured database: $Database"
-          }
-          }
-          Write-Host "Configuration completed for all databases."
-          return $true
+              # Execute the query
+              $SqlOutput = sqlcmd -S $ConnectionString -U $Username -P $Password -d $Database -i $NriSqlFile -h -1 2>&1
+              if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+              if ($SqlOutput -like "*Msg*") {
+                  Write-Error "Failed to configure database ${Database}: ${SqlOutput}"
+              } else {
+                  Write-Host "Successfully configured database: $Database"
+              }
+              }
+              Write-Host "Configuration completed for all databases."
+            return $true
           }
           $setupCount = 0
 
           # Check deployment type
           if ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE" -OR $NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-          if ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE") {
-          Write-Host "Azure SQL Managed Instance deployment type detected."
-          } elseif ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-          Write-Host "Azure SQL Database deployment type detected."
-          } else {
-              Write-Error "ERROR: Unsupported NEW_RELIC_AZURE_DEPLOYMENT_TYPE value: '$env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE'. Supported values: AZURE_SQL_MANAGED_INSTANCE, AZURE_SQL_DATABASE."
-              exit 7 # Exit code for unsupported deployment type
-          }
+            $azureDeploymentType = "SQL Database"
+            if ($env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE") {
+              $azureDeploymentType = "SQL Managed Instance"
+            }
+            Write-Host "Azure $azureDeploymentType deployment type detected."
 
-          # Validate necessary environment variables for Azure SQL MI / DB
-          if (($NEW_RELIC_MSSQL_DB_HOSTNAME -eq (hostname)) -or [string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_HOSTNAME)) {
-          Write-Error "Error: NEW_RELIC_MSSQL_DB_HOSTNAME must be set to the FQDN of the Azure SQL Managed Instance or Azure SQL Database and cannot be the local machine hostname."
-          Exit 132 
-          }
-          if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_PORT) -and $NEW_RELIC_MSSQL_DB_HOSTNAME -eq (hostname)) {
-          Write-Error "Error: NEW_RELIC_MSSQL_DB_PORT must not be null for Azure SQL Managed Instance or Azure SQL Database."
-          Exit 133 
-          }
+            # Validate necessary environment variables for Azure SQL MI / DB
+            if (($NEW_RELIC_MSSQL_DB_HOSTNAME -eq (hostname)) -or [string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_HOSTNAME)) {
+                Write-Error "Error: NEW_RELIC_MSSQL_DB_HOSTNAME must be set to the FQDN of the Azure $azureDeploymentType and cannot be the local machine hostname."
+                Exit 132 
+            }
+            if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_PORT) -and $NEW_RELIC_MSSQL_DB_HOSTNAME -eq (hostname) ) {
+                Write-Error "Error: NEW_RELIC_MSSQL_DB_PORT must not be null for Azure $azureDeploymentType."
+                Exit 133 
+            }
 
-          # using instanceName as empty because AzureSQL ManagedInstance & AzureSQL Database supports SQL user/password authentication.
-          $instanceName = ""
-          $connectionString = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
+            # using instanceName as empty because AzureSQL ManagedInstance & AzureSQL Database supports SQL user/password authentication.
+            $instanceName = ""
+            $connectionString = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
+            $instanceType = "SQL Server"
+            if ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE") {
+              $instanceType = "Azure SQL Managed Instance"
+            } elseif ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
+              $instanceType = "Azure SQL Database"
+            }
 
-          $instanceType = if ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE") {
-          "Azure SQL Managed Instance"
-          } elseif ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-          "Azure SQL Database"
-          } else {
-          "SQL Server"
-          }
+            Write-Host "Configuring New Relic for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}:${NEW_RELIC_MSSQL_DB_PORT}"
+            $isCreated = $false
+            if ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
+              $isCreated = Create-User-AzureSqlDatabase -ConnectionString $connectionString -Username $NEW_RELIC_MSSQL_SQL_USERNAME -Password $NEW_RELIC_MSSQL_SQL_PASSWORD
+            } else {
+              $isCreated = Create-SqlUser -connection $connectionString -InstanceName $instanceName -Port $NEW_RELIC_MSSQL_DB_PORT
+            }
+            if ($NR_CLI_SLOW_QUERY -eq "true") {
+              $isQueryStoreEnabled = Enable-QueryStore -connection $connectionString -InstanceName $instanceName -Port $NEW_RELIC_MSSQL_DB_PORT
+              if($isQueryStoreEnabled -ne $true) {
+                Write-Error "Failed to enable QueryStore for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
+                Exit 134 
+              }
+            }
 
-          Write-Host "Configuring New Relic for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}:${NEW_RELIC_MSSQL_DB_PORT}"
-          $isCreated = $false
-          if ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
-          $isCreated = Create-User-AzureSqlDatabase -ConnectionString $connectionString -Username $NEW_RELIC_MSSQL_SQL_USERNAME -Password $NEW_RELIC_MSSQL_SQL_PASSWORD
-          } else {
-          $isCreated = Create-SqlUser -connection $connectionString -InstanceName $instanceName -Port $NEW_RELIC_MSSQL_DB_PORT
-          }
-          if ($NR_CLI_SLOW_QUERY -eq "true") {
-          $isQueryStoreEnabled = Enable-QueryStore -connection $connectionString -InstanceName $instanceName -Port $NEW_RELIC_MSSQL_DB_PORT
-          if ($isQueryStoreEnabled -ne $true) {
-              Write-Error "Failed to enable QueryStore for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
-              Exit 134 
-          }
-          }
-
-          if ($isCreated) {  
-          Write-OhiConfig -InstanceName $instanceName -Port $NEW_RELIC_MSSQL_DB_PORT
-          $setupCount++
-          Write-Host "Successfully configured New Relic for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}"
-          } else {
-          Write-Warning "Failed to set up New Relic for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
-          }
+            if ($isCreated) {  
+                Write-OhiConfig -InstanceName $instanceName -Port $NEW_RELIC_MSSQL_DB_PORT
+                $setupCount++
+                Write-Host "Successfully configured New Relic for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}"
+            } else {
+                Write-Warning "Failed to set up New Relic for ${instanceType}: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
+            }
 
           } else {
-          # Original logic for on-premise SQL Server instances
-          Write-Host "Processing local SQL Server instances."
+            # Original logic for on-premise SQL Server instances
+            Write-Host "Processing local SQL Server instances."
 
-          # Create user for all DBs
-          $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
-          $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
+            # Create user for all DBs
+            $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
+            $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
 
-          foreach ($instance in $instances) {
+            foreach ($instance in $instances) {
 
-          $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance},${NEW_RELIC_MSSQL_DB_PORT}"
-          $name = (sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
-          If ($name.Length -ge 3) {
-              $actualName = $name[2].ToString().Trim();
-              If ($actualName -eq $instance) {
+              $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance},${NEW_RELIC_MSSQL_DB_PORT}"
+              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+              If ($name.Length -ge 3) {
+                $actualName = $name[2].ToString().Trim();
+                If ($actualName -eq $instance) {
                   # Was able to connect with port
-                  $canLogin = ($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+                  $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
                   if (-Not ($canLogin -eq $null)) {
-                      $isCreated = (Create-SqlUser -connection $connection -InstanceName $instance -Port $NEW_RELIC_MSSQL_DB_PORT)
+                    $isCreated = (Create-SqlUser -connection $connection -InstanceName $instance -Port $NEW_RELIC_MSSQL_DB_PORT)
 
-                      if ($NR_CLI_SLOW_QUERY -eq "true") {
-                          $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance -Port $NEW_RELIC_MSSQL_DB_PORT
-                          if ($isQueryStoreEnabled -ne $true) {
-                              Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
-                              Exit 139 
-                          }
+                    if ($NR_CLI_SLOW_QUERY -eq "true") {
+                      $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance -Port $NEW_RELIC_MSSQL_DB_PORT
+                      if($isQueryStoreEnabled -ne $true) {
+                        Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
+                        Exit 139 
                       }
+                    }
 
-                      if ($isCreated) {
-                          Write-OhiConfig -InstanceName $instance -Port $NEW_RELIC_MSSQL_DB_PORT
-                          $setupCount++
-                      }
+                    if ($isCreated) {
+                      Write-OhiConfig -InstanceName $instance -Port $NEW_RELIC_MSSQL_DB_PORT
+                      $setupCount++
+                    }
                   }
                   continue
+                }
               }
-          }
 
-          $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance}"
-          $name = (sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
-          If ($name.Length -ge 3) {
-              $actualName = $name[2].ToString().Trim();
-              If ($actualName -eq $instance) {
+              $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance}"
+              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+              If ($name.Length -ge 3) {
+                $actualName = $name[2].ToString().Trim();
+                If ($actualName -eq $instance) {
                   # Was able to connect with instance name
-                  $canLogin = ($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+                  $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
                   if (-Not ($canLogin -eq $null)) {
-                      $isCreated = (Create-SqlUser -connection $connection -InstanceName $instance)
+                    $isCreated = (Create-SqlUser -connection $connection -InstanceName $instance)
 
-                      if ($NR_CLI_SLOW_QUERY -eq "true") {
-                          $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance
-                          if ($isQueryStoreEnabled -ne $true) {
-                              Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
-                              Exit 135 
-                          }
+                    if ($NR_CLI_SLOW_QUERY -eq "true") {
+                      $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance
+                      if($isQueryStoreEnabled -ne $true) {
+                        Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
+                        Exit 135 
                       }
+                    }
 
-                      if ($isCreated) {
-                          Write-OhiConfig -InstanceName $instance
-                          $setupCount++
-                      }
+                    if ($isCreated) {
+                      Write-OhiConfig -InstanceName $instance
+                      $setupCount++
+                    }
                   }
                   continue
+                }
               }
-          }
 
-          $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
-          $name = (sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
-          If ($name.Length -ge 3) {
-              $actualName = $name[2].ToString().Trim();
-              If ($actualName -eq $instance) {
+              $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
+              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+              If ($name.Length -ge 3) {
+                $actualName = $name[2].ToString().Trim();
+                If ($actualName -eq $instance) {
                   # Was able to connect with instance name
-                  $canLogin = ($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
+                  $canLogin=($loginModes | Where-Object -Property PSPath -like -Value "*${actualName}*")
                   if (-Not ($canLogin -eq $null)) {
-                      $isCreated = (Create-SqlUser -connection $connection -InstanceName $instance)
+                    $isCreated = (Create-SqlUser -connection $connection -InstanceName $instance)
 
-                      if ($NR_CLI_SLOW_QUERY -eq "true") {
-                          $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance
-                          if ($isQueryStoreEnabled -ne $true) {
-                              Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
-                              Exit 135 
-                          }
+                    if ($NR_CLI_SLOW_QUERY -eq "true") {
+                      $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance
+                      if($isQueryStoreEnabled -ne $true) {
+                        Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
+                        Exit 135 
                       }
+                    }
 
-                      if ($isCreated) {
-                          Write-OhiConfig -InstanceName $instance
-                          $setupCount++
-                      }
+                    if ($isCreated) {
+                      Write-OhiConfig -InstanceName $instance
+                      $setupCount++
+                    }
                   }
                   continue
+                }
               }
-          }
-          }
+            }
           }
 
           if ($setupCount -eq 0) {
-          Write-Host "No SQL Server instances instrumented, unable to create the required SQL account, please check your credentials"
-          Exit 131
+            Write-Host "No SQL Server instances instrumented, unable to create the required SQL account, please check your credentials"
+            Exit 131
           }
 
           #Remove previous versions
           function Find-UninstallGuids {
-          param (
-          [Parameter(Mandatory)]
-          [string]$Match
-          )
+            param (
+              [Parameter(Mandatory)]
+              [string]$Match
+            )
 
-          $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
-          | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+            $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
 
-          $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
-          | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+            $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
 
-          $allKeys = $baseKeys + $wowKeys
+            $allKeys = $baseKeys + $wowKeys
 
-          $uninstallIds = New-Object System.Collections.ArrayList
-          foreach ($key in $allKeys) {
-          $keyData = Get-Item -Path HKLM:\$key
-          $name = $keyData.GetValue("DisplayName")
-          if ($name -and $name -match $Match) {
-          $keyId = Split-Path $key -Leaf
-          $uninstallIds.Add($keyId) | Out-Null
-          }
-          }
+            $uninstallIds = New-Object System.Collections.ArrayList
+            foreach ($key in $allKeys) {
+              $keyData = Get-Item -Path HKLM:\$key
+              $name = $keyData.GetValue("DisplayName")
+              if ($name -and $name -match $Match) {
+                $keyId = Split-Path $key -Leaf
+                $uninstallIds.Add($keyId) | Out-Null
+              }
+            }
 
-          if ($uninstallIds.Count -eq 0) {
-          return @()
-          }
+            if ($uninstallIds.Count -eq 0) {
+              return @()
+            }
 
-          return $uninstallIds
+            return $uninstallIds
           }
 
           $uninstallIds = Find-UninstallGuids -Match "nri-mssql"
           foreach ($uninstallId in $uninstallIds) {
-          $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-          Invoke-Expression $uninstallCommand
-          # wait here to allow uninstall command to complete since it returns without waiting
-          Start-Sleep -s 15
+            $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
+            Invoke-Expression $uninstallCommand
+            # wait here to allow uninstall command to complete since it returns without waiting
+            Start-Sleep -s 15
           }
 
           # Installing MSSql Integration
           $WebClient = New-Object System.Net.WebClient
           if ($env:HTTPS_PROXY) {
-          $WebClient.Proxy = New-Object System.Net.WebProxy($env:HTTPS_PROXY, $true)
+            $WebClient.Proxy = New-Object System.Net.WebProxy($env:HTTPS_PROXY, $true)
           }
           $WebClient.DownloadFile("https://download.newrelic.com/infrastructure_agent/windows/integrations/nri-mssql/nri-mssql-amd64.msi", "$env:TEMP\nri-mssql-amd64.msi");
           msiexec.exe /qn /i "$env:TEMP\nri-mssql-amd64.msi" | Out-Null;
 
-          Restart-Service newrelic-infra                
+          Restart-Service newrelic-infra
           '
 
 postInstall:
