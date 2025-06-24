@@ -10,6 +10,11 @@ installTargets:
   - type: host
     os: linux
     platform: "ubuntu"
+    platformVersion: "(((20|21|22|24)\\.04))"
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "((11|12)\\.?.*)"
 
 keywords:
   - eBPF
@@ -29,37 +34,9 @@ processMatch: []
 preInstall:
   requireAtDiscovery: |  
       if [[ "$EUID" -ne 0 ]]; then
-          echo "ERROR: root privleges are required. Please use sudo."
+          echo "\033[0;31mERROR:\033[0m root privleges are required. Please use sudo."
           exit 1
       fi
-      PACKAGE_NAME="newrelic-ebpf-agent"
-      echo "Checking if $PACKAGE_NAME is installed..."
-      if apt list --installed 2>/dev/null | grep -qw "$PACKAGE_NAME"; then
-          echo "$PACKAGE_NAME is already installed. Please uninstall and then run the installation again."
-          echo -e "\nRun the following command to uninstall:\n\nsudo apt-get remove $PACKAGE_NAME -y\n"
-          exit 0
-      fi
-
-      CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
-      echo "Checking for newrelic-ebpf-agent.conf..."
-      if [[ -f "$CONFIG_FILE" ]]; then
-          echo "Configuration file exists at $CONFIG_FILE. Proceeding with installation."
-          source $CONFIG_FILE
-          return 0
-      else
-          echo "ERROR: Configuration file $CONFIG_FILE does not exist. Aborting installation."
-      fi
-
-      echo "Checking for mandatory config..."
-      if [[ -z "$NEW_RELIC_LICENSE_KEY" ]]; then
-          echo "ERROR: NEW_RELIC_LICENSE_KEY is not found in the config file $CONFIG_FILE. Aborting installation."
-      fi
-      if [[ -z "$DEPLOYMENT_NAME" ]]; then
-          echo "ERROR: DEPLOYMENT_NAME is not found in the config file $CONFIG_FILE. Aborting installation."
-      fi
-      echo "Required config is found."
-
-      exit 0
 
 install:
   version: "3"
@@ -69,7 +46,8 @@ install:
     default:
       cmds:
         - task: assert_pre_req
-        # - task: check_config_file
+        - task: check_existing_install
+        - task: check_config_file
         - task: update_apt
         - task: add_gpg_key
         - task: add_nr_source
@@ -82,40 +60,346 @@ install:
         - |
           IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
           if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
-            echo "This newrelic install must be run under sudo or root" >&2
+            echo ""
+            echo -e "\e[31mERROR:\e[0m This newrelic install must be run under sudo or root" >&2
+            echo ""
             exit 3
           fi
         - |
           IS_GREP_INSTALLED=$(which grep | wc -l)
           if [ $IS_GREP_INSTALLED -eq 0 ] ; then
-            echo "grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
+            echo ""
+            echo -e "\e[31mERROR:\e[0m grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
+            echo ""
             exit 10
           fi
         - |
           IS_OPENSSL_INSTALLED=$(which openssl | wc -l)
           if [ $IS_OPENSSL_INSTALLED -eq 0 ] ; then
-            echo "openssl is required to run the newrelic install. Please install openssl and re-run the installation." >&2
+            echo ""
+            echo -e "\e[31mERROR:\e[0m openssl is required to run the newrelic install. Please install openssl and re-run the installation." >&2
+            echo ""
             exit 14
           fi
         - |
           IS_UNAME_INSTALLED=$(which uname | wc -l)
           if [ $IS_UNAME_INSTALLED -eq 0 ] ; then
-            echo "uname is required to run the newrelic install. Please install uname and re-run the installation." >&2
+            echo ""
+            echo -e "\e[31mERROR:\e[0m uname is required to run the newrelic install. Please install uname and re-run the installation." >&2
+            echo ""
+            exit 15
+          fi
+        - |
+          IS_GPG_INSTALLED=$(which gpg | wc -l)
+          if [ $IS_GPG_INSTALLED -eq 0 ] ; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m gpg is required to run the newrelic install. Please install gpg and re-run the installation." >&2
+            echo ""
             exit 15
           fi
 
-    # check_config_file:
-    #   cmds:
-    #     - |
-    #       CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
-    #       if [[ -f "$CONFIG_FILE" ]]; then
-    #         echo "Configuration file exists at $CONFIG_FILE. Proceeding with installation."
-    #         source $CONFIG_FILE
-    #       else
-    #         echo "ERROR: Configuration file $CONFIG_FILE does not exist. Aborting installation." >&2
-    #         exit 1
-    #       fi
+    check_existing_install:
+      cmds:
+        - |
+          PACKAGE_NAME="newrelic-ebpf-agent"
+          echo "Checking if $PACKAGE_NAME is installed..."
+          if apt list --installed 2>/dev/null | grep -qw "$PACKAGE_NAME"; then
+              echo "$PACKAGE_NAME is already installed. Please uninstall and then run the installation again."
+              echo -e "\nRun the following command to uninstall:\n\nsudo apt-get remove $PACKAGE_NAME -y\n"
+              exit 1
+          fi
 
+    check_config_file:
+      cmds:
+        - |
+
+          CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
+
+          # Function to log errors and exit
+          log_error_and_exit() {
+              echo ""
+              echo -e "\033[0;31mERROR:\033[0m $1"
+              echo ""
+              exit 1
+          }
+
+          create_default_config_file(){
+          
+              echo "Creating default configuration file at $CONFIG_FILE..."
+              # Ensure the directory exists
+              if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
+                echo "Creating directory /etc/newrelic-ebpf-agent/..."
+                sudo mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
+              fi
+
+              # Create the default configuration file
+              sudo tee "$CONFIG_FILE" > /dev/null << EOS
+          # -- The license key to use.
+          NEW_RELIC_LICENSE_KEY="${NEW_RELIC_LICENSE_KEY:-}"
+          # -- Unique name for the deployment to identify data posting via eBPF Agent
+          DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-}"
+          # -- Endpoint to export data to Newrelic
+          OTLP_ENDPOINT=staging-otlp.nr-data.net:4317
+          # -- To configure the log level in increasing order of verboseness. [OFF, FATAL, ERROR, WARNING, INFO, DEBUG]
+          NEW_RELIC_LOG_LEVEL=INFO
+          # -- To configure log file path of eBPF Agent. If logging to this path fails, logs will be directed to stdout.
+          NEW_RELIC_LOG_FILE_PATH=""
+          # -- Comma separated string of identifiers to exclude from process monitoring.
+          # Supported values:
+          # Entity Name: Specific name of the entity set via NEW_RELIC_APP_NAME that you wish to exclude.
+          # Process Name: Name of the process you want to ignore.
+          # Process Working Directory: Absolute path to directory from which the process is running.
+          DROP_DATA_FOR_ENTITY=""
+          # -- Enable TLS communication between the eBPF client and agent.
+          TLS_ENABLED="true"
+          # -- TLS Certificate Option 1: This must be enabled to create a self-signed cert and secret for you.
+          TLS_AUTOGENERATE_CERT_ENABLED="true"
+          # -- Certificates path.
+          TLS_CERT_PATH="/etc/newrelic-ebpf-agent/certs/"
+          # TLS Certificate Option 2: Use your own self-signed certificate. TLS_AUTOGENERATE_CERT_ENABLED must be disabled, and TLS_CERT_FILE, TLS_KEY_FILE, and TLS_CA_FILE must be set.
+          # -- Path to your own PEM-encoded certificate.
+          TLS_CERT_FILE=""
+          # -- Path to your own PEM-encoded private key.
+          TLS_KEY_FILE=""
+          # -- Path to the CA cert.
+          TLS_CA_FILE=""
+          # -- The primary lever to control RAM use of the eBPF agent. Specified in MiB.
+          TABLE_STORE_DATA_LIMIT_MB=250
+
+          # To toggle the protocols to enable for tracing in the socket_tracer. There is an ability to configure span export if it is enabled.
+          # Each protocol has the flexibility to selectively enable the type of data to export.
+          # Metrics are sent by default when a protocol is enabled and it supports metrics. Note: AMQP, Kafka, DNS do not report metrics.
+          # PROTOCOLS_<protocol-name>_SPANS_SAMPLING_LATENCY represents the sampling latency threshold for the spans to export. [Options: p1, p10, p50, p90, p99].
+
+          # -- To Enable/Disable the metrics, spans, sampling of latency and error rate of HTTP
+          PROTOCOLS_HTTP_ENABLED="true"
+          PROTOCOLS_HTTP_SPANS_ENABLED="true"
+          PROTOCOLS_HTTP_SPANS_SAMPLING_LATENCY="p50"
+          # PROTOCOLS_HTTP_SPANS_SAMPLING_ERROR_RATE represents the error rate threshold for an HTTP route where surpassing it would mean the corresponds spans of the route are exported. [Options: 1-100]
+          PROTOCOLS_HTTP_SPANS_SAMPLING_ERROR_RATE=""
+
+          # -- To Enable/Disable the metrics, spans, sampling latency rate of MySQL DB
+          PROTOCOLS_MYSQL_ENABLED="true"
+          PROTOCOLS_MYSQL_SPANS_ENABLED="false"
+          PROTOCOLS_MYSQL_SPANS_SAMPLING_LATENCY=""
+
+          # -- To Enable/Disable the metrics, spans, sampling latency rate of PostgreSQL DB
+          PROTOCOLS_PGSQL_ENABLED="true"
+          PROTOCOLS_PGSQL_SPANS_ENABLED="false"
+          PROTOCOLS_PGSQL_SPANS_SAMPLING_LATENCY=""
+
+          # -- To Enable/Disable the metrics, spans, sampling latency rate of Cassandra DB
+          PROTOCOLS_CASS_ENABLED="true"
+          PROTOCOLS_CASS_SPANS_ENABLED="false"
+          PROTOCOLS_CASS_SPANS_SAMPLING_LATENCY=""
+
+          # -- To Enable/Disable the metrics, spans, sampling latency rate of Redis DB
+          PROTOCOLS_REDIS_ENABLED="true"
+          PROTOCOLS_REDIS_SPANS_ENABLED="false"
+          PROTOCOLS_REDIS_SPANS_SAMPLING_LATENCY=""
+
+          # -- To Enable/Disable the metrics, spans, sampling latency rate of MongoDB
+          PROTOCOLS_MONGODB_ENABLED="true"
+          PROTOCOLS_MONGODB_SPANS_ENABLED="false"
+          PROTOCOLS_MONGODB_SPANS_SAMPLING_LATENCY=""
+
+          # -- To Enable/Disable the spans and sampling latency of Kafka
+          PROTOCOLS_KAFKA_SPANS_ENABLED="false"
+          PROTOCOLS_KAFKA_SPANS_SAMPLING_LATENCY=""
+
+          # -- To Enable/Disable the spans and sampling latency of AMQP
+          PROTOCOLS_AMQP_SPANS_ENABLED="false"
+          PROTOCOLS_AMQP_SPANS_SAMPLING_LATENCY=""
+
+          # -- To Enable/Disable the spans and sampling latency of DNS
+          PROTOCOLS_DNS_SPANS_ENABLED="false"
+          PROTOCOLS_DNS_SPANS_SAMPLING_LATENCY=""
+          EOS
+
+              source "$CONFIG_FILE"
+              echo "Default configuration file created successfully at $CONFIG_FILE."
+
+          }
+
+          check_custom_config_file() {
+              FILE_PATH="$1"
+              if [[ -f "$FILE_PATH" ]]; then
+                  echo "Custom configuration file exists at $FILE_PATH. Proceeding with installation."
+
+                  # Ensure the directory exists
+                  if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
+                      echo "Creating directory /etc/newrelic-ebpf-agent/..."
+                      sudo mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
+                  fi
+
+                  if [[ "$(realpath "$FILE_PATH")" == "$(realpath "$CONFIG_FILE")" ]]; then
+                    echo "Custom config file and target config file are the same. Skipping symlink creation."
+                  else
+                    # Create a symbolic link
+                    echo "Creating symbolic link from $FILE_PATH to $CONFIG_FILE..."
+                    sudo ln -sf "$(realpath "$FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link from $(realpath "$FILE_PATH") to $CONFIG_FILE."
+                    echo "Symbolic link created successfully."
+                  fi
+
+                source "$CONFIG_FILE"
+              else
+                  log_error_and_exit "Custom configuration file $FILE_PATH does not exist or is not a valid file. Aborting installation."
+              fi
+          }
+
+          check_and_autogenerate_cert() {
+
+              echo "Checking if TLS certificate autogeneration is enabled..."
+              # Check if TLS_AUTOGENERATE_CERT_ENABLED is set to null or empty
+              if [[ -z "$TLS_AUTOGENERATE_CERT_ENABLED" ]]; then
+                  echo "TLS_AUTOGENERATE_CERT_ENABLED is not set. Defaulting to true."
+                  TLS_AUTOGENERATE_CERT_ENABLED="true"
+              fi
+
+              # Check if TLS_AUTOGENERATE_CERT_ENABLED is set to True/true
+              if [[ "$TLS_AUTOGENERATE_CERT_ENABLED" == "True" || "$TLS_AUTOGENERATE_CERT_ENABLED" == "true" ]]; then
+                  generate_tls_cert
+              else
+                  echo "Autogenerating TLS certificate skipped..."
+                  validate_and_copy_tls_files
+              fi
+          }
+
+          ensure_tls_certs_directory(){
+              # Check if TLS_CERT_PATH is null or empty
+              if [[ -z "$TLS_CERT_PATH" ]]; then
+                  echo "TLS_CERT_PATH is not set or is empty. Placing certs in the directory /etc/newrelic-ebpf-agent/certs/"
+                  TLS_CERT_PATH="/etc/newrelic-ebpf-agent/certs/"
+              fi
+
+              # Create the directory if it does not exist
+              if [[ ! -d "$TLS_CERT_PATH" ]]; then
+                  echo "Creating directory for certificates: $TLS_CERT_PATH"
+                  sudo mkdir -p "$TLS_CERT_PATH" || log_error_and_exit "Failed to create directory $TLS_CERT_PATH."
+              fi
+
+          }
+
+          generate_tls_cert() {
+
+              ensure_tls_certs_directory
+              echo "Autogenerating TLS certificates in $TLS_CERT_PATH."
+
+              # Create an OpenSSL configuration file for generating certificates
+              sudo tee "$TLS_CERT_PATH/ssl.conf" > /dev/null << EOS
+          [ req ]
+          default_bits       = 4096
+          distinguished_name = req_distinguished_name
+          req_extensions     = req_ext
+
+          [ req_distinguished_name ]
+
+          [ req_ext ]
+          subjectAltName = @alt_names
+
+          [alt_names]
+          DNS.1   = localhost
+          EOS
+
+              # Generate a private key for the Certificate Authority (CA)
+              sudo openssl genrsa -out "$TLS_CERT_PATH/ca.key" 4096 || log_error_and_exit "Failed to generate CA private key."
+
+              # Create a self-signed certificate for the CA
+              sudo openssl req -new -x509 -sha256 -days 365 -key "$TLS_CERT_PATH/ca.key" -out "$TLS_CERT_PATH/ca.crt" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate CA certificate."
+
+              # Generate a private key for the server
+              sudo openssl genrsa -out "$TLS_CERT_PATH/tls.key" 4096 || log_error_and_exit "Failed to generate server private key."
+
+              # Create a certificate signing request (CSR) for the server
+              sudo openssl req -new -sha256 -key "$TLS_CERT_PATH/tls.key" -out "$TLS_CERT_PATH/server.csr" -config "$TLS_CERT_PATH/ssl.conf" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate server CSR."
+
+              # Sign the server CSR with the CA certificate to create the server certificate
+              sudo openssl x509 -req -sha256 -days 365 -in "$TLS_CERT_PATH/server.csr" -CA "$TLS_CERT_PATH/ca.crt" -CAkey "$TLS_CERT_PATH/ca.key" -set_serial 01 \
+                  -out "$TLS_CERT_PATH/tls.crt" -extensions req_ext -extfile "$TLS_CERT_PATH/ssl.conf" || log_error_and_exit "Failed to generate server certificate."
+
+              echo "TLS certificates generated successfully in $TLS_CERT_PATH."
+          }
+
+
+          validate_and_copy_tls_files() {
+              echo "Validating TLS environment variables..."
+
+              # Check if any of the variables are empty
+              if [[ -z "$TLS_CERT_FILE" || -z "$TLS_KEY_FILE" || -z "$TLS_CA_FILE" ]]; then
+                  log_error_and_exit "All three environment variables (TLS_CERT_FILE, TLS_KEY_FILE, TLS_CA_FILE) are required if $TLS_AUTOGENERATE_CERT_ENABLED is not set to True/true."
+              fi
+
+              # Check if the file paths provided in the variables are valid
+              if [[ ! -f "$TLS_CERT_FILE" ]]; then
+                  log_error_and_exit "The file path specified in TLS_CERT_FILE ($TLS_CERT_FILE) is invalid, does not exist, or is a directory."
+              fi
+
+              if [[ ! -f "$TLS_KEY_FILE" ]]; then
+                  log_error_and_exit "The file path specified in TLS_KEY_FILE ($TLS_KEY_FILE) is invalid, does not exist, or is a directory."
+              fi
+
+              if [[ ! -f "$TLS_CA_FILE" ]]; then
+                  log_error_and_exit "The file path specified in TLS_CA_FILE ($TLS_CA_FILE) is invalid, does not exist, or is a directory."
+              fi
+
+              ensure_tls_certs_directory
+
+              # Copy the files to the destination directory
+              echo "Copying TLS certificate files to $TLS_CERT_PATH..."
+              sudo cp "$TLS_CERT_FILE" "$TLS_CERT_PATH/tls.crt" || log_error_and_exit "Failed to copy TLS_CERT_FILE to $TLS_CERT_PATH/tls.crt."
+              sudo cp "$TLS_KEY_FILE" "$TLS_CERT_PATH/tls.key" || log_error_and_exit "Failed to copy TLS_KEY_FILE to $TLS_CERT_PATH/tls.key."
+              sudo cp "$TLS_CA_FILE" "$TLS_CERT_PATH/ca.crt" || log_error_and_exit "Failed to copy TLS_CA_FILE to $TLS_CERT_PATH/tls.key."
+
+              echo "TLS certificate files copied successfully."
+          }
+          
+          # Assign DEPLOYMENT_NAME value to DEPLOYMENT_NAME_FROM_ENV if it is not empty, else set to DEPLOYMENT_NAME_404
+          if [[ -n "$DEPLOYMENT_NAME" ]]; then
+            DEPLOYMENT_NAME_FROM_ENV="$DEPLOYMENT_NAME"
+          else
+            DEPLOYMENT_NAME_FROM_ENV="DEPLOYMENT_NAME_404$123"
+          fi
+
+          # Check if CONFIG_FILE_PATH is set and not empty
+          if [[ -z "$CONFIG_FILE_PATH" ]]; then
+            create_default_config_file
+          else
+            echo "Using custom configuration file path: $CONFIG_FILE_PATH"
+            check_custom_config_file $CONFIG_FILE_PATH
+          fi
+
+          if [[ -z "$NEW_RELIC_LICENSE_KEY" ]]; then
+              log_error_and_exit "NEW_RELIC_LICENSE_KEY is not found in the config file $CONFIG_FILE. Aborting installation."
+              exit 1
+          fi
+
+          if [[ "$DEPLOYMENT_NAME_FROM_ENV" != "DEPLOYMENT_NAME_404$123" ]]; then
+            # DEPLOYMENT_NAME="$DEPLOYMENT_NAME_FROM_ENV"
+            # env "DEPLOYMENT_NAME=$DEPLOYMENT_NAME_FROM_ENV" bash
+            export DEPLOYMENT_NAME="$DEPLOYMENT_NAME_FROM_ENV"
+          fi
+
+          echo "Final Deployment Name: $DEPLOYMENT_NAME"
+
+          if [[ -z "$DEPLOYMENT_NAME" ]]; then
+              log_error_and_exit "DEPLOYMENT_NAME is empty. Aborting installation."
+              exit 1
+          fi
+          echo "Required config is found."   
+
+          echo "Checking if TLS is enabled..."
+          # Check for TLS_ENABLED is set to null or empty
+          if [[ -z "$TLS_ENABLED" ]]; then
+              echo "TLS_ENABLED is not set in the configuration file. Setting it to true by default."
+              TLS_ENABLED="true"
+          fi
+
+          # Step 5: Check if TLS_ENABLED is set to True/true
+          if [[ "$TLS_ENABLED" == "True" || "$TLS_ENABLED" == "true" ]]; then
+              check_and_autogenerate_cert
+          else
+              echo "TLS is disabled. Skipping certificate generation and validation."
+          fi
 
     update_apt:
       cmds:
@@ -148,10 +432,10 @@ install:
           if [ $IS_ARM -gt 0 ] ; then
             ARCH="arm64"
           fi
-          printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}/preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-ebpf.list > /dev/null
+          printf "deb [arch="$ARCH"] http://nr-downloads-ohai-staging.s3-website-us-east-1.amazonaws.com/preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-ebpf.list > /dev/null
       vars:
         DEBIAN_CODENAME:
-          sh: awk -F= '/DISTRIB_CODENAME/ {print $2}' /etc/lsb-release
+          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
       silent: true
 
     update_apt_nr_source:
@@ -162,20 +446,40 @@ install:
           if [ ! -z "$HTTPS_PROXY" ]; then
             OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
           fi
-          apt-get $OPTIONS update -yq
+          apt-get $OPTIONS update -qq -y
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
 
     install_linux_headers:
       cmds:
         - |
-          # Install the linux headers for the current kernel
-          KERNEL_VERSION=$(uname -r)
-          echo "Installing linux headers for kernel version: $KERNEL_VERSION"
-          apt-get install -yq --no-install-recommends linux-headers-$KERNEL_VERSION || {
-            echo "ERROR: Failed to install linux headers for kernel version: $KERNEL_VERSION"
-            exit 1
-          }
+          linux_headers_base_url="http://nr-downloads-ohai-staging.s3.amazonaws.com/nr-ebpf-agent/artifacts/linux-headers/latest/"
+          linux_headers_dir="/px"
+
+          arch=$(uname -m)
+          if [[ "$arch" == "x86_64" || "$arch" == "amd64" ]]; then
+              arch="x86_64"
+          elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
+              arch="arm64"
+          else
+              echo "Unsupported architecture: $arch"
+              exit 1
+          fi
+          kernel_version=$(uname -r)
+          major=$(echo "$kernel_version" | cut -d. -f1)
+          minor=$(echo "$kernel_version" | cut -d. -f2 | cut -d- -f1)
+          header_filename="linux-headers-${arch}-${major}.${minor}.0.tar.gz"
+          linux_headers_url="${linux_headers_base_url}${header_filename}"
+          if ! curl --head --silent --fail "$linux_headers_url" > /dev/null; then
+              echo "File not found at $linux_headers_url"
+              exit 1
+          fi
+
+          mkdir -p "$linux_headers_dir"
+
+          curl -s "$linux_headers_url" -o "$linux_headers_dir/$header_filename"
+
+          echo "Downloaded $header_filename to $linux_headers_dir"
       silent: true
 
     install_ebpf_agent:
@@ -184,9 +488,9 @@ install:
           export DEBIAN_FRONTEND=noninteractive
           apt-get install -yq --no-install-recommends newrelic-ebpf-agent || {
             echo "Resolving missing dependencies for the eBPF agent..."
-            apt-get update -yq || echo "ERROR: Failed to perform apt-get update."
-            apt-get install -f -yq || echo "ERROR: Failed to resolve dependencies for the eBPF agent."
-            apt-get install -yq --no-install-recommends newrelic-ebpf-agent || echo "ERROR: Failed to install the eBPF agent after resolving dependencies."
+            apt-get update -yq || echo -e "\e[31mERROR:\e[0m Failed to perform apt-get update."
+            apt-get install -f -yq || echo -e "\e[31mERROR:\e[0m Failed to resolve dependencies for the eBPF agent."
+            apt-get install -yq --no-install-recommends newrelic-ebpf-agent || echo -e "\e[31mERROR:\e[0m Failed to install the eBPF agent after resolving dependencies."
           }
       silent: true
 
