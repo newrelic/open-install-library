@@ -40,19 +40,19 @@ docker run -it \
 ```
 
 | Recipe        | Prompt Values                                                                                                                                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|---------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Apache        | Status URL: http://127.0.0.1/server-status?auto                                                                                                                                                                                 |
 | Cassandra     | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 7199                                                                                                                                           |
 | Elasticsearch | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 9200 <br>Config file: /etc/elasticsearch/elasticsearch.yml <br>Use SSL to connect? (true/false): false <br>Default the rest (just press enter) |
 | JMX (JBoss)   | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 9990 <br>Are you using SSL? (y/n): n <br>Default the rest (just press enter)                                                                   |
 | MySQL         | Username: newrelic <br>Password: Virtuoso4all! <br>Hostname: localhost <br>Port: 3306 <br>Database Name: MysqlSample                                                                                                            |
-| MS SQL        | Username: newrelic <br>Password: the RDP password used to logon <br>Hostname: 127.0.0.1 <br>Port: 1433                                                                                                                                           |
+| MS SQL        | Username: newrelic <br>Password: the RDP password used to logon <br>Hostname: 127.0.0.1 <br>Port: 1433                                                                                                                          |
 | Nginx         | NGINX status URL: http://127.0.0.1/status                                                                                                                                                                                       |
 | Redis         | Hostname: localhost <br>Password: Virtuoso4all! <br>Port: 6379 <br>Keyspace Metrics: '{}'                                                                                                                                       |
 
 ## Windows
 
-For the Windows host, you'll want to get the password from the AWS Console. While on the EC2 UI, right click the Windows instance, and click Connect. Then use your pem key to decrypt the password.
+For the Windows host, you'll want to get the password from the AWS Console. While on the EC2 UI, right-click the Windows instance, and click Connect. Then use your pem key to decrypt the password.
 Once you have the password, use a `Remote Desktop Connection` client with the credential `Administrator` and the password you've decrypted in AWS.
 
 ## Tearing down
@@ -100,11 +100,11 @@ Once started, there are two forms of access:
 - ssh: while in the macos-catalina folder, run: `vagrant ssh`
 - GUI: open the VirtualBox application, select the macos-catalina host and click Show (the vagrant user has password: `vagrant`)
 
-This method of running a macOS host uses a [public GitHub project](https://github.com/ramsey/macos-vagrant-box) based off [macinbox](https://github.com/bacongravy/macinbox).
+This method of running a macOS host uses a [public GitHub project](https://github.com/ramsey/macos-vagrant-box) based off [mac inbox](https://github.com/bacongravy/macinbox).
 
 ## Ansible install scripts with Vagrant
 
-Our install scripts can be used locally through the following steps.
+Our installation scripts can be used locally through the following steps.
 
 Create a working directory:
 ```
@@ -156,3 +156,38 @@ Smoke test:
 ```
 vagrant up && vagrant destroy -f
 ```
+
+## Testing Local Recipe Changes
+
+To test local recipe changes with the New Relic CLI, you can use the `--recipePath` flag. This flag bypasses the default recipe execution from the CLI core bundle and instead executes the recipe specified in the provided path. Below is a detailed guide on how to perform this:
+
+Steps for Testing Local Recipe Changes
+
+1) Locate Your Local Recipe:
+    Ensure your local recipe is saved on your system. For example, assume the recipe file is located at `~/debian.yml` on an EC2 instance.
+
+2) Modify the Guided Install Command:
+    Replace the default guided install command from New Relic's UI with a custom command by specifying the actual recipe name and using the `--recipePath` flag to point to your local recipe file.
+
+Example Command:
+
+```bash
+curl -Ls https://download.newrelic.com/install/newrelic-cli/scripts/install.sh | bash && \
+sudo NEW_RELIC_API_KEY=<API-KEY> NEW_RELIC_ACCOUNT_ID=<ACC-ID> /usr/local/bin/newrelic install -n infrastructure-agent-installer --recipePath ~/debian.yml # Add --debug for verbose logging
+```
+Additionally, We can test multiple local recipe changes by using comma-separated values for targeted installs and specifying multiple paths with the `--recipePath` flag. See the example below:
+
+```bash
+curl -Ls https://download.newrelic.com/install/newrelic-cli/scripts/install.sh | bash && \
+sudo NEW_RELIC_API_KEY=<API-KEY> NEW_RELIC_ACCOUNT_ID=<ACC-ID> /usr/local/bin/newrelic install -n infrastructure-agent-installer,logs-integration --recipePath /path/to/your/local/infra-recipe/file,/path/to/your/local/logs-recipe/file # Add --debug for verbose logging
+```
+
+## Explanation of Parameters:
+
+NEW_RELIC_API_KEY: Replace <API-KEY> with your actual New Relic API key.  
+NEW_RELIC_ACCOUNT_ID: Replace <ACC-ID> with your New Relic account ID.  
+`-n <recipe-name>`: Specifies the name of the recipe (e.g., `infrastructure-agent-installer`).  
+`--recipePath /path/to/your/local/recipe/file`: Specifies the path to your local recipe file (`~/debian.yml` in this case).  
+`--debug`: Optional flag to enable verbose logging for debugging purposes.
+
+This approach allows you to test custom changes in your recipes locally before deploying them to production environments.

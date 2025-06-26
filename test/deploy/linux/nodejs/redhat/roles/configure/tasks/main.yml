@@ -1,53 +1,51 @@
 ---
 - debug:
-    msg: Install Nodejs and docker
+    msg: Install Node.js and setup Node.js application
 
-- name: update yum packages
-  shell: yum update -y
+#copy node appllication to remote
+- name: Copy node application to remote
+  ansible.builtin.copy:
+    src: ../../../../templates/myNodeApp
+    dest: /home/ec2-user
+    mode: '0777'
   become: true
 
-- name: install docker
-  shell: yum install docker
+# Install Node.js using NodeSource
+- name: Install Node.js using NodeSource
+  become: yes
+  shell: curl -sL https://rpm.nodesource.com/setup_18.x | bash -
+  args:
+    executable: /bin/bash
+
+- name: Install Node.js
+  become: yes
+  yum:
+    name: nodejs
+    state: present
+
+- name: Verify Node.js installation
+  command: node -v
+  register: node_version
+  become_user: "{{ ansible_user }}"
+
+- name: Print Node.js version
+  debug:
+    msg: "Node.js version installed: {{ node_version.stdout }}"
+
+# Ensure the correct permissions for the myNodeApp directory
+- name: Ensure the correct permissions for the myNodeApp directory
+  file:
+    path: /home/ec2-user/myNodeApp
+    state: directory
+    owner: ec2-user
+    group: ec2-user
+    mode: '0755'
   become: true
 
-- name: RHEL - Start docker service
-  shell: "service docker start"
-
-# - name: RHEL - Granting permissions to docker from ec2-user
-#   shell: "usermod -a -G docker ec2-user"
-
-# - name: Install Node.js
-#   shell: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-#   become: true
-
-# - name: load nvm
-#   shell: source ~/.bashrc
-
-# - name: install node.js 20.5.1
-#   shell: nvm install 20.5.1
-
-# - name: set node.js version 20.5.1 as default
-#   shell: nvm alias default 20.5.1
-
-# - name: Create node.js app directory
-#   file:
-#     path: /home/ec2-user/myNodeApp
-#     state: directory
-
-# - name: Copy files to myNodeApp directory
-#   synchronize:
-#       src: "{{ item }}"
-#       dest: /home/ec2-user/myNodeApp
-#       mode: push
-#   with_fileglob:
-#     - "../../../../templates/*"
-#   become: true
-
-# - name: create package.json
-#   shell: cd /home/ec2-user/myNodeApp && npm init -y
-#   become: true
-
-# - name: install express
-#   shell: cd /home/ec2-user/myNodeApp && npm install express
-#   become: true
-
+# install npm dependencies
+- name: Install npm dependencies
+  shell: npm install
+  args:
+    chdir: "/home/{{ ansible_user }}/myNodeApp"
+  become: yes
+  become_user: "{{ ansible_user }}"
