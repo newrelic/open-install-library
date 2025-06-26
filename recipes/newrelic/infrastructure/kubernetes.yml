@@ -147,6 +147,11 @@ install:
             echo "{\"Metadata\":{\"UnsupportedReason\":\"cut is not installed\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 131
           fi
+          if [[ "{{.NR_CLI_OPEN_SHIFT}}" == "true" ]] && [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]] ; then
+            echo "Both OpenShift and Gke Autopilot selected only one is allowed. Please only set one of NR_CLI_OPEN_SHIFT or NR_CLI_GKE_AUTOPILOT." >&2
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"cut is not installed\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
 
           # Check the Kubernetes version
           KUBECTL_VERSION=$($SUDO $KUBECTL version --short 2>&1)
@@ -592,12 +597,15 @@ install:
             ARGS="${ARGS} --set newrelic-infrastructure.enableWindows=${NR_CLI_WINDOWS}"
             ARGS="${ARGS} --set newrelic-logging.enableWindows=${NR_CLI_LOGGING_WINDOWS}"
 
-            # if installing in GKE Autopilot, we need to turn off controlPlane and pixie and set kubelet scheme and port
+            # if installing in GKE Autopilot, set the Provider to GKE_AUTOPILOT
             if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]]; then
-              ARGS="${ARGS} --set newrelic-infrastructure.controlPlane.enabled=false"
-              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.scheme=http"
-              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.port=10255"
+              ARGS="${ARGS} --set global.provider=GKE_AUTOPILOT"
               ARGS="${ARGS} --set newrelic-pixie.enabled=false"
+            fi
+
+            # if installing in OpenShift, set the Provider to OPEN_SHIFT
+            if [[ "{{.NR_CLI_OPEN_SHIFT}}" == "true" ]]; then
+              ARGS="${ARGS} --set global.provider=OPEN_SHIFT"
             fi
 
             # leaving this commented out for the future
@@ -711,11 +719,14 @@ install:
             BODY="${BODY},\"newrelic-infrastructure.enableWindows\":\"${NR_CLI_WINDOWS}\""
             BODY="${BODY},\"newrelic-logging.enableWindows\":\"${NR_CLI_LOGGING_WINDOWS}\""
 
-            # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
+            # if installing in GKE Autopilot, set Provider to GKE_AUTOPILOT
             if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]]; then
-              BODY="${BODY},\"newrelic-infrastructure.controlPlane.enabled\":\"false\""
-              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
-              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.port\":\"10255\""
+              BODY="${BODY},\"global.provider\":\"GKE_AUTOPILOT\""
+            fi
+
+            # if installing in OpenShift, set Provider to OPEN_SHIFT
+            if [[ "{{.NR_CLI_OPEN_SHIFT}}" == "true" ]]; then
+              BODY="${BODY},\"global.provider\":\"OPEN_SHIFT\""
             fi
 
             # leaving this commented out for the future
