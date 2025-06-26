@@ -379,6 +379,9 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
+          echo "CLIENT ID: $NEW_RELIC_AUTH_CLIENT_ID"
+          echo "CLIENT ID: $NEW_RELIC_AUTH_CLIENT_SECRET"
+          echo "CLIENT ID: $NEW_RELIC_REGION"
           if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
             sed -i '/^\s*#\s*auth_config:\s*$/s/# //' /etc/newrelic-agent-control/config.yaml
             sed -i '/^\s*#\s*token_url: PLACEHOLDER/s/# //' /etc/newrelic-agent-control/config.yaml
@@ -426,7 +429,7 @@ install:
             ############################################################
             echo Requesting Token for System Identity Creation... 
             for RETRY in 1 2 3; do  
-              ACCESS_TOKEN=$(/bin/newrelic-auth-cli authenticate --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --client-secret "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" --output-token-format Plain)
+              ACCESS_TOKEN=$(newrelic-auth-cli authenticate --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --client-secret "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" --output-token-format Plain)
           
               if [[ -n "$ACCESS_TOKEN" ]]; then
                 echo "Access token retrieved successfully"
@@ -450,7 +453,7 @@ install:
             NAME="System Identity for $(hostname) - $DATE"
           
             for RETRY in 1 2 3; do
-              IDENTITY=$(/bin/newrelic-auth-cli create-identity key --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --organization-id "{{ .NEW_RELIC_ORGANIZATION }}" --bearer-access-token "${ACCESS_TOKEN}" --output-platform local-file --output-local-filepath "${TEMPORAL_FOLDER}/identity")
+              IDENTITY=$(newrelic-auth-cli create-identity key --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --organization-id "{{ .NEW_RELIC_ORGANIZATION }}" --bearer-access-token "${ACCESS_TOKEN}" --output-platform local-file --output-local-filepath "${TEMPORAL_FOLDER}/identity")
           
               if [[ -n "CLIENT_ID" ]]; then
                 echo "System Identity created successfully"
