@@ -146,17 +146,23 @@ install:
           }
           catch {}
 
+          $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
+          $MSI_FILENAME = "newrelic-infra.msi"
+          if ($AGENT_VERSION) {
+            $MSI_FILENAME = "newrelic-infra.$AGENT_VERSION.msi"
+          }
           $WebClient = New-Object System.Net.WebClient
           if ($env:HTTPS_PROXY) {
             $WebClient.Proxy = New-Object System.Net.WebProxy($env:HTTPS_PROXY, $true)
           }
 
           try {
-            $WebClient.DownloadFile("{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/windows/newrelic-infra.msi", "$env:TEMP\newrelic-infra.msi")
+            $WebClient.DownloadFile("{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/windows/$MSI_FILENAME", "$env:TEMP\newrelic-infra.msi")
           }
           catch {
             $baseException = $_.Exception.GetBaseException()
-            Write-Host -ForegroundColor Red "Failed to download New Relic Infrastructure Agent ($($baseException.Message))"
+            Write-Host -ForegroundColor Red "Failed to download New Relic Infrastructure Agent$(if ($AGENT_VERSION) { 
+            " version: $AGENT_VERSION" } else { " latest version" }) ($($baseException.Message))"
             $errorCode = 24 # unknown download error
 
             switch ($baseException) {
@@ -174,6 +180,13 @@ install:
           powershell -command '
           $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
           $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
+          $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
+          
+          if ($AGENT_VERSION) {
+            Write-Host "Installing specific version of New Relic Infrastructure Agent: $AGENT_VERSION"
+          } else {
+            Write-Host "Installing latest version of New Relic Infrastructure Agent"
+          }
 
           if (Test-Path $InfraConfig) {
             msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
