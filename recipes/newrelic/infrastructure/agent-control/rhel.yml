@@ -91,6 +91,18 @@ install:
       sh: command -v systemctl | wc -l
     IS_INITCTL:
       sh: command -v initctl | wc -l
+    # By default, we'll install the Infra Agent as the Host instrumentation solution
+    # We use env vars per host instrumentation to avoid checking constants and related issues in the recipe
+    HOST_INFRA_AGENT:
+      sh: |
+        if [[ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "" || "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "infra-agent" ]]; then
+          echo "true"
+        fi
+    HOST_OTEL:
+      sh: |
+        if [ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "otel" ]; then
+          echo "true"
+        fi
 
   tasks:
     default:
@@ -107,7 +119,7 @@ install:
         - task: config_fleet_id
         - task: config_fleet_control
         - task: config_agent_control_auth
-        - task: config_host_monitoring
+        - task: config_host_monitoring_otel
         - task: update_otel_mem_limit
         - task: update_otel_end_point
         - task: migrate_newrelic_infra_config
@@ -213,7 +225,7 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
             rm -rf /var/db/newrelic-infra/data 2>/dev/null
           fi
 
@@ -222,7 +234,7 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
             if [ -f /etc/newrelic-infra.yml ]; then
               printf "\nAn existing newrelic-infra configuration file was detected. Updating where needed."
 
@@ -253,7 +265,7 @@ install:
             fi
           fi
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
             if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
               echo 'staging: true' >> /etc/newrelic-infra.yml
             fi
@@ -268,7 +280,7 @@ install:
     setup_infra_proxy:
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] && [ ! -z "$HTTPS_PROXY" ]; then
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
 
@@ -310,7 +322,7 @@ install:
         DISTRO_VERSION:
           sh: |
             rpm -E %{rhel}
-        NEW_RELIC_AGENT_VERSION: "0.27.0"
+        NEW_RELIC_AGENT_VERSION: "0.39.0"
       silent: true
 
     # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
@@ -337,24 +349,24 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
             sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
           fi
 
-    # Add OTLP Endpoint as ENV Var for the agent-control Systemd service
+    # Add OTLP Endpoint as ENV Var for the Agent Control Systemd service
     update_otel_end_point:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/staging-otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.eu01.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            else
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            fi
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
+            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
+            case "${{.NEW_RELIC_REGION}}" in
+              "STAGING") url="staging.otlp.nr-data.net" ;;
+              "EU") url="otlp.eu01.nr-data.net" ;;
+              *) url="otlp.nr-data.net" ;;
+            esac
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=https://${url}:4317/" >> /etc/newrelic-agent-control/newrelic-agent-control.conf
           fi
 
     config_supervisors:
@@ -362,14 +374,11 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
-            cp /etc/newrelic-agent-control/examples/agent-control-config-no-agents.yaml /etc/newrelic-agent-control/config.yaml
-          elif [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ]; then
+          # We install otel if explicitly requested, otherwise we install the infra agent
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
             cp /etc/newrelic-agent-control/examples/agent-control-config-nr-otel-collector.yaml /etc/newrelic-agent-control/config.yaml
-          elif [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
-            cp /etc/newrelic-agent-control/examples/agent-control-config-nr-infra-agent.yaml /etc/newrelic-agent-control/config.yaml
           else
-            cp /etc/newrelic-agent-control/examples/agent-control-config-all-agents.yaml /etc/newrelic-agent-control/config.yaml
+            cp /etc/newrelic-agent-control/examples/agent-control-config-nr-infra-agent.yaml /etc/newrelic-agent-control/config.yaml
           fi
 
     config_fleet_id:
@@ -451,28 +460,31 @@ install:
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
               REGISTRATION_ENDPOINT=https://staging-api.newrelic.com/graphql
               TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.staging-service.newrelic.com/oauth2/token
-              IDENTITY_CREATION_ENDPOINT=https://ng-iam-service.staging-service.nr-ops.net/system-identity/graphql
+              IDENTITY_CREATION_ENDPOINT=https://staging-api.newrelic.com/graphql
             elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
               REGISTRATION_ENDPOINT=https://api.eu.newrelic.com/graphql
               TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
-              IDENTITY_CREATION_ENDPOINT=https://ng-iam-service.service.eu.nr-ops.net/system-identity/graphql
+              IDENTITY_CREATION_ENDPOINT=https://api.eu.newrelic.com/graphql
             else
               REGISTRATION_ENDPOINT=https://api.newrelic.com/graphql
               TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
-              IDENTITY_CREATION_ENDPOINT=https://ng-iam-service.service.nr-ops.net/system-identity/graphql
+              IDENTITY_CREATION_ENDPOINT=https://api.newrelic.com/graphql
             fi
 
             ############################################################
             # Get the L1 Access Token
             ############################################################
             if [ "{{.NEW_RELIC_AUTH_CLIENT_ID}}" != "" ] && [ "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" != "" ]; then
+              echo Starting with L1 System Identity...
               RESPONSE_FILE=$TEMPORAL_FOLDER/response_token.json
               for RETRY in 1 2 3; do
                 HTTP_CODE=$(echo '{"client_id": "{{.NEW_RELIC_AUTH_CLIENT_ID}}", "client_secret": "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}", "grant_type": "client_credentials"}' | tr -d $'\n' | curl \
-                  -s -w "%{http_code}" \
+                  -s -S -w "%{http_code}" \
                   -H "Content-Type: application/json" \
                   -o "$RESPONSE_FILE" \
                   --data-binary @- \
+                  --max-time 60 \
+                  --connect-timeout 10 \
                   "$TOKEN_RENEWAL_ENDPOINT"
                 )
 
@@ -480,10 +492,22 @@ install:
                   break
                 fi
           
-                ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.error_description // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
-
-                echo "Error getting system identity auth token. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
-                sleep 2
+                if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -eq 0 ]; then
+                  echo "Network error occurred or no HTTP response was received. Retrying ($RETRY/3)..."
+                  sleep 2
+                  continue
+                else
+                  if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
+                    ERROR_MESSAGE=$(jq '.error_description // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
+                    echo "Error getting system identity auth token. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
+                    sleep 2
+                    continue
+                  else
+                    echo -n "Error getting system identity auth token. The API endpoint returned $HTTP_CODE: " && cat "$TEMPORAL_FOLDER/response_token.json" | tr -d '\n' && echo " Retrying ($RETRY/3)..."
+                    sleep 2
+                    continue
+                  fi
+                fi
               done
 
               if [ $HTTP_CODE -ne 200 ]; then
@@ -498,54 +522,8 @@ install:
               ############################################################
               DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
               NAME="System Identity for $(hostname) - $DATE"
-  
-              for RETRY in 1 2 3; do
-                HTTP_CODE=$(echo '{ "query":
-                    "mutation {
-                      create(
-                        name: \"'$NAME'\",
-                        organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
-                        publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
-                      ) {
-                        clientId,
-                        name
-                      }
-                    }"
-                  }' | tr -d $'\n' | curl \
-                    -s -w "%{http_code}" \
-                    -H "Content-Type: application/json" \
-                    -H "Authorization: Bearer $ACCESS_TOKEN" \
-                    -o "$TEMPORAL_FOLDER/response.json" \
-                    --data-binary @- \
-                    "$IDENTITY_CREATION_ENDPOINT"
-                )
-  
-                if [ $HTTP_CODE -eq 200 ]; then
-                  break
-                fi
-  
-                echo "Error creating L2 system identity. The API endpoint returned $HTTP_CODE. Retrying ($RETRY/3)..."
-                sleep 2
-              done
-  
-              if [ $HTTP_CODE -ne 200 ]; then
-                exit 99
-              fi
-  
-              ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
-              if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
-                echo "Failed to create a New Relic System Identity for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
-                exit 100
-              fi
-  
-              CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.create.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
-            else
-              ############################################################
-              # Create System Identity (Legacy)
-              ############################################################
-              DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-              NAME="System Identity for $(hostname) - $DATE"
-  
+              echo Starting with L2 System Identity...
+              
               for RETRY in 1 2 3; do
                 HTTP_CODE=$(echo '{ "query":
                     "mutation {
@@ -559,30 +537,114 @@ install:
                       }
                     }"
                   }' | tr -d $'\n' | curl \
-                    -s -w "%{http_code}" \
+                    -s -S -w "%{http_code}" \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $ACCESS_TOKEN" \
+                    -o "$TEMPORAL_FOLDER/response.json" \
+                    --data-binary @- \
+                    --max-time 60 \
+                    --connect-timeout 10 \
+                    "$IDENTITY_CREATION_ENDPOINT"
+                )
+  
+                if [ $HTTP_CODE -eq 200 ]; then
+                  break
+                fi
+          
+                if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -eq 0 ]; then
+                  echo "Network error occurred or no HTTP response was received during L2 identity creation. Retrying ($RETRY/3)..."
+                  sleep 2
+                  continue
+                else
+                  if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
+                    ERROR_MESSAGE=$(jq '.errors[0].message // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
+                    echo "Error creating L2 system identity. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
+                    sleep 2
+                    continue
+                  else
+                    echo -n "Error creating L2 system identity. The API endpoint returned $HTTP_CODE: " && cat "$TEMPORAL_FOLDER/response_token.json" | tr -d '\n' && echo " Retrying ($RETRY/3)..."
+                    sleep 2
+                    continue
+                  fi
+                fi
+              done
+  
+              if [ $HTTP_CODE -ne 200 ]; then
+                exit 99
+              fi
+          
+              if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
+                ERROR_MESSAGE=$(jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
+                if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
+                  echo "Failed to create a New Relic System Identity L2 for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
+                  exit 100
+                fi
+              fi
+  
+              CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.systemIdentityCreate.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
+            else
+              ############################################################
+              # Create System Identity (Legacy)
+              ############################################################
+              DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+              NAME="System Identity for $(hostname) - $DATE"
+              echo Starting with Legacy System Identity...
+              
+              for RETRY in 1 2 3; do
+                HTTP_CODE=$(echo '{ "query":
+                    "mutation {
+                      systemIdentityCreate(
+                        name: \"'$NAME'\",
+                        organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
+                        publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
+                      ) {
+                        clientId,
+                        name
+                      }
+                    }"
+                  }' | tr -d $'\n' | curl \
+                    -s -S -w "%{http_code}" \
                     -H "Content-Type: application/json" \
                     -H "API-Key: {{ .NEW_RELIC_API_KEY }}" \
                     -o "$TEMPORAL_FOLDER/response.json" \
-                    --data-binary @- \
+                    --data @- \
+                    --max-time 60 \
+                    --connect-timeout 10 \
                     "$REGISTRATION_ENDPOINT"
                 )
   
                 if [ $HTTP_CODE -eq 200 ]; then
                   break
                 fi
-  
-                echo "Error creating the new system identity. The API endpoint returned $HTTP_CODE. Retrying ($RETRY/3)..."
-                sleep 2
+          
+                if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -eq 0 ]; then
+                  echo "Network error occurred or no HTTP response was received during legacy identity creation. Retrying ($RETRY/3)..."
+                  sleep 2
+                  continue
+                else
+                  if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
+                    ERROR_MESSAGE=$(jq '.errors[0].message // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
+                    echo "Error creating the new legacy system identity. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
+                    sleep 2
+                    continue
+                  else
+                    echo -n "Error creating the new legacy system identity. The API endpoint returned $HTTP_CODE: " && cat "$TEMPORAL_FOLDER/response_token.json" | tr -d '\n' && echo " Retrying ($RETRY/3)..."
+                    sleep 2
+                    continue
+                  fi
+                fi
               done
   
               if [ $HTTP_CODE -ne 200 ]; then
                 exit 99
               fi
-  
-              ERROR_MESSAGE=$(/usr/local/bin/newrelic utils jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
-              if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
-                echo "Failed to create a New Relic System Identity for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
-                exit 100
+          
+              if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
+                ERROR_MESSAGE=$(jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
+                if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
+                  echo "Failed to create a New Relic Legacy System Identity for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
+                  exit 100
+                fi
               fi
   
               CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.systemIdentityCreate.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
@@ -595,20 +657,14 @@ install:
             sed -i 's~private_key_path: PLACEHOLDER~private_key_path: '"/etc/newrelic-agent-control/keys/$CLIENT_ID.key"'~g' /etc/newrelic-agent-control/config.yaml
           fi
 
-    config_host_monitoring:
+    config_host_monitoring_otel:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}}" = "otel" ]; then
-            echo 'is_integrations_only: true' >> /etc/newrelic-infra.yml
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
             mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
             cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-agent-linux.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-          else
-            if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
-              mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
-              cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-gateway.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            fi
           fi
 
     restart_agent_control:
