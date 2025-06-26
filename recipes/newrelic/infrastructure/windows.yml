@@ -55,8 +55,6 @@ install:
           powershell -command '
           $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
           $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-
           if(-not ($isAdmin))
           {
             Write-Host -ForegroundColor Red "Powershell needs to be started in Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
@@ -103,13 +101,14 @@ install:
               $allKeys = $baseKeys + $wowKeys
 
               $uninstallIds = New-Object System.Collections.ArrayList
-              foreach ($key in $allKeys) {
-                $escapedKey = $key -replace '\[', '`[' -replace '\]', '`]'
-                $keyData = Get-Item -Path "HKLM:\$escapedKey"
-                $name = $keyData.GetValue("DisplayName")
-                if ($name -and $name -match $Match) {
-                  $keyId = Split-Path $key -Leaf
-                  $uninstallIds.Add($keyId) | Out-Null
+              foreach ($key in $allKeys) {       
+                $keyData = Get-Item -LiteralPath "HKLM:\$key" -ErrorAction SilentlyContinue
+                if ($keyData) {
+                  $name = $keyData.GetValue("DisplayName")
+                  if ($name -and $name -match $Match) {
+                    $keyId = Split-Path $key -Leaf
+                    $uninstallIds.Add($keyId) | Out-Null
+                  }
                 }
               }
 
@@ -168,7 +167,7 @@ install:
             exit $errorCode
           }
           '
-
+    
     install_infra:
       cmds:
         - |

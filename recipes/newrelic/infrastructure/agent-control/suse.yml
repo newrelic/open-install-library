@@ -58,6 +58,19 @@ install:
       sh: command -v systemctl | wc -l
     IS_INITCTL:
       sh: command -v initctl | wc -l
+    # By default, we'll install the Infra Agent as the Host instrumentation solution
+    # We use env vars per host instrumentation to avoid checking constants and related issues in the recipe
+    HOST_INFRA_AGENT:
+      sh: |
+        if [[ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "" || "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "infra-agent" ]]; then
+          echo "true"
+        fi
+    HOST_OTEL:
+      sh: |
+        if [ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "otel" ]; then
+          echo "true"
+        fi
+
   tasks:
     default:
       cmds:
@@ -73,7 +86,7 @@ install:
         - task: config_fleet_id
         - task: config_fleet_control
         - task: config_agent_control_auth
-        - task: config_host_monitoring
+        - task: config_host_monitoring_otel
         - task: update_otel_mem_limit
         - task: update_otel_end_point
         - task: migrate_newrelic_infra_config
@@ -173,14 +186,16 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          rm -rf /var/db/newrelic-infra/data 2>/dev/null
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
+            rm -rf /var/db/newrelic-infra/data 2>/dev/null
+          fi
 
     setup_infra_license:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
             if [ -f /etc/newrelic-infra.yml ]; then
               printf "\nAn existing newrelic-infra configuration file was detected. Updating where needed."
 
@@ -211,7 +226,7 @@ install:
             fi
           fi
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] ; then
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
             if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
               echo 'staging: true' >> /etc/newrelic-infra.yml
             fi
@@ -228,7 +243,7 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" != "false" ] && [ ! -z "$HTTPS_PROXY" ]; then
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
@@ -257,7 +272,7 @@ install:
       vars:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
-        NEW_RELIC_AGENT_VERSION: "0.34.0"
+        NEW_RELIC_AGENT_VERSION: "0.39.0"
       silent: true
 
     # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
@@ -284,24 +299,24 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
             sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
           fi
 
-    # Add OTLP Endpoint as ENV Var for the agent-control Systemd service
+    # Add OTLP Endpoint as ENV Var for the Agent Control Systemd service
     update_otel_end_point:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/staging-otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.eu01.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            else
-              sed -i "s/endpoint: .*$/endpoint: https:\/\/otlp.nr-data.net:4317/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            fi
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
+            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
+            case "${{.NEW_RELIC_REGION}}" in
+              "STAGING") url="staging.otlp.nr-data.net" ;;
+              "EU") url="otlp.eu01.nr-data.net" ;;
+              *) url="otlp.nr-data.net" ;;
+            esac
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=https://${url}:4317/" >> /etc/newrelic-agent-control/newrelic-agent-control.conf
           fi
 
     config_supervisors:
@@ -309,14 +324,11 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ] && [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
-            cp /etc/newrelic-agent-control/examples/agent-control-config-no-agents.yaml /etc/newrelic-agent-control/config.yaml
-          elif [ "{{.NR_CLI_INFRA_AGENT}}" = "false" ]; then
+          # We install otel if explicitly requested, otherwise we install the infra agent
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
             cp /etc/newrelic-agent-control/examples/agent-control-config-nr-otel-collector.yaml /etc/newrelic-agent-control/config.yaml
-          elif [ "{{.NR_CLI_NRDOT}}" = "false" ]; then
-            cp /etc/newrelic-agent-control/examples/agent-control-config-nr-infra-agent.yaml /etc/newrelic-agent-control/config.yaml
           else
-            cp /etc/newrelic-agent-control/examples/agent-control-config-all-agents.yaml /etc/newrelic-agent-control/config.yaml
+            cp /etc/newrelic-agent-control/examples/agent-control-config-nr-infra-agent.yaml /etc/newrelic-agent-control/config.yaml
           fi
 
     config_fleet_id:
@@ -595,20 +607,14 @@ install:
             sed -i 's~private_key_path: PLACEHOLDER~private_key_path: '"/etc/newrelic-agent-control/keys/$CLIENT_ID.key"'~g' /etc/newrelic-agent-control/config.yaml
           fi
 
-    config_host_monitoring:
+    config_host_monitoring_otel:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}}" = "otel" ]; then
-            echo 'is_integrations_only: true' >> /etc/newrelic-infra.yml
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
             mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
             cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-agent-linux.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-          else
-            if [ "{{.NR_CLI_NRDOT}}" != "false" ]; then
-              mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
-              cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-gateway.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-            fi
           fi
 
     restart_agent_control:
