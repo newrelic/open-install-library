@@ -9,31 +9,26 @@ repository: https://github.com/newrelic/newrelic-ebpf-agent
 installTargets:
   - type: host
     os: linux
-    platform: "ubuntu"
-    platformVersion: "(((20|21|22|24)\\.04))"
-  - type: host
-    os: linux
-    platform: "debian"
-    platformVersion: "((11|12)\\.?.*)"
-
+    platform: "centos"
+    
 keywords:
   - eBPF
   - Agent
   - Linux
-  - Ubuntu
-  - Precise
-  - Trusty
-  - Xenial
-  - Bionic
-  - Focal
-  - Jammy
-  - Noble
+  - CentOS 7
+  - CentOS 8
+  - RHEL 7
+  - RHEL 8
+  - RHEL 9
 
 processMatch: []
 
 preInstall:
-  discoveryMode:
-    - targeted
+  requireAtDiscovery: |  
+      if [[ "$EUID" -ne 0 ]]; then
+          echo "\033[0;31mERROR:\033[0m root privleges are required. Please use sudo."
+          exit 1
+      fi
 
 install:
   version: "3"
@@ -45,12 +40,12 @@ install:
         - task: assert_pre_req
         - task: check_existing_install
         - task: check_config_file
-        - task: update_apt
-        - task: add_gpg_key
-        - task: add_nr_source
-        - task: update_apt_nr_source
-        - task: install_linux_headers
-        - task: install_ebpf_agent
+        # - task: update_yum
+        # - task: add_gpg_key
+        # - task: add_nr_source
+        # - task: update_apt_nr_source
+        # - task: install_linux_headers
+        # - task: install_ebpf_agent
 
     assert_pre_req:
       cmds:
@@ -73,6 +68,7 @@ install:
         - |
           IS_OPENSSL_INSTALLED=$(which openssl | wc -l)
           if [ $IS_OPENSSL_INSTALLED -eq 0 ] ; then
+            echo "openssl is required to run the newrelic install. Please install openssl and re-run the installation." >&2
             echo ""
             echo -e "\e[31mERROR:\e[0m openssl is required to run the newrelic install. Please install openssl and re-run the installation." >&2
             echo ""
@@ -100,9 +96,9 @@ install:
         - |
           PACKAGE_NAME="newrelic-ebpf-agent"
           echo "Checking if $PACKAGE_NAME is installed..."
-          if apt list --installed 2>/dev/null | grep -qw "$PACKAGE_NAME"; then
-              echo -e "\033[0;31mERROR:\033[0m $PACKAGE_NAME is already installed. Please uninstall and then run the installation again."
-              echo -e "\nRun the following command to uninstall:\n\nsudo apt-get remove $PACKAGE_NAME -y\n"
+          if yum list --installed 2>/dev/null | grep -qw "$PACKAGE_NAME"; then
+              echo "$PACKAGE_NAME is already installed. Please uninstall and then run the installation again."
+              echo -e "\nRun the following command to uninstall:\n\nsudo yum remove $PACKAGE_NAME -y\n"
               exit 1
           fi
 
@@ -274,6 +270,7 @@ install:
                   echo "Creating directory for certificates: $TLS_CERT_PATH"
                   sudo mkdir -p "$TLS_CERT_PATH" || log_error_and_exit "Failed to create directory $TLS_CERT_PATH."
               fi
+
           }
 
           generate_tls_cert() {
@@ -359,10 +356,11 @@ install:
 
           if [[ -z "$NEW_RELIC_LICENSE_KEY" ]]; then
               log_error_and_exit "NEW_RELIC_LICENSE_KEY is not found in the config file $CONFIG_FILE. Aborting installation."
+              exit 1
           fi
-
           if [[ -z "$DEPLOYMENT_NAME" ]]; then
               log_error_and_exit "DEPLOYMENT_NAME is empty. Aborting installation."
+              exit 1
           fi
           echo "Required config is found."   
 
@@ -380,123 +378,152 @@ install:
               echo "TLS is disabled. Skipping certificate generation and validation."
           fi
 
-    update_apt:
-      cmds:
-        - |
-          # Get latest definitions and skip any failure because of deprecation
-          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
-          if [ ! -z "$HTTPS_PROXY" ]; then
-            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
-          fi
-          apt-get $OPTIONS update -yq
-      silent: true
-      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
-      ignore_error: true
+          if [[ -n "$LOCAL_PACKAGE_PATH" ]]; then
+              echo "Local package path provided: $LOCAL_PACKAGE_PATH"
+              if [[ -f "$LOCAL_PACKAGE_PATH" ]]; then
+                  #######
 
-    add_gpg_key:
-      cmds:
-        - |
-          # Remove the key from the legacy keyring if it exists
-          sudo rm -f /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg 2>/dev/null
-          sudo rm -f /etc/apt/trusted.gpg 2>/dev/null
-          # Add the key to the correct directory
-          curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg
-      silent: true
+                  linux_headers_base_url="http://nr-downloads-ohai-staging.s3.amazonaws.com/nr-ebpf-agent/artifacts/linux-headers/latest/"
+                  linux_headers_dir="/px"
 
-    add_nr_source:
-      cmds:
-        - |
-          ARCH="amd64"
-          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
-          if [ $IS_ARM -gt 0 ] ; then
-            ARCH="arm64"
-          fi
-          printf "deb [arch="$ARCH"] http://nr-downloads-ohai-staging.s3-website-us-east-1.amazonaws.com/preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-ebpf.list > /dev/null
-      vars:
-        DEBIAN_CODENAME:
-          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
-      silent: true
+                  arch=$(uname -m)
+                  if [[ "$arch" == "x86_64" || "$arch" == "amd64" ]]; then
+                      arch="x86_64"
+                  elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
+                      arch="arm64"
+                  else
+                      echo "Unsupported architecture: $arch"
+                      exit 1
+                  fi
+                  kernel_version=$(uname -r)
+                  major=$(echo "$kernel_version" | cut -d. -f1)
+                  minor=$(echo "$kernel_version" | cut -d. -f2 | cut -d- -f1)
+                  header_filename="linux-headers-${arch}-${major}.${minor}.0.tar.gz"
+                  linux_headers_url="${linux_headers_base_url}${header_filename}"
+                  if ! curl --head --silent --fail "$linux_headers_url" > /dev/null; then
+                      echo "File not found at $linux_headers_url"
+                      exit 1
+                  fi
 
-    update_apt_nr_source:
-      cmds:
-        - |
-          # Get latest definitions and skip any failure because of deprecation
-          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
-          if [ ! -z "$HTTPS_PROXY" ]; then
-            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
-          fi
-          apt-get $OPTIONS update -qq -y
-      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
-      ignore_error: true
+                  mkdir -p "$linux_headers_dir"
 
-    install_linux_headers:
-      cmds:
-        - |
-          base_url="http://nr-downloads-ohai-staging.s3.amazonaws.com/nr-ebpf-agent/artifacts/linux-headers/latest/"
-          linux_headers_dir="/px"
-          GPG_KEYRING="/tmp/newrelic-ebpf.gpg"
-          GPG_KEY_URL="https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg"
+                  curl -s "$linux_headers_url" -o "$linux_headers_dir/$header_filename"
 
-          arch=$(uname -m)
-          if [[ "$arch" == "x86_64" || "$arch" == "amd64" ]]; then
-              arch="x86_64"
-          elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
-              arch="arm64"
-          else
-              log_error_and_exit "Unsupported architecture: $arch"
-          fi
-          kernel_version=$(uname -r)
-          major=$(echo "$kernel_version" | cut -d. -f1)
-          minor=$(echo "$kernel_version" | cut -d. -f2 | cut -d- -f1)
-          header_filename="linux-headers-${arch}-${major}.${minor}.0.tar.gz"
-          signature_filename="linux-headers-${arch}-${major}.${minor}.0.tar.gz.sig"
-          linux_headers_url="${base_url}${header_filename}"
-          signature_url="${base_url}${signature_filename}"
-          if ! curl --head --silent --fail "$linux_headers_url" > /dev/null; then
-              log_error_and_exit "File not found at $linux_headers_url"
+                  echo "Downloaded $header_filename to $linux_headers_dir"
+
+                  #######
+                  echo "Installing the provided RPM package..."
+                  yum install -y "$LOCAL_PACKAGE_PATH" || {
+                      echo "Resolving missing dependencies..."
+                      yum update -y || log_error_and_exit "Failed to perform yum upgrade."
+                      yum install -f -y || log_error_and_exit "Failed to resolve dependencies for the RPM package."
+                  }
+                  echo "RPM package and its dependencies installed successfully."
+                  exit 123
+              else
+                  log_error_and_exit "The provided path does not point to a valid file: $LOCAL_PACKAGE_PATH"
+              fi
           fi
 
-          if ! curl --head --silent --fail "$signature_url" > /dev/null; then
-              log_error_and_exit "Signature file not found at $signature_url"
-          fi
+    # update_yum:
+    #   cmds:
+    #     - |
+    #       # Get latest definitions and skip any failure because of deprecation
+    #       OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
+    #       if [ ! -z "$HTTPS_PROXY" ]; then
+    #         OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+    #       fi
+    #       yum $OPTIONS update -yq
+    #   silent: true
+    #   ignore_error: true
 
-          mkdir -p "$linux_headers_dir"
+    # add_gpg_key:
+    #   cmds:
+    #     - |
+    #       # Remove the key from the legacy keyring if it exists
+    #       sudo rm -f /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg 2>/dev/null
+    #       sudo rm -f /etc/apt/trusted.gpg 2>/dev/null
+    #       # Add the key to the correct directory
+    #       curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg
+    #   silent: true
 
-          curl -s "$linux_headers_url" -o "$linux_headers_dir/$header_filename"
-          echo "Downloaded $header_filename to $linux_headers_dir"
+    # add_nr_source:
+    #   cmds:
+    #     - |
+    #       ARCH="amd64"
+    #       IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+    #       if [ $IS_ARM -gt 0 ] ; then
+    #         ARCH="arm64"
+    #       fi
+    #       printf "deb [arch="$ARCH"] http://nr-downloads-ohai-staging.s3-website-us-east-1.amazonaws.com/preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-ebpf.list > /dev/null
+    #   vars:
+    #     DEBIAN_CODENAME:
+    #       sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
+    #   silent: true
 
-          curl -s "$signature_url" -o "$linux_headers_dir/$signature_filename"
-          echo "Downloaded $signature_filename to $linux_headers_dir"
+    # update_apt_nr_source:
+    #   cmds:
+    #     - |
+    #       # Get latest definitions and skip any failure because of deprecation
+    #       OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
+    #       if [ ! -z "$HTTPS_PROXY" ]; then
+    #         OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+    #       fi
+    #       apt-get $OPTIONS update -qq -y
+    #   # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
+    #   ignore_error: true
 
-          # Download the GPG public key
-          curl -fsSL "$GPG_KEY_URL" -o "$GPG_KEYRING" || log_error_and_exit "Failed to download GPG key."
-          echo "Downloaded GPG public at $GPG_KEYRING"
+    # install_linux_headers:
+    #   cmds:
+    #     - |
+    #       linux_headers_base_url="http://nr-downloads-ohai-staging.s3.amazonaws.com/nr-ebpf-agent/artifacts/linux-headers/latest/"
+    #       linux_headers_dir="/px"
 
-          # Import the key into a temporary keyring
-          gpg --no-default-keyring --keyring /tmp/newrelic-ebpf-keyring.gpg --import "$GPG_KEYRING" >/dev/null 2>&1 || log_error_and_exit "Failed to import GPG key."
-          echo "Imported GPG key into $GPG_KEYRING"
+    #       arch=$(uname -m)
+    #       if [[ "$arch" == "x86_64" || "$arch" == "amd64" ]]; then
+    #           arch="x86_64"
+    #       elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
+    #           arch="arm64"
+    #       else
+    #           echo "Unsupported architecture: $arch"
+    #           exit 1
+    #       fi
+    #       kernel_version=$(uname -r)
+    #       major=$(echo "$kernel_version" | cut -d. -f1)
+    #       minor=$(echo "$kernel_version" | cut -d. -f2 | cut -d- -f1)
+    #       header_filename="linux-headers-${arch}-${major}.${minor}.0.tar.gz"
+    #       linux_headers_url="${linux_headers_base_url}${header_filename}"
+    #       if ! curl --head --silent --fail "$linux_headers_url" > /dev/null; then
+    #           echo "File not found at $linux_headers_url"
+    #           exit 1
+    #       fi
 
-          # Verify the package
-          gpg --no-default-keyring --keyring /tmp/newrelic-ebpf-keyring.gpg --verify "$linux_headers_dir/$signature_filename" "$linux_headers_dir/$header_filename"
-          if [[ $? -eq 0 ]]; then
-            echo "GPG verification successful: "$linux_headers_dir/$header_filename" is signed and valid."
-            rm -f "$GPG_KEYRING"
-          else
-            log_error_and_exit "GPG verification failed!"
-          fi
-          
-      silent: true
-    install_ebpf_agent:
-      cmds:
-        - |
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get install -yq --no-install-recommends newrelic-ebpf-agent || {
-            echo "Resolving missing dependencies for the eBPF agent..."
-            apt-get update -yq || echo -e "\e[31mERROR:\e[0m Failed to perform apt-get update."
-            apt-get install -f -yq || echo -e "\e[31mERROR:\e[0m Failed to resolve dependencies for the eBPF agent."
-            apt-get install -yq --no-install-recommends newrelic-ebpf-agent || echo -e "\e[31mERROR:\e[0m Failed to install the eBPF agent after resolving dependencies."
-          }
-      silent: true
+    #       mkdir -p "$linux_headers_dir"
+
+    #       curl -s "$linux_headers_url" -o "$linux_headers_dir/$header_filename"
+
+    #       echo "Downloaded $header_filename to $linux_headers_dir"
+    #   silent: true
+
+    # install_ebpf_agent:
+    #   cmds:
+    #     - |
+    #       ARCH=$(uname -m)
+    #       REPO_URL=$(echo -n "http://nr-downloads-ohai-staging.s3-website-us-east-1.amazonaws.com/preview/linux/yum/el/{{.DISTRO_VERSION}}/$ARCH/newrelic-infra.repo")
+    #       IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
+    #       if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
+    #         echo "newrelic eBPF agent is not available for this architecture "$ARCH". See our documentation for installing manually" >&2
+    #         exit 131
+    #       fi
+
+    #       curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-ebpf.repo
+    #       yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+    #       yum -y -q install newrelic-ebpf-agent
+    #   vars:
+    #     DISTRO_VERSION:
+    #       sh: |
+    #         rpm -E %{rhel}
+    #   silent: true
 
 postInstall:
   info: |2
