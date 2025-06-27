@@ -271,16 +271,24 @@ install:
       cmds:
         - |
           OPTIONS="-o DPkg::Lock::Timeout=60"
+
+          # Install specific version if provided, otherwise install latest
+          AGENT_VERSION={{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}
+          VERSION_SUFFIX=""
+          if [ -n "$AGENT_VERSION" ]; then
+            VERSION_SUFFIX="=$AGENT_VERSION"
+          fi
+
           if [ ! -z "$HTTPS_PROXY" ]; then
             OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
           fi
           # Check NEW_RELIC_FIPS_ENABLED flag
           if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
-            echo "FIPS mode enabled. Installing newrelic-infra-fips..."
-            apt-get $OPTIONS install newrelic-infra-fips -y -qq
+            echo "FIPS mode enabled. Installing newrelic-infra-fips${VERSION_SUFFIX}..."
+            apt-get $OPTIONS install newrelic-infra-fips${VERSION_SUFFIX} -y -qq --allow-downgrades
           else
-            echo "FIPS mode not enabled. Installing newrelic-infra..."
-            apt-get $OPTIONS install newrelic-infra -y -qq
+            echo "FIPS mode not enabled. Installing newrelic-infra${VERSION_SUFFIX}..."
+            apt-get $OPTIONS install newrelic-infra${VERSION_SUFFIX} -y -qq --allow-downgrades
           fi
           # Check the exit status of the previous command
           if [ $? -ne 0 ]; then
