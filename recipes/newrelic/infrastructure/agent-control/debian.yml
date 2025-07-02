@@ -9,12 +9,8 @@ repository: https://github.com/newrelic/newrelic-agent-control
 installTargets:
   - type: host
     os: linux
-    platformFamily: debian
-    platformVersion: "(10|11|12)\\.*" # Buster, Bullseye, Bookworm #
-  - type: host
-    os: linux
-    platform: ubuntu
-    platformVersion: "(16|18|20|22|24)\\.04"
+    platformFamily: suse
+    platformVersion: "(12|15)\\.*"
 
 keywords:
   - AgentControl
@@ -23,13 +19,8 @@ keywords:
   - Infrastructure
   - Agent
   - Linux
-  - Debian
-  - jammy
-  - focal
-  - bionic
-  - xenial
-  - bullseye
-  - buster
+  - Suse
+  - SLES
 
 processMatch: []
 
@@ -58,6 +49,7 @@ preInstall:
 
   discoveryMode:
     - targeted
+
 install:
   version: "3"
   silent: true
@@ -88,12 +80,6 @@ install:
         - task: cleanup
         - task: setup_infra_license
         - task: setup_infra_proxy
-        - task: log_ssl_ciphers
-        - task: update_apt
-        - task: install_gnupg
-        - task: add_gpg_key
-        - task: add_nr_source
-        - task: update_apt_nr_source
         - task: install_agent_control
         - task: update_otel_license_key
         - task: config_supervisors
@@ -185,29 +171,14 @@ install:
             exit 18
           fi
         - |
-          if [ -n "{{.DEBIAN_CODENAME}}" ]; then
-            IS_AGENT_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt/dists/{{.DEBIAN_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
-            if [ $IS_AGENT_AVAILABLE -eq 0 ] ; then
-              echo "there is no New Relic Agent Control available for the distribution with codename '{{.DEBIAN_CODENAME}}'." >&2
-              exit 131
-            fi
-          else
-            if [ -n "{{.DEBIAN_VERSION_CODENAME}}" ]; then
-              IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt/dists/{{.DEBIAN_VERSION_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
-              if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-                echo "there is no New Relic Agent Control available for the distribution with version codename '{{.DEBIAN_VERSION_CODENAME}}'." >&2
-                exit 131
-              fi
-            else
-              echo "there is no New Relic Agent Control available for the distribution, no version codename was found." >&2
-              exit 131
-            fi
+          IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
+          if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
+            echo "there is no New Relic Agent Control available for the distribution '{{.SLES_VERSION}}'." >&2
+            exit 131
           fi
       vars:
-        DEBIAN_CODENAME:
-          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
-        DEBIAN_VERSION_CODENAME:
-          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
+        SLES_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
     cleanup:
       # skipping this task if .nr-cli exists
@@ -259,12 +230,14 @@ install:
             if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
               echo 'staging: true' >> /etc/newrelic-infra.yml
             fi
+
             echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
             echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
             echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
             echo 'license_key: {{`{{NEW_RELIC_LICENSE_KEY}}`}}' >> /etc/newrelic-infra.yml
             echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
           fi
+
     setup_infra_proxy:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
@@ -275,112 +248,31 @@ install:
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
           fi
 
-    log_ssl_ciphers:
-      cmds:
-        - |
-          IS_SORT_INSTALLED=$(which sort | wc -l)
-          IS_UNIQ_INSTALLED=$(which uniq | wc -l)
-          if [ $IS_SORT_INSTALLED -gt 0 ] && [ $IS_UNIQ_INSTALLED -gt 0 ]; then
-            echo "Detecting available SSL ciphers..."
-            openssl ciphers -v | awk '{print " - " $2}' | sort | uniq
-          fi
-      ignore_error: true
-
-    update_apt:
-      cmds:
-        - |
-          # Get latest definitions and skip any failure because of deprecation
-          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
-          if [ ! -z "$HTTPS_PROXY" ]; then
-            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
-          fi
-          apt-get $OPTIONS update -yq
-      silent: true
-      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
-      ignore_error: true
-
-    install_gnupg:
-      cmds:
-        - |
-          if [ {{.HAS_GPG}} -eq 0 ] ; then
-            OPTIONS="-o DPkg::Lock::Timeout=60"
-            if [ ! -z "$HTTPS_PROXY" ]; then
-              OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
-            fi
-            apt-get $OPTIONS install gnupg2 -y
-          fi
-      vars:
-        HAS_GPG:
-          sh: command -v gpg | wc -l
-
-    add_gpg_key:
-      cmds:
-        - |
-          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/newrelic-infra.gpg
-      silent: true
-
-    add_nr_source:
-      cmds:
-        - |
-          ARCH="amd64"
-          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
-          if [ $IS_ARM -gt 0 ] ; then
-            ARCH="arm64"
-          fi
-
-          if [ -n "{{.DEBIAN_CODENAME}}" ]; then
-            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
-            printf "\ndeb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
-          else
-            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
-            printf "\ndeb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
-          fi
-      vars:
-        DEBIAN_CODENAME:
-          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
-        DEBIAN_VERSION_CODENAME:
-          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
-      silent: true
-
-    update_apt_nr_source:
-      cmds:
-        - |
-          # Get latest definitions and skip any failure because of deprecation
-          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
-          if [ ! -z "$HTTPS_PROXY" ]; then
-            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
-          fi
-          apt-get $OPTIONS update -yq
-      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail. Just to trigger the pipeline
-      ignore_error: true
-
     install_agent_control:
       cmds:
         - |
-          OPTIONS="-o DPkg::Lock::Timeout=60"
-          if [ ! -z "$HTTPS_PROXY" ]; then
-            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
+          ARCH=$(uname -m)
+          AGENT_CONTROL_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
+          IS_NEWRELIC_AVAILABLE=$(curl -Ls $AGENT_CONTROL_REPO_URL | grep "\[newrelic-infra\]" | wc -l)
+          if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
+            echo "New Relic Agent Control is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+            exit 131
           fi
-          apt-get $OPTIONS install newrelic-agent-control={{.NEW_RELIC_AGENT_VERSION}} -y -qq
-          # Check the exit status of the previous command
-          if [ $? -ne 0 ]; then
-            echo "Error: newrelic-agent-control installation failed"
-            echo "Attempting to configure the packages again"
-            dpkg --configure -a
-            # Check if there was an error
-            if [ $? -ne 0 ]; then
-              echo "Error found while reconfiguring dpkg database"
-              # Force-Install the Software
-              echo "Attempting to install any missing dependencies or fixes broken packages."
-              apt-get $OPTIONS install -f
-              if [ $? -ne 0 ]; then
-                exit 1
-              fi
-              echo "Installation is successful"
-            fi
-          fi
+          INFRA_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
+
+          curl -s $INFRA_REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
+          curl -s $AGENT_CONTROL_REPO_URL | sed 's/\[newrelic-infra]/\n[newrelic-agent-control]/g' >> /etc/zypp/repos.d/newrelic-infra.repo
+
+        - curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
+        - rpm --import newrelic_rpm_key_current.gpg
+        - zypper -n --quiet ref -r newrelic-infra
+        - zypper -n --quiet ref -r newrelic-agent-control
+        - zypper -n --quiet install newrelic-agent-control={{.NEW_RELIC_AGENT_VERSION}}
+        - rm newrelic_rpm_key_current.gpg
       vars:
-        NEW_RELIC_AGENT_VERSION: "0.39.0"
+        SLES_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+        NEW_RELIC_AGENT_VERSION: "0.40.0"
       silent: true
 
     # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
@@ -394,7 +286,6 @@ install:
             newrelic-config-migrate
           fi
 
-    # Add NR Ingest Key as ENV Var for the agent-control Systemd service (used by Infra Agent and Otel)
     update_otel_license_key:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
@@ -508,13 +399,16 @@ install:
             mkdir -p /etc/newrelic-agent-control/keys
             chown root:root /etc/newrelic-agent-control/keys
             chmod 700 /etc/newrelic-agent-control/keys
-
+            sudo mv /usr/bin/newrelic-auth-cli/newrelic-auth-cli-* /usr/bin/newrelic-auth-cli2
+            sudo chmod +x /usr/bin/newrelic-auth-cli2 
+            echo <<<HERE>>> 
+            source ~/.bashrc
+            ls /usr/local/bin
+          
             TEMPORAL_FOLDER=$(mktemp -d newrelic-agent-control.XXXXXXXXXX)
             chown root:root "${TEMPORAL_FOLDER}"
             chmod 700 "${TEMPORAL_FOLDER}"
             trap "rm -rf $TEMPORAL_FOLDER" EXIT
-            openssl genrsa -out "$TEMPORAL_FOLDER/key" 4096
-            openssl rsa -in "$TEMPORAL_FOLDER/key" -pubout -out "$TEMPORAL_FOLDER/pub"
 
             if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
               REGISTRATION_ENDPOINT=https://staging-api.newrelic.com/graphql
@@ -529,193 +423,59 @@ install:
               TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
               IDENTITY_CREATION_ENDPOINT=https://api.newrelic.com/graphql
             fi
-            
+          
             ############################################################
             # Get the L1 Access Token
             ############################################################
-            if [ "{{.NEW_RELIC_AUTH_CLIENT_ID}}" != "" ] && [ "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" != "" ]; then
-              echo Starting with L1 System Identity...
-              RESPONSE_FILE=$TEMPORAL_FOLDER/response_token.json
-              for RETRY in 1 2 3; do
-                HTTP_CODE=$(echo '{"client_id": "{{.NEW_RELIC_AUTH_CLIENT_ID}}", "client_secret": "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}", "grant_type": "client_credentials"}' | tr -d $'\n' | curl \
-                  -s -S -w "%{http_code}" \
-                  -H "Content-Type: application/json" \
-                  -o "$RESPONSE_FILE" \
-                  --data-binary @- \
-                  --max-time 60 \
-                  --connect-timeout 10 \
-                  "$TOKEN_RENEWAL_ENDPOINT"
-                )
-
-                if [ $HTTP_CODE -eq 200 ]; then
-                  break
-                fi
+            echo Requesting Token for System Identity Creation... 
+            for RETRY in 1 2 3; do  
+              ACCESS_TOKEN=$(newrelic-auth-cli2 authenticate --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --client-secret "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" --output-token-format Plain)
           
-                if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -eq 0 ]; then
-                  echo "Network error occurred or no HTTP response was received. Retrying ($RETRY/3)..."
-                  sleep 2
-                  continue
-                else
-                  if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
-                    ERROR_MESSAGE=$(jq '.error_description // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
-                    echo "Error getting system identity auth token. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
-                    sleep 2
-                    continue
-                  else
-                    echo -n "Error getting system identity auth token. The API endpoint returned $HTTP_CODE: " && cat "$TEMPORAL_FOLDER/response_token.json" | tr -d '\n' && echo " Retrying ($RETRY/3)..."
-                    sleep 2
-                    continue
-                  fi
-                fi
-              done
-
-              if [ $HTTP_CODE -ne 200 ]; then
-                echo "Error getting system identity auth token"
-                exit 99
-              fi
-              
-              ACCESS_TOKEN=$(/usr/local/bin/newrelic utils jq  '.access_token' < "$RESPONSE_FILE" | tr -d '"' )
-          
-              ############################################################
-              # Create System Identity
-              ############################################################
-              DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-              NAME="System Identity for $(hostname) - $DATE"
-              echo Starting with L2 System Identity...
-              
-              for RETRY in 1 2 3; do
-                HTTP_CODE=$(echo '{ "query":
-                    "mutation {
-                      systemIdentityCreate(
-                        name: \"'$NAME'\",
-                        organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
-                        publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
-                      ) {
-                        clientId,
-                        name
-                      }
-                    }"
-                  }' | tr -d $'\n' | curl \
-                    -s -S -w "%{http_code}" \
-                    -H "Content-Type: application/json" \
-                    -H "Authorization: Bearer $ACCESS_TOKEN" \
-                    -o "$TEMPORAL_FOLDER/response.json" \
-                    --data-binary @- \
-                    --max-time 60 \
-                    --connect-timeout 10 \
-                    "$IDENTITY_CREATION_ENDPOINT"
-                )
-  
-                if [ $HTTP_CODE -eq 200 ]; then
-                  break
-                fi
-          
-                if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -eq 0 ]; then
-                  echo "Network error occurred or no HTTP response was received during L2 identity creation. Retrying ($RETRY/3)..."
-                  sleep 2
-                  continue
-                else
-                  if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
-                    ERROR_MESSAGE=$(jq '.errors[0].message // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
-                    echo "Error creating L2 system identity. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
-                    sleep 2
-                    continue
-                  else
-                    echo -n "Error creating L2 system identity. The API endpoint returned $HTTP_CODE: " && cat "$TEMPORAL_FOLDER/response_token.json" | tr -d '\n' && echo " Retrying ($RETRY/3)..."
-                    sleep 2
-                    continue
-                  fi
-                fi
-              done
-  
-              if [ $HTTP_CODE -ne 200 ]; then
-                exit 99
+              if [[ -n "$ACCESS_TOKEN" ]]; then
+                echo "Access token retrieved successfully"
+                break
+              else
+                echo "Failed to retrieve access token, retrying ($RETRY/3)..."
+                sleep 2
               fi
           
-              if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
-                ERROR_MESSAGE=$(jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
-                if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
-                  echo "Failed to create a New Relic System Identity L2 for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
-                  exit 100
-                fi
+              if [[ -z "$ACCESS_TOKEN" ]]; then
+                echo "ERROR: Unable to retrieve access token after three attempts."
+                exit 1
               fi
-  
-              CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.systemIdentityCreate.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
-            else
-              ############################################################
-              # Create System Identity (Legacy)
-              ############################################################
-              DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-              NAME="System Identity for $(hostname) - $DATE"
-              echo Starting with Legacy System Identity...
-              
-              for RETRY in 1 2 3; do
-                HTTP_CODE=$(echo '{ "query":
-                    "mutation {
-                      systemIdentityCreate(
-                        name: \"'$NAME'\",
-                        organizationId: \"{{ .NEW_RELIC_ORGANIZATION }}\",
-                        publicKey: \"'$(openssl enc -base64 -A -in "$TEMPORAL_FOLDER/pub")'\"
-                      ) {
-                        clientId,
-                        name
-                      }
-                    }"
-                  }' | tr -d $'\n' | curl \
-                    -s -S -w "%{http_code}" \
-                    -H "Content-Type: application/json" \
-                    -H "API-Key: {{ .NEW_RELIC_API_KEY }}" \
-                    -o "$TEMPORAL_FOLDER/response.json" \
-                    --data @- \
-                    --max-time 60 \
-                    --connect-timeout 10 \
-                    "$REGISTRATION_ENDPOINT"
-                )
-  
-                if [ $HTTP_CODE -eq 200 ]; then
-                  break
-                fi
+            done
           
-                if [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -eq 0 ]; then
-                  echo "Network error occurred or no HTTP response was received during legacy identity creation. Retrying ($RETRY/3)..."
-                  sleep 2
-                  continue
-                else
-                  if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
-                    ERROR_MESSAGE=$(jq '.errors[0].message // "invalid_request"' < "$TEMPORAL_FOLDER/response_token.json" | tr -d '"')
-                    echo "Error creating the new legacy system identity. The API endpoint returned $HTTP_CODE: $ERROR_MESSAGE. Retrying ($RETRY/3)..."
-                    sleep 2
-                    continue
-                  else
-                    echo -n "Error creating the new legacy system identity. The API endpoint returned $HTTP_CODE: " && cat "$TEMPORAL_FOLDER/response_token.json" | tr -d '\n' && echo " Retrying ($RETRY/3)..."
-                    sleep 2
-                    continue
-                  fi
-                fi
-              done
-  
-              if [ $HTTP_CODE -ne 200 ]; then
-                exit 99
+            ############################################################
+            # Create System Identity
+            ############################################################
+            echo Starting with System Identity Creation...
+            DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            NAME="System Identity for $(hostname) - $DATE"
+          
+            for RETRY in 1 2 3; do
+              IDENTITY=$(newrelic-auth-cli2 create-identity key --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --organization-id "{{ .NEW_RELIC_ORGANIZATION }}" --bearer-access-token "${ACCESS_TOKEN}" --output-platform local-file --output-local-filepath "${TEMPORAL_FOLDER}/identity")
+          
+              if [[ -n "CLIENT_ID" ]]; then
+                echo "System Identity created successfully"
+                break
+              else
+                echo "Failed to create System Identity, retrying ($RETRY/3)..."
+                sleep 2
               fi
           
-              if jq empty "$TEMPORAL_FOLDER/response_token.json" > /dev/null 2>&1; then
-                ERROR_MESSAGE=$(jq '.errors[0].message // "NOERROR"' < "$TEMPORAL_FOLDER/response.json" | tr -d '"')
-                if [ "$ERROR_MESSAGE" != "NOERROR" ]; then
-                  echo "Failed to create a New Relic Legacy System Identity for Fleet Control communication authentication. Please verify that your User Key is valid and that your Account Organization has the necessary permissions to create a System Identity: $ERROR_MESSAGE"
-                  exit 100
-                fi
+              if [[ -z "CLIENT_ID" ]]; then
+                echo "ERROR: Unable to create System Identity after three attempts."
+                exit 1
               fi
-  
-              CLIENT_ID=$(/usr/local/bin/newrelic utils jq  '.data.systemIdentityCreate.clientId' < "$TEMPORAL_FOLDER/response.json" | tr -d '"' )
-            fi
-            
-            mv "$TEMPORAL_FOLDER/key" "/etc/newrelic-agent-control/keys/$CLIENT_ID.key"
+            done
+          
+            CLIENT_ID=$(echo "$IDENTITY" | /usr/local/bin/newrelic utils jq '.client_id' | tr -d '"')
+            mv "$TEMPORAL_FOLDER/identity" "/etc/newrelic-agent-control/keys/$CLIENT_ID.key"
             sed -i 's~token_url: PLACEHOLDER~token_url: '"$TOKEN_RENEWAL_ENDPOINT"'~g' /etc/newrelic-agent-control/config.yaml
             sed -i 's/client_id: PLACEHOLDER/client_id: '"$CLIENT_ID"'/g' /etc/newrelic-agent-control/config.yaml
             sed -i 's/provider: PLACEHOLDER/provider: local/g' /etc/newrelic-agent-control/config.yaml
             sed -i 's~private_key_path: PLACEHOLDER~private_key_path: '"/etc/newrelic-agent-control/keys/$CLIENT_ID.key"'~g' /etc/newrelic-agent-control/config.yaml
           fi
-
     config_host_monitoring_otel:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
