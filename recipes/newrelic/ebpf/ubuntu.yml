@@ -43,13 +43,11 @@ install:
     default:
       cmds:
         - task: assert_pre_req
-        - task: check_existing_install
         - task: check_config_file
         - task: update_apt
         - task: add_gpg_key
         - task: add_nr_source
         - task: update_apt_nr_source
-        - task: install_linux_headers
         - task: install_ebpf_agent
 
     assert_pre_req:
@@ -94,16 +92,24 @@ install:
             echo ""
             exit 15
           fi
-
-    check_existing_install:
-      cmds:
         - |
-          PACKAGE_NAME="newrelic-ebpf-agent"
-          echo "Checking if $PACKAGE_NAME is installed..."
-          if apt list --installed 2>/dev/null | grep -qw "$PACKAGE_NAME"; then
-              echo -e "\033[0;31mERROR:\033[0m $PACKAGE_NAME is already installed. Please uninstall and then run the installation again."
-              echo -e "\nRun the following command to uninstall:\n\nsudo apt-get remove $PACKAGE_NAME -y\n"
-              exit 1
+          IS_CURL_INSTALLED=$(which curl | wc -l)
+          if [ $IS_CURL_INSTALLED -eq 0 ] ; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            echo ""
+            exit 15
+          fi
+        - |
+          if [[ ! -d "$PX_DIR" ]]; then
+            if ! sudo mkdir -p /px; then
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Failed to create /px directory. Aborting installation."
+              echo ""
+              exit 16
+            fi
+          else
+            echo "Directory /px already exists. Continuing with installation."  
           fi
 
     check_config_file:
@@ -349,6 +355,11 @@ install:
               echo "TLS certificate files copied successfully."
           }
 
+          # Delete the existing configuration file if it exists. Helpful in case if user runs the installer multiple times.
+          if [[ -f "$CONFIG_FILE" ]]; then
+            sudo rm -f "$CONFIG_FILE" || log_error_and_exit "Failed to delete existing configuration file at $CONFIG_FILE."
+          fi
+
           # Check if CONFIG_FILE_PATH is set and not empty
           if [[ -z "$CONFIG_FILE_PATH" ]]; then
             create_default_config_file
@@ -429,63 +440,6 @@ install:
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
 
-    install_linux_headers:
-      cmds:
-        - |
-          base_url="http://nr-downloads-ohai-staging.s3.amazonaws.com/nr-ebpf-agent/artifacts/linux-headers/latest/"
-          linux_headers_dir="/px"
-          GPG_KEYRING="/tmp/newrelic-ebpf.gpg"
-          GPG_KEY_URL="https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg"
-
-          arch=$(uname -m)
-          if [[ "$arch" == "x86_64" || "$arch" == "amd64" ]]; then
-              arch="x86_64"
-          elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
-              arch="arm64"
-          else
-              log_error_and_exit "Unsupported architecture: $arch"
-          fi
-          kernel_version=$(uname -r)
-          major=$(echo "$kernel_version" | cut -d. -f1)
-          minor=$(echo "$kernel_version" | cut -d. -f2 | cut -d- -f1)
-          header_filename="linux-headers-${arch}-${major}.${minor}.0.tar.gz"
-          signature_filename="linux-headers-${arch}-${major}.${minor}.0.tar.gz.sig"
-          linux_headers_url="${base_url}${header_filename}"
-          signature_url="${base_url}${signature_filename}"
-          if ! curl --head --silent --fail "$linux_headers_url" > /dev/null; then
-              log_error_and_exit "File not found at $linux_headers_url"
-          fi
-
-          if ! curl --head --silent --fail "$signature_url" > /dev/null; then
-              log_error_and_exit "Signature file not found at $signature_url"
-          fi
-
-          mkdir -p "$linux_headers_dir"
-
-          curl -s "$linux_headers_url" -o "$linux_headers_dir/$header_filename"
-          echo "Downloaded $header_filename to $linux_headers_dir"
-
-          curl -s "$signature_url" -o "$linux_headers_dir/$signature_filename"
-          echo "Downloaded $signature_filename to $linux_headers_dir"
-
-          # Download the GPG public key
-          curl -fsSL "$GPG_KEY_URL" -o "$GPG_KEYRING" || log_error_and_exit "Failed to download GPG key."
-          echo "Downloaded GPG public at $GPG_KEYRING"
-
-          # Import the key into a temporary keyring
-          gpg --no-default-keyring --keyring /tmp/newrelic-ebpf-keyring.gpg --import "$GPG_KEYRING" >/dev/null 2>&1 || log_error_and_exit "Failed to import GPG key."
-          echo "Imported GPG key into $GPG_KEYRING"
-
-          # Verify the package
-          gpg --no-default-keyring --keyring /tmp/newrelic-ebpf-keyring.gpg --verify "$linux_headers_dir/$signature_filename" "$linux_headers_dir/$header_filename"
-          if [[ $? -eq 0 ]]; then
-            echo "GPG verification successful: "$linux_headers_dir/$header_filename" is signed and valid."
-            rm -f "$GPG_KEYRING"
-          else
-            log_error_and_exit "GPG verification failed!"
-          fi
-          
-      silent: true
     install_ebpf_agent:
       cmds:
         - |
