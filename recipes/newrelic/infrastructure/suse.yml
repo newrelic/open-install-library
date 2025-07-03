@@ -180,23 +180,31 @@ install:
           # Check NEW_RELIC_FIPS_ENABLED flag
           FIPS_ENABLED="${NEW_RELIC_FIPS_ENABLED:-false}"
 
-          if [ "$FIPS_ENABLED" = "true" ]; then
-            echo "FIPS mode enabled. Installing newrelic-infra-fips..."
-            curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
-            curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
-            rpm --import newrelic_rpm_key_current.gpg
-            zypper -n --quiet ref -r newrelic-infra
-            zypper -n --quiet install newrelic-infra-fips
-            rm newrelic_rpm_key_current.gpg
-          else
-            echo "FIPS mode not enabled. Installing newrelic-infra..."
-            curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
-            curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
-            rpm --import newrelic_rpm_key_current.gpg
-            zypper -n --quiet ref -r newrelic-infra
-            zypper -n --quiet install newrelic-infra
-            rm newrelic_rpm_key_current.gpg
+          # Install specific version if provided, otherwise install latest
+          AGENT_VERSION={{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}
+          VERSION_SUFFIX=""
+          if [ -n "$AGENT_VERSION" ]; then
+            VERSION_SUFFIX="-$AGENT_VERSION"
           fi
+
+          # Set package name based on FIPS mode
+          PACKAGE_NAME="newrelic-infra"
+          if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
+            PACKAGE_NAME="newrelic-infra-fips"
+            echo "FIPS mode enabled. Installing $PACKAGE_NAME${VERSION_SUFFIX}..."
+          else
+            echo "FIPS mode not enabled. Installing $PACKAGE_NAME${VERSION_SUFFIX}..."
+          fi
+
+          # Download and set up repository and keys
+          curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
+          curl -s -L {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
+          rpm --import newrelic_rpm_key_current.gpg
+          zypper -n --quiet ref -r newrelic-infra
+
+          # Install package based on FIPS mode and version
+          zypper -n --quiet install $PACKAGE_NAME${VERSION_SUFFIX}
+          rm newrelic_rpm_key_current.gpg
       vars:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
