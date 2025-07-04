@@ -1,0 +1,114 @@
+name: Check PR author write access
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  check-author-permissions:
+    runs-on: ubuntu-latest
+    # Only run this check on PRs from forks
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    steps:
+      - name: Check if PR author has write access
+        id: check-access
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const author = context.payload.pull_request.user.login;
+            
+            console.log(`Checking if ${author} has write access to ${owner}/${repo}`);
+            
+            try {
+              // Check if user has collaborator access
+              const { data: collaboratorPermission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner,
+                repo,
+                username: author
+              });
+              
+              console.log(`User ${author} has permission level: ${collaboratorPermission.permission}`);
+              
+              // Check if permission is write or admin
+              if (['write', 'admin'].includes(collaboratorPermission.permission)) {
+                core.setOutput('has-write-access', 'true');
+                return;
+              }
+            } catch (error) {
+              console.log(`Error checking collaborator status: ${error.message}`);
+              // If we can't get the permission level, they might not be a direct collaborator
+              // Continue checking team membership
+            }
+            
+            try {
+              // Get all teams in the organization
+              const { data: teams } = await github.rest.teams.list({
+                org: owner
+              });
+              
+              // Check each team for the user and their permissions
+              for (const team of teams) {
+                try {
+                  // Check if user is in the team
+                  const { data: membership } = await github.rest.teams.getMembershipForUserInOrg({
+                    org: owner,
+                    team_slug: team.slug,
+                    username: author
+                  });
+                  
+                  if (membership.state === 'active') {
+                    console.log(`User ${author} is a member of team ${team.name}`);
+                    
+                    // Check team's repository permission
+                    const { data: teamPerm } = await github.rest.teams.getRepoPermissionsInOrg({
+                      org: owner,
+                      team_slug: team.slug,
+                      owner,
+                      repo
+                    });
+                    
+                    console.log(`Team ${team.name} has permission level: ${teamPerm.permission}`);
+                    
+                    if (['write', 'admin', 'maintain'].includes(teamPerm.permission)) {
+                      core.setOutput('has-write-access', 'true');
+                      return;
+                    }
+                  }
+                } catch (error) {
+                  console.log(`Error checking team membership for ${team.name}: ${error.message}`);
+                  // Continue checking other teams
+                }
+              }
+            } catch (error) {
+              console.log(`Error listing teams: ${error.message}`);
+            }
+            
+            // If we reach here, user does not have write access
+            core.setOutput('has-write-access', 'false');
+
+      - name: Comment on PR if author has write access
+        if: steps.check-access.outputs.has-write-access == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.issue.number;
+            const author = context.payload.pull_request.user.login;
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `@${author} - It appears you have write access to this repository. 
+              
+              Please close this PR and create a new one directly from a branch in the original repository rather than from a fork. 
+              
+              As a repository collaborator with write access, you can push branches directly to the repository, which is the preferred workflow.`
+            });
+            
+            core.setFailed('PR author has write access to the repository. PR should be created from the original repository instead of a fork.');
