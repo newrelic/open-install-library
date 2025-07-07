@@ -77,6 +77,29 @@ preInstall:
                   Write-Host "Using SQL Authentication with User: $sqlUsername"
                   $fullSqlCommandToExecute = "sqlcmd -S ""$connectionString"" -U ""$sqlUsername"" -P ""$sqlPassword"" -Q ""SELECT @@SERVERNAME"" -l 1 -W -w 200 -b"
               }
+              "AzureADServicePrincipal" {
+                $clientId = $env:NEW_RELIC_MSSQL_AZURE_CLIENT_ID
+                $tenantId = $env:NEW_RELIC_MSSQL_AZURE_TENANT_ID
+                $clientSecret = $env:NEW_RELIC_MSSQL_AZURE_CLIENT_SECRET
+
+                if ([string]::IsNullOrWhiteSpace($clientId)) {
+                    Write-Error "ERROR: For Azure AD Service Principal auth, NEW_RELIC_MSSQL_AZURE_CLIENT_ID must be set."
+                    exit 11 # Exit code for missing Client ID
+                }
+                if ([string]::IsNullOrWhiteSpace($tenantId)) {
+                    Write-Error "ERROR: For Azure AD Service Principal auth, NEW_RELIC_MSSQL_AZURE_TENANT_ID must be set."
+                    exit 12 # Exit code for missing Tenant ID
+                }
+                if ([string]::IsNullOrWhiteSpace($clientSecret)) {
+                    Write-Error "ERROR: For Azure AD Service Principal auth, NEW_RELIC_MSSQL_AZURE_CLIENT_SECRET must be set."
+                    exit 13 # Exit code for missing Client Secret
+                }
+
+                $servicePrincipalUser = "${clientId}@${tenantId}"
+                Write-Host "Using Azure AD Service Principal Authentication with Client ID: $clientId and Tenant ID: $tenantId"
+                
+                $fullSqlCommandToExecute = "sqlcmd -S ""$connectionString"" --authentication-method ActiveDirectoryServicePrincipal -U ""$servicePrincipalUser"" -P ""$clientSecret"" -Q ""SELECT @@SERVERNAME"" -l 1 -W -w 200 -b"
+              }
               Default {
                   Write-Error "ERROR: Invalid NEW_RELIC_MSSQL_AZURE_AUTH_MODE: '$azureAuthMode'. Supported modes: SQL Authentication."
                   exit 8 # Exit code for invalid authentication mode
@@ -217,6 +240,11 @@ install:
           $NEW_RELIC_MSSQL_SQL_USERNAME = if ($env:NEW_RELIC_MSSQL_SQL_USERNAME) { $env:NEW_RELIC_MSSQL_SQL_USERNAME } else { $env:NR_CLI_SQL_USERNAME };
           $NR_ENABLE_BUFFER_METRICS = if ($env:NEW_RELIC_MSSQL_ENABLE_BUFFER_METRICS) { $env:NEW_RELIC_MSSQL_ENABLE_BUFFER_METRICS } else { $env:NR_CLI_ENABLE_BUFFER_METRICS };
           $NR_ENABLE_DATABASE_RESERVE_METRICS = if ($env:NEW_RELIC_MSSQL_ENABLE_RESERVE_METRICS) { $env:NEW_RELIC_MSSQL_ENABLE_RESERVE_METRICS } else { $env:NR_CLI_ENABLE_RESERVE_METRICS };
+          $NEW_RELIC_MSSQL_AZURE_CLIENT_ID = $env:NEW_RELIC_MSSQL_AZURE_CLIENT_ID
+          $NEW_RELIC_MSSQL_AZURE_TENANT_ID = $env:NEW_RELIC_MSSQL_AZURE_TENANT_ID
+          $NEW_RELIC_MSSQL_AZURE_CLIENT_SECRET = $env:NEW_RELIC_MSSQL_AZURE_CLIENT_SECRET
+          # The display name of the Azure AD Service Principal is needed for the CREATE LOGIN query
+          $NEW_RELIC_MSSQL_AZURE_SP_NAME = $env:NEW_RELIC_MSSQL_AZURE_SP_NAME
 
           # Azure Deployment Type Flag
           $NEW_RELIC_AZURE_DEPLOYMENT_TYPE = $env:NEW_RELIC_AZURE_DEPLOYMENT_TYPE
@@ -252,8 +280,21 @@ install:
             Add-Content -Path $OhiConfig -Value "  - name`:` nri-mssql" -Force | Out-Null;
             Add-Content -Path $OhiConfig -Value "    env`:` " -Force | Out-Null;
             Add-Content -Path $OhiConfig -Value "      HOSTNAME`:` ${NEW_RELIC_MSSQL_DB_HOSTNAME}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NEW_RELIC_MSSQL_DB_USERNAME}" -Force | Out-Null;
-            Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NEW_RELIC_MSSQL_DB_PASSWORD}`"" -Force | Out-Null;
+            Switch ($NEW_RELIC_MSSQL_AZURE_AUTH_MODE) {
+              "SQL" {
+                Add-Content -Path $OhiConfig -Value "      USERNAME`:` ${NEW_RELIC_MSSQL_DB_USERNAME}" -Force | Out-Null;
+                Add-Content -Path $OhiConfig -Value "      PASSWORD`:` `"${NEW_RELIC_MSSQL_DB_PASSWORD}`"" -Force | Out-Null;
+              }
+              "AzureADServicePrincipal" {
+                Add-Content -Path $OhiConfig -Value "      CLIENT_ID`:` ${NEW_RELIC_MSSQL_AZURE_CLIENT_ID}" -Force | Out-Null;
+                Add-Content -Path $OhiConfig -Value "      TENANT_ID`:` ${NEW_RELIC_MSSQL_AZURE_TENANT_ID}" -Force | Out-Null;
+                Add-Content -Path $OhiConfig -Value "      CLIENT_SECRET`:` `"${NEW_RELIC_MSSQL_AZURE_CLIENT_SECRET}`"" -Force | Out-Null;
+              }
+              Default {
+                Write-Error "ERROR: Invalid NEW_RELIC_MSSQL_AZURE_AUTH_MODE: '$azureAuthMode'. Supported modes: SQL Authentication."
+                exit 180 # Exit code for invalid authentication mode
+              }
+            }
 
             if ($NR_ENABLE_BUFFER_METRICS -eq "0") {
             Add-Content -Path $OhiConfig -Value "      ENABLE_BUFFER_METRICS`:` false" -Force | Out-Null;
@@ -275,6 +316,139 @@ install:
 
             Add-Content -Path $OhiConfig -Value "    inventory_source`:` config/mssql" -Force | Out-Null;
             Add-Content -Path $OhiConfig -Value "    interval`:` 15" -Force | Out-Null;
+          }
+
+          function Invoke-SqlCmdAsAdmin {
+            param (
+              [Parameter(Mandatory=$true)]
+              [string] $connection,
+              [Parameter(Mandatory=$true)]
+              [string] $sqlFile
+            )
+
+            $sqlCmdExitCode = -1
+            $SqlOutput = ""
+            
+            if ($NEW_RELIC_MSSQL_AZURE_AUTH_MODE -eq "AzureADServicePrincipal" -and $NEW_RELIC_MSSQL_AZURE_CLIENT_ID -and $NEW_RELIC_MSSQL_AZURE_TENANT_ID -and $NEW_RELIC_MSSQL_AZURE_CLIENT_SECRET) {
+              Write-Host "Attempting to connect using Azure AD Service Principal admin credentials."
+              $adminUser = "${NEW_RELIC_MSSQL_AZURE_CLIENT_ID}@${NEW_RELIC_MSSQL_AZURE_TENANT_ID}"
+              $SqlOutput = (sqlcmd -S $connection --authentication-method ActiveDirectoryServicePrincipal -U $adminUser -P $NEW_RELIC_MSSQL_AZURE_CLIENT_SECRET -i $sqlFile 2>&1)
+              $sqlCmdExitCode = $LASTEXITCODE
+            }
+            elseif ($NEW_RELIC_MSSQL_SQL_USERNAME -and $NEW_RELIC_MSSQL_SQL_PASSWORD) {
+              Write-Host "Attempting to connect using SQL admin credentials."
+              $SqlOutput = (sqlcmd -U $NEW_RELIC_MSSQL_SQL_USERNAME -P $NEW_RELIC_MSSQL_SQL_PASSWORD -S $connection -i $sqlFile 2>&1)
+              $sqlCmdExitCode = $LASTEXITCODE
+            }
+            if ($sqlCmdExitCode -ne 0) {
+              Write-Host "Attempting to connect using integrated security (Windows Authentication)."
+              $SqlOutput = (sqlcmd -E -S $connection -i $sqlFile 2>&1)
+              $sqlCmdExitCode = $LASTEXITCODE
+            }
+
+            return @{ ExitCode = $sqlCmdExitCode; Output = $SqlOutput }
+          }
+
+          function Create-AzureADLogin-ManagedInstance {
+              param(
+                  [Parameter(Mandatory=$true)]
+                  [string] $connection,
+                  [Parameter(Mandatory=$true)]
+                  [string] $servicePrincipalName
+              )
+              Write-Host "Creating/Recreating Azure AD login for Service Principal '${servicePrincipalName}' on Managed Instance."
+
+              # This comprehensive T-SQL script performs the full drop and recreate operation.
+              $FullSQLScript = @"
+          SET QUOTED_IDENTIFIER OFF;
+          DECLARE @sp_name NVARCHAR(128) = N'${servicePrincipalName}';
+          DECLARE @db_name SYSNAME;
+
+          -- Drop existing user from all databases to release any locks
+          DECLARE db_user_drop_cursor CURSOR 
+          READ_ONLY FORWARD_ONLY 
+          FOR SELECT name FROM master.sys.databases WHERE name NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`") AND state != 6;
+          OPEN db_user_drop_cursor;
+          FETCH NEXT FROM db_user_drop_cursor INTO @db_name WHILE @@FETCH_STATUS = 0
+          BEGIN
+              BEGIN TRY
+                  EXECUTE(`"USE [`" + @name + `"]; IF EXISTS(SELECT name FROM sys.database_principals WHERE name = `" + @sp_name + `") DROP USER [`" + @sp_name + `"];`");
+              END TRY
+              BEGIN CATCH
+              END CATCH
+              FETCH NEXT FROM db_user_drop_cursor INTO @db_name;
+          END
+          CLOSE db_user_drop_cursor;
+          DEALLOCATE db_user_drop_cursor;
+
+          -- Kill active sessions for the login and drop the login from master
+          IF EXISTS(SELECT name FROM sys.server_principals WHERE name = @sp_name)
+          BEGIN
+              DECLARE @session_id INT;
+              DECLARE login_session_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+              SELECT session_id FROM sys.dm_exec_sessions WHERE login_name = @sp_name;
+              OPEN login_session_cursor;
+              FETCH NEXT FROM login_session_cursor INTO @session_id WHILE @@FETCH_STATUS = 0
+              BEGIN
+                  BEGIN TRY
+                      EXECUTE(`"KILL `" + @session_id);
+                  END TRY
+                  BEGIN CATCH
+                  END CATCH
+                  FETCH NEXT FROM login_session_cursor INTO @session_id;
+              END
+              CLOSE login_session_cursor;
+              DEALLOCATE login_session_cursor;
+
+              BEGIN TRY
+                  DROP LOGIN [${servicePrincipalName}];
+              END TRY
+              BEGIN CATCH
+              END CATCH
+          END
+
+          -- Create the new login from the external provider (Azure AD)
+          CREATE LOGIN [${servicePrincipalName}] FROM EXTERNAL PROVIDER;
+
+          -- Grant necessary server-level permissions
+          GRANT CONNECT SQL TO [${servicePrincipalName}];
+          GRANT VIEW SERVER STATE TO [${servicePrincipalName}];
+          GRANT VIEW ANY DEFINITION TO [${servicePrincipalName}];
+
+          -- Create the user in each database for the new login
+          DECLARE db_user_create_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+          SELECT name FROM master.sys.databases WHERE name NOT IN (`"master`",`"msdb`",`"tempdb`",`"model`",`"rdsadmin`",`"distribution`") AND state != 6;
+          OPEN db_user_create_cursor;
+          FETCH NEXT FROM db_user_create_cursor INTO @db_name;
+          WHILE @@FETCH_STATUS = 0
+          BEGIN
+              BEGIN TRY
+                  EXECUTE(`"USE [`" + @name + `"]; IF NOT EXISTS(SELECT name FROM sys.database_principals WHERE name = `" + @sp_name + `") CREATE USER [`" + @sp_name + `"] FROM EXTERNAL PROVIDER;`");
+              END TRY
+              BEGIN CATCH
+              END CATCH
+              FETCH NEXT FROM db_user_create_cursor INTO @db_name;
+          END
+          CLOSE db_user_create_cursor;
+          DEALLOCATE db_user_create_cursor;
+
+          -- Verify that the login was created successfully
+          SELECT name FROM sys.server_principals WHERE name = @sp_name;
+          "@
+              $NriSqlFile = "$env:TEMP\nri-aad-sql.sql"
+              if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+              Add-Content -Path $NriSqlFile -Value $FullSQLScript -Force
+
+              $result = Invoke-SqlCmdAsAdmin -connection $connection -sqlFile $NriSqlFile
+              if (Test-Path $NriSqlFile) { Remove-Item $NriSqlFile }
+              
+              if ($result.ExitCode -eq 0 -and $result.Output -match $servicePrincipalName) {
+                  Write-Host "SUCCESS: Azure AD Login '${servicePrincipalName}' created/recreated."
+                  return $true
+              } else {
+                  Write-Error "FAILURE: Failed to create Azure AD login. Exit Code: $($result.ExitCode). Output: $($result.Output | Out-String)"
+                  return $false
+              }
           }
 
           # Enable Query Store function
@@ -628,6 +802,12 @@ install:
             $isCreated = $false
             if ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_DATABASE") {
               $isCreated = Create-User-AzureSqlDatabase -ConnectionString $connectionString -Username $NEW_RELIC_MSSQL_SQL_USERNAME -Password $NEW_RELIC_MSSQL_SQL_PASSWORD
+            } elseif ($NEW_RELIC_AZURE_DEPLOYMENT_TYPE -eq "AZURE_SQL_MANAGED_INSTANCE" -and $NEW_RELIC_MSSQL_AZURE_AUTH_MODE -eq "AzureADServicePrincipal") {
+              if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_AZURE_SP_NAME)) {
+                  Write-Error "Error: NEW_RELIC_MSSQL_AZURE_SP_NAME (the Service Principal's display name) must be set for Azure AD authentication on Managed Instance."
+                  Exit 140
+              }
+              $isCreated = Create-AzureADLogin-ManagedInstance -connection $connectionString -servicePrincipalName $NEW_RELIC_MSSQL_AZURE_SP_NAME
             } else {
               $isCreated = Create-SqlUser -connection $connectionString -InstanceName $instanceName -Port $NEW_RELIC_MSSQL_DB_PORT
             }
