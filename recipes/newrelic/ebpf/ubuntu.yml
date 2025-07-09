@@ -10,7 +10,7 @@ installTargets:
   - type: host
     os: linux
     platform: "ubuntu"
-    platformVersion: "(((20|22|24)\\.04))"
+    platformVersion: "((20|22|24)\\.04)"
   - type: host
     os: linux
     platform: "debian"
@@ -135,6 +135,14 @@ install:
                 sudo mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
               fi
 
+              if [[ "$NEW_RELIC_REGION" == "staging" ]]; then
+                NEW_RELIC_OTLP_ENDPOINT="staging-otlp.nr-data.net:4317"
+              elif [[ "$NEW_RELIC_REGION" == "EU" ]]; then
+                NEW_RELIC_OTLP_ENDPOINT="otlp.eu01.nr-data.net:4317"
+              elif [[ "$NEW_RELIC_REGION" == "US" ]]; then
+                NEW_RELIC_OTLP_ENDPOINT="otlp.nr-data.net:4317"
+              fi       
+
               # Create the default configuration file
               sudo tee "$CONFIG_FILE" > /dev/null << EOS
           # -- The license key to use.
@@ -142,7 +150,7 @@ install:
           # -- Unique name for the deployment to identify data posting via eBPF Agent
           DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-}"
           # -- Endpoint to export data to Newrelic
-          OTLP_ENDPOINT=staging-otlp.nr-data.net:4317
+          OTLP_ENDPOINT="${NEW_RELIC_OTLP_ENDPOINT:-}"
           # -- To configure the log level in increasing order of verboseness. [OFF, FATAL, ERROR, WARNING, INFO, DEBUG]
           NEW_RELIC_LOG_LEVEL=INFO
           # -- To configure log file path of eBPF Agent. If logging to this path fails, logs will be directed to stdout.
