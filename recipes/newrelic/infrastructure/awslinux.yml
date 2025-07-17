@@ -223,17 +223,16 @@ install:
             echo "FIPS mode not enabled. Installing $PACKAGE_NAME${VERSION_SUFFIX}..."
           fi
 
-          # Install specific version if provided, otherwise install latest
           if [ -n "$AGENT_VERSION" ]; then
             # Install specific version (handles install/update)
-            INSTALL_OUTPUT=$(yum -y install $PACKAGE_NAME${VERSION_SUFFIX} 2>&1)
-            # If install did not complete, attempt to downgrade the package.
-            if ! echo "$INSTALL_OUTPUT" | grep -q "Complete!"; then
+            yum -y -q install $PACKAGE_NAME${VERSION_SUFFIX}
+            # If specific version was not installed, attempt to downgrade the package.
+            if ! rpm -q $PACKAGE_NAME${VERSION_SUFFIX} >/dev/null 2>&1; then
                 yum -y -q downgrade $PACKAGE_NAME${VERSION_SUFFIX}
             fi
           else
             # No version specified - install or update to latest
-            yum list installed $PACKAGE_NAME >/dev/null 2>&1 && yum -y -q update $PACKAGE_NAME || yum -y -q install $PACKAGE_NAME
+            rpm -q $PACKAGE_NAME >/dev/null 2>&1 && yum -y -q update $PACKAGE_NAME || yum -y -q install $PACKAGE_NAME
           fi
       silent: true
 
