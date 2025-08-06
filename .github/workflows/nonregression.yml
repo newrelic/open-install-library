@@ -69,8 +69,8 @@ jobs:
               );
               return Array.prototype.concat(...files);
             }
-
-            const definitionsDir = "test/definitions";
+            # TO-DO: Remove this once AC tests are validated
+            const definitionsDir = "test/definitions/agent-control/rhel";
             const testDefinitions = await getFiles(definitionsDir);
 
             const outputTestFilesMap = testDefinitions
@@ -163,10 +163,34 @@ jobs:
         run: |
           echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
 
+      - name: Extract New Relic Credentials (US)
+        id: extract-nr-creds
+        run: |
+          NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+          NR_ORG_ID=$(jq -r -e '.credentials.newrelic.nrOrganizationId' configs/gitusdkr${{ github.run_id }}.json)
+          echo "NR_API_KEY=$NR_API_KEY" >> $GITHUB_OUTPUT
+          echo "NR_ORG_ID=$NR_ORG_ID" >> $GITHUB_OUTPUT
+
       - name: Pull Deployer image
         run: |
           docker pull newrelic/deployer:latest
           docker images newrelic/deployer:latest
+
+      - name: Create System Identity for US Region
+        id: create-us-identity
+        run: |
+          RESPONSE=$(curl -X POST https://api.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-nr-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"mutation { systemIdentityCreate( name: \\\"open-install-library-e2e-us\\\" organizationId: \\\"${{ steps.extract-nr-creds.outputs.NR_ORG_ID }}\\\" ) { clientId clientSecret } }\"
+            }")
+          CLIENT_ID=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientId')
+          CLIENT_SECRET=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientSecret')
+          echo "::add-mask::$CLIENT_ID"
+          echo "::add-mask::$CLIENT_SECRET"
+          echo "CLIENT_ID=$CLIENT_ID" >> $GITHUB_OUTPUT
+          echo "CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_OUTPUT
 
       - name: Run deployer
         id: deployerRun
@@ -174,6 +198,8 @@ jobs:
           CROWDSTRIKE_CLIENT_ID: ${{ secrets.CROWDSTRIKE_CLIENT_ID }}
           CROWDSTRIKE_CLIENT_SECRET: ${{ secrets.CROWDSTRIKE_CLIENT_SECRET }}
           CROWDSTRIKE_CUSTOMER_ID: ${{ secrets.CROWDSTRIKE_CUSTOMER_ID }}
+          SYSTEM_IDENTITY_CLIENT_ID: ${{ steps.create-us-identity.outputs.CLIENT_ID }}
+          SYSTEM_IDENTITY_CLIENT_SECRET: ${{ steps.create-us-identity.outputs.CLIENT_SECRET }}
         run: |
           set -e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
@@ -182,6 +208,8 @@ jobs:
             -e CROWDSTRIKE_CUSTOMER_ID=$CROWDSTRIKE_CUSTOMER_ID\
             -e CROWDSTRIKE_CLIENT_ID=$CROWDSTRIKE_CLIENT_ID\
             -e CROWDSTRIKE_CLIENT_SECRET=$CROWDSTRIKE_CLIENT_SECRET\
+            -e SYSTEM_IDENTITY_CLIENT_ID=$SYSTEM_IDENTITY_CLIENT_ID\
+            -e SYSTEM_IDENTITY_CLIENT_SECRET=$SYSTEM_IDENTITY_CLIENT_SECRET\
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
