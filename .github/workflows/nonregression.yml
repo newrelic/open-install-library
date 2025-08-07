@@ -231,6 +231,13 @@ jobs:
           echo "$AWS_PEM" > configs/gitdeployerCanada.pem
           sudo chmod 400 configs/gitdeployerCanada.pem
 
+      - name: Write Test Definition File JSON to file
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
       - name: Pull Deployer image
         run: |
           docker pull newrelic/deployer:latest
@@ -277,6 +284,27 @@ jobs:
             -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -t
+
+      - name: Clean up system identity
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
+            NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+            if [ ! -z "$SYSTEM_IDENTITY_CLIENT_ID" ] && [ "$SYSTEM_IDENTITY_CLIENT_ID" != "null" ]; then
+              echo "Cleaning up system identity with client ID: $SYSTEM_IDENTITY_CLIENT_ID"
+              curl -X POST https://api.newrelic.com/graphql \
+                -H 'content-type: application/json; charset=utf-8' \
+                -H "API-Key: $NR_API_KEY" \
+                --data-raw "{
+                  \"query\": \"mutation { systemIdentityDelete(clientId: \\\"$SYSTEM_IDENTITY_CLIENT_ID\\\") { clientId } }\"
+                }" || echo "Failed to delete system identity, it may have already been deleted"
+            else
+              echo "No system identity to clean up"
+            fi
+          else
+            echo "Config file not found, skipping system identity cleanup"
+          fi
 
       - name: Report any error
         if: steps.deployerRun.outputs.exit_status != 0
