@@ -202,6 +202,7 @@ jobs:
     outputs:
       CLIENT_ID: ${{ steps.create-identity.outputs.CLIENT_ID }}
       CLIENT_SECRET: ${{ steps.create-identity.outputs.CLIENT_SECRET }}
+      SYSTEM_IDENTITY_ID: ${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
@@ -267,7 +268,7 @@ jobs:
 
   test-deploy-recipe:
     name: Test Deploy Recipe
-    needs: [get-test-definition-files, create-system-identity]
+    needs: [get-test-definition-files]
     if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] }}
     runs-on: ubuntu-latest
     strategy:
@@ -283,6 +284,7 @@ jobs:
           fetch-depth: 0
 
       - name: Mask and set system identity credentials
+        if: needs.get-test-definition-files.outputs.needs_system_identity == 'true'
         run: |
           echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_ID }}"
           echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_SECRET }}"
@@ -395,8 +397,8 @@ jobs:
   cleanup-system-identity:
     name: Cleanup System Identity
     runs-on: ubuntu-latest
-    needs: [test-deploy-recipe, create-system-identity]
-    if: always() && needs.create-system-identity.result == 'success'
+    needs: [test-deploy-recipe, get-test-definition-files, create-system-identity]
+    if: always() && needs.get-test-definition-files.outputs.needs_system_identity == 'true'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
@@ -415,15 +417,15 @@ jobs:
         run: |
           if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
             NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
-            CLIENT_ID="${{ needs.create-system-identity.outputs.CLIENT_ID }}"
-            echo "::add-mask::$CLIENT_ID"
-            if [ ! -z "$CLIENT_ID" ] && [ "$CLIENT_ID" != "null" ]; then
-              echo "Cleaning up system identity with client ID: $CLIENT_ID"
+            SYSTEM_IDENTITY_ID="${{ needs.create-system-identity.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$SYSTEM_IDENTITY_ID"
+            if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
+              echo "Cleaning up system identity with ID: $SYSTEM_IDENTITY_ID"
               curl -X POST https://api.newrelic.com/graphql \
                 -H 'content-type: application/json; charset=utf-8' \
                 -H "API-Key: $NR_API_KEY" \
                 --data-raw "{
-                  \"query\": \"mutation { systemIdentityDelete(clientId: \\\"$CLIENT_ID\\\") { clientId } }\"
+                  \"query\": \"mutation { systemIdentityDelete(id: \\\"$SYSTEM_IDENTITY_ID\\\") { id } }\"
                 }" || echo "Failed to delete system identity, it may have already been deleted"
             else
               echo "No system identity to clean up"

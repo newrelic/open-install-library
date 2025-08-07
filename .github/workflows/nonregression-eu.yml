@@ -40,6 +40,7 @@ jobs:
     outputs:
       CLIENT_ID: ${{ steps.create-eu-identity.outputs.CLIENT_ID }}
       CLIENT_SECRET: ${{ steps.create-eu-identity.outputs.CLIENT_SECRET }}
+      SYSTEM_IDENTITY_ID: ${{ steps.create-eu-identity.outputs.SYSTEM_IDENTITY_ID }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
@@ -246,25 +247,15 @@ jobs:
           set -e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
           echo $testDefinitionFile
-          if [[ "$testDefinitionFile" == test/definitions-eu/agent-control/* ]]; then
-            docker run -i\
-              -e CROWDSTRIKE_CUSTOMER_ID=$CROWDSTRIKE_CUSTOMER_ID\
-              -e CROWDSTRIKE_CLIENT_ID=$CROWDSTRIKE_CLIENT_ID\
-              -e CROWDSTRIKE_CLIENT_SECRET=$CROWDSTRIKE_CLIENT_SECRET\
-              -e SYSTEM_IDENTITY_CLIENT_ID=$SYSTEM_IDENTITY_CLIENT_ID\
-              -e SYSTEM_IDENTITY_CLIENT_SECRET=$SYSTEM_IDENTITY_CLIENT_SECRET\
-              -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
-              -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-              --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -l debug
-          else
-            docker run -i\
-              -e CROWDSTRIKE_CUSTOMER_ID=$CROWDSTRIKE_CUSTOMER_ID\
-              -e CROWDSTRIKE_CLIENT_ID=$CROWDSTRIKE_CLIENT_ID\
-              -e CROWDSTRIKE_CLIENT_SECRET=$CROWDSTRIKE_CLIENT_SECRET\
-              -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
-              -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-              --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -l debug
-          fi
+          docker run -i\
+            -e CROWDSTRIKE_CUSTOMER_ID=$CROWDSTRIKE_CUSTOMER_ID\
+            -e CROWDSTRIKE_CLIENT_ID=$CROWDSTRIKE_CLIENT_ID\
+            -e CROWDSTRIKE_CLIENT_SECRET=$CROWDSTRIKE_CLIENT_SECRET\
+            -e SYSTEM_IDENTITY_CLIENT_ID=$SYSTEM_IDENTITY_CLIENT_ID\
+            -e SYSTEM_IDENTITY_CLIENT_SECRET=$SYSTEM_IDENTITY_CLIENT_SECRET\
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+            --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -l debug
           echo ::set-output name=exit_status::$?
 
       - name: Teardown any previous deployment
@@ -307,15 +298,15 @@ jobs:
         run: |
           if [ -f configs/gitusdkreu${{ github.run_id }}.json ]; then
             NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkreu${{ github.run_id }}.json)
-            CLIENT_ID="${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}"
-            echo "::add-mask::$CLIENT_ID"
-            if [ ! -z "$CLIENT_ID" ] && [ "$CLIENT_ID" != "null" ]; then
-              echo "Cleaning up system identity with client ID: $CLIENT_ID"
+            SYSTEM_IDENTITY_ID="${{ needs.create-system-identity-eu.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$SYSTEM_IDENTITY_ID"
+            if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
+              echo "Cleaning up system identity with ID: $SYSTEM_IDENTITY_ID"
               curl -X POST https://api.eu.newrelic.com/graphql \
                 -H 'content-type: application/json; charset=utf-8' \
                 -H "API-Key: $NR_API_KEY" \
                 --data-raw "{
-                  \"query\": \"mutation { systemIdentityDelete(clientId: \\\"$CLIENT_ID\\\") { clientId } }\"
+                  \"query\": \"mutation { systemIdentityDelete(id: \\\"$SYSTEM_IDENTITY_ID\\\") { id } }\"
                 }" || echo "Failed to delete system identity, it may have already been deleted"
             else
               echo "No system identity to clean up"
