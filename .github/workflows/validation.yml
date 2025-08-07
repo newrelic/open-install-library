@@ -1,6 +1,9 @@
 name: Validate Recipe (Unit Test)
 on: [pull_request, workflow_dispatch]
 
+permissions:
+  contents: read
+
 jobs:
   log-context:
     runs-on: ubuntu-latest
@@ -180,7 +183,6 @@ jobs:
               "include": outputTestFilesMap
             }
             console.log('Matrix output:', JSON.stringify(output, null, 2));
-            console.log('Files for filtering:', outputTestFiles);
             core.setOutput('files_list', JSON.stringify(outputTestFiles));
             return output;
 
@@ -272,7 +274,7 @@ jobs:
   test-deploy-recipe:
     name: Test Deploy Recipe
     needs: [get-test-definition-files, create-system-identity]
-    if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] && (always() && (needs.create-system-identity.result == 'success' || needs.create-system-identity.result == 'skipped')) }}
+    if: ${{ always() && fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] && (needs.create-system-identity.result == 'success' || needs.create-system-identity.result == 'skipped') }}
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
@@ -420,6 +422,7 @@ jobs:
           if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
             NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
             SYSTEM_IDENTITY_ID="${{ needs.create-system-identity.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$NR_API_KEY"
             echo "::add-mask::$SYSTEM_IDENTITY_ID"
             if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
               echo "Cleaning up system identity with ID: $SYSTEM_IDENTITY_ID"

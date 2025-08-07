@@ -7,6 +7,9 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   log-context:
     runs-on: ubuntu-latest
@@ -256,15 +259,25 @@ jobs:
           set -e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
           echo $testDefinitionFile
-          docker run -i\
-            -e CROWDSTRIKE_CUSTOMER_ID=$CROWDSTRIKE_CUSTOMER_ID\
-            -e CROWDSTRIKE_CLIENT_ID=$CROWDSTRIKE_CLIENT_ID\
-            -e CROWDSTRIKE_CLIENT_SECRET=$CROWDSTRIKE_CLIENT_SECRET\
-            -e SYSTEM_IDENTITY_CLIENT_ID=$SYSTEM_IDENTITY_CLIENT_ID\
-            -e SYSTEM_IDENTITY_CLIENT_SECRET=$SYSTEM_IDENTITY_CLIENT_SECRET\
-            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
-            -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
-            --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
+          if [[ "$testDefinitionFile" == test/definitions/agent-control/* || "$testDefinitionFile" == test/definitions-eu/agent-control/* ]]; then
+            docker run -i\
+              -e CROWDSTRIKE_CUSTOMER_ID=$CROWDSTRIKE_CUSTOMER_ID\
+              -e CROWDSTRIKE_CLIENT_ID=$CROWDSTRIKE_CLIENT_ID\
+              -e CROWDSTRIKE_CLIENT_SECRET=$CROWDSTRIKE_CLIENT_SECRET\
+              -e SYSTEM_IDENTITY_CLIENT_ID=$SYSTEM_IDENTITY_CLIENT_ID\
+              -e SYSTEM_IDENTITY_CLIENT_SECRET=$SYSTEM_IDENTITY_CLIENT_SECRET\
+              -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+              -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+              --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
+          else
+            docker run -i\
+              -e CROWDSTRIKE_CUSTOMER_ID=$CROWDSTRIKE_CUSTOMER_ID\
+              -e CROWDSTRIKE_CLIENT_ID=$CROWDSTRIKE_CLIENT_ID\
+              -e CROWDSTRIKE_CLIENT_SECRET=$CROWDSTRIKE_CLIENT_SECRET\
+              -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
+              -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
+              --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
+          fi
           echo ::set-output name=exit_status::$?
       - name: Teardown any previous deployment
         if: always()
@@ -306,6 +319,7 @@ jobs:
           if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
             NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
             SYSTEM_IDENTITY_ID="${{ needs.create-system-identity.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$NR_API_KEY"
             echo "::add-mask::$SYSTEM_IDENTITY_ID"
             if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
               echo "Cleaning up system identity with ID: $SYSTEM_IDENTITY_ID"
