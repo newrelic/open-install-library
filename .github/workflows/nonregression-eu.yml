@@ -157,13 +157,18 @@ jobs:
       max-parallel: 20
     env:
       MATRIX: ${{ toJSON(matrix) }}
-      SYSTEM_IDENTITY_CLIENT_ID: ${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}
-      SYSTEM_IDENTITY_CLIENT_SECRET: ${{ needs.create-system-identity-eu.outputs.CLIENT_SECRET }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
+
+      - name: Mask and set system identity credentials
+        run: |
+          echo "::add-mask::${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}"
+          echo "::add-mask::${{ needs.create-system-identity-eu.outputs.CLIENT_SECRET }}"
+          echo "SYSTEM_IDENTITY_CLIENT_ID=${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}" >> $GITHUB_ENV
+          echo "SYSTEM_IDENTITY_CLIENT_SECRET=${{ needs.create-system-identity-eu.outputs.CLIENT_SECRET }}" >> $GITHUB_ENV
 
       - name: Update Test Definition Files URLs
         id: get-test-definition-files
@@ -237,8 +242,6 @@ jobs:
           CROWDSTRIKE_CLIENT_ID: ${{ secrets.CROWDSTRIKE_CLIENT_ID }}
           CROWDSTRIKE_CLIENT_SECRET: ${{ secrets.CROWDSTRIKE_CLIENT_SECRET }}
           CROWDSTRIKE_CUSTOMER_ID: ${{ secrets.CROWDSTRIKE_CUSTOMER_ID }}
-          SYSTEM_IDENTITY_CLIENT_ID: ${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}
-          SYSTEM_IDENTITY_CLIENT_SECRET: ${{ needs.create-system-identity-eu.outputs.CLIENT_SECRET }}
         run: |
           set -e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
@@ -276,22 +279,43 @@ jobs:
             -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
             --entrypoint ruby newrelic/deployer:latest main.rb -c configs/gitusdkreu${{ github.run_id }}.json -d $testDefinitionFile -t
 
+      - name: Report any error
+        if: steps.deployerRun.outputs.exit_status != 0
+        run: exit 1
+
+  cleanup-system-identity:
+    name: Cleanup System Identity
+    runs-on: ubuntu-latest
+    needs: [test-deploy-recipe, create-system-identity-eu]
+    if: always() && needs.create-system-identity-eu.result == 'success'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write Test Definition File JSON to file
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkreu${{ github.run_id }}.json
+
       - name: Clean up system identity
         if: always()
         continue-on-error: true
-        env:
-          SYSTEM_IDENTITY_CLIENT_ID: ${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}
-          SYSTEM_IDENTITY_CLIENT_SECRET: ${{ needs.create-system-identity-eu.outputs.CLIENT_SECRET }}
         run: |
           if [ -f configs/gitusdkreu${{ github.run_id }}.json ]; then
             NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkreu${{ github.run_id }}.json)
-            if [ ! -z "$SYSTEM_IDENTITY_CLIENT_ID" ] && [ "$SYSTEM_IDENTITY_CLIENT_ID" != "null" ]; then
-              echo "Cleaning up system identity with client ID: $SYSTEM_IDENTITY_CLIENT_ID"
+            CLIENT_ID="${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}"
+            echo "::add-mask::$CLIENT_ID"
+            if [ ! -z "$CLIENT_ID" ] && [ "$CLIENT_ID" != "null" ]; then
+              echo "Cleaning up system identity with client ID: $CLIENT_ID"
               curl -X POST https://api.eu.newrelic.com/graphql \
                 -H 'content-type: application/json; charset=utf-8' \
                 -H "API-Key: $NR_API_KEY" \
                 --data-raw "{
-                  \"query\": \"mutation { systemIdentityDelete(clientId: \\\"$SYSTEM_IDENTITY_CLIENT_ID\\\") { clientId } }\"
+                  \"query\": \"mutation { systemIdentityDelete(clientId: \\\"$CLIENT_ID\\\") { clientId } }\"
                 }" || echo "Failed to delete system identity, it may have already been deleted"
             else
               echo "No system identity to clean up"
@@ -300,13 +324,9 @@ jobs:
             echo "Config file not found, skipping system identity cleanup"
           fi
 
-      - name: Report any error
-        if: steps.deployerRun.outputs.exit_status != 0
-        run: exit 1
-
   slack-notify:
     runs-on: ubuntu-latest
-    needs: [test-deploy-recipe]
+    needs: [test-deploy-recipe, cleanup-system-identity]
     if: always()
     steps:
       - name: Build Result Slack Notification
