@@ -55,6 +55,7 @@ jobs:
     outputs:
       matrix: ${{ steps.get-test-definition-files.outputs.result }}
       needs_system_identity: ${{ steps.filter-agent-control.outputs.needs_system_identity }}
+      files_list: ${{ steps.get-test-definition-files.outputs.files_list }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
@@ -178,13 +179,15 @@ jobs:
             const output = {
               "include": outputTestFilesMap
             }
-            // Add a flat list for easier filtering in next step
-            return { ...output, files: outputTestFiles };
+            console.log('Matrix output:', JSON.stringify(output, null, 2));
+            console.log('Files for filtering:', outputTestFiles);
+            core.setOutput('files_list', JSON.stringify(outputTestFiles));
+            return output;
 
       - name: Check if agent-control test definitions exist
         id: filter-agent-control
         run: |
-          FILES=$(echo '${{ steps.get-test-definition-files.outputs.result }}' | jq -r '.files[]')
+          FILES=$(echo '${{ steps.get-test-definition-files.outputs.files_list }}' | jq -r '.[]')
           NEEDS_IDENTITY=false
           for FILE in $FILES; do
             if [[ "$FILE" == test/definitions/agent-control/* || "$FILE" == test/definitions-eu/agent-control/* ]]; then
@@ -268,8 +271,8 @@ jobs:
 
   test-deploy-recipe:
     name: Test Deploy Recipe
-    needs: [get-test-definition-files]
-    if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] }}
+    needs: [get-test-definition-files, create-system-identity]
+    if: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] && (always() && (needs.create-system-identity.result == 'success' || needs.create-system-identity.result == 'skipped')) }}
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
@@ -284,7 +287,7 @@ jobs:
           fetch-depth: 0
 
       - name: Mask and set system identity credentials
-        if: needs.get-test-definition-files.outputs.needs_system_identity == 'true'
+        if: needs.get-test-definition-files.outputs.needs_system_identity == 'true' && needs.create-system-identity.result == 'success'
         run: |
           echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_ID }}"
           echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_SECRET }}"
