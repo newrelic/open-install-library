@@ -10,6 +10,7 @@
 # use_organization_id: (optional) A boolean value to control if NEW_RELIC_ORGANIZATION_ID should be added to env_vars. False by default.
 # newrelic_organization_id: (optional) The NewRelic Organization ID if use_organization_id is set to True.
 # nr_host_fleet_id: (optional) A NewRelic host fleet id to add if NR_CLI_FLEET_ID should be added to env_vars.
+# use_system_identity_auth: (optional) A boolean value to control if system identity authentication should be used. False by default.
 
 - name: Prepare command_should_fail option
   when: command_should_fail is not defined
@@ -30,6 +31,11 @@
   set_fact:
     use_organization_id: false
   when: use_organization_id is not defined
+
+- name: Prepare nr_l1_system_identity_auth
+  set_fact:
+    use_system_identity_auth: false
+  when: use_system_identity_auth is not defined
 
 - fail:
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
@@ -70,6 +76,18 @@
   set_fact:
     env_vars: "{{ env_vars }} NEW_RELIC_ORGANIZATION={{ newrelic_organization_id }}"
   when: use_organization_id | bool == True
+  no_log: true
+
+- name: Adding L1 System Identities Auth Client ID environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} NEW_RELIC_AUTH_CLIENT_ID={{ lookup('env', 'SYSTEM_IDENTITY_CLIENT_ID') }}"
+  when: use_system_identity_auth | bool == True
+  no_log: true
+
+- name: Adding L1 System Identities Auth Client Secret environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} NEW_RELIC_AUTH_CLIENT_SECRET={{ lookup('env', 'SYSTEM_IDENTITY_CLIENT_SECRET') }}"
+  when: use_system_identity_auth | bool == True
   no_log: true
 
 - name: Adding newrelic host fleet id environment variable
