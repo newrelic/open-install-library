@@ -272,7 +272,7 @@ install:
       vars:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
-        NEW_RELIC_AGENT_VERSION: "0.42.0"
+        NEW_RELIC_AGENT_VERSION: "0.44.0"
       silent: true
 
     # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
@@ -379,9 +379,6 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          echo "CLIENT ID: $NEW_RELIC_AUTH_CLIENT_ID"
-          echo "CLIENT ID: $NEW_RELIC_AUTH_CLIENT_SECRET"
-          echo "CLIENT ID: $NEW_RELIC_REGION"
           if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
             sed -i '/^\s*#\s*auth_config:\s*$/s/# //' /etc/newrelic-agent-control/config.yaml
             sed -i '/^\s*#\s*token_url: PLACEHOLDER/s/# //' /etc/newrelic-agent-control/config.yaml
@@ -455,7 +452,7 @@ install:
             for RETRY in 1 2 3; do
               IDENTITY=$(newrelic-auth-cli create-identity key --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --organization-id "{{ .NEW_RELIC_ORGANIZATION }}" --bearer-access-token "${ACCESS_TOKEN}" --output-platform local-file --output-local-filepath "${TEMPORAL_FOLDER}/identity")
           
-              if [[ -n "CLIENT_ID" ]]; then
+              if [[ -n "$IDENTITY" ]]; then
                 echo "System Identity created successfully"
                 break
               else
@@ -463,7 +460,7 @@ install:
                 sleep 2
               fi
           
-              if [[ -z "CLIENT_ID" ]]; then
+              if [[ -z "$IDENTITY" ]]; then
                 echo "ERROR: Unable to create System Identity after three attempts."
                 exit 1
               fi
