@@ -19,6 +19,7 @@ keywords:
   - RHEL 7
   - RHEL 8
   - RHEL 9
+  - RHEL 10
 
 processMatch: []
 
@@ -211,12 +212,26 @@ install:
       cmds:
         - |
           if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            systemctl restart newrelic-infra
+            # For RHEL 10, ensure service is properly enabled before starting
+            if [ "{{.DISTRO_VERSION}}" = "10" ]; then
+              systemctl enable newrelic-infra
+              systemctl start newrelic-infra
+            else
+              systemctl restart newrelic-infra
+            fi
           else 
             if [ {{.IS_INITCTL}} -gt 0 ]; then
-              initctl restart newrelic-infra
+              if [ "{{.DISTRO_VERSION}}" = "10" ]; then
+                initctl start newrelic-infra
+              else
+                initctl restart newrelic-infra
+              fi
             else
-              /etc/init.d/newrelic-infra restart
+              if [ "{{.DISTRO_VERSION}}" = "10" ]; then
+                /etc/init.d/newrelic-infra start
+              else
+                /etc/init.d/newrelic-infra restart
+              fi
             fi
           fi
       vars:
@@ -224,6 +239,9 @@ install:
           sh: command -v systemctl | wc -l
         IS_INITCTL:
           sh: command -v initctl | wc -l
+        DISTRO_VERSION:
+          sh: |
+            rpm -E %{rhel}
 
     assert_agent_status_ok:
       cmds:
