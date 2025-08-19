@@ -81,6 +81,7 @@ install:
           NR_CLI_LOGGING_LOW_DATA_MODE="{{.NR_CLI_LOGGING_LOW_DATA_MODE}}"
           NR_CLI_AGENT_OPERATOR="{{.NR_CLI_AGENT_OPERATOR}}"
           NR_CLI_EAPM_AGENT="{{.NR_CLI_EAPM_AGENT}}"
+          NR_CLI_WINDOWS="{{.NR_CLI_WINDOWS}}"
 
           # Prometheus integrations
 
@@ -146,13 +147,18 @@ install:
             echo "{\"Metadata\":{\"UnsupportedReason\":\"cut is not installed\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 131
           fi
+          if [[ "{{.NR_CLI_OPEN_SHIFT}}" == "true" ]] && [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]] ; then
+            echo "Both OpenShift and Gke Autopilot selected only one is allowed. Please only set one of NR_CLI_OPEN_SHIFT or NR_CLI_GKE_AUTOPILOT." >&2
+            echo "{\"Metadata\":{\"UnsupportedReason\":\"cut is not installed\"}}" | tee -a {{.NR_CLI_OUTPUT}}
+            exit 131
+          fi
 
           # Check the Kubernetes version
           KUBECTL_VERSION=$($SUDO $KUBECTL version --short 2>&1)
           SHORT_FLAG_ERROR=false
 
           # Check if $KUBECTL_VERSION contains an error with unknown flag --short
-          # run again without --short flag since it was deprecated in kubectl version 1.28
+          # run again without --short flag since it was deprecated in kubectl version 1.29
           if echo "$KUBECTL_VERSION" | grep -q "unknown flag: --short"
           then
             SHORT_FLAG_ERROR=true
@@ -182,14 +188,14 @@ install:
             exit 131
           fi
 
-          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 27 ]]; then
-            echo "Installation failed. Kubernetes version less that v1.27 is not supported, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
+          if [[ "$SERVER_MAJOR_VERSION" -lt 1 ]] || [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -lt 29 ]]; then
+            echo "Installation failed. Kubernetes version less that v1.29 is not supported, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
             echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsupported k8s version - found $SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
             exit 131
           fi
 
-          if [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -gt 31 ]]; then
-            echo "Kubernetes version greater than v1.31 is not officially supported, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
+          if [[ "$SERVER_MAJOR_VERSION" -eq 1 && "$SERVER_MINOR_VERSION" -gt 33 ]]; then
+            echo "Kubernetes version greater than v1.33 is not officially supported, found v${SERVER_MAJOR_VERSION}.${SERVER_MINOR_VERSION}" >&2
             echo "{\"Metadata\":{\"UnsupportedReason\":\"Unsupported k8s version - found $SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\", \"K8sClientVersion\":\"$CLIENT_MAJOR_VERSION.$CLIENT_MINOR_VERSION\", \"K8sServerVersion\":\"$SERVER_MAJOR_VERSION.$SERVER_MINOR_VERSION\"}}" | tee -a {{.NR_CLI_OUTPUT}}
           fi
           
@@ -279,6 +285,12 @@ install:
           NR_CLI_LOGGING_LINUX_MOUNT_PATH=${NR_CLI_LOGGING_LINUX_MOUNT_PATH:-""}
           NR_CLI_AGENT_OPERATOR=${NR_CLI_AGENT_OPERATOR:-false}
           NR_CLI_EAPM_AGENT=${NR_CLI_EAPM_AGENT:-false}
+          NR_CLI_WINDOWS=${NR_CLI_WINDOWS:-false}
+          
+          NR_CLI_LOGGING_WINDOWS=false
+          if [[ "$NR_CLI_LOGGING" == "true" && "$NR_CLI_WINDOWS" == "true" ]]; then
+            NR_CLI_LOGGING_WINDOWS=true
+          fi
 
           # Prometheus integrations
 
@@ -380,7 +392,7 @@ install:
             fi
 
             # SHORT_FLAG_ERROR will be true if it returned an --short flag error earlier in the script
-            # if SHORT_FLAG_ERROR is true, run KUBECTL version without --short flag since it was deprecated in kubectl version 1.28
+            # if SHORT_FLAG_ERROR is true, run KUBECTL version without --short flag since it was deprecated in kubectl version 1.29
             if $SHORT_FLAG_ERROR == true; then
               K8S_VERSION=$($SUDO $KUBECTL version | grep "Server Version")
             else
@@ -582,13 +594,18 @@ install:
             ARGS="${ARGS} --set ksm.enabled=${NR_CLI_KSM}"
             ARGS="${ARGS} --set k8s-agents-operator.enabled=${NR_CLI_AGENT_OPERATOR}"
             ARGS="${ARGS} --set newrelic-eapm-agent.enabled=${NR_CLI_EAPM_AGENT}"
+            ARGS="${ARGS} --set newrelic-infrastructure.enableWindows=${NR_CLI_WINDOWS}"
+            ARGS="${ARGS} --set newrelic-logging.enableWindows=${NR_CLI_LOGGING_WINDOWS}"
 
-            # if installing in GKE Autopilot, we need to turn off controlPlane and pixie and set kubelet scheme and port
+            # if installing in GKE Autopilot, set the Provider to GKE_AUTOPILOT
             if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]]; then
-              ARGS="${ARGS} --set newrelic-infrastructure.controlPlane.enabled=false"
-              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.scheme=http"
-              ARGS="${ARGS} --set newrelic-infrastructure.kubelet.config.port=10255"
+              ARGS="${ARGS} --set global.provider=GKE_AUTOPILOT"
               ARGS="${ARGS} --set newrelic-pixie.enabled=false"
+            fi
+
+            # if installing in OpenShift, set the Provider to OPEN_SHIFT
+            if [[ "{{.NR_CLI_OPEN_SHIFT}}" == "true" ]]; then
+              ARGS="${ARGS} --set global.provider=OPEN_SHIFT"
             fi
 
             # leaving this commented out for the future
@@ -699,12 +716,17 @@ install:
             BODY="${BODY},\"ksm.enabled\":\"${NR_CLI_KSM}\""
             BODY="${BODY},\"k8s-agents-operator.enabled\":\"${NR_CLI_AGENT_OPERATOR}\""
             BODY="${BODY},\"newrelic-eapm-agent.enabled\":\"${NR_CLI_EAPM_AGENT}\""
+            BODY="${BODY},\"newrelic-infrastructure.enableWindows\":\"${NR_CLI_WINDOWS}\""
+            BODY="${BODY},\"newrelic-logging.enableWindows\":\"${NR_CLI_LOGGING_WINDOWS}\""
 
-            # if installing in GKE Autopilot, turn off controlPlane and set kubelet scheme and port
+            # if installing in GKE Autopilot, set Provider to GKE_AUTOPILOT
             if [[ "{{.NR_CLI_GKE_AUTOPILOT}}" == "true" ]]; then
-              BODY="${BODY},\"newrelic-infrastructure.controlPlane.enabled\":\"false\""
-              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.scheme\":\"http\""
-              BODY="${BODY},\"newrelic-infrastructure.kubelet.config.port\":\"10255\""
+              BODY="${BODY},\"global.provider\":\"GKE_AUTOPILOT\""
+            fi
+
+            # if installing in OpenShift, set Provider to OPEN_SHIFT
+            if [[ "{{.NR_CLI_OPEN_SHIFT}}" == "true" ]]; then
+              BODY="${BODY},\"global.provider\":\"OPEN_SHIFT\""
             fi
 
             # leaving this commented out for the future

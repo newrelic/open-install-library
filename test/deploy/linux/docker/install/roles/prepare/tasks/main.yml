@@ -67,3 +67,39 @@
 
   when: ansible_pkg_mgr == 'apt'
   become: yes
+  
+########################################
+# Amazon Linux 2023 support for Docker installation
+########################################
+- block:
+  # Update the system packages
+  - name: Update all system packages
+    dnf:
+      name: "*"
+      state: latest
+
+  # Install Docker
+  - name: Install Docker
+    dnf:
+      name: docker
+      state: present
+
+  # Start and enable Docker service
+  - name: Start and enable Docker service
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+
+  # Add the ec2-user to the docker group
+  - name: Add ec2-user to the docker group
+    user:
+      name: ec2-user
+      groups: docker
+      append: yes
+
+  - debug:
+      msg: "Docker installation completed successfully."
+
+  when: ansible_distribution == 'Amazon' and ansible_distribution_version == '2023'
+  become: yes

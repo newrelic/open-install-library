@@ -181,9 +181,26 @@ install:
             echo "newrelic infrastructure agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
-          curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
-          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-          yum -y -q install newrelic-infra
+
+          # Install specific version if provided, otherwise install latest
+          AGENT_VERSION={{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}
+          VERSION_SUFFIX=""
+          if [ -n "$AGENT_VERSION" ]; then
+            VERSION_SUFFIX="-$AGENT_VERSION"
+          fi
+          
+          # Check NEW_RELIC_FIPS_ENABLED flag
+          if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
+            echo "FIPS mode enabled. Installing newrelic-infra-fips${VERSION_SUFFIX}..."
+            curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+            yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+            yum -y -q install newrelic-infra-fips${VERSION_SUFFIX}
+          else
+            echo "FIPS mode not enabled. Installing newrelic-infra${VERSION_SUFFIX}..."
+            curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+            yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+            yum -y -q install newrelic-infra${VERSION_SUFFIX}
+          fi
       vars:
         DISTRO_VERSION:
           sh: |

@@ -31,6 +31,7 @@ keywords:
 # Examine Infrastructure events for correlated data
 processMatch:
   - mysqld
+  - mariadbd
 
 preInstall:
   requireAtDiscovery: |
@@ -122,6 +123,36 @@ install:
           if [[ "$NEW_RELIC_MYSQL_PASSWORD" == "" ]]; then
             NEW_RELIC_MYSQL_PASSWORD=$(echo -n $(date +%s | sha256sum | base64 | head -c 16); echo "oO0$")
           fi
+          
+          # Detect if MariaDB is being used
+          IS_MARIADB=$(mysql --version | grep -i mariadb | wc -l)
+          
+          # Check the Query monitoring status in previous installation
+          QUERY_MONITORING_PREVIOUSLY_ENABLED=0
+          if [[ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]] && grep -qE '^\s*ENABLE_QUERY_MONITORING\s*:\s*true\s*$' /etc/newrelic-infra/integrations.d/mysql-config.yml; then
+            QUERY_MONITORING_PREVIOUSLY_ENABLED=1
+          fi
+
+          if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
+          CONFIG_FILES=(
+            "/etc/my.cnf"
+            "/etc/mysql/my.cnf"
+            "/etc/my.cnf.d/mysql-server.cnf"
+          )
+          
+          # Iterate through each configuration file path and update if it exists
+            FILE_FOUND=0
+            for config in "${CONFIG_FILES[@]}"; do
+              # Check if the file exists
+              if [[ -f "$config" ]]; then
+                echo "Found MySQL configuration file at $config."
+                FILE_FOUND=1
+                break
+              fi
+            done
+          elif [[ "$QUERY_MONITORING_PREVIOUSLY_ENABLED" -eq 1 ]]; then
+            echo -e "\033[0;33m[Warning] This guided install can enable the performance schema of your DB system, but it cannot safely turn these off. Please find details of what was enabled in a previous guided install in the log file /root/.newrelic/newrelic-cli.log. These details need to be manually reverted, if so desired.\033[0m" >&2
+          fi
 
           # Check to see if default port works, or prompt if non-interactive
           CAN_CONNECT=$(curl $NEW_RELIC_MYSQL_HOSTNAME:$NEW_RELIC_MYSQL_PORT 2>&1 1>/dev/null -s -S | awk -F'[()]' '{print $2}')
@@ -158,7 +189,15 @@ install:
 
           # Attempt to create required user
           SQL_CHECK_AUTH=$(echo "SELECT USER FROM mysql.user where USER in ('"$NEW_RELIC_MYSQL_USERNAME"')")
-          MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          # Check if MariaDB is being used
+          if [[ $IS_MARIADB -eq 1 ]]; then
+            # For MariaDB, check connection using socket-based authentication (no port or password)
+            MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root  -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          else
+            # For MySQL, check connection using username and password
+            MYSQL_ROOT_PASSWORD=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -ne \"$SQL_CHECK_AUTH\" 2>&1 | grep "ERROR" | wc -l)
+          fi
+          
           if [ $MYSQL_ROOT_PASSWORD -gt 0 ] ; then
             if [[ "$NEW_RELIC_ASSUME_YES" == "true" && -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
               # non-interactive mode, need a valid root password
@@ -177,6 +216,11 @@ install:
           GRANT REPLICATION CLIENT ON *.* TO 'newrelic'@'localhost';
           GRANT SELECT ON *.* TO 'newrelic'@'localhost';
           EOT
+          
+          # Conditionally append the GRANT PROCESS command if NR_CLI_SLOW_QUERY is true
+          if [[ "$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1 ]]; then
+            echo "GRANT PROCESS ON *.* TO 'newrelic'@'localhost';" | sudo tee -a /tmp/sql-create-user.sql > /dev/null
+          fi
 
           sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-drop-user.sql
           sudo sed -i 's/NEW_RELIC_MYSQL_USERNAME/'$NEW_RELIC_MYSQL_USERNAME'/g' /tmp/sql-create-user.sql
@@ -194,7 +238,13 @@ install:
               printf "\nPlease enter your username for MySql (default: root): "
               read -r USERNAME
               USERNAME=${USERNAME:-root}
-
+          
+              printf "Enter password: "
+              stty -echo
+              read -r NEW_RELIC_MYSQL_ROOT_PASSWORD
+              stty echo
+              printf "\n"
+              
               sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u $USERNAME --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
               echo "MySqlOutput:"$EXEC_OUTPUT | sudo tee -a {{.NEW_RELIC_CLI_LOG_FILE_PATH}} > /dev/null
@@ -215,8 +265,15 @@ install:
             fi
           else
             if [[ -z "$NEW_RELIC_MYSQL_ROOT_PASSWORD" ]]; then
-              sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
-              EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+              if [[ $IS_MARIADB -eq 1 ]]; then
+                  # For MariaDB, use socket-based authentication (no port number)
+                  sudo mysql -u root < /tmp/sql-drop-user.sql &> /dev/null ||:
+                  EXEC_OUTPUT=$(eval sudo mysql -u root < /tmp/sql-create-user.sql 2>&1)
+                else
+                  # For MySQL, use port-based authentication
+                  sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-drop-user.sql &> /dev/null ||:
+                  EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT < /tmp/sql-create-user.sql 2>&1)
+                fi
             else
               sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-drop-user.sql &> /dev/null ||:
               EXEC_OUTPUT=$(eval sudo mysql -u root --port $NEW_RELIC_MYSQL_PORT -p$NEW_RELIC_MYSQL_ROOT_PASSWORD < /tmp/sql-create-user.sql 2>&1)
@@ -244,9 +301,11 @@ install:
           if [ -f /etc/newrelic-infra/integrations.d/mysql-config.yml ]; then
             sudo rm /etc/newrelic-infra/integrations.d/mysql-config.yml;
           fi
-
-          sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;
-          sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null <<EOT
+          
+          sudo cp /etc/newrelic-infra/integrations.d/mysql-config.yml.sample /etc/newrelic-infra/integrations.d/mysql-config.yml;  
+          
+          # Defining the common config for mysql-config.yml file
+          common_config=$(cat <<EOT
           integrations:
             - name: nri-mysql
               env:
@@ -262,7 +321,111 @@ install:
               inventory_source: config/mysql
               interval: 30s
           EOT
+          )
 
+          # Write the common config to the file
+          echo "$common_config" | sudo tee /etc/newrelic-infra/integrations.d/mysql-config.yml > /dev/null
+
+          # Enable slow query monitoring if selected by user or enabled in previous installation.
+          if [[ ("$NR_CLI_SLOW_QUERY" == "true" && $FILE_FOUND -eq 1) || $QUERY_MONITORING_PREVIOUSLY_ENABLED -eq 1 ]]; then
+            sudo sed -i '/env:/a \ \ \ \ \ \ ENABLE_QUERY_MONITORING: true' /etc/newrelic-infra/integrations.d/mysql-config.yml
+          fi
+          
+          # Function to update or append the performance_schema and init-file properties
+          update_mysql_config() {
+              local config_file="$1"
+              backup_log="[NR_CLI_SLOW_QUERY] Created /etc/my.cnf.bak backup file"
+          
+              # Check if the [mysqld] section is present
+              if ! grep -qE '^\[mysqld\]' "$config_file"; then
+                # Append the [mysqld] section with the properties if not present
+                cp "$config_file" "$config_file.bak"
+                echo "$backup_log"
+                echo -e "\n[mysqld]\nperformance_schema=ON\ninit-file=/etc/my.cnf.d/init.sql" >> "$config_file"
+                echo "[NR_CLI_SLOW_QUERY] Successfully added the [mysqld] section with performance_schema=ON and init-file=/etc/my.cnf.d/init.sql to $config_file."
+              else
+                # Handle performance_schema property
+                if grep -qE '^\s*performance_schema\s*=\s*ON\s*$' "$config_file"; then
+                  echo "[NR_CLI_SLOW_QUERY] The performance_schema is already set to ON in $config_file. No changes made."
+                elif grep -qE '^\s*performance_schema\s*=' "$config_file"; then
+                  # Update any other value to ON
+                  sed -i.bak 's/^\s*performance_schema\s*=.*$/performance_schema=ON/' "$config_file"
+                  echo "$backup_log"
+                  echo "[NR_CLI_SLOW_QUERY] Updated performance_schema to ON in $config_file."
+                else
+                  # Append the property below the [mysqld] section if not present
+                  sed -i.bak '/\[mysqld\]/a\performance_schema=ON' "$config_file"
+                    echo "$backup_log"  
+                    echo "[NR_CLI_SLOW_QUERY] Appended performance_schema=ON to $config_file."
+                  fi
+                  # Handle init-file property
+                  if grep -qE '^\s*init-file\s*=\s*/etc/my.cnf.d/init.sql\s*$' "$config_file"; then
+                    echo "[NR_CLI_SLOW_QUERY] The init-file is already set to /etc/my.cnf.d/init.sql in $config_file. No changes made."
+                  elif grep -qE '^\s*init-file\s*=' "$config_file"; then
+                    # Update any other value to /etc/my.cnf.d/init.sql
+                    sed -i 's|^\s*init-file\s*=.*$|init-file=/etc/my.cnf.d/init.sql|' "$config_file"
+                    echo "[NR_CLI_SLOW_QUERY] Updated init-file to /etc/my.cnf.d/init.sql in $config_file."
+                  else
+                    # Append the property below the [mysqld] section if not present
+                    sed -i '/\[mysqld\]/a\init-file=/etc/my.cnf.d/init.sql' "$config_file"
+                    echo "[NR_CLI_SLOW_QUERY] Appended init-file=/etc/my.cnf.d/init.sql to $config_file."
+                  fi
+                fi
+            }
+          
+          create_init_sql() {       
+          # Create init.sql file with required SQL commands
+          local INIT_FILE="/etc/my.cnf.d/init.sql"
+          
+          cat <<EOF | sudo tee "$INIT_FILE" > /dev/null
+          -- Enable required Performance Schema instruments
+          UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/%';
+          -- Enable CPU Instruments
+          UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'statement/%';
+          -- Enable Collection of Current Data Lock Waits
+          UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE '%lock%';
+          -- Enable required Performance Schema consumers
+          UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('events_waits_current', 'events_waits_history_long', 'events_waits_history', 'events_statements_history_long');
+          -- Enable required Performance Schema consumers for CPU metrics
+          UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('events_statements_history', 'events_statements_current', 'events_statements_cpu');
+          UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME LIKE 'events_waits_current%' OR NAME LIKE 'events_statements_current%';
+          SET GLOBAL innodb_lock_wait_timeout = 120; -- Increase to 2 minutes
+          EOF
+          
+          echo "[NR_CLI_SLOW_QUERY] Created $INIT_FILE with necessary SQL commands."
+          
+          printf "\nRestart your MySQL instance to enable the performance schema settings now? (y/n): "
+          read -r APPLICATION_RESTART
+          APPLICATION_RESTART=${APPLICATION_RESTART:-y}
+          
+          if [ "$APPLICATION_RESTART" = "y" ]; then
+            if systemctl status mysqld >/dev/null 2>&1; then
+              # Restart mysqld service using systemd
+              sudo systemctl restart mysqld
+              echo -e "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
+            elif systemctl status mysql >/dev/null 2>&1; then
+              # Restart mysql service using systemd
+              sudo systemctl restart mysql
+              echo -e "\n[NR_CLI_SLOW_QUERY] MySQL server restarted to apply changes."
+            fi
+          else  
+            echo -e "\n\033[0;33m[Warning] The Performance Schema configuration changes of the database will become active the next time you restart your MySQL server. Without those changes, the New Relic integration will not be able to collect SQL query level details.\033[0m" >&2
+            printf "\n"
+          fi     
+          }
+          
+          if [[ "$NR_CLI_SLOW_QUERY" == "true" ]]; then
+            if [[ $FILE_FOUND -eq 1 ]]; then
+              echo -e "\n--- Checking MySQL configuration settings"
+              echo "[NR_CLI_SLOW_QUERY] Granted PROCESS privilege to the $NEW_RELIC_MYSQL_USERNAME user."
+              echo -e "[NR_CLI_SLOW_QUERY] Updated \`ENABLE_QUERY_MONITORING: true\` in /etc/newrelic-infra/integrations.d/mysql-config.yml."
+              update_mysql_config "$config"
+              create_init_sql
+            else
+              echo -e "\033[0;33m[Warning] The database settings could not be checked or amended to enable the required Performance Schema. The rest of the installation will continue, to make sure we collect the basic telemetry data for MySQL, but these database configuration steps will need to be done manually. Instructions can be found (soon) on the documentation page for the MySQL Integration.\033[0m" >&2
+            fi
+          fi
+          echo "You can find the CLI logs in this path: /root/.newrelic/newrelic-cli.log"
     restart:
       cmds:
         - |

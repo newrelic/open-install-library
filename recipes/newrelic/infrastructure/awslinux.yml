@@ -203,9 +203,38 @@ install:
             echo "newrelic infrastructure agent is not available for this architecture "{{.ARCH}}". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
+
+          AGENT_VERSION={{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}
+          VERSION_SUFFIX=""
+          if [ -n "$AGENT_VERSION" ]; then
+            VERSION_SUFFIX="-$AGENT_VERSION"
+          fi
+
+          # Set up the repo
           curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
           yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-          yum -y -q install newrelic-infra
+
+          # Check NEW_RELIC_FIPS_ENABLED flag to determine package name
+          PACKAGE_NAME="newrelic-infra"
+          if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
+            PACKAGE_NAME="newrelic-infra-fips"
+            echo "FIPS mode enabled. Installing $PACKAGE_NAME${VERSION_SUFFIX}..."
+          else
+            echo "FIPS mode not enabled. Installing $PACKAGE_NAME${VERSION_SUFFIX}..."
+          fi
+
+          # Install specific version if provided, otherwise install latest
+          if [ -n "$AGENT_VERSION" ]; then
+            # Install specific version (handles install/update)
+            yum -y -q install $PACKAGE_NAME${VERSION_SUFFIX}
+            # If specific version was not installed, attempt to downgrade the package.
+            if ! rpm -q $PACKAGE_NAME${VERSION_SUFFIX} >/dev/null 2>&1; then
+                yum -y -q downgrade $PACKAGE_NAME${VERSION_SUFFIX}
+            fi
+          else
+            # No version specified - install or update to latest
+            rpm -q $PACKAGE_NAME >/dev/null 2>&1 && yum -y -q update $PACKAGE_NAME || yum -y -q install $PACKAGE_NAME
+          fi
       silent: true
 
     restart:
