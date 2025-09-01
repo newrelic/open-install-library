@@ -120,6 +120,7 @@ install:
         - task: config_fleet_control
         - task: config_agent_control_auth
         - task: config_host_monitoring_otel
+        - task: config_agent_control_proxy
         - task: update_otel_mem_limit
         - task: update_otel_end_point
         - task: migrate_newrelic_infra_config
@@ -530,6 +531,26 @@ install:
           if [ "{{.HOST_OTEL}}" == "true" ] ; then
             mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
             cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-agent-linux.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
+          fi
+
+    config_agent_control_proxy:
+      status:
+        - test -f /etc/newrelic-agent-control/.nr-cli
+      cmds:
+        - |
+          if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" ] ; then
+            sed -i '/^proxy:/,/^\S/{ /^\S/!d }' /etc/newrelic-agent-control/config.yaml
+            sed -i '/^proxy:/d' /etc/newrelic-agent-control/config.yaml
+            printf "proxy:\n  url: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" >> /etc/newrelic-agent-control/config.yaml
+            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" ] ; then
+              printf "  ca_bundle_file: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" >> /etc/newrelic-agent-control/config.yaml
+            fi
+            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" ] ; then
+              printf "  ca_bundle_dir: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" >> /etc/newrelic-agent-control/config.yaml
+            fi
+            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" ] ; then
+              printf "  ignore_system_proxy: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" >> /etc/newrelic-agent-control/config.yaml
+            fi
           fi
 
     restart_agent_control:
