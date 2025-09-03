@@ -49,6 +49,7 @@ install:
         - task: add_nr_source
         - task: update_apt_nr_source
         - task: install_ebpf_agent
+        - task: disable_service_for_agent_control
 
     assert_pre_req:
       cmds:
@@ -380,7 +381,7 @@ install:
               log_error_and_exit "NEW_RELIC_LICENSE_KEY is not found in the config file $CONFIG_FILE. Aborting installation."
           fi
 
-          if [[ -z "$DEPLOYMENT_NAME" ]]; then
+          if [[ -z "$DEPLOYMENT_NAME" && "${NEW_RELIC_AGENT_CONTROL:-}" != "true" ]]; then
               log_error_and_exit "DEPLOYMENT_NAME is empty. Aborting installation."
           fi
           echo "Required config is found."   
@@ -459,6 +460,23 @@ install:
             apt-get install -yq --no-install-recommends newrelic-ebpf-agent || echo -e "\e[31mERROR:\e[0m Failed to install the eBPF agent after resolving dependencies."
           }
       silent: true
+    
+    # When the eBPF agent is installed alongside Agent Control, the default services are disabled
+    # and the binary execution is orchestrated by Agent Control
+    disable_service_for_agent_control:
+      status:
+        - |
+          if [ "${NEW_RELIC_AGENT_CONTROL:-}" = "true" ]; then
+            echo "eBPF agent services will be controlled by Agent Control - disabling default startup"
+            exit 1
+          fi
+      cmds:
+        - |
+          sudo systemctl stop newrelic-ebpf-agent-client
+          sudo systemctl disable newrelic-ebpf-agent-client
+          sudo systemctl stop newrelic-ebpf-agent
+          sudo systemctl disable newrelic-ebpf-agent
+      ignore_error: true
 
 postInstall:
   info: |2
