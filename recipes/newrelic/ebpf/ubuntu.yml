@@ -48,6 +48,7 @@ install:
         - task: add_gpg_key
         - task: add_nr_source
         - task: update_apt_nr_source
+        - task: install_linux_headers
         - task: install_ebpf_agent
 
     assert_pre_req:
@@ -449,11 +450,25 @@ install:
       # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
       ignore_error: true
 
+    install_linux_headers:
+      cmds:
+        - |
+          KERNEL_VERSION=$(uname -r)
+          echo "Installing linux headers for kernel version: $KERNEL_VERSION"
+          if ! apt-get install -yq --no-install-recommends "linux-headers-$KERNEL_VERSION"; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m Failed to install linux headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
+            echo ""
+            exit 20
+          fi
+          echo "Linux headers installed successfully for kernel $KERNEL_VERSION."
+
     install_ebpf_agent:
       cmds:
         - |
           export DEBIAN_FRONTEND=noninteractive
           CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
+          OPTIONS="-o DPkg::Lock::Timeout=60"
 
           create_default_config_file(){
           
@@ -693,39 +708,54 @@ install:
               echo "TLS certificate files copied successfully."
           }
 
-          apt-get install -yq --no-install-recommends newrelic-ebpf-agent || {
-            echo "Resolving missing dependencies for the eBPF agent..."
-            apt-get update -yq || echo -e "\e[31mERROR:\e[0m Failed to perform apt-get update."
-            apt-get install -f -yq || echo -e "\e[31mERROR:\e[0m Failed to resolve dependencies for the eBPF agent."
-            apt-get install -yq --no-install-recommends newrelic-ebpf-agent || {
-              echo -e "\e[31mERROR:\e[0m Failed to install the eBPF agent after resolving dependencies."
-              
-              if [[ ! -f "$CONFIG_FILE" ]]; then
-                # Check if CONFIG_FILE_PATH is set and not empty
-                if [[ -z "$CONFIG_FILE_PATH" ]]; then
-                  create_default_config_file
-                else
-                  check_custom_config_file $CONFIG_FILE_PATH
-                fi
-
-                if [[ -z "$TLS_ENABLED" ]]; then
-                  echo "TLS_ENABLED is not set in the configuration file. Setting it to true by default."
-                  TLS_ENABLED="true"
-                fi
-
-                if [[ "$TLS_ENABLED" == "True" || "$TLS_ENABLED" == "true" ]]; then
-                    check_and_autogenerate_cert
-                else
-                    echo "TLS is disabled. Skipping certificate generation and validation."
-                fi
-
-                sudo mkdir -p /px;
-                sleep 5s;
-                systemctl restart newrelic-ebpf-agent.service
-                systemctl restart newrelic-ebpf-agent-client.service
+          apt-get $OPTIONS install -yq --no-install-recommends newrelic-ebpf-agent || {
+            if [[ ! -f "$CONFIG_FILE" ]]; then
+              # Check if CONFIG_FILE_PATH is set and not empty
+              if [[ -z "$CONFIG_FILE_PATH" ]]; then
+                create_default_config_file
+              else
+                check_custom_config_file $CONFIG_FILE_PATH
               fi
-            }
+
+              if [[ -z "$TLS_ENABLED" ]]; then
+                echo "TLS_ENABLED is not set in the configuration file. Setting it to true by default."
+                TLS_ENABLED="true"
+              fi
+
+              if [[ "$TLS_ENABLED" == "True" || "$TLS_ENABLED" == "true" ]]; then
+                  check_and_autogenerate_cert
+              else
+                  echo "TLS is disabled. Skipping certificate generation and validation."
+              fi
+
+              sudo mkdir -p /px;
+              sleep 5s;
+              systemctl restart newrelic-ebpf-agent.service
+              systemctl restart newrelic-ebpf-agent-client.service
+            else
+              echo "Error: newrelic-infra installation failed"
+              echo "Attempting to configure the packages again"
+              dpkg --configure -a
+              # Check if there was an error
+              if [ $? -ne 0 ]; then
+                echo "Error found while reconfiguring dpkg database"
+                # Force-Install the Software
+                echo "Attempting to install any missing dependencies or fixes broken packages."
+                apt-get $OPTIONS install -f
+                if [ $? -ne 0 ]; then 
+                  exit 1
+                fi
+                echo "Installation is successful"
+              fi
+            fi
           }
+
+
+            
+        
+      
+
+
       silent: true
 
 postInstall:
