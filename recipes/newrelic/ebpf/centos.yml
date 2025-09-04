@@ -56,6 +56,7 @@ install:
       cmds:
         - task: assert_pre_req
         - task: check_config_file
+        - task: install_linux_headers
         - task: install_ebpf_agent
 
     assert_pre_req:
@@ -407,6 +408,20 @@ install:
           else
               echo "TLS is disabled. Skipping certificate generation and validation."
           fi
+    
+    install_linux_headers:
+      cmds:
+        - |
+          KERNEL_VERSION=$(uname -r)
+          echo "Installing kernel headers for kernel version: $KERNEL_VERSION"
+          if ! yum install -y "kernel-devel-$KERNEL_VERSION" "kernel-headers-$KERNEL_VERSION"; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m Failed to install kernel headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
+            echo ""
+            exit 20
+          fi
+          echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."ignore_error: true
+      ignore_error: true
 
     install_ebpf_agent:
       cmds:
