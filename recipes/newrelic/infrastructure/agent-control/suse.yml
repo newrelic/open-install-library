@@ -273,7 +273,7 @@ install:
       vars:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
-        NEW_RELIC_AGENT_VERSION: "0.48.0"
+        NEW_RELIC_AGENT_VERSION: "1.0.0"
       silent: true
 
     # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
@@ -369,10 +369,13 @@ install:
         - |
           if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
             sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"staging-service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-agent-control/config.yaml
+            sed -i '/^fleet_control:/a \  signature_validation:\n    public_key_server_url: https:\/\/staging-publickeys.newrelic.com\/r\/blob-management\/global\/agentconfiguration\/jwks.json' /etc/newrelic-agent-control/config.yaml
           elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
             sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.eu.newrelic.com\/v1\/opamp"'/' /etc/newrelic-agent-control/config.yaml
+            sed -i '/^fleet_control:/a \  signature_validation:\n    public_key_server_url: https:\/\/publickeys.eu.newrelic.com\/r\/blob-management\/global\/agentconfiguration\/jwks.json' /etc/newrelic-agent-control/config.yaml
           else
             sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-agent-control/config.yaml
+            sed -i '/^fleet_control:/a \  signature_validation:\n    public_key_server_url: https:\/\/publickeys.newrelic.com\/r\/blob-management\/global\/agentconfiguration\/jwks.json' /etc/newrelic-agent-control/config.yaml
           fi
 
     config_agent_control_auth:
@@ -469,6 +472,7 @@ install:
           
             CLIENT_ID=$(echo "$IDENTITY" | /usr/local/bin/newrelic utils jq '.client_id' | tr -d '"')
             mv "$TEMPORAL_FOLDER/identity" "/etc/newrelic-agent-control/keys/$CLIENT_ID.key"
+            chmod 600 "/etc/newrelic-agent-control/keys/$CLIENT_ID.key"
             sed -i 's~token_url: PLACEHOLDER~token_url: '"$TOKEN_RENEWAL_ENDPOINT"'~g' /etc/newrelic-agent-control/config.yaml
             sed -i 's/client_id: PLACEHOLDER/client_id: '"$CLIENT_ID"'/g' /etc/newrelic-agent-control/config.yaml
             sed -i 's/provider: PLACEHOLDER/provider: local/g' /etc/newrelic-agent-control/config.yaml
