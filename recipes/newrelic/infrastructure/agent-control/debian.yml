@@ -398,8 +398,8 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
-          echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-agent-control/newrelic-agent-control.conf
+          sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-agent-control/systemd-env.conf
+          echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-agent-control/systemd-env.conf
 
     update_otel_mem_limit:
       status:
@@ -407,7 +407,7 @@ install:
       cmds:
         - |
           if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
+            sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-agent-control/local-data/nr-otel-collector/local_config.yaml
           fi
 
     # Add OTLP Endpoint as ENV Var for the Agent Control Systemd service
@@ -417,13 +417,13 @@ install:
       cmds:
         - |
           if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
+            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/systemd-env.conf
             case "${{.NEW_RELIC_REGION}}" in
               "STAGING") url="staging.otlp.nr-data.net" ;;
               "EU") url="otlp.eu01.nr-data.net" ;;
               *) url="otlp.nr-data.net" ;;
             esac
-            echo "OTEL_EXPORTER_OTLP_ENDPOINT=https://${url}:4317/" >> /etc/newrelic-agent-control/newrelic-agent-control.conf
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=https://${url}:4317/" >> /etc/newrelic-agent-control/systemd-env.conf
           fi
 
     config_agent_control:
@@ -456,7 +456,7 @@ install:
           if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" = "false" ]; then
             newrelic-agent-control-cli generate-config \
               --fleet-disabled \
-              --output-path /etc/newrelic-agent-control/config.yaml \
+              --output-path /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml \
               --region {{.NEW_RELIC_REGION}} \
               --agent-set $AGENT_SET $AC_PROXY_ARGS
           else
@@ -467,7 +467,7 @@ install:
               AC_AUTH_PRIVATE_KEY_PATH="{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}"
             fi
             newrelic-agent-control-cli generate-config \
-              --output-path /etc/newrelic-agent-control/config.yaml \
+              --output-path /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml \
               --region {{.NEW_RELIC_REGION}} \
               --agent-set $AGENT_SET \
               --fleet-id {{.NR_CLI_FLEET_ID}} \
@@ -488,8 +488,8 @@ install:
       cmds:
         - |
           if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
-            cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-agent-linux.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
+            mkdir -p /etc/newrelic-agent-control/local-data/nr-otel-collector
+            cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-agent-linux.yaml /etc/newrelic-agent-control/local-data/nr-otel-collector/local_config.yaml
           fi
 
     restart_agent_control:
@@ -553,4 +553,4 @@ install:
     post_install:
       cmds:
         - |
-          echo "⚙️  New Relic Agent Control configuration file can be found in /etc/newrelic-agent-control/config.yaml"
+          echo "⚙️  New Relic Agent Control configuration file can be found in /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml"
