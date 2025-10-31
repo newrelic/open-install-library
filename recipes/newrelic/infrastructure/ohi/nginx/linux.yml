@@ -167,11 +167,23 @@ install:
           if [[ -n "$isYumInstalled" ]]; then
             # rhel
             sudo yum -q makecache -y --disablerepo='*' --enablerepo='newrelic-infra'
-            sudo yum install nri-nginx -y -q
+            if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
+              echo "FIPS mode enabled. Installing newrelic-nginx-fips..."
+              sudo yum install nri-nginx-fips -y -q
+            else
+              echo "FIPS mode not enabled. Installing newrelic-nginx..."
+              sudo yum install nri-nginx -y -q
+            fi
           else
             # debian
             sudo apt-get -o Acquire::Check-Valid-Until=false update -yq
-            sudo apt-get install nri-nginx -y
+            if [ "${NEW_RELIC_FIPS_ENABLED:-false}" = "true" ]; then
+              echo "FIPS mode enabled. Installing newrelic-nginx-fips..."
+              sudo apt-get install nri-nginx-fips -y
+            else
+              echo "FIPS mode not enabled. Installing newrelic-nginx..."
+              sudo apt-get install nri-nginx -y
+            fi
           fi
 
           if [ -f /etc/newrelic-infra/integrations.d/nginx-config.yml ]; then
