@@ -79,9 +79,9 @@ install:
         - task: assert_pre_req
         - task: cleanup
         - task: install_agent_control
+        - task: config_agent_control
         - task: systemd_config
         - task: host_monitoring_config
-        - task: config_agent_control
         - task: restart_agent_control
         - task: assert_agent_control_status_ok
         - task: signal_recipe_applied
@@ -210,34 +210,6 @@ install:
         NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.2.0" }}'
       silent: true
 
-    systemd_config:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          newrelic-agent-control-cli systemd-config \
-              --region {{.NEW_RELIC_REGION}} \
-              --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}}
-
-    host_monitoring_config:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
-            INFRA_PROXY="--proxy {{.HTTPS_PROXY}}"
-          fi
-          
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            AGENT_SET="otel"
-          else
-            AGENT_SET="infra-agent"
-          fi
-          
-          newrelic-agent-control-cli host-monitoring \
-              --region {{.NEW_RELIC_REGION}} \
-              --agent-set $AGENT_SET $INFRA_PROXY
-
     config_agent_control:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
@@ -293,6 +265,34 @@ install:
               chmod 600 /etc/newrelic-agent-control/keys/agent-control-identity.key
             fi
           fi
+
+    systemd_config:
+      status:
+        - test -f /etc/newrelic-agent-control/.nr-cli
+      cmds:
+        - |
+          newrelic-agent-control-cli systemd-config \
+              --region {{.NEW_RELIC_REGION}} \
+              --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}}
+
+    host_monitoring_config:
+      status:
+        - test -f /etc/newrelic-agent-control/.nr-cli
+      cmds:
+        - |
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
+            INFRA_PROXY="--proxy {{.HTTPS_PROXY}}"
+          fi
+          
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
+            AGENT_SET="otel"
+          else
+            AGENT_SET="infra-agent"
+          fi
+          
+          newrelic-agent-control-cli host-monitoring \
+              --region {{.NEW_RELIC_REGION}} \
+              --agent-set $AGENT_SET $INFRA_PROXY
 
     restart_agent_control:
       cmds:
