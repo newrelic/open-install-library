@@ -111,15 +111,10 @@ install:
         - task: detect_previous_install
         - task: assert_pre_req
         - task: cleanup
-        - task: setup_infra_license
-        - task: setup_infra_proxy
         - task: install_agent_control
-        - task: update_otel_license_key
         - task: config_agent_control
-        - task: config_host_monitoring_otel
-        - task: update_otel_mem_limit
-        - task: update_otel_end_point
-        - task: migrate_newrelic_infra_config
+        - task: systemd_config
+        - task: host_monitoring_config
         - task: restart_agent_control
         - task: assert_agent_control_status_ok
         - task: signal_recipe_applied
@@ -226,70 +221,6 @@ install:
             rm -rf /var/db/newrelic-infra/data 2>/dev/null
           fi
 
-    setup_infra_license:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
-            if [ -f /etc/newrelic-infra.yml ]; then
-              printf "\nAn existing newrelic-infra configuration file was detected. Updating where needed."
-
-              sed -i "/^staging/d" /etc/newrelic-infra.yml
-              sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
-              sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
-              sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
-              sed -i "/^license_key/d" /etc/newrelic-infra.yml
-              sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
-              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
-              sed -i "/^is_integrations_only/d" /etc/newrelic-infra.yml
-
-              if [ "{{.NR_AC_MIGRATE_INFRA_CONFIG}}" == "true" ] || [ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ] ; then
-                touch /etc/newrelic-infra-do-migrate
-              else
-                printf "\nWould you like to migrate this newrelic-infra config to use it with New Relic Agent Control? (y/N): "
-                read -r MIGRATE_NEWRELIC_INFRA_CONFIG
-                MIGRATE_NEWRELIC_INFRA_CONFIG=${MIGRATE_NEWRELIC_INFRA_CONFIG:-N}
-
-                if [ "$MIGRATE_NEWRELIC_INFRA_CONFIG" == "y" ] ; then
-                  touch /etc/newrelic-infra-do-migrate
-                fi
-              fi
-            else
-              touch /etc/newrelic-infra.yml
-              # If we are creating a new file, perform the migration as well
-              touch /etc/newrelic-infra-do-migrate
-            fi
-          fi
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
-            if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-              echo 'staging: true' >> /etc/newrelic-infra.yml
-            fi
-
-            echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
-            echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
-            echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
-            echo 'license_key: "{{`{{NEW_RELIC_LICENSE_KEY}}`}}"' >> /etc/newrelic-infra.yml
-            echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
-          fi
-
-    setup_infra_proxy:
-      cmds:
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
-            sed -i "/^proxy/d" /etc/newrelic-infra.yml
-            echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
-
-            if ! grep -q '^proxy=' /etc/dnf/dnf.conf; then
-              echo "************************************************************"
-              echo "WARNING: proxy settings not detected in your dnf config"
-              echo "If installation fails with a timeout, add the following line to /etc/dnf/dnf.conf and retry:"
-              echo "proxy={{.HTTPS_PROXY}}"
-              echo "************************************************************"
-            fi
-          fi
-
     install_agent_control:
       cmds:
         - |
@@ -322,52 +253,8 @@ install:
           sh: |
             rpm -E %{rhel}
         # Allows to set an specific version from the cli
-        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.2.0" }}'
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.3.1" }}'
       silent: true
-
-    # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
-    migrate_newrelic_infra_config:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ -f /etc/newrelic-infra-do-migrate ]; then
-            rm /etc/newrelic-infra-do-migrate
-            newrelic-config-migrate
-          fi
-
-    update_otel_license_key:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
-          echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-agent-control/newrelic-agent-control.conf
-
-    update_otel_mem_limit:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-          fi
-
-    # Add OTLP Endpoint as ENV Var for the Agent Control Systemd service
-    update_otel_end_point:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
-            case "${{.NEW_RELIC_REGION}}" in
-              "STAGING") url="staging.otlp.nr-data.net" ;;
-              "EU") url="otlp.eu01.nr-data.net" ;;
-              *) url="otlp.nr-data.net" ;;
-            esac
-            echo "OTEL_EXPORTER_OTLP_ENDPOINT=https://${url}:4317/" >> /etc/newrelic-agent-control/newrelic-agent-control.conf
-          fi
 
     config_agent_control:
       status:
@@ -425,15 +312,33 @@ install:
             fi
           fi
 
-    config_host_monitoring_otel:
+    systemd_config:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
-            cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-agent-linux.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
+          newrelic-agent-control-cli systemd-config \
+              --region {{.NEW_RELIC_REGION}} \
+              --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}}
+
+    host_monitoring_config:
+      status:
+        - test -f /etc/newrelic-agent-control/.nr-cli
+      cmds:
+        - |
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
+            INFRA_PROXY="--proxy {{.HTTPS_PROXY}}"
           fi
+          
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
+            AGENT_SET="otel"
+          else
+            AGENT_SET="infra-agent"
+          fi
+          
+          newrelic-agent-control-cli host-monitoring \
+              --region {{.NEW_RELIC_REGION}} \
+              --agent-set $AGENT_SET $INFRA_PROXY
 
     restart_agent_control:
       cmds:
