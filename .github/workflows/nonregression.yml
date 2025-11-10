@@ -144,7 +144,25 @@ jobs:
               return Array.prototype.concat(...files);
             }
             const definitionsDir = "test/definitions";
-            const testDefinitions = await getFiles(definitionsDir);
+
+            let testDefinitions = await getFiles(definitionsDir);
+
+            // Tests in this list will be skipped.
+            const excludedListPath = path.join(process.env.GITHUB_WORKSPACE, '.github', 'deprecated-tests.json');
+            let excludedTests = [];
+            try {
+              const data = require(excludedListPath);
+              excludedTests = Array.isArray(data) ? data : (Array.isArray(data.exclude) ? data.exclude : []);
+              console.log('Excluded tests loaded:', excludedTests);
+            } catch (err) {
+              // If file missing or invalid, proceed without exclusions.
+              console.log('Excluded tests file not loaded (missing or invalid). Proceeding without exclusions. Reason:', err.message);
+            }
+            if (excludedTests.length) {
+              const beforeCount = testDefinitions.length;
+              testDefinitions = testDefinitions.filter(f => !excludedTests.includes(f));
+              console.log(`Filtered ${beforeCount - testDefinitions.length} tests from test definitions.`);
+            }
 
             const outputTestFilesMap = testDefinitions
               .filter((testDefinitionFile) => !isOHIValidationTimeout(testDefinitionFile))
