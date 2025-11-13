@@ -17,6 +17,13 @@ keywords:
 
 processMatch: []
 
+inputVars:
+  - name: NRIA_USER
+    prompt: "Enter the Windows service account username (e.g., DOMAIN\\username or .\\username for local accounts)"
+  - name: NRIA_PASS
+    prompt: "Enter the Windows service account password"
+    secret: true
+
 # DEPRECATED! Use `validationUrl` instead.
 validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 5 minutes ago"
 validationUrl: "http://localhost:18003/v1/status/entity"
@@ -55,10 +62,23 @@ install:
           powershell -command '
           $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
           $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-          if(-not ($isAdmin))
+          $NRIA_USER = "{{.NRIA_USER}}"
+          $NRIA_PASS = "{{.NRIA_PASS}}"
+
+          $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_USER)) -and (-not [string]::IsNullOrWhiteSpace($NRIA_PASS))
+
+          if(-not ($isAdmin) -and -not ($credentialsProvided))
           {
-            Write-Host -ForegroundColor Red "Powershell needs to be started in Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
+            Write-Host -ForegroundColor Red "Installation requires either:"
+            Write-Host -ForegroundColor Red "1. Administrator permissions, OR"
+            Write-Host -ForegroundColor Red "2. Service account credentials (NRIA_USER and NRIA_PASS parameters)"
+            Write-Host -ForegroundColor Red "Please restart Powershell as Administrator, or provide service account credentials."
             exit 131;
+          }
+
+          if(-not ($isAdmin) -and ($credentialsProvided))
+          {
+            Write-Host -ForegroundColor Yellow "Running as non-administrator with service account credentials."
           }
           '
 
@@ -181,15 +201,25 @@ install:
           $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
           $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
           $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
-          
+          $NRIA_USER = "{{.NRIA_USER}}"
+          $NRIA_PASS = "{{.NRIA_PASS}}"
+
           if ($AGENT_VERSION) {
             Write-Host "Installing specific version of New Relic Infrastructure Agent: $AGENT_VERSION"
           } else {
             Write-Host "Installing latest version of New Relic Infrastructure Agent"
           }
 
+          # Build MSI command with credentials if provided
+          $msiArgs = "/qn /i `"$env:TEMP\newrelic-infra.msi`""
+          $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_USER)) -and (-not [string]::IsNullOrWhiteSpace($NRIA_PASS))
+
+          if ($credentialsProvided) {
+            $msiArgs += " NRIA_USER=`"$NRIA_USER`" NRIA_PASS=`"$NRIA_PASS`""
+          }
+
           if (Test-Path $InfraConfig) {
-            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
+            Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -NoNewWindow
 
             (Get-Content $InfraConfig) | Where-Object {
               $_ -notmatch "^staging"
@@ -214,7 +244,8 @@ install:
             (Get-Content -raw $InfraConfig) -replace "(?m)^custom_attributes:(?s:.*?)(^\s.+:.+\n)+", "" | Set-Content $InfraConfig
 
           } else {
-            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
+            $msiArgsWithConfig = $msiArgs + " GENERATE_CONFIG=true LICENSE_KEY=`"$LICENSE_KEY`""
+            Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgsWithConfig -Wait -NoNewWindow
           }
 
           $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
