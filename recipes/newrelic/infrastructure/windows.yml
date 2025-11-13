@@ -17,13 +17,6 @@ keywords:
 
 processMatch: []
 
-inputVars:
-  - name: NRIA_USER
-    prompt: "Enter the Windows service account username (e.g., DOMAIN\\username or .\\username for local accounts)"
-  - name: NRIA_PASS
-    prompt: "Enter the Windows service account password"
-    secret: true
-
 # DEPRECATED! Use `validationUrl` instead.
 validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 5 minutes ago"
 validationUrl: "http://localhost:18003/v1/status/entity"
@@ -195,54 +188,8 @@ install:
             Write-Host "Installing latest version of New Relic Infrastructure Agent"
           }
 
-          $NRIA_USER = "{{.NRIA_USER}}"
-          $NRIA_PASS = "{{.NRIA_PASS}}"
-
-          # Secure credential handling - avoid command line exposure
-          $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_USER)) -and (-not [string]::IsNullOrWhiteSpace($NRIA_PASS))
-
           if (Test-Path $InfraConfig) {
-            if ($credentialsProvided) {
-              # Create temporary registry key for secure credential passing
-              $regKeyName = "NRIA_Install_$(Get-Random -Maximum 999999)"
-              $regPath = "HKLM:\SOFTWARE\NewRelic\TempInstall\$regKeyName"
-
-              try {
-                New-Item -Path $regPath -Force | Out-Null
-                Set-ItemProperty -Path $regPath -Name "NRIA_USER" -Value $NRIA_USER
-                Set-ItemProperty -Path $regPath -Name "NRIA_PASS" -Value $NRIA_PASS
-
-                # Install with registry reference (no credentials in command line)
-                msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" NRIA_REGISTRY_KEY="$regKeyName" | Out-Null
-              }
-              catch {
-                Write-Warning "Failed to use secure credential method, falling back to environment variables"
-                # Fallback: Set as environment variables for MSI to pick up
-                $env:NRIA_USER_TEMP = $NRIA_USER
-                $env:NRIA_PASS_TEMP = $NRIA_PASS
-                msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
-                # Clean up environment variables immediately
-                Remove-Item Env:\NRIA_USER_TEMP -ErrorAction SilentlyContinue
-                Remove-Item Env:\NRIA_PASS_TEMP -ErrorAction SilentlyContinue
-              }
-              finally {
-                # Always clean up registry key
-                if (Test-Path $regPath) {
-                  Remove-Item $regPath -Recurse -Force -ErrorAction SilentlyContinue
-                }
-                # Clean up parent registry path if empty
-                $parentPath = "HKLM:\SOFTWARE\NewRelic\TempInstall"
-                if (Test-Path $parentPath) {
-                  $childItems = Get-ChildItem $parentPath -ErrorAction SilentlyContinue
-                  if ($childItems.Count -eq 0) {
-                    Remove-Item $parentPath -Force -ErrorAction SilentlyContinue
-                  }
-                }
-              }
-            } else {
-              # No credentials provided - use default installation
-              msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
-            }
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
 
             (Get-Content $InfraConfig) | Where-Object {
               $_ -notmatch "^staging"
@@ -267,47 +214,7 @@ install:
             (Get-Content -raw $InfraConfig) -replace "(?m)^custom_attributes:(?s:.*?)(^\s.+:.+\n)+", "" | Set-Content $InfraConfig
 
           } else {
-            if ($credentialsProvided) {
-              # Create temporary registry key for secure credential passing
-              $regKeyName = "NRIA_Install_$(Get-Random -Maximum 999999)"
-              $regPath = "HKLM:\SOFTWARE\NewRelic\TempInstall\$regKeyName"
-
-              try {
-                New-Item -Path $regPath -Force | Out-Null
-                Set-ItemProperty -Path $regPath -Name "NRIA_USER" -Value $NRIA_USER
-                Set-ItemProperty -Path $regPath -Name "NRIA_PASS" -Value $NRIA_PASS
-
-                # Install with registry reference and generate config
-                msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" NRIA_REGISTRY_KEY="$regKeyName" | Out-Null
-              }
-              catch {
-                Write-Warning "Failed to use secure credential method, falling back to environment variables"
-                # Fallback: Set as environment variables for MSI to pick up
-                $env:NRIA_USER_TEMP = $NRIA_USER
-                $env:NRIA_PASS_TEMP = $NRIA_PASS
-                msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
-                # Clean up environment variables immediately
-                Remove-Item Env:\NRIA_USER_TEMP -ErrorAction SilentlyContinue
-                Remove-Item Env:\NRIA_PASS_TEMP -ErrorAction SilentlyContinue
-              }
-              finally {
-                # Always clean up registry key
-                if (Test-Path $regPath) {
-                  Remove-Item $regPath -Recurse -Force -ErrorAction SilentlyContinue
-                }
-                # Clean up parent registry path if empty
-                $parentPath = "HKLM:\SOFTWARE\NewRelic\TempInstall"
-                if (Test-Path $parentPath) {
-                  $childItems = Get-ChildItem $parentPath -ErrorAction SilentlyContinue
-                  if ($childItems.Count -eq 0) {
-                    Remove-Item $parentPath -Force -ErrorAction SilentlyContinue
-                  }
-                }
-              }
-            } else {
-              # No credentials provided - use default installation
-              msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
-            }
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
           }
 
           $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
