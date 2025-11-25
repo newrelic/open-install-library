@@ -132,7 +132,7 @@ install:
           fi
         - |
           if [[ ! -d "/px" ]]; then
-            if ! sudo mkdir -p "/px"; then
+            if ! mkdir -p "/px"; then
               echo ""
               echo -e "\e[31mERROR:\e[0m Failed to create /px directory. Aborting installation."
               echo ""
@@ -162,7 +162,7 @@ install:
               # Ensure the directory exists
               if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
                 echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                sudo mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
+                mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
               fi
 
               if [[ "$NEW_RELIC_REGION" == "staging" ]]; then
@@ -174,7 +174,7 @@ install:
               fi       
 
               # Create the default configuration file
-              sudo tee "$CONFIG_FILE" > /dev/null << EOS
+              tee "$CONFIG_FILE" > /dev/null << EOS
           # -- The license key to use.
           NEW_RELIC_LICENSE_KEY="${NEW_RELIC_LICENSE_KEY:-}"
           # -- Unique name for the deployment to identify data posting via eBPF Agent
@@ -187,6 +187,8 @@ install:
           NEW_RELIC_LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-}"
           # Regular expression pattern to match the specific name(s) of the entity set that you wish to exclude.
           DROP_DATA_FOR_ENTITY=""
+          # Vizier server port on which agent receives pxl scripts from the client.
+          VIZIER_PORT="12345"
           # -- Enable TLS communication between the eBPF client and agent.
           TLS_ENABLED="true"
           # -- TLS Certificate Option 1: This must be enabled to create a self-signed cert and secret for you.
@@ -213,6 +215,10 @@ install:
           # Capability to include/exclude port from entity name, default: true. ex: python:frosty_merkle:[80]
           # Set it to false, to exclude ports from entity name, ex: python:frosty_merkle
           INCLUDE_PORT_IN_SERVER_ENTITY_IDENTIFICATION="true"
+          # -- Enable APM data reporting. When enabled, the agent collects and reports application performance monitoring data
+          APM_DATA_REPORTING="true"
+          # -- Enable TCP statistics reporting. When enabled, the agent collects and reports low level tcp metrics and starts network monitoring
+          TCP_STATS_REPORTING="true"
 
           # To toggle the protocols to enable for tracing in the socket_tracer. There is an ability to configure span export if it is enabled.
           # Each protocol has the flexibility to selectively enable the type of data to export.
@@ -277,7 +283,7 @@ install:
                   # Ensure the directory exists
                   if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
                       echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                      sudo mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
+                      mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
                   fi
 
                   if [[ "$(realpath "$FILE_PATH")" == "$(realpath "$CONFIG_FILE")" ]]; then
@@ -285,7 +291,7 @@ install:
                   else
                     # Create a symbolic link
                     echo "Creating symbolic link from $FILE_PATH to $CONFIG_FILE..."
-                    sudo ln -sf "$(realpath "$FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link from $(realpath "$FILE_PATH") to $CONFIG_FILE."
+                    ln -sf "$(realpath "$FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link from $(realpath "$FILE_PATH") to $CONFIG_FILE."
                     echo "Symbolic link created successfully."
                   fi
 
@@ -323,7 +329,7 @@ install:
               # Create the directory if it does not exist
               if [[ ! -d "$TLS_CERT_PATH" ]]; then
                   echo "Creating directory for certificates: $TLS_CERT_PATH"
-                  sudo mkdir -p "$TLS_CERT_PATH" || log_error_and_exit "Failed to create directory $TLS_CERT_PATH."
+                  mkdir -p "$TLS_CERT_PATH" || log_error_and_exit "Failed to create directory $TLS_CERT_PATH."
               fi
           }
 
@@ -333,7 +339,7 @@ install:
               echo "Autogenerating TLS certificates in $TLS_CERT_PATH."
 
               # Create an OpenSSL configuration file for generating certificates
-              sudo tee "$TLS_CERT_PATH/ssl.conf" > /dev/null << EOS
+              tee "$TLS_CERT_PATH/ssl.conf" > /dev/null << EOS
           [ req ]
           default_bits       = 4096
           distinguished_name = req_distinguished_name
@@ -349,19 +355,19 @@ install:
           EOS
 
               # Generate a private key for the Certificate Authority (CA)
-              sudo openssl genrsa -out "$TLS_CERT_PATH/ca.key" 4096 || log_error_and_exit "Failed to generate CA private key."
+              openssl genrsa -out "$TLS_CERT_PATH/ca.key" 4096 || log_error_and_exit "Failed to generate CA private key."
 
               # Create a self-signed certificate for the CA
-              sudo openssl req -new -x509 -sha256 -days 730 -key "$TLS_CERT_PATH/ca.key" -out "$TLS_CERT_PATH/ca.crt" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate CA certificate."
+              openssl req -new -x509 -sha256 -days 730 -key "$TLS_CERT_PATH/ca.key" -out "$TLS_CERT_PATH/ca.crt" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate CA certificate."
 
               # Generate a private key for the server
-              sudo openssl genrsa -out "$TLS_CERT_PATH/tls.key" 4096 || log_error_and_exit "Failed to generate server private key."
+              openssl genrsa -out "$TLS_CERT_PATH/tls.key" 4096 || log_error_and_exit "Failed to generate server private key."
 
               # Create a certificate signing request (CSR) for the server
-              sudo openssl req -new -sha256 -key "$TLS_CERT_PATH/tls.key" -out "$TLS_CERT_PATH/server.csr" -config "$TLS_CERT_PATH/ssl.conf" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate server CSR."
+              openssl req -new -sha256 -key "$TLS_CERT_PATH/tls.key" -out "$TLS_CERT_PATH/server.csr" -config "$TLS_CERT_PATH/ssl.conf" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate server CSR."
 
               # Sign the server CSR with the CA certificate to create the server certificate
-              sudo openssl x509 -req -sha256 -days 730 -in "$TLS_CERT_PATH/server.csr" -CA "$TLS_CERT_PATH/ca.crt" -CAkey "$TLS_CERT_PATH/ca.key" -set_serial 01 \
+              openssl x509 -req -sha256 -days 730 -in "$TLS_CERT_PATH/server.csr" -CA "$TLS_CERT_PATH/ca.crt" -CAkey "$TLS_CERT_PATH/ca.key" -set_serial 01 \
                   -out "$TLS_CERT_PATH/tls.crt" -extensions req_ext -extfile "$TLS_CERT_PATH/ssl.conf" || log_error_and_exit "Failed to generate server certificate."
 
               echo "TLS certificates generated successfully in $TLS_CERT_PATH."
@@ -393,16 +399,16 @@ install:
 
               # Copy the files to the destination directory
               echo "Copying TLS certificate files to $TLS_CERT_PATH..."
-              sudo cp "$TLS_CERT_FILE" "$TLS_CERT_PATH/tls.crt" || log_error_and_exit "Failed to copy TLS_CERT_FILE to $TLS_CERT_PATH/tls.crt."
-              sudo cp "$TLS_KEY_FILE" "$TLS_CERT_PATH/tls.key" || log_error_and_exit "Failed to copy TLS_KEY_FILE to $TLS_CERT_PATH/tls.key."
-              sudo cp "$TLS_CA_FILE" "$TLS_CERT_PATH/ca.crt" || log_error_and_exit "Failed to copy TLS_CA_FILE to $TLS_CERT_PATH/tls.key."
+              cp "$TLS_CERT_FILE" "$TLS_CERT_PATH/tls.crt" || log_error_and_exit "Failed to copy TLS_CERT_FILE to $TLS_CERT_PATH/tls.crt."
+              cp "$TLS_KEY_FILE" "$TLS_CERT_PATH/tls.key" || log_error_and_exit "Failed to copy TLS_KEY_FILE to $TLS_CERT_PATH/tls.key."
+              cp "$TLS_CA_FILE" "$TLS_CERT_PATH/ca.crt" || log_error_and_exit "Failed to copy TLS_CA_FILE to $TLS_CERT_PATH/tls.key."
 
               echo "TLS certificate files copied successfully."
           }
 
           # Delete the existing configuration file if it exists. Helpful in case if user runs the installer multiple times.
           if [[ -f "$CONFIG_FILE" ]]; then
-            sudo rm -f "$CONFIG_FILE" || log_error_and_exit "Failed to delete existing configuration file at $CONFIG_FILE."
+            rm -f "$CONFIG_FILE" || log_error_and_exit "Failed to delete existing configuration file at $CONFIG_FILE."
           fi
 
           # Set default log file path if NEW_RELIC_LOG_FILE_PATH is empty
@@ -443,7 +449,7 @@ install:
           
           if [[ ! -d "$NEW_RELIC_LOG_FILE_PATH" ]]; then
             echo "Directory $NEW_RELIC_LOG_FILE_PATH does not exist. Attempting to create it..."
-            if ! sudo mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
+            if ! mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
               echo -e "\e[31mERROR:\e[0m Failed to create directory $NEW_RELIC_LOG_FILE_PATH. Aborting installation."
               exit 20
             fi
@@ -467,10 +473,10 @@ install:
       cmds:
         - |
           # Remove the key from the legacy keyring if it exists
-          sudo rm -f /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg 2>/dev/null
-          sudo rm -f /etc/apt/trusted.gpg 2>/dev/null
+          rm -f /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg 2>/dev/null
+          rm -f /etc/apt/trusted.gpg 2>/dev/null
           # Add the key to the correct directory
-          curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg
+          curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg
       silent: true
 
     add_nr_source:
@@ -525,7 +531,7 @@ install:
               # Ensure the directory exists
               if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
                 echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                sudo mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
+                mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
               fi
 
               if [[ "$NEW_RELIC_REGION" == "staging" ]]; then
@@ -537,7 +543,7 @@ install:
               fi       
 
               # Create the default configuration file
-              sudo tee "$CONFIG_FILE" > /dev/null << EOS
+              tee "$CONFIG_FILE" > /dev/null << EOS
           # -- The license key to use.
           NEW_RELIC_LICENSE_KEY="${NEW_RELIC_LICENSE_KEY:-}"
           # -- Unique name for the deployment to identify data posting via eBPF Agent
@@ -550,6 +556,8 @@ install:
           NEW_RELIC_LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-}"
           # Regular expression pattern to match the specific name(s) of the entity set that you wish to exclude.
           DROP_DATA_FOR_ENTITY=""
+          # Vizier server port on which agent receives pxl scripts from the client.
+          VIZIER_PORT="12345"
           # -- Enable TLS communication between the eBPF client and agent.
           TLS_ENABLED="true"
           # -- TLS Certificate Option 1: This must be enabled to create a self-signed cert and secret for you.
@@ -576,6 +584,10 @@ install:
           # Capability to include/exclude port from entity name, default: true. ex: python:frosty_merkle:[80]
           # Set it to false, to exclude ports from entity name, ex: python:frosty_merkle
           INCLUDE_PORT_IN_SERVER_ENTITY_IDENTIFICATION="true"
+          # -- Enable APM data reporting. When enabled, the agent collects and reports application performance monitoring data
+          APM_DATA_REPORTING="true"
+          # -- Enable TCP statistics reporting. When enabled, the agent collects and reports low level tcp metrics and starts network monitoring
+          TCP_STATS_REPORTING="true"
 
           # To toggle the protocols to enable for tracing in the socket_tracer. There is an ability to configure span export if it is enabled.
           # Each protocol has the flexibility to selectively enable the type of data to export.
@@ -640,7 +652,7 @@ install:
                   # Ensure the directory exists
                   if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
                       echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                      sudo mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
+                      mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
                   fi
 
                   if [[ "$(realpath "$FILE_PATH")" == "$(realpath "$CONFIG_FILE")" ]]; then
@@ -648,7 +660,7 @@ install:
                   else
                     # Create a symbolic link
                     echo "Creating symbolic link from $FILE_PATH to $CONFIG_FILE..."
-                    sudo ln -sf "$(realpath "$FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link from $(realpath "$FILE_PATH") to $CONFIG_FILE."
+                    ln -sf "$(realpath "$FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link from $(realpath "$FILE_PATH") to $CONFIG_FILE."
                     echo "Symbolic link created successfully."
                   fi
 
@@ -686,7 +698,7 @@ install:
               # Create the directory if it does not exist
               if [[ ! -d "$TLS_CERT_PATH" ]]; then
                   echo "Creating directory for certificates: $TLS_CERT_PATH"
-                  sudo mkdir -p "$TLS_CERT_PATH" || log_error_and_exit "Failed to create directory $TLS_CERT_PATH."
+                  mkdir -p "$TLS_CERT_PATH" || log_error_and_exit "Failed to create directory $TLS_CERT_PATH."
               fi
           }
 
@@ -696,7 +708,7 @@ install:
               echo "Autogenerating TLS certificates in $TLS_CERT_PATH."
 
               # Create an OpenSSL configuration file for generating certificates
-              sudo tee "$TLS_CERT_PATH/ssl.conf" > /dev/null << EOS
+              tee "$TLS_CERT_PATH/ssl.conf" > /dev/null << EOS
           [ req ]
           default_bits       = 4096
           distinguished_name = req_distinguished_name
@@ -712,19 +724,19 @@ install:
           EOS
 
               # Generate a private key for the Certificate Authority (CA)
-              sudo openssl genrsa -out "$TLS_CERT_PATH/ca.key" 4096 || log_error_and_exit "Failed to generate CA private key."
+              openssl genrsa -out "$TLS_CERT_PATH/ca.key" 4096 || log_error_and_exit "Failed to generate CA private key."
 
               # Create a self-signed certificate for the CA
-              sudo openssl req -new -x509 -sha256 -days 730 -key "$TLS_CERT_PATH/ca.key" -out "$TLS_CERT_PATH/ca.crt" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate CA certificate."
+              openssl req -new -x509 -sha256 -days 730 -key "$TLS_CERT_PATH/ca.key" -out "$TLS_CERT_PATH/ca.crt" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate CA certificate."
 
               # Generate a private key for the server
-              sudo openssl genrsa -out "$TLS_CERT_PATH/tls.key" 4096 || log_error_and_exit "Failed to generate server private key."
+              openssl genrsa -out "$TLS_CERT_PATH/tls.key" 4096 || log_error_and_exit "Failed to generate server private key."
 
               # Create a certificate signing request (CSR) for the server
-              sudo openssl req -new -sha256 -key "$TLS_CERT_PATH/tls.key" -out "$TLS_CERT_PATH/server.csr" -config "$TLS_CERT_PATH/ssl.conf" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate server CSR."
+              openssl req -new -sha256 -key "$TLS_CERT_PATH/tls.key" -out "$TLS_CERT_PATH/server.csr" -config "$TLS_CERT_PATH/ssl.conf" -subj "/O=eBPF/CN=localhost" || log_error_and_exit "Failed to generate server CSR."
 
               # Sign the server CSR with the CA certificate to create the server certificate
-              sudo openssl x509 -req -sha256 -days 730 -in "$TLS_CERT_PATH/server.csr" -CA "$TLS_CERT_PATH/ca.crt" -CAkey "$TLS_CERT_PATH/ca.key" -set_serial 01 \
+              openssl x509 -req -sha256 -days 730 -in "$TLS_CERT_PATH/server.csr" -CA "$TLS_CERT_PATH/ca.crt" -CAkey "$TLS_CERT_PATH/ca.key" -set_serial 01 \
                   -out "$TLS_CERT_PATH/tls.crt" -extensions req_ext -extfile "$TLS_CERT_PATH/ssl.conf" || log_error_and_exit "Failed to generate server certificate."
 
               echo "TLS certificates generated successfully in $TLS_CERT_PATH."
@@ -756,9 +768,9 @@ install:
 
               # Copy the files to the destination directory
               echo "Copying TLS certificate files to $TLS_CERT_PATH..."
-              sudo cp "$TLS_CERT_FILE" "$TLS_CERT_PATH/tls.crt" || log_error_and_exit "Failed to copy TLS_CERT_FILE to $TLS_CERT_PATH/tls.crt."
-              sudo cp "$TLS_KEY_FILE" "$TLS_CERT_PATH/tls.key" || log_error_and_exit "Failed to copy TLS_KEY_FILE to $TLS_CERT_PATH/tls.key."
-              sudo cp "$TLS_CA_FILE" "$TLS_CERT_PATH/ca.crt" || log_error_and_exit "Failed to copy TLS_CA_FILE to $TLS_CERT_PATH/tls.key."
+              cp "$TLS_CERT_FILE" "$TLS_CERT_PATH/tls.crt" || log_error_and_exit "Failed to copy TLS_CERT_FILE to $TLS_CERT_PATH/tls.crt."
+              cp "$TLS_KEY_FILE" "$TLS_CERT_PATH/tls.key" || log_error_and_exit "Failed to copy TLS_KEY_FILE to $TLS_CERT_PATH/tls.key."
+              cp "$TLS_CA_FILE" "$TLS_CERT_PATH/ca.crt" || log_error_and_exit "Failed to copy TLS_CA_FILE to $TLS_CERT_PATH/tls.key."
 
               echo "TLS certificate files copied successfully."
           }
@@ -791,7 +803,7 @@ install:
 
               if [[ ! -d "$NEW_RELIC_LOG_FILE_PATH" ]]; then
                 echo "Directory $NEW_RELIC_LOG_FILE_PATH does not exist. Attempting to create it..."
-                if ! sudo mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
+                if ! mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
                   echo -e "\e[31mERROR:\e[0m Failed to create directory $NEW_RELIC_LOG_FILE_PATH. Aborting installation."
                   exit 20
                 fi
@@ -799,7 +811,7 @@ install:
               fi
               echo "eBPF logs directory: $NEW_RELIC_LOG_FILE_PATH"
 
-              sudo mkdir -p /px;
+              mkdir -p /px;
               sleep 5s;
               systemctl restart newrelic-ebpf-agent.service
               systemctl restart newrelic-ebpf-agent-client.service

@@ -111,19 +111,10 @@ install:
         - task: detect_previous_install
         - task: assert_pre_req
         - task: cleanup
-        - task: setup_infra_license
-        - task: setup_infra_proxy
         - task: install_agent_control
-        - task: update_otel_license_key
-        - task: config_supervisors
-        - task: config_fleet_id
-        - task: config_fleet_control
-        - task: config_agent_control_auth
-        - task: config_host_monitoring_otel
-        - task: config_agent_control_proxy
-        - task: update_otel_mem_limit
-        - task: update_otel_end_point
-        - task: migrate_newrelic_infra_config
+        - task: config_agent_control
+        - task: systemd_config
+        - task: host_monitoring_config
         - task: restart_agent_control
         - task: assert_agent_control_status_ok
         - task: signal_recipe_applied
@@ -230,70 +221,6 @@ install:
             rm -rf /var/db/newrelic-infra/data 2>/dev/null
           fi
 
-    setup_infra_license:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
-            if [ -f /etc/newrelic-infra.yml ]; then
-              printf "\nAn existing newrelic-infra configuration file was detected. Updating where needed."
-
-              sed -i "/^staging/d" /etc/newrelic-infra.yml
-              sed -i "/^enable_process_metrics/d" /etc/newrelic-infra.yml
-              sed -i "/^status_server_enabled/d" /etc/newrelic-infra.yml
-              sed -i "/^status_server_port/d" /etc/newrelic-infra.yml
-              sed -i "/^license_key/d" /etc/newrelic-infra.yml
-              sed -i '/^custom_attributes:/,/^\S/{ /^\S/!d }' /etc/newrelic-infra.yml
-              sed -i '/^custom_attributes:/d' /etc/newrelic-infra.yml
-              sed -i "/^is_integrations_only/d" /etc/newrelic-infra.yml
-
-              if [ "{{.NR_AC_MIGRATE_INFRA_CONFIG}}" == "true" ] || [ "{{.NEW_RELIC_ASSUME_YES}}" == "true" ] ; then
-                touch /etc/newrelic-infra-do-migrate
-              else
-                printf "\nWould you like to migrate this newrelic-infra config to use it with New Relic Agent Control? (y/N): "
-                read -r MIGRATE_NEWRELIC_INFRA_CONFIG
-                MIGRATE_NEWRELIC_INFRA_CONFIG=${MIGRATE_NEWRELIC_INFRA_CONFIG:-N}
-
-                if [ "$MIGRATE_NEWRELIC_INFRA_CONFIG" == "y" ] ; then
-                  touch /etc/newrelic-infra-do-migrate
-                fi
-              fi
-            else
-              touch /etc/newrelic-infra.yml
-              # If we are creating a new file, perform the migration as well
-              touch /etc/newrelic-infra-do-migrate
-            fi
-          fi
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
-            if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
-              echo 'staging: true' >> /etc/newrelic-infra.yml
-            fi
-
-            echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
-            echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
-            echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
-            echo 'license_key: {{`{{NEW_RELIC_LICENSE_KEY}}`}}' >> /etc/newrelic-infra.yml
-            echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
-          fi
-
-    setup_infra_proxy:
-      cmds:
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
-            sed -i "/^proxy/d" /etc/newrelic-infra.yml
-            echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
-
-            if ! grep -q '^proxy=' /etc/dnf/dnf.conf; then
-              echo "************************************************************"
-              echo "WARNING: proxy settings not detected in your dnf config"
-              echo "If installation fails with a timeout, add the following line to /etc/dnf/dnf.conf and retry:"
-              echo "proxy={{.HTTPS_PROXY}}"
-              echo "************************************************************"
-            fi
-          fi
-
     install_agent_control:
       cmds:
         - |
@@ -314,7 +241,9 @@ install:
           curl -s $AGENT_CONTROL_REPO_URL | sed 's/\[newrelic-infra]/\n[newrelic-agent-control]/g' >> /etc/yum.repos.d/newrelic-infra.repo
 
           yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra' --enablerepo='newrelic-agent-control'
-          yum -y -q install newrelic-agent-control-{{.NEW_RELIC_AGENT_VERSION}}
+          # newrelic-super-agent package on preview repository is conflicting with newrelic-agent-control whenever installation overrides infrastructure-agent or nr-dot.
+          # The --exclude parameter discard the old super-agent package from the dependency resolution process.
+          yum -y -q install newrelic-agent-control-{{.NEW_RELIC_AGENT_VERSION}} --exclude=newrelic-super-agent
 
           if [ "{{.AMAZON_LINUX_VERSION}}" == "2" ] || [ "{{.AMAZON_LINUX_VERSION}}" == "2023" ] ; then
             yum -y -q install fluent-bit
@@ -323,239 +252,93 @@ install:
         DISTRO_VERSION:
           sh: |
             rpm -E %{rhel}
-        NEW_RELIC_AGENT_VERSION: "1.0.0"
+        # Allows to set a specific version from the cli
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.5.0" }}'
       silent: true
 
-    # If configured to do so, migrate the newrelic-infra configuration for usage with New Relic Agent Control
-    migrate_newrelic_infra_config:
+    config_agent_control:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ -f /etc/newrelic-infra-do-migrate ]; then
-            rm /etc/newrelic-infra-do-migrate
-            newrelic-config-migrate
-          fi
-
-    update_otel_license_key:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          sed -i "/^NEW_RELIC_LICENSE_KEY/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
-          echo 'NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"' >> /etc/newrelic-agent-control/newrelic-agent-control.conf
-
-    update_otel_mem_limit:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
+          # Local config for Agent Control (agents)
           if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            sed -i "s/limit_mib: .*$/limit_mib: 100/g" /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-          fi
-
-    # Add OTLP Endpoint as ENV Var for the Agent Control Systemd service
-    update_otel_end_point:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            sed -i "/^OTEL_EXPORTER_OTLP_ENDPOINT/d" /etc/newrelic-agent-control/newrelic-agent-control.conf
-            case "${{.NEW_RELIC_REGION}}" in
-              "STAGING") url="staging.otlp.nr-data.net" ;;
-              "EU") url="otlp.eu01.nr-data.net" ;;
-              *) url="otlp.nr-data.net" ;;
-            esac
-            echo "OTEL_EXPORTER_OTLP_ENDPOINT=https://${url}:4317/" >> /etc/newrelic-agent-control/newrelic-agent-control.conf
-          fi
-
-    config_supervisors:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          # We install otel if explicitly requested, otherwise we install the infra agent
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            cp /etc/newrelic-agent-control/examples/agent-control-config-nr-otel-collector.yaml /etc/newrelic-agent-control/config.yaml
+            AGENT_SET="otel"
           else
-            cp /etc/newrelic-agent-control/examples/agent-control-config-nr-infra-agent.yaml /etc/newrelic-agent-control/config.yaml
+            AGENT_SET="infra-agent"
           fi
-
-    config_fleet_id:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ ! -z "{{.NR_CLI_FLEET_ID}}" ] ; then
-            sed -i '/^\s*#\s*fleet_id:/s/# //' /etc/newrelic-agent-control/config.yaml
-            sed -i 's/fleet_id: FLEET_ID_HERE/fleet_id: {{.NR_CLI_FLEET_ID}}/g' /etc/newrelic-agent-control/config.yaml
-          fi
-
-    config_fleet_control:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" = "false" ]; then
-            sed -i '/^\s*fleet_control:/s/^/#/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*endpoint: https:\/\/opamp/s/^/#/' /etc/newrelic-agent-control/config.yaml
-          else
-            sed -i 's/s*#\s*fleet_control:/fleet_control:/g' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*#\s*endpoint: https:\/\/opamp/s/# //' /etc/newrelic-agent-control/config.yaml
-          fi
-        - |
-          if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" = "false" ]; then
-            sed -i '/^\s*api-key:/s/^/#/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*headers:/s/^/#/' /etc/newrelic-agent-control/config.yaml
-          else
-            sed -i '/^\s*#\s*api-key:/s/# //' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*#\s*headers:/s/# //' /etc/newrelic-agent-control/config.yaml
-          fi
-        - |
-          if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" != "false" ] ; then
-            sed -i 's/api-key: API_KEY_HERE/api-key: {{ .NEW_RELIC_LICENSE_KEY }}/g' /etc/newrelic-agent-control/config.yaml
-          fi
-        - |
-          if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"staging-service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^fleet_control:/a \  signature_validation:\n    public_key_server_url: https:\/\/staging-publickeys.newrelic.com\/r\/blob-management\/global\/agentconfiguration\/jwks.json' /etc/newrelic-agent-control/config.yaml
-          elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.eu.newrelic.com\/v1\/opamp"'/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^fleet_control:/a \  signature_validation:\n    public_key_server_url: https:\/\/publickeys.eu.newrelic.com\/r\/blob-management\/global\/agentconfiguration\/jwks.json' /etc/newrelic-agent-control/config.yaml
-          else
-            sed -i 's/\(endpoint: https:\/\/opamp.\).*/\1'"service.newrelic.com\/v1\/opamp"'/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^fleet_control:/a \  signature_validation:\n    public_key_server_url: https:\/\/publickeys.newrelic.com\/r\/blob-management\/global\/agentconfiguration\/jwks.json' /etc/newrelic-agent-control/config.yaml
-          fi
-
-    config_agent_control_auth:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
-            sed -i '/^\s*#\s*auth_config:\s*$/s/# //' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*#\s*token_url: PLACEHOLDER/s/# //' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*#\s*client_id: PLACEHOLDER/s/# //' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*#\s*provider: PLACEHOLDER/s/# //' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*#\s*private_key_path: PLACEHOLDER/s/# //' /etc/newrelic-agent-control/config.yaml
-          else
-            sed -i '/^\s*auth_config:/s/^/#/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*token_url: PLACEHOLDER/s/^/#/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*client_id: PLACEHOLDER/s/^/#/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*provider: PLACEHOLDER/s/^/#/' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^\s*private_key_path: PLACEHOLDER/s/^/#/' /etc/newrelic-agent-control/config.yaml
-          fi
-        - |
-          if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" != "false" ] && [ "{{ .NEW_RELIC_ORGANIZATION }}" != "" ]; then
-            set -uo pipefail
-
-            mkdir -p /etc/newrelic-agent-control/keys
-            chown root:root /etc/newrelic-agent-control/keys
-            chmod 700 /etc/newrelic-agent-control/keys
-
-            TEMPORAL_FOLDER=$(mktemp -d newrelic-agent-control.XXXXXXXXXX)
-            chown root:root "${TEMPORAL_FOLDER}"
-            chmod 700 "${TEMPORAL_FOLDER}"
-            trap "rm -rf $TEMPORAL_FOLDER" EXIT
-
-            if [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
-              REGISTRATION_ENDPOINT=https://staging-api.newrelic.com/graphql
-              TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.staging-service.newrelic.com/oauth2/token
-              IDENTITY_CREATION_ENDPOINT=https://staging-api.newrelic.com/graphql
-            elif [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-              REGISTRATION_ENDPOINT=https://api.eu.newrelic.com/graphql
-              TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
-              IDENTITY_CREATION_ENDPOINT=https://api.eu.newrelic.com/graphql
-            else
-              REGISTRATION_ENDPOINT=https://api.newrelic.com/graphql
-              TOKEN_RENEWAL_ENDPOINT=https://system-identity-oauth.service.newrelic.com/oauth2/token
-              IDENTITY_CREATION_ENDPOINT=https://api.newrelic.com/graphql
-            fi
-          
-            ############################################################
-            # Get the L1 Access Token
-            ############################################################
-            echo Requesting Token for System Identity Creation... 
-            for RETRY in 1 2 3; do  
-              ACCESS_TOKEN=$(newrelic-auth-cli authenticate --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --client-secret "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" --output-token-format Plain)
-          
-              if [[ -n "$ACCESS_TOKEN" ]]; then
-                echo "Access token retrieved successfully"
-                break
-              else
-                echo "Failed to retrieve access token, retrying ($RETRY/3)..."
-                sleep 2
-              fi
-          
-              if [[ -z "$ACCESS_TOKEN" ]]; then
-                echo "ERROR: Unable to retrieve access token after three attempts."
-                exit 1
-              fi
-            done
-          
-            ############################################################
-            # Create System Identity
-            ############################################################
-            echo Starting with System Identity Creation...
-            DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            NAME="System Identity for $(hostname) - $DATE"
-          
-            for RETRY in 1 2 3; do
-              IDENTITY=$(newrelic-auth-cli create-identity key --client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" --environment "{{.NEW_RELIC_REGION}}" --organization-id "{{ .NEW_RELIC_ORGANIZATION }}" --bearer-access-token "${ACCESS_TOKEN}" --output-platform local-file --output-local-filepath "${TEMPORAL_FOLDER}/identity")
-          
-              if [[ -n "$IDENTITY" ]]; then
-                echo "System Identity created successfully"
-                break
-              else
-                echo "Failed to create System Identity, retrying ($RETRY/3)..."
-                sleep 2
-              fi
-          
-              if [[ -z "$IDENTITY" ]]; then
-                echo "ERROR: Unable to create System Identity after three attempts."
-                exit 1
-              fi
-            done
-          
-            CLIENT_ID=$(echo "$IDENTITY" | /usr/local/bin/newrelic utils jq '.client_id' | tr -d '"')
-            mv "$TEMPORAL_FOLDER/identity" "/etc/newrelic-agent-control/keys/$CLIENT_ID.key"
-            chmod 600 "/etc/newrelic-agent-control/keys/$CLIENT_ID.key"
-            sed -i 's~token_url: PLACEHOLDER~token_url: '"$TOKEN_RENEWAL_ENDPOINT"'~g' /etc/newrelic-agent-control/config.yaml
-            sed -i 's/client_id: PLACEHOLDER/client_id: '"$CLIENT_ID"'/g' /etc/newrelic-agent-control/config.yaml
-            sed -i 's/provider: PLACEHOLDER/provider: local/g' /etc/newrelic-agent-control/config.yaml
-            sed -i 's~private_key_path: PLACEHOLDER~private_key_path: '"/etc/newrelic-agent-control/keys/$CLIENT_ID.key"'~g' /etc/newrelic-agent-control/config.yaml
-          fi
-
-    config_host_monitoring_otel:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            mkdir -p /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values
-            cp /etc/newrelic-agent-control/examples/values-nr-otel-collector-agent-linux.yaml /etc/newrelic-agent-control/fleet/agents.d/nr-otel-collector/values/values.yaml
-          fi
-
-    config_agent_control_proxy:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
+          # Proxy configuration
           if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" ] ; then
-            sed -i '/^proxy:/,/^\S/{ /^\S/!d }' /etc/newrelic-agent-control/config.yaml
-            sed -i '/^proxy:/d' /etc/newrelic-agent-control/config.yaml
-            printf "proxy:\n  url: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" >> /etc/newrelic-agent-control/config.yaml
+            AC_PROXY_ARGS="--proxy-url {{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}"
             if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" ] ; then
-              printf "  ca_bundle_file: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" >> /etc/newrelic-agent-control/config.yaml
+              AC_PROXY_ARGS="$AC_PROXY_ARGS --proxy-ca-bundle-file {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}"
             fi
             if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" ] ; then
-              printf "  ca_bundle_dir: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" >> /etc/newrelic-agent-control/config.yaml
+              AC_PROXY_ARGS="$AC_PROXY_ARGS --proxy-ca-bundle-dir {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}"
             fi
-            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" ] ; then
-              printf "  ignore_system_proxy: %s\n" "{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" >> /etc/newrelic-agent-control/config.yaml
+            if [ "{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" == "true" ] ; then
+              AC_PROXY_ARGS="$AC_PROXY_ARGS --ignore-system-proxy"
+            fi
+          else
+            AC_PROXY_ARGS=""
+          fi
+          # Config generation
+          if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" = "false" ]; then
+            newrelic-agent-control-cli generate-config \
+              --fleet-disabled \
+              --output-path /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml \
+              --region {{.NEW_RELIC_REGION}} \
+              --agent-set $AGENT_SET $AC_PROXY_ARGS
+          else
+            if [ -z "{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}" ]; then
+              mkdir -p /etc/newrelic-agent-control/keys
+              AC_AUTH_PRIVATE_KEY_PATH="/etc/newrelic-agent-control/keys/agent-control-identity.key"
+            else
+              AC_AUTH_PRIVATE_KEY_PATH="{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}"
+            fi
+            newrelic-agent-control-cli generate-config \
+              --output-path /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml \
+              --region {{.NEW_RELIC_REGION}} \
+              --agent-set $AGENT_SET \
+              --fleet-id {{.NR_CLI_FLEET_ID}} \
+              --organization-id "{{.NEW_RELIC_ORGANIZATION}}" \
+              --auth-client-id "{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" \
+              --auth-parent-token "{{.NEW_RELIC_AUTH_TOKEN}}" \
+              --auth-parent-client-id "{{.NEW_RELIC_AUTH_CLIENT_ID}}" \
+              --auth-parent-client-secret "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" \
+              --auth-private-key-path $AC_AUTH_PRIVATE_KEY_PATH $AC_PROXY_ARGS
+            if [ -z "{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}" ]; then
+              chmod 600 /etc/newrelic-agent-control/keys/agent-control-identity.key
             fi
           fi
+
+    systemd_config:
+      status:
+        - test -f /etc/newrelic-agent-control/.nr-cli
+      cmds:
+        - |
+          newrelic-agent-control-cli systemd-config \
+              --region {{.NEW_RELIC_REGION}} \
+              --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}}
+
+    host_monitoring_config:
+      status:
+        - test -f /etc/newrelic-agent-control/.nr-cli
+      cmds:
+        - |
+          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
+            INFRA_PROXY="--proxy {{.HTTPS_PROXY}}"
+          fi
+          
+          if [ "{{.HOST_OTEL}}" == "true" ] ; then
+            AGENT_SET="otel"
+          else
+            AGENT_SET="infra-agent"
+          fi
+          
+          newrelic-agent-control-cli host-monitoring \
+              --region {{.NEW_RELIC_REGION}} \
+              --agent-set $AGENT_SET $INFRA_PROXY
 
     restart_agent_control:
       cmds:
@@ -618,4 +401,4 @@ install:
     post_install:
       cmds:
         - |
-          echo "⚙️  New Relic Agent Control configuration file can be found in /etc/newrelic-agent-control/config.yaml"
+          echo "⚙️  New Relic Agent Control configuration file can be found in /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml"
