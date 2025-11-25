@@ -17,13 +17,6 @@ keywords:
 
 processMatch: []
 
-#inputVars:
-  #- name: NRIA_USER
-  #  prompt: "Enter the Enter the newrelic service account name"
-  #- name: NRIA_PASS
-  #  prompt: "Enter the Windows service account password"
-  #  secret: true
-
 # DEPRECATED! Use `validationUrl` instead.
 validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTNAME}}' FACET entityGuid SINCE 5 minutes ago"
 validationUrl: "http://localhost:18003/v1/status/entity"
@@ -50,7 +43,7 @@ install:
         - task: assert_required_powershell
         - task: collect_meta
         - task: remove_any_previous
-        #- task: download_infra
+        - task: download_infra
         - task: install_infra
         - task: start_infra
         - task: assert_agent_status_ok
@@ -62,25 +55,10 @@ install:
           powershell -command '
           $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
           $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-          #$NRIA_USER = "{{.NRIA_USER}}"
-          #$NRIA_PASS = "{{.NRIA_PASS}}"
-          $NRIA_ACCOUNT = "{{.NRIA_ACCOUNT}}"
-
-          #$credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_USER)) -and (-not [string]::IsNullOrWhiteSpace($NRIA_PASS))
-          $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_ACCOUNT))
-          if(-not ($isAdmin) -and -not ($credentialsProvided))
+          if(-not ($isAdmin))
           {
-            Write-Host -ForegroundColor Red "Installation requires either:"
-            Write-Host -ForegroundColor Red "1. Administrator permissions, OR"
-            #Write-Host -ForegroundColor Red "2. Service account credentials (NRIA_USER and NRIA_PASS parameters)"
-            Write-Host -ForegroundColor Red "2. Service account credentials (NRIA_ACCOUNT parameter)"
-            Write-Host -ForegroundColor Red "Please restart Powershell as Administrator, or provide service account credentials."
+            Write-Host -ForegroundColor Red "Powershell needs to be started in Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
             exit 131;
-          }
-
-          if(-not ($isAdmin) -and ($credentialsProvided))
-          {
-            Write-Host -ForegroundColor Yellow "Running as non-administrator with service account credentials."
           }
           '
 
@@ -203,12 +181,10 @@ install:
           $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
           $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
           $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
-          # $NRIA_USER = "{{.NRIA_USER}}"
-          # $NRIA_PASS = "{{.NRIA_PASS}}"
+          # To read from the environment variables instead of prompting the user, uncomment the following lines:
+          # $NRIA_ACCOUNT = "{{.NRIA_ACCOUNT}}"
+          # $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_ACCOUNT))
           $NRIA_ACCOUNT = Read-Host "Enter the newrelic service account name (leave blank to use LocalSystem)"
-          # $key = (1..32)
-          # $NRIA_PASS_SEC = Read-Host "Enter password for the user" -AsSecureString
-          # $NRIA_PASS = $encrypted = ConvertFrom-SecureString $NRIA_PASS_SEC -Key $key
           Write-Host "Installing latest version of New Relic Infrastructure Agent using the service account $NRIA_ACCOUNT"
 
           if ($AGENT_VERSION) {
@@ -219,13 +195,10 @@ install:
 
           # Build MSI command with credentials if provided
           $msiArgs = "/qn /i `"C:\Users\nravada\newrelic\infrastructure-agent\dist\newrelic-infra-amd64.1.71.0.msi`""
-          #$credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_USER)) -and (-not [string]::IsNullOrWhiteSpace($NRIA_PASS))
           $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_ACCOUNT))
 
           if ($credentialsProvided) {
-            #$msiArgs += " NRIA_USER=`"$NRIA_USER`" NRIA_PASS=`"$NRIA_PASS`""
             $msiArgs += " NRIA_ACCOUNT=`"$NRIA_ACCOUNT`""
-
           }
 
           if (Test-Path $InfraConfig) {
