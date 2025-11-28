@@ -42,7 +42,6 @@ install:
         - task: assert_required_permissions
         - task: assert_required_powershell
         - task: collect_meta
-        - task: remove_any_previous
         - task: download_infra
         - task: install_infra
         - task: start_infra
@@ -74,64 +73,6 @@ install:
           if ($powershellEnabled.Name -ne "powershell.exe") {
             Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
             exit 131;
-          }
-          '
-
-    remove_any_previous:
-      ignore_error: true
-      cmds:
-        - |
-          powershell -command '
-          try{
-            if ( Get-Service "newrelic-infra" -ErrorAction SilentlyContinue) {
-              Stop-Service -Name "newrelic-infra" -Force -PassThru | Out-Null
-            }
-            function Find-UninstallGuids {
-              param (
-                [Parameter(Mandatory)]
-                [string]$Match
-              )
-
-              $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
-              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
-
-              $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
-              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
-
-              $allKeys = $baseKeys + $wowKeys
-
-              $uninstallIds = New-Object System.Collections.ArrayList
-              foreach ($key in $allKeys) {       
-                $keyData = Get-Item -LiteralPath "HKLM:\$key" -ErrorAction SilentlyContinue
-                if ($keyData) {
-                  $name = $keyData.GetValue("DisplayName")
-                  if ($name -and $name -match $Match) {
-                    $keyId = Split-Path $key -Leaf
-                    $uninstallIds.Add($keyId) | Out-Null
-                  }
-                }
-              }
-
-              if ($uninstallIds.Count -eq 0) {
-                return @()
-              }
-
-              return $uninstallIds
-            }
-
-            $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
-            foreach ($uninstallId in $uninstallIds) {
-              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-              $er = (Invoke-Expression $uninstallCommand) 2>&1
-              if($er.Exception){
-                throw $er.Exception
-              }
-              # wait here to allow uninstall command to complete since it returns without waiting
-              Start-Sleep -s 15
-            }
-          }
-          catch {
-            throw $_.Exception
           }
           '
 
@@ -181,28 +122,15 @@ install:
           $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
           $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
           $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
-          # To read from the environment variables instead of prompting the user, uncomment the following lines:
-          # $NRIA_ACCOUNT = "{{.NRIA_ACCOUNT}}"
-          # $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_ACCOUNT))
-          $NRIA_ACCOUNT = Read-Host "Enter the newrelic service account name (leave blank to use LocalSystem)"
-          Write-Host "Installing latest version of New Relic Infrastructure Agent using the service account $NRIA_ACCOUNT"
-
+          
           if ($AGENT_VERSION) {
             Write-Host "Installing specific version of New Relic Infrastructure Agent: $AGENT_VERSION"
           } else {
             Write-Host "Installing latest version of New Relic Infrastructure Agent"
           }
 
-          # Build MSI command with credentials if provided
-          $msiArgs = "/qn /i `"C:\Users\nravada\newrelic\infrastructure-agent\dist\newrelic-infra-amd64.1.71.0.msi`""
-          $credentialsProvided = (-not [string]::IsNullOrWhiteSpace($NRIA_ACCOUNT))
-
-          if ($credentialsProvided) {
-            $msiArgs += " NRIA_ACCOUNT=`"$NRIA_ACCOUNT`""
-          }
-
           if (Test-Path $InfraConfig) {
-            Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -NoNewWindow
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
 
             (Get-Content $InfraConfig) | Where-Object {
               $_ -notmatch "^staging"
@@ -227,8 +155,7 @@ install:
             (Get-Content -raw $InfraConfig) -replace "(?m)^custom_attributes:(?s:.*?)(^\s.+:.+\n)+", "" | Set-Content $InfraConfig
 
           } else {
-            $msiArgsWithConfig = $msiArgs + " GENERATE_CONFIG=true LICENSE_KEY=`"$LICENSE_KEY`""
-            Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgsWithConfig -Wait -NoNewWindow
+            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
           }
 
           $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
@@ -264,18 +191,16 @@ install:
           }
           if ($service.Status -ne "Running") {
               try {
-                  Start-Service -Name $serviceName -ErrorAction Stop
+                  Start-Service -Name $serviceName
                   Write-Host "New Relic infrastructure agent for Windows installed and started"  -ForegroundColor Green
               }
               catch {
                   Write-Host "Error starting service: $_" -ForegroundColor Red
-                  exit 1
               }
           }
           else {
               Write-Host "$serviceName is already running" -ForegroundColor Green
           }
-          exit 0
           '
 
     assert_agent_status_ok:
