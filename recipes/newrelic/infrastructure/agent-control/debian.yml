@@ -317,7 +317,7 @@ install:
           fi
       vars:
         # Allows to set a specific version from the cli
-        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.5.0" }}'
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.6.1" }}'
       silent: true
 
     config_agent_control:
@@ -332,20 +332,8 @@ install:
             AGENT_SET="infra-agent"
           fi
           # Proxy configuration
-          if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" ] ; then
-            AC_PROXY_ARGS="--proxy-url {{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}"
-            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" ] ; then
-              AC_PROXY_ARGS="$AC_PROXY_ARGS --proxy-ca-bundle-file {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}"
-            fi
-            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" ] ; then
-              AC_PROXY_ARGS="$AC_PROXY_ARGS --proxy-ca-bundle-dir {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}"
-            fi
-            if [ "{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" == "true" ] ; then
-              AC_PROXY_ARGS="$AC_PROXY_ARGS --ignore-system-proxy"
-            fi
-          else
-            AC_PROXY_ARGS=""
-          fi
+          # Empty values are ignored by the cli (--proxy-url="" is the same as not setting --proxy-url)
+          AC_PROXY_ARGS="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
           # Config generation
           if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" = "false" ]; then
             newrelic-agent-control-cli generate-config \
@@ -390,14 +378,11 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
-            INFRA_PROXY="--proxy {{.HTTPS_PROXY}}"
-          fi
-          
           if [ "{{.HOST_OTEL}}" == "true" ] ; then
             AGENT_SET="otel"
           else
             AGENT_SET="infra-agent"
+            INFRA_PROXY="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
           fi
           
           newrelic-agent-control-cli host-monitoring \
