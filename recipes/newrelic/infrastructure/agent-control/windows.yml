@@ -1,0 +1,114 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: agent-control
+displayName: Agent Control
+description: New Relic install recipe for Agent Control
+repository: https://github.com/newrelic/newrelic-agent-control
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - AgentControl
+  - OpenTelemetry
+  - OTel
+  - Infrastructure
+  - Agent
+  - Windows
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_required_permissions
+        - task: assert_required_powershell
+        - task: write_recipe_metadata
+        - task: download_agent_control
+        - task: run_install_ps1
+        - task: post_install
+
+    assert_required_permissions:
+      cmds:
+        - |
+          powershell -command '
+          $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+          $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          if(-not ($isAdmin))
+          {
+            Write-Host -ForegroundColor Red "Powershell needs to be started in Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
+            exit 131;
+          }
+          '
+
+    assert_required_powershell:
+      cmds:
+        - |
+          powershell -command '
+          $powershellEnabled = ""
+          try {
+            $powershellEnabled = Get-Command -All powershell.exe | select Name
+          }
+          catch { }
+          if ($powershellEnabled.Name -ne "powershell.exe") {
+            Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
+            exit 131;
+          }
+          '
+
+    write_recipe_metadata:
+      cmds:
+        - |
+          powershell -command '
+          $version = (Get-WmiObject -class Win32_OperatingSystem).Caption
+          $metadata = "{""Metadata"":{""CapturedCliOutput"": ""$true""}}"
+          try {
+            $metadata | Set-Content {{.NR_CLI_OUTPUT}}
+          } catch {}
+          '
+
+    download_agent_control:
+      cmds:
+        # TODO verify binary signature 
+        - | 
+          powershell -command '
+          $zipUrl = "https://download.newrelic.com/preview/binaries/windows/amd64/newrelic-agent-control_${NEW_RELIC_AGENT_VERSION}_windows_amd64.zip"
+          $zipPath = "$env:TEMP\newrelic-agent-control.zip"
+          $extractPath = "$env:TEMP\newrelic-agent-control"
+
+          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          '
+      vars:
+        # Allows to set a specific version from the cli
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.6.1" }}'
+      silent: true
+
+    run_install_ps1:
+      cmds:
+        - | 
+          powershell -command '
+              if ($env:NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED -eq "false") {
+                .\$env:TEMP\newrelic-agent-control\install.ps1 `
+                -Region {{.NEW_RELIC_REGION}} -FleetEnabled false `
+                -ProxyUrl {{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} -ProxyCABundleFile {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} -ProxyCABundleDir {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} -ProxyIgnoreSystem {{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}
+              } else{
+                .\$env:TEMP\newrelic-agent-control\install.ps1 `
+                -Region {{.NEW_RELIC_REGION}} -FleetId {{.NR_CLI_FLEET_ID}} -OrganizationId {{.NEW_RELIC_ORGANIZATION}} `
+                -AuthParentToken {{.NEW_RELIC_AUTH_TOKEN}} -AuthParentClientId {{.NEW_RELIC_AUTH_CLIENT_ID}} -AuthParentClientSecret {{.NEW_RELIC_AUTH_CLIENT_SECRET}} `
+                -AuthClientId {{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}} -AuthPrivateKeyPath {{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }} `
+                -ProxyUrl {{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} -ProxyCABundleFile {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} -ProxyCABundleDir {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} -ProxyIgnoreSystem {{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}
+              }
+          '
+
+    post_install:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host "⚙️  New Relic Agent Control configuration file can be found in C:\Program Files\New Relic\newrelic-agent-control\local-data\agent-control\local_config.yaml"
+          '
+
