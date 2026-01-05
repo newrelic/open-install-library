@@ -73,16 +73,23 @@ install:
 
     download_agent_control:
       cmds:
-        # TODO verify binary signature 
         - | 
           powershell -command '
-              $zipUrl = "{{.NEW_RELIC_DOWNLOAD_URL}}/preview/binaries/windows/amd64/newrelic-agent-control_{{ .NEW_RELIC_AGENT_VERSION }}_windows_amd64.zip"          
+              $zipUrl = "{{.NEW_RELIC_DOWNLOAD_URL}}preview/binaries/windows/amd64/newrelic-agent-control_{{ .NEW_RELIC_AGENT_VERSION }}_windows_amd64.zip"          
               $zipPath = "$env:TEMP\newrelic-agent-control.zip"
               $extractPath = "$env:TEMP\newrelic-agent-control"          
           
               Write-Host "Downloading $zipUrl to $zipPath and extracting it in $extractPath"        
               Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
               Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+              
+              # Verify signature
+              $signature = Get-AuthenticodeSignature -FilePath "$extractPath\newrelic-agent-control.exe"
+              $signatureCli = Get-AuthenticodeSignature -FilePath "$extractPath\newrelic-agent-control-cli.exe"
+              if (("{{.NEW_RELIC_AGENT_CONTROL_SKIP_BINARY_SIGNATURE_VALIDATION}}" -ne "true") -and ($signature.Status -ne "Valid" -or $signatureCli.Status -ne "Valid")){
+                    Write-Host -ForegroundColor Red "Failed to verify the signature of the downloaded binaries "
+                    exit 131;                
+              }
           '    
       vars:
         NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.6.1"}}'
@@ -93,18 +100,45 @@ install:
           powershell -command '
               Set-Location -Path "$($env:TEMP)\newrelic-agent-control"
               
-              if ($env:NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED -eq "false") {
-              Write-Host "Executing script"
-                .\install.ps1 -Region {{.NEW_RELIC_REGION}} -FleetEnabled false -ProxyUrl {{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} -ProxyCABundleFile {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} -ProxyCABundleDir {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} -ProxyIgnoreSystem 
-              } else{
-                .\install.ps1 -Region "{{.NEW_RELIC_REGION}}" -FleetId "{{.NR_CLI_FLEET_ID}}" -OrganizationId "{{.NEW_RELIC_ORGANIZATION}}" -AuthParentToken "{{.NEW_RELIC_AUTH_TOKEN}}" -AuthParentClientId "{{.NEW_RELIC_AUTH_CLIENT_ID}}" -AuthParentClientSecret "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" -AuthClientId "{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" -AuthPrivateKeyPath "{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}" -ProxyUrl "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" -ProxyCABundleFile "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" -ProxyCABundleDir "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" -ProxyIgnoreSystem 
+              # Common args
+              $cliArgs = @("-Region", "{{.NEW_RELIC_REGION}}", "-ServiceOverwrite")
+
+              # Proxy args (optional)
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" -ne "") { $cliArgs += @("-ProxyUrl", "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}")}
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" -ne "") { $cliArgs += @("-ProxyCABundleFile", "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}")}
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" -ne "") { $cliArgs += @("-ProxyCABundleDir", "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}")}
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" -eq "true") { $cliArgs += "-ProxyIgnoreSystem" }    
+
+              if ($env:NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED -ne "false") {
+                $cliArgs += @("-FleetEnabled")
+                     
+                if ("{{.NR_CLI_FLEET_ID}}" -eq "") {
+                    Write-Host -ForegroundColor Red "NR_CLI_FLEET_ID is required if fleet is enabled"
+                    exit 131;
+
+                }
+                if ("{{.NEW_RELIC_ORGANIZATION}}" -eq "") {
+                    Write-Host -ForegroundColor Red "NEW_RELIC_ORGANIZATION is required if fleet is enabled"
+                    exit 131;
+                }
+
+                $cliArgs += @("-FleetId", "{{.NR_CLI_FLEET_ID}}", "-OrganizationId", "{{.NEW_RELIC_ORGANIZATION}}")
+
+
+              if ("{{.NEW_RELIC_AUTH_TOKEN}}" -ne "") { $cliArgs += @("-AuthParentToken", "{{.NEW_RELIC_AUTH_TOKEN}}")}
+              if ("{{.NEW_RELIC_AUTH_CLIENT_ID}}" -ne "") { $cliArgs += @("-AuthParentClientId", "{{.NEW_RELIC_AUTH_CLIENT_ID}}")}
+              if ("{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" -ne "") { $cliArgs += @("-AuthParentClientSecret", "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}")}
+    
+
+              if ("{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" -ne "") { $cliArgs += @("-AuthClientId", "{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}")}
+              if ("{{.NEW_RELIC_AUTH_PRIVATE_KEY_PATH}}" -ne "") { $cliArgs += @("-AuthPrivateKeyPath", "{{.NEW_RELIC_AUTH_PRIVATE_KEY_PATH}}")}
               }
+              powershell.exe -File ".\install.ps1" @cliArgs
           '
 
     post_install:
       cmds:
         - |
           powershell -command '
-              Write-Host "⚙️  New Relic Agent Control configuration file can be found in C:\Program Files\New Relic\newrelic-agent-control\local-data\agent-control\local_config.yaml"
+              Write-Host "New Relic Agent Control configuration file can be found in C:\Program Files\New Relic\newrelic-agent-control\local-data\agent-control\local_config.yaml"
           '
-
