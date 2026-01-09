@@ -171,11 +171,78 @@ install:
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             echo 'staging: true' >> /etc/newrelic-infra.yml
           fi
-          echo 'enable_process_metrics: true' >> /etc/newrelic-infra.yml
-          echo 'status_server_enabled: true' >> /etc/newrelic-infra.yml
-          echo 'status_server_port: 18003' >> /etc/newrelic-infra.yml
+          echo 'enable_process_metrics: {{.NRIA_ENABLE_PROCESS_METRICS}}' >> /etc/newrelic-infra.yml
+          echo 'status_server_enabled: {{.NRIA_STATUS_SERVER_ENABLED}}' >> /etc/newrelic-infra.yml
+          echo 'status_server_port: {{.NRIA_STATUS_SERVER_PORT}}' >> /etc/newrelic-infra.yml
           echo 'license_key: {{.NEW_RELIC_LICENSE_KEY}}' >> /etc/newrelic-infra.yml
           echo '{{.NRIA_CUSTOM_ATTRIBUTES}}' >> /etc/newrelic-infra.yml
+          echo '{{.NRIA_PASSTHROUGH_ENVIRONMENT}}' >> /etc/newrelic-infra.yml
+        - |
+          # Logging configuration
+          if [ ! -z "{{.NRIA_LOG_LEVEL}}" ]; then
+            sed -i '/^log:/d' /etc/newrelic-infra.yml
+            echo 'log:' >> /etc/newrelic-infra.yml
+            echo '  level: {{.NRIA_LOG_LEVEL}}' >> /etc/newrelic-infra.yml
+            if [ ! -z "{{.NRIA_LOG_FILE}}" ]; then
+              echo '  file: {{.NRIA_LOG_FILE}}' >> /etc/newrelic-infra.yml
+            fi
+            if [ ! -z "{{.NRIA_LOG_FORMAT}}" ]; then
+              echo '  format: {{.NRIA_LOG_FORMAT}}' >> /etc/newrelic-infra.yml
+            fi
+          fi
+        - |
+          # Hostname configuration
+          if [ ! -z "{{.NRIA_DISPLAY_NAME}}" ]; then
+            echo 'display_name: {{.NRIA_DISPLAY_NAME}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_OVERRIDE_HOSTNAME}}" ]; then
+            echo 'override_hostname: {{.NRIA_OVERRIDE_HOSTNAME}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_OVERRIDE_HOSTNAME_SHORT}}" ]; then
+            echo 'override_hostname_short: {{.NRIA_OVERRIDE_HOSTNAME_SHORT}}' >> /etc/newrelic-infra.yml
+          fi
+        - |
+          # Installation paths
+          if [ ! -z "{{.NRIA_AGENT_DIR}}" ]; then
+            echo 'agent_dir: {{.NRIA_AGENT_DIR}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_PLUGIN_DIR}}" ]; then
+            echo 'plugin_dir: {{.NRIA_PLUGIN_DIR}}' >> /etc/newrelic-infra.yml
+          fi
+        - |
+          # Metrics sample rates
+          if [ ! -z "{{.NRIA_METRICS_PROCESS_SAMPLE_RATE}}" ]; then
+            echo 'metrics_process_sample_rate: {{.NRIA_METRICS_PROCESS_SAMPLE_RATE}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_METRICS_NETWORK_SAMPLE_RATE}}" ]; then
+            echo 'metrics_network_sample_rate: {{.NRIA_METRICS_NETWORK_SAMPLE_RATE}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_METRICS_STORAGE_SAMPLE_RATE}}" ]; then
+            echo 'metrics_storage_sample_rate: {{.NRIA_METRICS_STORAGE_SAMPLE_RATE}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_METRICS_SYSTEM_SAMPLE_RATE}}" ]; then
+            echo 'metrics_system_sample_rate: {{.NRIA_METRICS_SYSTEM_SAMPLE_RATE}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_METRICS_NFS_SAMPLE_RATE}}" ]; then
+            echo 'metrics_nfs_sample_rate: {{.NRIA_METRICS_NFS_SAMPLE_RATE}}' >> /etc/newrelic-infra.yml
+          fi
+        - |
+          # Proxy configuration (NRIA_PROXY takes precedence over HTTPS_PROXY)
+          if [ ! -z "{{.NRIA_PROXY}}" ]; then
+            sed -i "/^proxy/d" /etc/newrelic-infra.yml
+            echo 'proxy: {{.NRIA_PROXY}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_IGNORE_SYSTEM_PROXY}}" ]; then
+            echo 'ignore_system_proxy: {{.NRIA_IGNORE_SYSTEM_PROXY}}' >> /etc/newrelic-infra.yml
+          fi
+        - |
+          # Cloud and process configuration
+          if [ ! -z "{{.NRIA_DISABLE_CLOUD_METADATA}}" ]; then
+            echo 'disable_cloud_metadata: {{.NRIA_DISABLE_CLOUD_METADATA}}' >> /etc/newrelic-infra.yml
+          fi
+          if [ ! -z "{{.NRIA_DISABLE_ZERO_MEM_PROCESS_FILTER}}" ]; then
+            echo 'disable_zero_mem_process_filter: {{.NRIA_DISABLE_ZERO_MEM_PROCESS_FILTER}}' >> /etc/newrelic-infra.yml
+          fi
 
 
     setup_proxy:
