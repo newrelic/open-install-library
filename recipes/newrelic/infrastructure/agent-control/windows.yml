@@ -82,7 +82,12 @@ install:
               $extractPath = "$env:TEMP\newrelic-agent-control"          
           
               Write-Host "Downloading $zipUrl to $zipPath and extracting it in $extractPath"        
-              Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+              try {
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+              } catch {
+                Write-Host -ForegroundColor Red "Failed to download $zipUrl"
+                exit 24;
+              }
               Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
               
               # Verify signature
@@ -90,7 +95,7 @@ install:
               $signatureCli = Get-AuthenticodeSignature -FilePath "$extractPath\newrelic-agent-control-cli.exe"
               if (("{{.NEW_RELIC_AGENT_CONTROL_SKIP_BINARY_SIGNATURE_VALIDATION}}" -ne "true") -and ($signature.Status -ne "Valid" -or $signatureCli.Status -ne "Valid")){
                     Write-Host -ForegroundColor Red "Failed to verify the signature of the downloaded binaries "
-                    exit 131;                
+                    exit 24;            
               }
           '    
       vars:
@@ -116,12 +121,11 @@ install:
                      
                 if ("{{.NR_CLI_FLEET_ID}}" -eq "") {
                     Write-Host -ForegroundColor Red "NR_CLI_FLEET_ID is required if fleet is enabled"
-                    exit 131;
-
+                    exit 133;
                 }
                 if ("{{.NEW_RELIC_ORGANIZATION}}" -eq "") {
                     Write-Host -ForegroundColor Red "NEW_RELIC_ORGANIZATION is required if fleet is enabled"
-                    exit 131;
+                    exit 133;
                 }
 
                 $cliArgs += @("-FleetId", "{{.NR_CLI_FLEET_ID}}", "-OrganizationId", "{{.NEW_RELIC_ORGANIZATION}}")
