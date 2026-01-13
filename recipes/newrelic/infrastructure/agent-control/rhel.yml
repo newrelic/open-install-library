@@ -113,7 +113,6 @@ install:
         - task: cleanup
         - task: install_agent_control
         - task: config_agent_control
-        - task: systemd_config
         - task: host_monitoring_config
         - task: restart_agent_control
         - task: assert_agent_control_status_ok
@@ -253,7 +252,7 @@ install:
           sh: |
             rpm -E %{rhel}
         # Allows to set a specific version from the cli
-        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.5.0" }}'
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.7.1" }}'
       silent: true
 
     config_agent_control:
@@ -268,26 +267,16 @@ install:
             AGENT_SET="infra-agent"
           fi
           # Proxy configuration
-          if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" ] ; then
-            AC_PROXY_ARGS="--proxy-url {{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}"
-            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" ] ; then
-              AC_PROXY_ARGS="$AC_PROXY_ARGS --proxy-ca-bundle-file {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}"
-            fi
-            if [ ! -z "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" ] ; then
-              AC_PROXY_ARGS="$AC_PROXY_ARGS --proxy-ca-bundle-dir {{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}"
-            fi
-            if [ "{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" == "true" ] ; then
-              AC_PROXY_ARGS="$AC_PROXY_ARGS --ignore-system-proxy"
-            fi
-          else
-            AC_PROXY_ARGS=""
-          fi
+          # Empty values are ignored by the cli (--proxy-url="" is the same as not setting --proxy-url)
+          AC_PROXY_ARGS="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
           # Config generation
           if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" = "false" ]; then
             newrelic-agent-control-cli generate-config \
               --fleet-disabled \
               --output-path /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml \
               --region {{.NEW_RELIC_REGION}} \
+              --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}} \
+              --env-vars-file-path /etc/newrelic-agent-control/environment_variables.yaml \
               --agent-set $AGENT_SET $AC_PROXY_ARGS
           else
             if [ -z "{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}" ]; then
@@ -299,6 +288,8 @@ install:
             newrelic-agent-control-cli generate-config \
               --output-path /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml \
               --region {{.NEW_RELIC_REGION}} \
+              --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}} \
+              --env-vars-file-path /etc/newrelic-agent-control/environment_variables.yaml \
               --agent-set $AGENT_SET \
               --fleet-id {{.NR_CLI_FLEET_ID}} \
               --organization-id "{{.NEW_RELIC_ORGANIZATION}}" \
@@ -312,28 +303,16 @@ install:
             fi
           fi
 
-    systemd_config:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          newrelic-agent-control-cli systemd-config \
-              --region {{.NEW_RELIC_REGION}} \
-              --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}}
-
     host_monitoring_config:
       status:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] && [ ! -z "$HTTPS_PROXY" ]; then
-            INFRA_PROXY="--proxy {{.HTTPS_PROXY}}"
-          fi
-          
           if [ "{{.HOST_OTEL}}" == "true" ] ; then
             AGENT_SET="otel"
           else
             AGENT_SET="infra-agent"
+            INFRA_PROXY="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
           fi
           
           newrelic-agent-control-cli host-monitoring \
