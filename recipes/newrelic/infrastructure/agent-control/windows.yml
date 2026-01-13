@@ -1,0 +1,150 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: agent-control
+displayName: Agent Control
+description: New Relic install recipe for Agent Control
+repository: https://github.com/newrelic/newrelic-agent-control
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - AgentControl
+  - OpenTelemetry
+  - OTel
+  - Infrastructure
+  - Agent
+  - Windows
+
+processMatch: []
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_required_permissions
+        - task: assert_required_powershell
+        - task: write_recipe_metadata
+        - task: download_agent_control
+        - task: run_install_ps1
+        - task: post_install
+
+    assert_required_permissions:
+      cmds:
+        - |
+          powershell -command '
+              $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+              $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+              if(-not ($isAdmin))
+              {
+                Write-Host -ForegroundColor Red "Powershell needs to be started in Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
+                exit 131;
+              }
+          '
+
+    assert_required_powershell:
+      cmds:
+        - |
+          powershell -command '
+              $powershellEnabled = ""
+              try {
+                $powershellEnabled = Get-Command -All powershell.exe | select Name
+              }
+              catch { }
+              if ($powershellEnabled.Name -ne "powershell.exe") {
+                Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
+                exit 131;
+              }
+          '
+
+    write_recipe_metadata:
+      cmds:
+        - |
+          powershell -command '
+              $version = (Get-WmiObject -class Win32_OperatingSystem).Caption
+              $metadata = "{""Metadata"":{""CapturedCliOutput"": ""$true""}}"
+              try {
+                $metadata | Set-Content {{.NR_CLI_OUTPUT}}
+              } catch {}
+          '
+
+    download_agent_control:
+      cmds:
+        - | 
+          powershell -command '
+              $zipUrl = "{{.NEW_RELIC_DOWNLOAD_URL}}preview/binaries/windows/amd64/newrelic-agent-control_{{ .NEW_RELIC_AGENT_VERSION }}_windows_amd64.zip"          
+              $zipPath = "$env:TEMP\newrelic-agent-control.zip"
+              $extractPath = "$env:TEMP\newrelic-agent-control"          
+          
+              Write-Host "Downloading $zipUrl to $zipPath and extracting it in $extractPath"        
+              try {
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+              } catch {
+                Write-Host -ForegroundColor Red "Failed to download $zipUrl"
+                exit 24;
+              }
+              Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+              
+              # Verify signature
+              $signature = Get-AuthenticodeSignature -FilePath "$extractPath\newrelic-agent-control.exe"
+              $signatureCli = Get-AuthenticodeSignature -FilePath "$extractPath\newrelic-agent-control-cli.exe"
+              if (("{{.NEW_RELIC_AGENT_CONTROL_SKIP_BINARY_SIGNATURE_VALIDATION}}" -ne "true") -and ($signature.Status -ne "Valid" -or $signatureCli.Status -ne "Valid")){
+                    Write-Host -ForegroundColor Red "Failed to verify the signature of the downloaded binaries "
+                    exit 24;            
+              }
+          '    
+      vars:
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.7.1"}}'
+
+    run_install_ps1:
+      cmds:
+        - | 
+          powershell -command '
+              Set-Location -Path "$($env:TEMP)\newrelic-agent-control"
+              
+              # Common args
+              $cliArgs = @("-Region", "{{.NEW_RELIC_REGION}}", "-ServiceOverwrite")
+
+              # Proxy args (optional)
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}" -ne "") { $cliArgs += @("-ProxyUrl", "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}")}
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}" -ne "") { $cliArgs += @("-ProxyCABundleFile", "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}")}
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}" -ne "") { $cliArgs += @("-ProxyCABundleDir", "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}")}
+              if ("{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}" -eq "true") { $cliArgs += "-ProxyIgnoreSystem" }    
+
+              if ($env:NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED -ne "false") {
+                $cliArgs += @("-FleetEnabled")
+                     
+                if ("{{.NR_CLI_FLEET_ID}}" -eq "") {
+                    Write-Host -ForegroundColor Red "NR_CLI_FLEET_ID is required if fleet is enabled"
+                    exit 133;
+                }
+                if ("{{.NEW_RELIC_ORGANIZATION}}" -eq "") {
+                    Write-Host -ForegroundColor Red "NEW_RELIC_ORGANIZATION is required if fleet is enabled"
+                    exit 133;
+                }
+
+                $cliArgs += @("-FleetId", "{{.NR_CLI_FLEET_ID}}", "-OrganizationId", "{{.NEW_RELIC_ORGANIZATION}}")
+
+
+              if ("{{.NEW_RELIC_AUTH_TOKEN}}" -ne "") { $cliArgs += @("-AuthParentToken", "{{.NEW_RELIC_AUTH_TOKEN}}")}
+              if ("{{.NEW_RELIC_AUTH_CLIENT_ID}}" -ne "") { $cliArgs += @("-AuthParentClientId", "{{.NEW_RELIC_AUTH_CLIENT_ID}}")}
+              if ("{{.NEW_RELIC_AUTH_CLIENT_SECRET}}" -ne "") { $cliArgs += @("-AuthParentClientSecret", "{{.NEW_RELIC_AUTH_CLIENT_SECRET}}")}
+    
+
+              if ("{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" -ne "") { $cliArgs += @("-AuthClientId", "{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}")}
+              if ("{{.NEW_RELIC_AUTH_PRIVATE_KEY_PATH}}" -ne "") { $cliArgs += @("-AuthPrivateKeyPath", "{{.NEW_RELIC_AUTH_PRIVATE_KEY_PATH}}")}
+              }
+              powershell.exe -File ".\install.ps1" @cliArgs
+          '
+
+    post_install:
+      cmds:
+        - |
+          powershell -command '
+              Write-Host "New Relic Agent Control configuration file can be found in C:\Program Files\New Relic\newrelic-agent-control\local-data\agent-control\local_config.yaml"
+          '
