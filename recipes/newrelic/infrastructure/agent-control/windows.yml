@@ -78,16 +78,22 @@ install:
         - | 
           powershell -command '
               $zipUrl = "{{.NEW_RELIC_DOWNLOAD_URL}}preview/binaries/windows/amd64/newrelic-agent-control_{{ .NEW_RELIC_AGENT_VERSION }}_windows_amd64.zip"          
-              $zipPath = "$env:TEMP\newrelic-agent-control.zip"
+              $zipPath = "$env:TEMP\newrelic-agent-control-{{ .NEW_RELIC_AGENT_VERSION }}.zip"
               $extractPath = "$env:TEMP\newrelic-agent-control"          
           
-              Write-Host "Downloading $zipUrl to $zipPath and extracting it in $extractPath"        
-              try {
-                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
-              } catch {
-                Write-Host -ForegroundColor Red "Failed to download $zipUrl"
-                exit 24;
+              if (-Not (Test-Path -Path $zipPath)) {
+                Write-Host "Downloading $zipUrl to $zipPath"        
+                try {
+                  Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+                } catch {
+                  Write-Host -ForegroundColor Red "Failed to download $zipUrl"
+                  exit 24;
+                }
+              } else {
+                Write-Host "File $zipPath already exists, skipping download"
               }
+              
+              Write-Host "Extracting to $extractPath"
               Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
               
               # Verify signature
