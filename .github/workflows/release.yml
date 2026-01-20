@@ -8,17 +8,17 @@ name: Create Release
 
 jobs:
   build:
-    name: Create Release
+    name: 🔖 Create Release
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout code
+      - name: 🏗️ Checkout code
         uses: actions/checkout@v2
 
-      - name: Get Release Changes
+      - name: 📝 Get Release Changes
         id: recentCommits
         run: |
           echo ::set-output name=release_body::$(git log --no-merges --pretty=format:'%s' $(git describe --abbrev=0 --tags)...HEAD)
-      - name: Create Release
+      - name: 🚀 Create Release
         id: create_release
         uses: actions/create-release@v1
         env:
@@ -31,32 +31,33 @@ jobs:
           prerelease: false
 
   zip-recipes:
+    name: 📦 Zip and Upload Assets
     runs-on: ubuntu-22.04
     needs: build
     steps:
-      - name: Checkout code
+      - name: 🏗️ Checkout code
         uses: actions/checkout@v2
 
-      - name: Get release
+      - name: 🔍 Get release
         id: get_release
         uses: bruceadams/get-release@v1.2.2
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Write version
+      - name: ✍️ Write version
         uses: DamianReeves/write-file-action@v1.0
         with:
           path: recipes/version.txt
           contents: ${{ steps.get_release.outputs.tag_name }}
           write-mode: overwrite
 
-      - name: Zip recipes
+      - name: 🤐 Zip recipes
         uses: vimtor/action-zip@v1
         with:
           files: recipes/ version.txt
           dest: recipes.zip
 
-      - name: Upload recipes zip file to GitHub
+      - name: ⬆️ Upload recipes zip file to GitHub
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -66,12 +67,12 @@ jobs:
           asset_name: recipes.zip
           asset_content_type: application/octet-stream
 
-      - name: Install aws cli
+      - name: 🛠️ Install aws cli
         run: |
           sudo apt-get update -y
           sudo apt-get install awscli -y
 
-      - name: Write config 1
+      - name: 📄 Write config 1
         uses: DamianReeves/write-file-action@v1.0
         with:
           path: /home/runner/.aws/credentials
@@ -81,7 +82,7 @@ jobs:
             aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
           write-mode: overwrite
 
-      - name: Write config 2
+      - name: 📄 Write config 2
         uses: DamianReeves/write-file-action@v1.0
         with:
           path: /home/runner/.aws/config
@@ -92,42 +93,44 @@ jobs:
             source_profile = virtuoso_user
           write-mode: overwrite
 
-      - name: Upload recipes zip file to S3 (download.newrelic.com)
+      - name: 📤 Upload recipes zip file to S3 (download.newrelic.com)
         id: upload-recipes-s3
         run: |
           aws s3 cp ${{ github.workspace }}/recipes.zip s3://nr-downloads-main/install/open-install-library/${{ steps.get_release.outputs.tag_name }}/recipes.zip --profile virtuoso
  
-      - name: Upload currentVersion.txt to S3
+      - name: 📤 Upload currentVersion.txt to S3
         id: upload-current-version-s3
         run: |
           aws s3 cp recipes/version.txt s3://nr-downloads-main/install/open-install-library/currentVersion.txt --profile virtuoso --cache-control no-cache
 
-      - name: Cleanup configs
+      - name: 🧹 Cleanup configs
         run: |
           rm -rf /home/runner/.aws/credentials
           rm -rf /home/runner/.aws/config
 
-  log-release-commit:
-    name: Log release commit on main
+  sync-to-main:
+    name: 🔄 Sync Release to Main
     runs-on: ubuntu-22.04
     needs: zip-recipes
-    permissions:
-      contents: write
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
+      - name: 🏗️ Checkout main branch
+        uses: actions/checkout@v2
         with:
           ref: main
           fetch-depth: 0
-          persist-credentials: true
-      - name: Create empty release commit on main
-        env:
-          GITHUB_REF: ${{ github.ref }}
+          token: ${{ secrets.NR_DEVELOPER_TOOLKIT_TOKEN }}
+
+      - name: ⚙️ Setup bot git identity
         run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          TIMESTAMP="$(TZ='Asia/Kolkata' date +'%d-%m-%YT%H:%M:%S')"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --ff-only origin main
-          git commit --allow-empty -m "chore(release): 🛢️ Release ${TAG_NAME}, ${TIMESTAMP}"
-          git push origin HEAD:main
+          git config --global user.name "nr-developer-toolkit"
+          git config --global user.email "developer-toolkit@newrelic.com"
+
+      - name: 🖊️ Push empty release commit
+        run: |
+          git pull --rebase origin main
+
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          TIMESTAMP=$(TZ='Asia/Kolkata' date +'%d-%m-%YT%H:%M')
+          
+          git commit --allow-empty -m "chore(release): 🛢️ Release `$TAG_NAME` $TIMESTAMP"
+          git push origin main
