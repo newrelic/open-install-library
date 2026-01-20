@@ -111,7 +111,7 @@ jobs:
           rm -rf /home/runner/.aws/config
 
   sync-to-main:
-    name: 🔄 Sync Release to Main
+    name: 🔄 Sync Release to Main (via PR)
     runs-on: ubuntu-22.04
     needs: zip-recipes
     steps:
@@ -119,7 +119,6 @@ jobs:
         uses: actions/checkout@v2
         with:
           ref: main
-          fetch-depth: 0
           token: ${{ secrets.NR_DEVELOPER_TOOLKIT_TOKEN }}
 
       - name: ⚙️ Setup bot git identity
@@ -127,12 +126,25 @@ jobs:
           git config --global user.name "nr-developer-toolkit"
           git config --global user.email "developer-toolkit@newrelic.com"
 
-      - name: 🖊️ Push empty release commit
+      - name: 🚀 Create PR and Auto-Merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.NR_DEVELOPER_TOOLKIT_TOKEN }}
         run: |
-          git pull --rebase origin main
-
           TAG_NAME=${GITHUB_REF#refs/tags/}
           TIMESTAMP=$(TZ='Asia/Kolkata' date +'%d-%m-%YT%H:%M')
-          
-          git commit --allow-empty -m "chore(release): 🛢️ Release `$TAG_NAME` $TIMESTAMP"
-          git push origin main
+          BRANCH_NAME="chore/release-sync-${TAG_NAME}"
+          COMMIT_MSG="chore(release): 🛢️ Release $TAG_NAME $TIMESTAMP"
+
+          git checkout -b $BRANCH_NAME
+          git commit --allow-empty -m "$COMMIT_MSG"
+          git push origin $BRANCH_NAME
+
+          echo "Creating Pull Request..."
+          PR_URL=$(gh pr create \
+            --title "$COMMIT_MSG" \
+            --body "Automated release sync commit for $TAG_NAME" \
+            --base main \
+            --head $BRANCH_NAME)
+
+          echo "Merging Pull Request: $PR_URL"
+          gh pr merge $PR_URL --admin --merge --delete-branch
