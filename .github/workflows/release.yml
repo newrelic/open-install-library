@@ -5,22 +5,20 @@ on:
       - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
 
 name: Create Release
-permissions:
-  contents: write
 
 jobs:
   build:
-    name: 🔖 Create Release
+    name: Create Release
     runs-on: ubuntu-22.04
     steps:
-      - name: 🏗️ Checkout code
+      - name: Checkout code
         uses: actions/checkout@v2
 
-      - name: 📝 Get Release Changes
+      - name: Get Release Changes
         id: recentCommits
         run: |
           echo ::set-output name=release_body::$(git log --no-merges --pretty=format:'%s' $(git describe --abbrev=0 --tags)...HEAD)
-      - name: 🚀 Create Release
+      - name: Create Release
         id: create_release
         uses: actions/create-release@v1
         env:
@@ -32,30 +30,79 @@ jobs:
           draft: false
           prerelease: false
 
-  sync-to-main:
-    name: 🔄 Sync Release to Main
+  zip-recipes:
     runs-on: ubuntu-22.04
     needs: build
     steps:
-      - name: 🏗️ Checkout main branch
+      - name: Checkout code
         uses: actions/checkout@v2
+
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.2.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Write version
+        uses: DamianReeves/write-file-action@v1.0
         with:
-          ref: main
-          fetch-depth: 0
-          token: ${{ secrets.NR_DEVELOPER_TOOLKIT_TOKEN }}
+          path: recipes/version.txt
+          contents: ${{ steps.get_release.outputs.tag_name }}
+          write-mode: overwrite
 
-      - name: ⚙️ Setup bot git identity
-        run: |
-          git config --global user.name "nr-developer-toolkit"
-          git config --global user.email "developer-toolkit@newrelic.com"
+      - name: Zip recipes
+        uses: vimtor/action-zip@v1
+        with:
+          files: recipes/ version.txt
+          dest: recipes.zip
 
-      - name: 🖊️ Push empty release commit
+      - name: Upload recipes zip file to GitHub
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/recipes.zip
+          asset_name: recipes.zip
+          asset_content_type: application/octet-stream
+
+      - name: Install aws cli
         run: |
-          git fetch origin main
-          git reset --hard origin/main
-          TAG_NAME=${GITHUB_REF#refs/tags/}
-          TIMESTAMP=$(TZ='Asia/Kolkata' date +'%d-%m-%YT%H:%M') 
-          echo "📝 Creating commit for $TAG_NAME at $TIMESTAMP"
-          git commit --allow-empty --no-verify -m "chore(release): 🛢️ Release $TAG_NAME $TIMESTAMP"
-          echo "🚀 Attempting direct push to main..."
-          git push --no-verify origin HEAD:main
+          sudo apt-get update -y
+          sudo apt-get install awscli -y
+
+      - name: Write config 1
+        uses: DamianReeves/write-file-action@v1.0
+        with:
+          path: /home/runner/.aws/credentials
+          contents:  |
+            [virtuoso_user]
+            aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          write-mode: overwrite
+
+      - name: Write config 2
+        uses: DamianReeves/write-file-action@v1.0
+        with:
+          path: /home/runner/.aws/config
+          contents:  |
+            [profile virtuoso]
+            role_arn = ${{ secrets.AWS_ROLE_ARN }}
+            region = ${{ secrets.AWS_DEFAULT_REGION }}
+            source_profile = virtuoso_user
+          write-mode: overwrite
+
+      - name: Upload recipes zip file to S3 (download.newrelic.com)
+        id: upload-recipes-s3
+        run: |
+          aws s3 cp ${{ github.workspace }}/recipes.zip s3://nr-downloads-main/install/open-install-library/${{ steps.get_release.outputs.tag_name }}/recipes.zip --profile virtuoso
+ 
+      - name: Upload currentVersion.txt to S3
+        id: upload-current-version-s3
+        run: |
+          aws s3 cp recipes/version.txt s3://nr-downloads-main/install/open-install-library/currentVersion.txt --profile virtuoso --cache-control no-cache
+
+      - name: Cleanup configs
+        run: |
+          rm -rf /home/runner/.aws/credentials
+          rm -rf /home/runner/.aws/config
