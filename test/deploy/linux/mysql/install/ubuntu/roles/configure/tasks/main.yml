@@ -1,0 +1,67 @@
+---
+- hosts: localhost
+  vars:
+    mysql_root_password: password
+  tasks:
+  - name: Ensure apt cache is up to date
+    apt:
+      update_cache: yes
+      cache_valid_time: 3600
+    become: yes
+
+  - name: Ensure required packages are installed
+    apt:
+      name: "{{ item }}"
+      state: present
+    become: yes
+    loop:
+      - python3-pymysql
+      - mysql-server
+
+  - name: Start mysql service
+    service:
+      name: mysql
+      state: started
+      enabled: true
+    become: yes
+
+  - name: Ensure MySQL root account can welcome password-based login
+    command: >
+      mysql -u root -e
+      "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '{{ mysql_root_password }}';"
+    become: yes
+    ignore_errors: true
+      
+  - name: Update MySQL root password for all root accounts
+    mysql_user: 
+      name: root 
+      host: "{{ item }}" 
+      password: "{{ mysql_root_password }}"
+      login_user: root
+      login_password: "{{ mysql_root_password }}"
+      check_implicit_admin: yes
+      priv: "*.*:ALL,GRANT"
+    become: yes
+    loop:
+      - "{{ ansible_hostname }}"
+      - 127.0.0.1
+      - ::1
+      - localhost 
+
+  - name: Verify MySQL is installed
+    command: mysql --version
+    register: mysql_version
+
+  - name: Print MySQL version
+    debug:
+      msg: "MySQL version: {{ mysql_version.stdout }}"
+
+  - name: Check MySQL service status
+    service:
+      name: mysql
+      state: started
+    register: mysql_service_status
+
+  - name: Print MySQL service status
+    debug:
+      msg: "MySQL service status: {{ mysql_service_status }}"
