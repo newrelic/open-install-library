@@ -42,7 +42,6 @@ install:
         - task: assert_required_permissions
         - task: assert_required_powershell
         - task: collect_meta
-        - task: remove_any_previous
         - task: download_infra
         - task: install_infra
         - task: start_infra
@@ -74,64 +73,6 @@ install:
           if ($powershellEnabled.Name -ne "powershell.exe") {
             Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
             exit 131;
-          }
-          '
-
-    remove_any_previous:
-      ignore_error: true
-      cmds:
-        - |
-          powershell -command '
-          try{
-            if ( Get-Service "newrelic-infra" -ErrorAction SilentlyContinue) {
-              Stop-Service -Name "newrelic-infra" -Force -PassThru | Out-Null
-            }
-            function Find-UninstallGuids {
-              param (
-                [Parameter(Mandatory)]
-                [string]$Match
-              )
-
-              $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall `
-              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
-
-              $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall `
-              | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
-
-              $allKeys = $baseKeys + $wowKeys
-
-              $uninstallIds = New-Object System.Collections.ArrayList
-              foreach ($key in $allKeys) {       
-                $keyData = Get-Item -LiteralPath "HKLM:\$key" -ErrorAction SilentlyContinue
-                if ($keyData) {
-                  $name = $keyData.GetValue("DisplayName")
-                  if ($name -and $name -match $Match) {
-                    $keyId = Split-Path $key -Leaf
-                    $uninstallIds.Add($keyId) | Out-Null
-                  }
-                }
-              }
-
-              if ($uninstallIds.Count -eq 0) {
-                return @()
-              }
-
-              return $uninstallIds
-            }
-
-            $uninstallIds = Find-UninstallGuids -Match "New Relic Infrastructure Agent"
-            foreach ($uninstallId in $uninstallIds) {
-              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
-              $er = (Invoke-Expression $uninstallCommand) 2>&1
-              if($er.Exception){
-                throw $er.Exception
-              }
-              # wait here to allow uninstall command to complete since it returns without waiting
-              Start-Sleep -s 15
-            }
-          }
-          catch {
-            throw $_.Exception
           }
           '
 
@@ -181,15 +122,50 @@ install:
           $LICENSE_KEY = "{{.NEW_RELIC_LICENSE_KEY}}"
           $InfraConfig = "C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml"
           $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
-          
+          $InstallLogPath = "$env:TEMP\newrelic-infra-install.log"
+
+          # MSI installer.ps1 always runs as SYSTEM (Windows Installer auto-elevation),
+          # so debug logs are always written to ProgramData regardless of recipe execution context
+          $InfraLogPath = "$env:SystemDrive\ProgramData\New Relic\newrelic-infra\tmp\newrelic_installer_debug.log"
+
           if ($AGENT_VERSION) {
             Write-Host "Installing specific version of New Relic Infrastructure Agent: $AGENT_VERSION"
           } else {
             Write-Host "Installing latest version of New Relic Infrastructure Agent"
           }
 
+          # Check if the agent service is running and stop it before installation
+          $serviceName = "newrelic-infra"
+          $service = Get-Service $serviceName -ErrorAction SilentlyContinue
+          if ($service -ne $null -and $service.Status -eq "Running") {
+            Write-Host "Stopping running New Relic Infrastructure Agent service before installation..."
+            try {
+              Stop-Service -Name $serviceName -Force -ErrorAction Stop
+              Write-Host "Service stopped successfully"
+              Start-Sleep -Seconds 2
+            }
+            catch {
+              Write-Host -ForegroundColor Yellow "Warning: Could not stop service: $_"
+            }
+          }
+
           if (Test-Path $InfraConfig) {
-            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" | Out-Null
+            $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/qn", "/i", "`"$env:TEMP\newrelic-infra.msi`"", "/l*v", "`"$InstallLogPath`"" -Wait -PassThru -NoNewWindow
+            $installExitCode = $process.ExitCode
+
+            if ($installExitCode -ne 0) {
+              Write-Host -ForegroundColor Red "MSI installation failed with exit code: $installExitCode"
+              Write-Host -ForegroundColor Yellow "`nInstallation log: $InstallLogPath"
+
+              if (Test-Path $InfraLogPath) {
+                Write-Host -ForegroundColor Yellow "Installer debug log: $InfraLogPath"
+              } else {
+                Write-Host -ForegroundColor Yellow "Installer debug log: (not created - installer may not have started)"
+              }
+
+              Write-Host -ForegroundColor Yellow "`nPlease check the installation log above for detailed error information."
+              exit $installExitCode
+            }
 
             (Get-Content $InfraConfig) | Where-Object {
               $_ -notmatch "^staging"
@@ -214,7 +190,22 @@ install:
             (Get-Content -raw $InfraConfig) -replace "(?m)^custom_attributes:(?s:.*?)(^\s.+:.+\n)+", "" | Set-Content $InfraConfig
 
           } else {
-            msiexec.exe /qn /i "$env:TEMP\newrelic-infra.msi" GENERATE_CONFIG=true LICENSE_KEY="$LICENSE_KEY" | Out-Null
+            $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/qn", "/i", "`"$env:TEMP\newrelic-infra.msi`"", "GENERATE_CONFIG=true", "LICENSE_KEY=$LICENSE_KEY", "/l*v", "`"$InstallLogPath`"" -Wait -PassThru -NoNewWindow
+            $installExitCode = $process.ExitCode
+
+            if ($installExitCode -ne 0) {
+              Write-Host -ForegroundColor Red "MSI installation failed with exit code: $installExitCode"
+              Write-Host -ForegroundColor Yellow "`nInstallation log: $InstallLogPath"
+
+              if (Test-Path $InfraLogPath) {
+                Write-Host -ForegroundColor Yellow "Installer debug log: $InfraLogPath"
+              } else {
+                Write-Host -ForegroundColor Yellow "Installer debug log: (not created - installer may not have started)"
+              }
+
+              Write-Host -ForegroundColor Yellow "`nPlease check the installation log above for detailed error information."
+              exit $installExitCode
+            }
           }
 
           $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
@@ -245,20 +236,44 @@ install:
           powershell -command '
           $serviceName = "newrelic-infra"
           $service = Get-Service $serviceName -ErrorAction SilentlyContinue -ErrorVariable errorMessage
+
           if ($service -eq $null) {
               Write-Host "The service $serviceName is not present. Error message: $errorMessage" -ForegroundColor Red
+              exit 1
           }
-          if ($service.Status -ne "Running") {
+
+          if ($service.Status -eq "Running") {
+              Write-Host "Service is already running. Restarting to apply configuration changes..."
+              try {
+                  Restart-Service -Name $serviceName -Force
+                  Write-Host "New Relic infrastructure agent for Windows restarted successfully" -ForegroundColor Green
+              }
+              catch {
+                  Write-Host "Error restarting service: $_" -ForegroundColor Red
+                  exit 1
+              }
+          }
+          elseif ($service.Status -eq "Stopped") {
               try {
                   Start-Service -Name $serviceName
-                  Write-Host "New Relic infrastructure agent for Windows installed and started"  -ForegroundColor Green
+                  Write-Host "New Relic infrastructure agent for Windows installed and started" -ForegroundColor Green
               }
               catch {
                   Write-Host "Error starting service: $_" -ForegroundColor Red
+                  exit 1
               }
           }
           else {
-              Write-Host "$serviceName is already running" -ForegroundColor Green
+              Write-Host "Service is in an unexpected state: $($service.Status)" -ForegroundColor Yellow
+              Write-Host "Attempting to start the service..."
+              try {
+                  Start-Service -Name $serviceName
+                  Write-Host "New Relic infrastructure agent for Windows started" -ForegroundColor Green
+              }
+              catch {
+                  Write-Host "Error starting service: $_" -ForegroundColor Red
+                  exit 1
+              }
           }
           '
 
