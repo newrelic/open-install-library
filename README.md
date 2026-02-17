@@ -33,6 +33,36 @@ curl -Ls https://download.newrelic.com/install/newrelic-cli/scripts/install.sh |
 (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/install/newrelic-cli/scripts/install.ps1", "$env:TEMP\install.ps1"); & $env:TEMP\install.ps1; $env:NEW_RELIC_API_KEY='<API_KEY>'; $env:NEW_RELIC_ACCOUNT_ID='<ACCOUNT_ID>'; & 'C:\Program Files\New Relic\New Relic CLI\newrelic.exe' install
 ```
 
+## Guided Install: Scope and Usage
+
+The installation commands above use recipes from this library to provide automated installation of New Relic agents and integrations.
+
+**Important:** These recipes are designed for **initial installations on new hosts**.
+
+### What Guided Install Does
+
+- Automatically detects your system configuration and running services
+- Installs New Relic agents and integrations with default configurations
+- Designed for "Day 0" greenfield installations
+- Ensures a consistent, clean installation experience
+
+### Configuration Behavior
+
+When run on a system with existing New Relic agents:
+- **Agent configuration files are reset to defaults**
+- **Custom log configurations, custom attributes, and manual changes are lost**
+- This behavior is **by design** to ensure idempotent installations (see [recipe development guidelines](docs/README.md#idempotence))
+
+### For Upgrading Existing Agents
+
+If you have existing New Relic agents with custom configurations you want to preserve, use the manual upgrade procedures instead:
+
+- **Infrastructure Agent**: [Update Infrastructure Agent](https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/update-or-uninstall/update-infrastructure-agent/)
+- **APM Agents**: [APM Agent Updates](https://docs.newrelic.com/docs/apm/)
+- **On-Host Integrations**: [Update specific integrations](https://docs.newrelic.com/docs/infrastructure/host-integrations/installation/update-infrastructure-host-integration-package/) using package manager commands (e.g., `apt-get install --only-upgrade nri-mysql -y` or `yum update nri-nginx -y`)
+
+For more details, see the [recipe development documentation](docs/README.md).
+
 ## Docs
 
 Project documentation can be found under [docs](docs/README.md).
