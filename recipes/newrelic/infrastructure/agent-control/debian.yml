@@ -66,18 +66,6 @@ install:
       sh: command -v systemctl | wc -l
     IS_INITCTL:
       sh: command -v initctl | wc -l
-    # By default, we'll install the Infra Agent as the Host instrumentation solution
-    # We use env vars per host instrumentation to avoid checking constants and related issues in the recipe
-    HOST_INFRA_AGENT:
-      sh: |
-        if [[ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "" || "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "infra-agent" ]]; then
-          echo "true"
-        fi
-    HOST_OTEL:
-      sh: |
-        if [ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "otel" ]; then
-          echo "true"
-        fi
 
   tasks:
     default:
@@ -85,7 +73,6 @@ install:
         - task: write_recipe_metadata
         - task: detect_previous_install
         - task: assert_pre_req
-        - task: cleanup
         - task: log_ssl_ciphers
         - task: update_apt
         - task: install_gnupg
@@ -94,7 +81,6 @@ install:
         - task: update_apt_nr_source
         - task: install_agent_control
         - task: config_agent_control
-        - task: host_monitoring_config
         - task: restart_agent_control
         - task: assert_agent_control_status_ok
         - task: signal_recipe_applied
@@ -205,16 +191,6 @@ install:
           sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
         DEBIAN_VERSION_CODENAME:
           sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
-
-    cleanup:
-      # skipping this task if .nr-cli exists
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
-            rm -rf /var/db/newrelic-infra/data 2>/dev/null
-          fi
 
     log_ssl_ciphers:
       cmds:
@@ -330,12 +306,6 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          # Local config for Agent Control (agents)
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            AGENT_SET="otel"
-          else
-            AGENT_SET="infra-agent"
-          fi
           # Proxy configuration
           # Empty values are ignored by the cli (--proxy-url="" is the same as not setting --proxy-url)
           AC_PROXY_ARGS="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
@@ -347,7 +317,7 @@ install:
               --region {{.NEW_RELIC_REGION}} \
               --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}} \
               --env-vars-file-path /etc/newrelic-agent-control/environment_variables.yaml \
-              --agent-set $AGENT_SET $AC_PROXY_ARGS
+              --agent-set no-agents $AC_PROXY_ARGS
           else
             if [ -z "{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}" ]; then
               mkdir -p /etc/newrelic-agent-control/keys
@@ -360,7 +330,7 @@ install:
               --region {{.NEW_RELIC_REGION}} \
               --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}} \
               --env-vars-file-path /etc/newrelic-agent-control/environment_variables.yaml \
-              --agent-set $AGENT_SET \
+              --agent-set  no-agents \
               --fleet-id {{.NR_CLI_FLEET_ID}} \
               --organization-id "{{.NEW_RELIC_ORGANIZATION}}" \
               --auth-client-id "{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" \
@@ -372,22 +342,6 @@ install:
               chmod 600 /etc/newrelic-agent-control/keys/agent-control-identity.key
             fi
           fi
-
-    host_monitoring_config:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            AGENT_SET="otel"
-          else
-            AGENT_SET="infra-agent"
-            INFRA_PROXY="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
-          fi
-          
-          newrelic-agent-control-cli host-monitoring \
-              --region {{.NEW_RELIC_REGION}} \
-              --agent-set $AGENT_SET $INFRA_PROXY
 
     restart_agent_control:
       cmds:
