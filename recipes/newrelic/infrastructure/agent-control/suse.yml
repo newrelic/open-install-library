@@ -58,18 +58,6 @@ install:
       sh: command -v systemctl | wc -l
     IS_INITCTL:
       sh: command -v initctl | wc -l
-    # By default, we'll install the Infra Agent as the Host instrumentation solution
-    # We use env vars per host instrumentation to avoid checking constants and related issues in the recipe
-    HOST_INFRA_AGENT:
-      sh: |
-        if [[ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "" || "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "infra-agent" ]]; then
-          echo "true"
-        fi
-    HOST_OTEL:
-      sh: |
-        if [ "${NEW_RELIC_AGENT_CONTROL_HOST_MONITORING_SOURCE}" == "otel" ]; then
-          echo "true"
-        fi
 
   tasks:
     default:
@@ -77,10 +65,8 @@ install:
         - task: write_recipe_metadata
         - task: detect_previous_install
         - task: assert_pre_req
-        - task: cleanup
         - task: install_agent_control
         - task: config_agent_control
-        - task: host_monitoring_config
         - task: restart_agent_control
         - task: assert_agent_control_status_ok
         - task: signal_recipe_applied
@@ -132,12 +118,6 @@ install:
             exit 12
           fi
         - |
-          IS_CAT_INSTALLED=$(which cat | wc -l)
-          if [ $IS_CAT_INSTALLED -eq 0 ] ; then
-            echo "cat is required to run the newrelic install. Please install cat and re-run the installation." >&2
-            exit 13
-          fi
-        - |
           IS_TEE_INSTALLED=$(which tee | wc -l)
           if [ $IS_TEE_INSTALLED -eq 0 ] ; then
             echo "tee is required to run the newrelic install. Please install tee and re-run the installation." >&2
@@ -156,18 +136,6 @@ install:
             exit 16
           fi
         - |
-          IS_OPENSSL_INSTALLED=$(which openssl | wc -l)
-          if [ $IS_OPENSSL_INSTALLED -eq 0 ] ; then
-            echo "openssl is required to run the newrelic install. Please install openssl and re-run the installation." >&2
-            exit 17
-          fi
-        - |
-          IS_MKTEMP_INSTALLED=$(which mktemp | wc -l)
-          if [ $IS_MKTEMP_INSTALLED -eq 0 ] ; then
-            echo "mktemp is required to run the newrelic install. Please install coreutils and re-run the installation." >&2
-            exit 18
-          fi
-        - |
           IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/zypp/sles/{{.SLES_VERSION}}/x86_64/newrelic-infra.repo | grep " 2[0-9][0-9] " | wc -l)
           if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
             echo "there is no New Relic Agent Control available for the distribution '{{.SLES_VERSION}}'." >&2
@@ -176,16 +144,6 @@ install:
       vars:
         SLES_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
-
-    cleanup:
-      # skipping this task if .nr-cli exists
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_INFRA_AGENT}}" == "true" ] ; then
-            rm -rf /var/db/newrelic-infra/data 2>/dev/null
-          fi
 
     install_agent_control:
       cmds:
@@ -220,12 +178,6 @@ install:
         - test -f /etc/newrelic-agent-control/.nr-cli
       cmds:
         - |
-          # Local config for Agent Control (agents)
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            AGENT_SET="otel"
-          else
-            AGENT_SET="infra-agent"
-          fi
           # Proxy configuration
           # Empty values are ignored by the cli (--proxy-url="" is the same as not setting --proxy-url)
           AC_PROXY_ARGS="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
@@ -236,8 +188,7 @@ install:
               --output-path /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml \
               --region {{.NEW_RELIC_REGION}} \
               --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}} \
-              --env-vars-file-path /etc/newrelic-agent-control/environment_variables.yaml \              
-              --agent-set $AGENT_SET $AC_PROXY_ARGS
+              --env-vars-file-path /etc/newrelic-agent-control/environment_variables.yaml $AC_PROXY_ARGS
           else
             if [ -z "{{ .NEW_RELIC_AUTH_PRIVATE_KEY_PATH }}" ]; then
               mkdir -p /etc/newrelic-agent-control/keys
@@ -250,7 +201,6 @@ install:
               --region {{.NEW_RELIC_REGION}} \
               --newrelic-license-key {{.NEW_RELIC_LICENSE_KEY}} \
               --env-vars-file-path /etc/newrelic-agent-control/environment_variables.yaml \
-              --agent-set $AGENT_SET \
               --fleet-id {{.NR_CLI_FLEET_ID}} \
               --organization-id "{{.NEW_RELIC_ORGANIZATION}}" \
               --auth-client-id "{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" \
@@ -262,22 +212,6 @@ install:
               chmod 600 /etc/newrelic-agent-control/keys/agent-control-identity.key
             fi
           fi
-
-    host_monitoring_config:
-      status:
-        - test -f /etc/newrelic-agent-control/.nr-cli
-      cmds:
-        - |
-          if [ "{{.HOST_OTEL}}" == "true" ] ; then
-            AGENT_SET="otel"
-          else
-            AGENT_SET="infra-agent"
-            INFRA_PROXY="--proxy-url={{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}} --proxy-ca-bundle-file={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}} --proxy-ca-bundle-dir={{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}} --ignore-system-proxy={{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
-          fi
-          
-          newrelic-agent-control-cli host-monitoring \
-              --region {{.NEW_RELIC_REGION}} \
-              --agent-set $AGENT_SET $INFRA_PROXY
 
     restart_agent_control:
       cmds:
