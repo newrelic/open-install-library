@@ -1,0 +1,419 @@
+name: OpenTelemetry Integration Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: 'Test filter (e.g., kafka, docker, all)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - kafka
+          - docker
+          - elasticsearch
+          - rabbitmq
+  schedule:
+    # Run weekly on Mondays at 10:00 AM UTC
+    - cron: "0 10 * * 1"
+  push:
+    branches: [ main ]
+    paths:
+      - 'test/definitions/otel/**'
+      - 'test/deploy/linux/nrdot/**'
+      - 'test/deploy/linux/kafka/**'
+      - 'test/deploy/linux/otel-collector-contrib/**'
+
+permissions:
+  contents: read
+
+jobs:
+  log-context:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "$GITHUB_CONTEXT"
+
+  create-system-identity:
+    name: Create System Identity
+    runs-on: ubuntu-latest
+    outputs:
+      CLIENT_ID: ${{ steps.create-identity.outputs.CLIENT_ID }}
+      CLIENT_SECRET: ${{ steps.create-identity.outputs.CLIENT_SECRET }}
+      SYSTEM_IDENTITY_ID: ${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write User Config
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Extract New Relic Credentials
+        id: extract-creds
+        run: |
+          NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+          NR_ORG_ID=$(jq -r -e '.credentials.newrelic.nrOrganizationId' configs/gitusdkr${{ github.run_id }}.json)
+          echo "::add-mask::$NR_API_KEY"
+          echo "::add-mask::$NR_ORG_ID"
+          echo "NR_API_KEY=$NR_API_KEY" >> $GITHUB_OUTPUT
+          echo "NR_ORG_ID=$NR_ORG_ID" >> $GITHUB_OUTPUT
+
+      - name: Create System Identity
+        id: create-identity
+        run: |
+          RESPONSE=$(curl -X POST https://api.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"mutation { systemIdentityCreate( name: \\\"otel-testing-${{ github.run_id }}\\\" organizationId: \\\"${{ steps.extract-creds.outputs.NR_ORG_ID }}\\\" ) { id clientId clientSecret } }\"
+            }")
+          CLIENT_ID=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientId')
+          CLIENT_SECRET=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientSecret')
+          SYSTEM_IDENTITY_ID=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.id')
+          echo "::add-mask::$CLIENT_ID"
+          echo "::add-mask::$CLIENT_SECRET"
+          echo "::add-mask::$SYSTEM_IDENTITY_ID"
+          echo "CLIENT_ID=$CLIENT_ID" >> $GITHUB_OUTPUT
+          echo "CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_OUTPUT
+          echo "SYSTEM_IDENTITY_ID=$SYSTEM_IDENTITY_ID" >> $GITHUB_OUTPUT
+
+      - name: Get NR Control Group ID
+        id: get-control-group
+        run: |
+          RESPONSE=$(curl -X POST https://api.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"query getSystemIdentityGroupsQuery(\$organizationId: ID!, \$name: String!) { customerAdministration { systemIdentityGroups(filter: {name: {eq: \$name}, organizationId: {eq: \$organizationId}}) { items { id } totalCount } } }\",
+              \"variables\": { \"organizationId\": \"${{ steps.extract-creds.outputs.NR_ORG_ID }}\", \"name\": \"NR Control Group\" }
+            }")
+          GROUP_ID=$(echo "$RESPONSE" | jq -e -r '.data.customerAdministration.systemIdentityGroups.items[0].id')
+          echo "GROUP_ID=$GROUP_ID" >> $GITHUB_OUTPUT
+
+      - name: Add System Identity to Control Group
+        if: steps.get-control-group.outputs.GROUP_ID != ''
+        run: |
+          curl -X POST https://api.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"mutation createSystemIdentityAddToGroupsMutation(\$systemIdentityIds: [ID!]!, \$systemIdentityGroupIds: [ID!]!) { systemIdentityAddToGroups(systemIdentityIds: \$systemIdentityIds, systemIdentityGroupIds: \$systemIdentityGroupIds) { systemIdentityGroups { id } } }\",
+              \"variables\": { \"systemIdentityIds\": [\"${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}\"], \"systemIdentityGroupIds\": [\"${{ steps.get-control-group.outputs.GROUP_ID }}\"] }
+            }"
+
+  get-otel-test-definitions:
+    name: Get OTEL Test Definitions
+    runs-on: ubuntu-latest
+    needs: [create-system-identity]
+    outputs:
+      matrix: ${{ steps.get-tests.outputs.result }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Get OTEL Test Definitions
+        id: get-tests
+        uses: actions/github-script@v3
+        with:
+          script: |
+            const fs = require("fs");
+            const fsp = fs.promises;
+            const path = require("path");
+
+            const definitionsDir = "test/definitions/otel";
+            const testFilter = "${{ github.event.inputs.test_filter || 'all' }}";
+
+            async function getFiles(dir) {
+              const dirents = await fsp.readdir(dir, { withFileTypes: true });
+              const files = await Promise.all(
+                dirents.map((dirent) => {
+                  const res = path.join(dir, dirent.name);
+                  return dirent.isDirectory() ? getFiles(res) : res;
+                })
+              );
+              return Array.prototype.concat(...files);
+            }
+
+            let testDefinitions = await getFiles(definitionsDir);
+
+            // Filter JSON files only
+            testDefinitions = testDefinitions.filter(f => f.endsWith('.json'));
+
+            // Apply test filter if specified
+            if (testFilter !== 'all') {
+              testDefinitions = testDefinitions.filter(f => f.includes(testFilter));
+            }
+
+            console.log(`Found ${testDefinitions.length} OTEL test definition(s)`);
+            console.log('Tests to run:', testDefinitions);
+
+            const outputTestFilesMap = testDefinitions.map((testDefinitionFile) => {
+              return {
+                testDefinitionFile,
+                testDisplayName: testDefinitionFile.replace(`${definitionsDir}/`, "OTEL: "),
+              };
+            });
+
+            const output = {
+              include: outputTestFilesMap,
+            };
+
+            console.log('Matrix output:', JSON.stringify(output, null, 2));
+            return output;
+
+  test-otel-integration:
+    name: ${{ matrix.testDisplayName }}
+    needs: [get-otel-test-definitions, create-system-identity]
+    if: ${{ fromJSON(needs.get-otel-test-definitions.outputs.matrix).include[0] }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.get-otel-test-definitions.outputs.matrix) }}
+      fail-fast: false
+      max-parallel: 3  # Limit concurrent OTEL tests to manage resources
+    timeout-minutes: 45  # OTEL tests may take longer due to setup
+    env:
+      MATRIX: ${{ toJSON(matrix) }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Set system identity credentials
+        run: |
+          echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_ID }}"
+          echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_SECRET }}"
+          echo "SYSTEM_IDENTITY_CLIENT_ID=${{ needs.create-system-identity.outputs.CLIENT_ID }}" >> $GITHUB_ENV
+          echo "SYSTEM_IDENTITY_CLIENT_SECRET=${{ needs.create-system-identity.outputs.CLIENT_SECRET }}" >> $GITHUB_ENV
+
+      - name: Update Test Definition URLs
+        id: update-urls
+        env:
+          TEST_DEFINITION_FILE: ${{ matrix.testDefinitionFile }}
+        uses: actions/github-script@v3
+        with:
+          script: |
+            const fs = require('fs');
+            const fsp = fs.promises;
+            const path = require('path');
+
+            const testDefinitionFile = process.env.TEST_DEFINITION_FILE;
+            console.log(`Processing: ${testDefinitionFile}`);
+
+            const data = JSON.parse(await fsp.readFile(path.join(process.env.GITHUB_WORKSPACE, testDefinitionFile)));
+
+            let jsonContent = JSON.stringify(data, null, 2);
+            const branchName = process.env.GITHUB_HEAD_REF ? process.env.GITHUB_HEAD_REF : process.env.GITHUB_REF_NAME;
+
+            // Update github source URLs with branch name
+            const sourceRepositoryRegex = /(.*)(\")(https:\/\/github.com\/newrelic\/open-install-library)(.*)/gi;
+            const replacementString = `$1$2-b ${branchName} $3$4`;
+            jsonContent = jsonContent.replace(sourceRepositoryRegex, replacementString);
+
+            // Update raw URLs with branch name
+            const sourceRepositoryRegex2 = /(raw.githubusercontent.com\/newrelic\/open-install-library\/)(main)(\/.*)/gi;
+            const replacementString2 = `$1${branchName}$3`;
+            jsonContent = jsonContent.replace(sourceRepositoryRegex2, replacementString2);
+
+            console.log(`Updated config:\n${jsonContent}`);
+
+            // Write file back
+            const outputPath = `${process.env.GITHUB_WORKSPACE}/${testDefinitionFile}`;
+            fs.writeFileSync(outputPath, jsonContent);
+
+            return testDefinitionFile;
+
+      - name: Write AWS Certificate
+        env:
+          AWS_PEM: ${{ secrets.GIT_DEPLOYER_CANADA_AWS_PEM }}
+        run: |
+          mkdir -p configs
+          rm -f configs/gitdeployerCanada.pem
+          echo "$AWS_PEM" > configs/gitdeployerCanada.pem
+          sudo chmod 400 configs/gitdeployerCanada.pem
+
+      - name: Write User Config
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        run: |
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Pull Deployer Image
+        run: |
+          docker pull newrelic/deployer:latest
+          docker images newrelic/deployer:latest
+
+      - name: Run Deployer for OTEL Test
+        id: deployerRun
+        run: |
+          set -e
+          testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
+          echo "Running OTEL test: $testDefinitionFile"
+
+          docker run -i \
+            -e SYSTEM_IDENTITY_CLIENT_ID=$SYSTEM_IDENTITY_CLIENT_ID \
+            -e SYSTEM_IDENTITY_CLIENT_SECRET=$SYSTEM_IDENTITY_CLIENT_SECRET \
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/ \
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/ \
+            --entrypoint ruby newrelic/deployer:latest \
+            main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -l debug
+
+          echo "exit_status=$?" >> $GITHUB_OUTPUT
+
+      - name: Teardown Resources
+        if: always()
+        id: cleanupResources
+        continue-on-error: true
+        run: |
+          testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
+          echo "Tearing down: $testDefinitionFile"
+
+          docker run -i \
+            -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/ \
+            -v ${{ github.workspace }}/test/:/mnt/deployer/test/ \
+            --entrypoint ruby newrelic/deployer:latest \
+            main.rb -c configs/gitusdkr${{ github.run_id }}.json -d $testDefinitionFile -t
+
+      - name: Report Failure
+        if: steps.deployerRun.outputs.exit_status != '0'
+        run: |
+          echo "OTEL test failed with exit status: ${{ steps.deployerRun.outputs.exit_status }}"
+          exit 1
+
+  cleanup-system-identity:
+    name: Cleanup System Identity
+    runs-on: ubuntu-latest
+    needs: [test-otel-integration, create-system-identity]
+    if: always() && needs.create-system-identity.result == 'success'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write User Config
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Delete System Identity
+        continue-on-error: true
+        run: |
+          if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
+            NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+            SYSTEM_IDENTITY_ID="${{ needs.create-system-identity.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$NR_API_KEY"
+            echo "::add-mask::$SYSTEM_IDENTITY_ID"
+
+            if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
+              echo "Deleting system identity: $SYSTEM_IDENTITY_ID"
+              curl -X POST https://api.newrelic.com/graphql \
+                -H 'content-type: application/json; charset=utf-8' \
+                -H "API-Key: $NR_API_KEY" \
+                --data-raw "{
+                  \"query\": \"mutation { systemIdentityDelete(id: \\\"$SYSTEM_IDENTITY_ID\\\") { id } }\"
+                }" || echo "Failed to delete system identity"
+            else
+              echo "No system identity to clean up"
+            fi
+          fi
+
+  slack-notify:
+    runs-on: ubuntu-latest
+    needs: [test-otel-integration, cleanup-system-identity]
+    if: always()
+    steps:
+      - name: Build Result Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          author_name: GitHub Actions
+          status: custom
+          fields: commit,repo,ref,author,eventName,message,workflow
+          custom_payload: |
+            {
+              username: "GitHub Actions",
+              icon_emoji: ":test_tube:",
+              attachments: [{
+                color: ${{
+                  needs.test-otel-integration.result == 'success'
+                }} === true ? '#43cc11' : '#e05d44',
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `OpenTelemetry Integration Tests for ${process.env.AS_REPO}`
+                    }
+                  },
+                  {
+                    type: "section",
+                    fields: [
+                      {
+                        type: "mrkdwn",
+                        text: `*Commit:*\n${process.env.AS_COMMIT}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Author:*\n${process.env.AS_AUTHOR}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Branch:*\n${process.env.AS_REF}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Test Filter:*\n${{ github.event.inputs.test_filter || 'all' }}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Type:*\n${process.env.AS_EVENT_NAME}`
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: `*Workflow:*\n${ process.env.AS_WORKFLOW }`
+                      }
+                    ]
+                  },
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: [
+                        "*Result:*",
+                        `• ${ ${{ needs.test-otel-integration.result == 'success' }} === true ? '✅' : '❌' } OTEL Integration Tests: ${{ needs.test-otel-integration.result }}`
+                      ].join('\n')
+                    }
+                  },
+                  {
+                    type: "context",
+                    elements: [
+                      {
+                        type: "image",
+                        image_url: "https://avatars2.githubusercontent.com/in/15368",
+                        alt_text: "Github Actions"
+                      },
+                      {
+                        type: "mrkdwn",
+                        text: "OpenTelemetry Integration Testing"
+                      }
+                    ]
+                  }
+                ]
+              }]
+            }
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
