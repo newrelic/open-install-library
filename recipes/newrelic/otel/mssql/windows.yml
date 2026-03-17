@@ -224,7 +224,84 @@ install:
     # ─────────────────────────────────────────────────────────────────────────
     create_sql_user:
       cmds:
-        - 'cmd /c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "`$Username = [Environment]::GetEnvironmentVariable(''NR_CLI_MSSQL_USERNAME''); if ([string]::IsNullOrWhiteSpace(`$Username)) { Write-Error ''NR_CLI_MSSQL_USERNAME not set''; exit 1 }; `$Password = [Environment]::GetEnvironmentVariable(''NR_CLI_MSSQL_PASSWORD''); if ([string]::IsNullOrWhiteSpace(`$Password)) { Write-Error ''NR_CLI_MSSQL_PASSWORD not set''; exit 1 }; `$Hostname = [Environment]::GetEnvironmentVariable(''NR_CLI_MSSQL_HOSTNAME''); if (-not `$Hostname) { `$Hostname = ''localhost'' }; `$Port = [Environment]::GetEnvironmentVariable(''NR_CLI_MSSQL_PORT''); if (-not `$Port) { `$Port = ''1433'' }; `$AuthMode = [Environment]::GetEnvironmentVariable(''NR_CLI_MSSQL_AUTH_MODE''); if (-not `$AuthMode) { `$AuthMode = ''1'' }; Write-Host ''''; Write-Host ''Step 3: Create SQL Server monitoring user''; Write-Host `"  Server   : `${Hostname},`${Port}`"; Write-Host `"  Username : `$Username`"; Write-Host ''''; `$SafeUsername = `$Username.Replace(`"''"", `"''''""); `$SafePassword = `$Password.Replace(`"''"", `"''''""); `$tempSqlFile = Join-Path ([System.IO.Path]::GetTempPath()) ''newrelic-mssql-setup.sql''; `$sqlScript = `"USE [master]; IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N''`$SafeUsername'') BEGIN CREATE LOGIN [`$SafeUsername] WITH PASSWORD = ''`$SafePassword''; PRINT ''Login created: `$SafeUsername''; END ELSE BEGIN ALTER LOGIN [`$SafeUsername] WITH PASSWORD = ''`$SafePassword''; PRINT ''Login already exists; password updated: `$SafeUsername''; END; GRANT VIEW SERVER STATE TO [`$SafeUsername]; GRANT VIEW ANY DEFINITION TO [`$SafeUsername]; GRANT VIEW ANY DATABASE TO [`$SafeUsername]; DECLARE @name SYSNAME; DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR SELECT [name] FROM [master].[sys].[databases] WHERE [name] NOT IN (''master'', ''msdb'', ''tempdb'', ''model'', ''rdsadmin'', ''distribution'') AND [state] = 0; OPEN db_cursor; FETCH NEXT FROM db_cursor INTO @name; WHILE @@FETCH_STATUS = 0 BEGIN BEGIN TRY PRINT ''Processing database: '' + @name; EXEC(''USE ['' + @name + '']; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''''`$SafeUsername'''') BEGIN CREATE USER [`$SafeUsername] FOR LOGIN [`$SafeUsername]; END; GRANT VIEW DATABASE STATE TO [`$SafeUsername]; GRANT VIEW DEFINITION TO [`$SafeUsername]; ALTER ROLE db_datareader ADD MEMBER [`$SafeUsername];''); PRINT ''Success: '' + @name; END TRY BEGIN CATCH PRINT ''Error on '' + @name + '': '' + ERROR_MESSAGE(); END CATCH FETCH NEXT FROM db_cursor INTO @name; END; CLOSE db_cursor; DEALLOCATE db_cursor;`"; [System.IO.File]::WriteAllText(`$tempSqlFile, `$sqlScript, [System.Text.Encoding]::UTF8); try { if (`$AuthMode -eq ''1'') { Write-Host ''Using Windows Authentication...''; & sqlcmd -S `"`${Hostname},`${Port}`" -E -i `$tempSqlFile } else { `$AdminUser = [Environment]::GetEnvironmentVariable(''NR_CLI_MSSQL_ADMIN_USERNAME''); `$AdminPass = [Environment]::GetEnvironmentVariable(''NR_CLI_MSSQL_ADMIN_PASSWORD''); if ([string]::IsNullOrWhiteSpace(`$AdminUser) -or [string]::IsNullOrWhiteSpace(`$AdminPass)) { Write-Error ''Admin credentials required for SQL Authentication''; exit 1 }; Write-Host ''Using SQL Server Authentication...''; & sqlcmd -S `"`${Hostname},`${Port}`" -U `$AdminUser -P `$AdminPass -i `$tempSqlFile }; if (`$LASTEXITCODE -ne 0) { Write-Error ''Failed to create SQL user''; exit 1 }; Write-Host ''SQL user created successfully''; Write-Host '''' } finally { if (Test-Path `$tempSqlFile) { Remove-Item `$tempSqlFile -Force } }"'
+        - |
+          powershell -command '
+          $Username = $env:NR_CLI_MSSQL_USERNAME
+          $Password = $env:NR_CLI_MSSQL_PASSWORD
+          $Hostname = if ($env:NR_CLI_MSSQL_HOSTNAME) { $env:NR_CLI_MSSQL_HOSTNAME } else { "localhost" }
+          $Port = if ($env:NR_CLI_MSSQL_PORT) { $env:NR_CLI_MSSQL_PORT } else { "1433" }
+          $AuthMode = if ($env:NR_CLI_MSSQL_AUTH_MODE) { $env:NR_CLI_MSSQL_AUTH_MODE } else { "1" }
+          
+          if ([string]::IsNullOrWhiteSpace($Username)) {
+            Write-Error "NR_CLI_MSSQL_USERNAME environment variable not set"
+            exit 1
+          }
+          if ([string]::IsNullOrWhiteSpace($Password)) {
+            Write-Error "NR_CLI_MSSQL_PASSWORD environment variable not set"
+            exit 1
+          }
+          
+          Write-Host ""
+          Write-Host "Step 3: Create SQL Server monitoring user"
+          Write-Host "  Server   : ${Hostname},${Port}"
+          Write-Host "  Username : $Username"
+          Write-Host ""
+          
+          $SafeUsername = $Username.Replace("''''", "''''''''")
+          $SafePassword = $Password.Replace("''''", "''''''''")
+          $tempSqlFile = Join-Path ([System.IO.Path]::GetTempPath()) "newrelic-mssql-setup.sql"
+          
+          $sqlScript = "USE [master]; "
+          $sqlScript += "IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N''''$SafeUsername'''') BEGIN CREATE LOGIN [$SafeUsername] WITH PASSWORD = ''''$SafePassword''''; PRINT ''''Login created: $SafeUsername''''; END ELSE BEGIN ALTER LOGIN [$SafeUsername] WITH PASSWORD = ''''$SafePassword''''; PRINT ''''Login already exists; password updated: $SafeUsername''''; END; "
+          $sqlScript += "GRANT VIEW SERVER STATE TO [$SafeUsername]; "
+          $sqlScript += "GRANT VIEW ANY DEFINITION TO [$SafeUsername]; "
+          $sqlScript += "GRANT VIEW ANY DATABASE TO [$SafeUsername]; "
+          $sqlScript += "DECLARE @name SYSNAME; "
+          $sqlScript += "DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR SELECT [name] FROM [master].[sys].[databases] WHERE [name] NOT IN (''''master'''', ''''msdb'''', ''''tempdb'''', ''''model'''', ''''rdsadmin'''', ''''distribution'''') AND [state] = 0; "
+          $sqlScript += "OPEN db_cursor; FETCH NEXT FROM db_cursor INTO @name; "
+          $sqlScript += "WHILE @@FETCH_STATUS = 0 BEGIN "
+          $sqlScript += "BEGIN TRY "
+          $sqlScript += "PRINT ''''Processing database: '''' + @name; "
+          $sqlScript += "EXEC(''''USE ['''' + @name + '''']; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''''''''$SafeUsername'''''''') BEGIN CREATE USER [$SafeUsername] FOR LOGIN [$SafeUsername]; END; GRANT VIEW DATABASE STATE TO [$SafeUsername]; GRANT VIEW DEFINITION TO [$SafeUsername]; ALTER ROLE db_datareader ADD MEMBER [$SafeUsername];''''); "
+          $sqlScript += "PRINT ''''Success: '''' + @name; "
+          $sqlScript += "END TRY BEGIN CATCH "
+          $sqlScript += "PRINT ''''Error on '''' + @name + '''': '''' + ERROR_MESSAGE(); "
+          $sqlScript += "END CATCH "
+          $sqlScript += "FETCH NEXT FROM db_cursor INTO @name; END; "
+          $sqlScript += "CLOSE db_cursor; DEALLOCATE db_cursor;"
+          
+          [System.IO.File]::WriteAllText($tempSqlFile, $sqlScript, [System.Text.Encoding]::UTF8)
+          
+          try {
+            if ($AuthMode -eq "1") {
+              Write-Host "Using Windows Authentication..."
+              & sqlcmd -S "${Hostname},${Port}" -E -i $tempSqlFile
+            }
+            else {
+              $AdminUser = $env:NR_CLI_MSSQL_ADMIN_USERNAME
+              $AdminPass = $env:NR_CLI_MSSQL_ADMIN_PASSWORD
+              if ([string]::IsNullOrWhiteSpace($AdminUser) -or [string]::IsNullOrWhiteSpace($AdminPass)) {
+                Write-Error "Admin credentials required for SQL Authentication"
+                exit 1
+              }
+              Write-Host "Using SQL Server Authentication..."
+              & sqlcmd -S "${Hostname},${Port}" -U $AdminUser -P $AdminPass -i $tempSqlFile
+            }
+            
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to create SQL user"
+              exit 1
+            }
+            
+            Write-Host "SQL user created successfully"
+            Write-Host ""
+          }
+          finally {
+            if (Test-Path $tempSqlFile) {
+              Remove-Item $tempSqlFile -Force
+            }
+          }
+          '
 
     configure_nrdot:
       cmds:
