@@ -5,22 +5,7 @@ name: mssql-otel-windows-installer
 displayName: Microsoft SQL Server OTel Integration (Windows)
 description: |
   Sets up Microsoft SQL Server monitoring via the New Relic NRDOT Collector.
-
-  Downloads and installs the NRDOT Collector MSI on this Windows host,
-  creates a SQL Server monitoring login (local or remote), and configures
-  the collector to connect to the target SQL Server instance.
-
-  SQL User Creation Modes:
-    1. Windows Authentication (local)  - uses the current Windows identity via
-       sqlcmd -E; SQL Server must be on this same host or domain-joined.
-    2. SQL Authentication (remote)     - uses a sysadmin SQL login via
-       sqlcmd -U/-P; works with any reachable SQL Server, including remote VMs.
-
-  Prerequisites:
-    - "SQL Server and Windows Authentication mode" (Mixed Mode) must be enabled.
-    - For mode 1: SQL Server must be local or domain-trusted.
-    - For mode 2: A sysadmin SQL login (e.g. sa) must exist on the remote SQL Server.
-    - Administrator privileges are required on this host.
+  Downloads and installs the NRDOT Collector MSI on this Windows host.
 repository: https://github.com/newrelic-forks/nrdot-collector-components/tree/feature/otel-mssql-qpm-receiver/receiver/newrelicsqlserverreceiver
 installTargets:
   - type: host
@@ -34,95 +19,7 @@ keywords:
   - Windows
   - NRDOT
 
-processMatch:
-  - sqlservr.exe
-
-discoveryMode:
-  - targeted
-
-preInstall:
-  requireAtDiscovery: |
-    powershell -command "if (Get-Service -Name MSSQL* -ErrorAction SilentlyContinue) { exit 0 } else { exit 132 }"
-  info: |
-    This installer will:
-    1. Create a NEW SQL Server monitoring login (default: 'newrelic')
-    2. Configure the NRDOT Collector to connect to SQL Server
-
-    IMPORTANT - Two Different Sets of Credentials:
-
-    A. MONITORING USER (you will create):
-       - Username: newrelic (or your choice)
-       - Password: You MUST provide this - it's for the NEW SQL user being created
-       - This is what New Relic uses to collect metrics going forward
-
-    B. ADMIN CREDENTIALS (how we create the monitoring user):
-       Mode 1 - Windows Authentication (recommended for local/domain):
-         • Uses your current Windows identity (no SQL password needed)
-         • SQL Server must be on this host or in your Windows domain
-         • No additional credentials required
-       
-       Mode 2 - SQL Authentication (for remote SQL Server):
-         • You'll be prompted for a sysadmin SQL login (e.g. sa) and password
-         • This happens AFTER the initial setup questions
-         • Works with any reachable SQL Server
-         • Requires "Mixed Mode" authentication enabled on SQL Server
-
-    Permissions granted to the monitoring login:
-      Instance-level : VIEW SERVER STATE, VIEW ANY DEFINITION, VIEW ANY DATABASE
-      Per database   : VIEW DATABASE STATE, VIEW DEFINITION, db_datareader
-
-# Inputs prompted by the New Relic CLI before the install script runs.
-# Values are injected as environment variables into the install tasks.
-inputVars:
-  # ── SQL user creation mode ────────────────────────────────────────────────
-  - name: NR_CLI_MSSQL_AUTH_MODE
-    prompt: |
-      Select SQL user creation mode (how to CONNECT to SQL Server to create the monitoring user):
-        1. Windows Authentication - uses your current Windows identity (sqlcmd -E)
-           Choose this if SQL Server is on this host or in your Windows domain.
-        2. SQL Authentication - uses a sysadmin SQL login you provide (e.g. sa)
-           Choose this for remote SQL Server or when Windows Auth is not available.
-      Enter 1 or 2
-    default: "1"
-
-  # ── SQL Server connection details ─────────────────────────────────────────
-  - name: NR_CLI_MSSQL_HOSTNAME
-    prompt: "SQL Server hostname or IP address (use remote IP for remote SQL Server)"
-    default: "localhost"
-
-  - name: NR_CLI_MSSQL_PORT
-    prompt: "SQL Server port"
-    default: "1433"
-
-  # ── New monitoring login credentials (will be CREATED by this installer) ──
-  - name: NR_CLI_MSSQL_USERNAME
-    prompt: |
-      Username for the NEW monitoring login to create on SQL Server
-      This is the login New Relic will use to collect metrics
-    default: "newrelic"
-
-  - name: NR_CLI_MSSQL_PASSWORD
-    prompt: |
-      Password for the NEW monitoring login (REQUIRED - this creates a SQL login on the server)
-      This is NOT your Windows password or SA password - it's for the new 'newrelic' user
-      Note: This will be visible as you type (CLI limitation with secret inputs)
-
-  # ── Databases and region ──────────────────────────────────────────────────
-  # Note: Admin credentials for Mode 2 (SQL Auth) will be prompted during installation
-  # if needed, so you won't see those prompts here if you choose Windows Auth (Mode 1)
-  - name: NR_CLI_MSSQL_DATABASES
-    prompt: |
-      Enter comma-separated database names to monitor, e.g. "database1","database2","database3"
-      Leave blank to monitor all databases (default)
-    default: ""
-
-  - name: NR_CLI_OTLP_REGION
-    prompt: |
-      Select New Relic OTLP Endpoint Region:
-        1. US Region (https://otlp.nr-data.net:4318)
-        2. EU Region (https://otlp.eu01.nr-data.net:4318)
-      Enter 1 or 2
-    default: "1"
+processMatch: []
 
 install:
   version: "3"
@@ -131,73 +28,251 @@ install:
   tasks:
     default:
       cmds:
-        - task: assert_admin
+        - task: assert_sqlcmd
+        - task: prompt_and_save_config
+        - task: assert_db_version
         - task: install_nrdot
-        - task: create_sql_user
-        - task: configure_nrdot
-        - task: restart_nrdot
 
-    # ── Guard: must run as Administrator ─────────────────────────────────────
-    assert_admin:
+    # ── Prompt user for SQL Server connection details ─────────────────────────
+    prompt_and_save_config:
       cmds:
         - |
           powershell -command '
-          $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-          if (-not $isAdmin) {
-            Write-Error "This installation requires Administrator privileges. Please run as Administrator."
+          Write-Host ""
+          Write-Host "=== SQL Server Connection Configuration ==="
+          Write-Host ""
+
+          $Hostname = Read-Host "SQL Server hostname or IP address (press Enter for localhost)"
+          if ([string]::IsNullOrWhiteSpace($Hostname)) { $Hostname = "localhost" }
+
+          $Port = Read-Host "SQL Server port (press Enter for 1433)"
+          if ([string]::IsNullOrWhiteSpace($Port)) { $Port = "1433" }
+
+          Write-Host ""
+          Write-Host "Authentication Method:"
+          Write-Host "  1. Windows Authentication (for local or domain SQL Server)"
+          Write-Host "  2. SQL Server Authentication (for remote SQL Server)"
+          $AuthChoice = Read-Host "Enter choice (1 or 2, press Enter for 1)"
+          if ([string]::IsNullOrWhiteSpace($AuthChoice)) { $AuthChoice = "1" }
+          if ($AuthChoice -ne "1" -and $AuthChoice -ne "2") {
+            Write-Host ""
+            Write-Host "ERROR: Invalid choice '$AuthChoice'. Enter 1 for Windows Authentication or 2 for SQL Authentication."
+            Write-Host ""
             exit 1
           }
+
+          $Username = ""
+          $Password = ""
+
+          if ($AuthChoice -eq "2") {
+            $Username = Read-Host "SQL Server username"
+            $SecurePassword = Read-Host "SQL Server password" -AsSecureString
+            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+            $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+            
+            # Test connection immediately
+            Write-Host ""
+            Write-Host "Testing connection to SQL Server..."
+            $testQuery = "SELECT @@VERSION"
+            $testResult = sqlcmd -S "$Hostname,$Port" -U $Username -P $Password -Q $testQuery -h -1 -W 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "ERROR: Connection test failed!"
+              Write-Host "Please verify:"
+              Write-Host "  - Server address: $Hostname"
+              Write-Host "  - Port: $Port"
+              Write-Host "  - Username: $Username"
+              Write-Host "  - Password is correct"
+              Write-Host "  - SQL Server is running and accessible"
+              Write-Host ""
+              Read-Host "Press Enter to exit"
+              exit 1
+            }
+            Write-Host "Connection successful!"
+          }
+
+          Write-Host ""
+          Write-Host "Configuration saved:"
+          Write-Host ("  Hostname: " + $Hostname)
+          Write-Host ("  Port: " + $Port)
+          Write-Host ("  Auth: " + $(if ($AuthChoice -eq "1") { "Windows Authentication" } else { "SQL Authentication (user: $Username)" }))
+          Write-Host ""
+
+          # Save to environment variables for next task
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_MSSQL_HOSTNAME", $Hostname, "Process")
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_MSSQL_PORT", $Port, "Process")
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_DB_USERNAME", $Username, "Process")
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_DB_PASSWORD", $Password, "Process")
+
+          # Also save to a temp file as backup
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          $configContent = "HOSTNAME=$Hostname`nPORT=$Port`nUSERNAME=$Username`nPASSWORD=$Password"
+          [System.IO.File]::WriteAllText($configFile, $configContent, [System.Text.Encoding]::UTF8)
           '
 
-    # ── Step 2: Download and install NRDOT Collector MSI ─────────────────────
+    # ── Check sqlcmd is installed ─────────────────────────────────────────────
+    assert_sqlcmd:
+      cmds:
+        - |
+          powershell -command '
+          if (Get-Command sqlcmd -ErrorAction SilentlyContinue) {
+            Write-Host ("sqlcmd found: " + (Get-Command sqlcmd).Source)
+            exit 0
+          }
+          Write-Host ""
+          Write-Host "ERROR: sqlcmd is not installed or not in PATH."
+          Write-Host ""
+          Write-Host "sqlcmd is required to create the SQL Server monitoring login."
+          Write-Host "Install it using one of the following methods:"
+          Write-Host ""
+          Write-Host "  Option 1 - SQL Server Command Line Tools (recommended):"
+          Write-Host "    https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility"
+          Write-Host ""
+          Write-Host "  Option 2 - winget:"
+          Write-Host "    winget install Microsoft.SQLServerCommandLineTools"
+          Write-Host ""
+          Write-Host "After installing, re-run this recipe."
+          Write-Host ""
+          exit 1
+          '
+
+    # ── Check SQL Server version (must be 2017 / v14 or later) ───────────────
     #
-    # Downloads nrdot-collector-host-windows-amd64-latest.msi from New Relic's
-    # distribution site and installs it silently via msiexec.
-    # Respects HTTPS_PROXY if set in the environment.
-    # An MSI installation log is written to %TEMP%\nrdot-install.log for
-    # troubleshooting if the install fails.
+    # Tries Windows Authentication first (works for local or domain SQL Server).
+    # If that fails, tries SQL Authentication using NR_CLI_DB_USERNAME/PASSWORD
+    # if provided. If both fail, the version check is skipped with a notice.
     # ─────────────────────────────────────────────────────────────────────────
+    assert_db_version:
+      cmds:
+        - |
+          powershell -command '
+          # Load config from temp file
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (Test-Path $configFile) {
+            Get-Content $configFile -Encoding UTF8 | ForEach-Object {
+              if ($_ -match "^(\w+)=(.*)$") {
+                $varName = $matches[1]
+                $varValue = $matches[2].Trim()
+                Set-Variable -Name $varName -Value $varValue
+                Write-Host ("Loaded: " + $varName + " = " + $varValue)
+              }
+            }
+          } else {
+            Write-Host "ERROR: Configuration file not found. Please re-run the installation."
+            exit 1
+          }
+
+          $Server = $HOSTNAME + "," + $PORT
+          $sq = [char]39
+          $Query = "SET NOCOUNT ON; SELECT SERVERPROPERTY(" + $sq + "ProductMajorVersion" + $sq + ")"
+
+          Write-Host ""
+          Write-Host "Checking SQL Server version..."
+          Write-Host ("  Server : " + $Server)
+
+          # Run query using SQL Auth or Windows Auth depending on available credentials
+          if ($USERNAME -and $PASSWORD) {
+            Write-Host "  Using SQL Authentication..."
+            $raw = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -Q $Query -h -1 -W 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "ERROR: Failed to connect to SQL Server at $Server"
+              Write-Host "  - Verify the server address and port are reachable"
+              Write-Host "  - Verify the username and password are correct"
+              Write-Host "  - Ensure SQL Server allows remote connections"
+              Write-Host "  - Check that port $PORT is open in the firewall"
+              Write-Host ""
+              exit 1
+            }
+          } else {
+            Write-Host "  Using Windows Authentication..."
+            $raw = sqlcmd -S $Server -E -Q $Query -h -1 -W 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "ERROR: Windows Authentication failed for $Server"
+              Write-Host "  - Ensure the current Windows user has access to SQL Server"
+              Write-Host "  - Or re-run and choose SQL Authentication with valid credentials"
+              Write-Host ""
+              exit 1
+            }
+          }
+
+          # Detect SQL-level errors even when sqlcmd exits 0
+          if ($raw -match "Msg \d+, Level \d+") {
+            Write-Host ""
+            Write-Host "ERROR: SQL Server returned an error while checking version:"
+            Write-Host ($raw.Trim())
+            Write-Host ""
+            exit 1
+          }
+
+          $majorVersionMatch = $raw -split "`n" | Where-Object { $_ -match "^\s*\d+\s*$" } | Select-Object -First 1
+          $majorVersion = if ($majorVersionMatch) { $majorVersionMatch.Trim() } else { "" }
+
+          if (-not $majorVersion -or -not ($majorVersion -match "^\d+$")) {
+            Write-Host ""
+            Write-Host "ERROR: Could not determine SQL Server version."
+            Write-Host "  sqlcmd output: " + $raw.Trim()
+            Write-Host ""
+            exit 1
+          }
+
+          $major = [int]$majorVersion
+
+          $versionMap = @{ 8="2000"; 9="2005"; 10="2008"; 11="2012"; 12="2014"; 13="2016"; 14="2017"; 15="2019"; 16="2022" }
+          $friendlyVersion = if ($versionMap.ContainsKey($major)) { $versionMap[$major] } else { "Unknown" }
+
+          Write-Host ("  Version: SQL Server " + $friendlyVersion + " (v" + $major + ")")
+
+          if ($major -lt 14) {
+            Write-Host ""
+            Write-Host ("ERROR: SQL Server " + $friendlyVersion + " (v" + $major + ") is not supported.")
+            Write-Host ""
+            Write-Host "The New Relic MSSQL OTel integration requires SQL Server 2017 (v14) or later."
+            Write-Host "Supported versions: 2017, 2019, 2022"
+            Write-Host ""
+            Write-Host "Please upgrade your SQL Server instance and re-run this recipe."
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host ("  Status : Supported (SQL Server " + $friendlyVersion + ")")
+          Write-Host ""
+          '
+
+    # ── Download and install NRDOT Collector MSI ──────────────────────────────
     install_nrdot:
       cmds:
         - |
           powershell -command '
           $MsiUrl  = "https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-windows-amd64-latest.msi"
-          $MsiFile = "$env:TEMP\nrdot-collector-host-windows-amd64-latest.msi"
-          $LogFile = "$env:TEMP\nrdot-install.log"
+          $MsiFile = [System.IO.Path]::Combine($env:TEMP, "nrdot-collector-host-windows-amd64-latest.msi")
+          $LogFile = [System.IO.Path]::Combine($env:TEMP, "nrdot-install.log")
 
           Write-Host ""
-          Write-Host "Step 2: Download NRDOT Collector for Windows"
-          Write-Host "  URL : $MsiUrl"
+          Write-Host "Downloading NRDOT Collector..."
+          Write-Host ("  URL : " + $MsiUrl)
           Write-Host ""
 
-          # Download MSI (honour HTTPS_PROXY if set)
           $ProgressPreference = "SilentlyContinue"
-          if ($env:HTTPS_PROXY) {
-            Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiFile -UseBasicParsing `
-              -Proxy $env:HTTPS_PROXY -ErrorAction Stop
-          } else {
-            Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiFile -UseBasicParsing `
-              -ErrorAction Stop
-          }
+          Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiFile -UseBasicParsing -ErrorAction Stop
           $ProgressPreference = "Continue"
 
           if (-not (Test-Path $MsiFile)) {
-            Write-Error "Download failed; MSI not found at: $MsiFile"
+            Write-Error "Download failed - MSI file not found"
             exit 1
           }
           Write-Host "Download complete."
           Write-Host ""
 
-          # Install silently, write verbose log for troubleshooting
-          Write-Host "Installing NRDOT Collector (this may take a moment) ..."
-          $process = Start-Process -FilePath "msiexec.exe" `
-            -ArgumentList "/qn /i `"$MsiFile`" /l*v `"$LogFile`"" `
-            -Wait -PassThru
+          Write-Host "Installing NRDOT Collector (this may take a moment)..."
+          $process = Start-Process -FilePath "msiexec.exe" -ArgumentList ("/qn /i " + [char]34 + $MsiFile + [char]34 + " /l*v " + [char]34 + $LogFile + [char]34) -Wait -PassThru
 
           if (Test-Path $MsiFile) { Remove-Item $MsiFile -Force }
 
           if ($process.ExitCode -ne 0) {
-            Write-Error "MSI installation failed (exit code $($process.ExitCode)). Review log: $LogFile"
+            Write-Error ("MSI installation failed (exit code " + $process.ExitCode + "). Review log: " + $LogFile)
             exit 1
           }
 
@@ -205,630 +280,11 @@ install:
           Write-Host ""
           '
 
-    # ── Step 3: Create SQL login and grant permissions ────────────────────────
-    #
-    # Mode 1 (Windows Auth / NR_CLI_MSSQL_AUTH_MODE=1):
-    #   Connects with sqlcmd -E (trusted connection / current Windows identity).
-    #   Requires SQL Server to be local or domain-trusted.
-    #
-    # Mode 2 (SQL Auth / NR_CLI_MSSQL_AUTH_MODE=2):
-    #   Connects with sqlcmd -U $AdminUsername -P $AdminPassword.
-    #   Works with any reachable SQL Server, including remote VMs.
-    #
-    # In both modes the script:
-    #   - Creates the monitoring login if it does not already exist
-    #   - Grants instance-level permissions (VIEW SERVER STATE, VIEW ANY DEFINITION,
-    #     VIEW ANY DATABASE)
-    #   - Grants per-database permissions across all online user databases
-    #     (VIEW DATABASE STATE, VIEW DEFINITION, db_datareader)
-    # ─────────────────────────────────────────────────────────────────────────
-    create_sql_user:
-      cmds:
-        - |
-          powershell -command '
-          Write-Host ""
-          Write-Host "Step 3: Create SQL Server monitoring user"
-          
-          $Username = $env:NR_CLI_MSSQL_USERNAME
-          $Password = $env:NR_CLI_MSSQL_PASSWORD
-          $Hostname = if ($env:NR_CLI_MSSQL_HOSTNAME) { $env:NR_CLI_MSSQL_HOSTNAME } else { "localhost" }
-          $Port = if ($env:NR_CLI_MSSQL_PORT) { $env:NR_CLI_MSSQL_PORT } else { "1433" }
-          $AuthMode = if ($env:NR_CLI_MSSQL_AUTH_MODE) { $env:NR_CLI_MSSQL_AUTH_MODE } else { "1" }
-          
-          if ([string]::IsNullOrWhiteSpace($Username)) {
-            Write-Error "NR_CLI_MSSQL_USERNAME environment variable not set"
-            exit 1
-          }
-          if ([string]::IsNullOrWhiteSpace($Password)) {
-            Write-Error "NR_CLI_MSSQL_PASSWORD environment variable not set"
-            exit 1
-          }
-          
-          Write-Host "  Server   : ${Hostname},${Port}"
-          Write-Host "  Username : $Username"
-          Write-Host ""
-          
-          $sqlUrl = "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/otel/mssql/windows-user-setup.sql"
-          $tempSqlFile = Join-Path $env:TEMP "newrelic-mssql-setup.sql"
-          
-          try {
-            Write-Host "Downloading SQL script..."
-            $webClient = New-Object System.Net.WebClient
-            $sqlTemplate = $webClient.DownloadString($sqlUrl)
-            
-            $sqlContent = $sqlTemplate.Replace("{USERNAME}", $Username).Replace("{PASSWORD}", $Password)
-            [System.IO.File]::WriteAllText($tempSqlFile, $sqlContent, [System.Text.Encoding]::UTF8)
-            
-            if ($AuthMode -eq "1") {
-              Write-Host "Using Windows Authentication..."
-              & sqlcmd -S "${Hostname},${Port}" -E -i $tempSqlFile
-            }
-            else {
-              $AdminUser = $env:NR_CLI_MSSQL_ADMIN_USERNAME
-              $AdminPass = $env:NR_CLI_MSSQL_ADMIN_PASSWORD
-              if ([string]::IsNullOrWhiteSpace($AdminUser) -or [string]::IsNullOrWhiteSpace($AdminPass)) {
-                Write-Error "Admin credentials required for SQL Authentication"
-                exit 1
-              }
-              Write-Host "Using SQL Server Authentication..."
-              & sqlcmd -S "${Hostname},${Port}" -U $AdminUser -P $AdminPass -i $tempSqlFile
-            }
-            
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to create SQL user"
-              exit 1
-            }
-            
-            Write-Host "SQL user created successfully"
-            Write-Host ""
-          }
-          finally {
-            if (Test-Path $tempSqlFile) {
-              Remove-Item $tempSqlFile -Force
-            }
-          }
-          '
-    configure_nrdot:
-      cmds:
-        - |
-          powershell -command '
-          # ── Resolve values ─────────────────────────────────────────────────
-          $Username   = if ($env:NR_CLI_MSSQL_USERNAME) { $env:NR_CLI_MSSQL_USERNAME } else { "newrelic" }
-          $Hostname   = if ($env:NR_CLI_MSSQL_HOSTNAME) { $env:NR_CLI_MSSQL_HOSTNAME } else { "localhost" }
-          $Port       = if ($env:NR_CLI_MSSQL_PORT)     { $env:NR_CLI_MSSQL_PORT }     else { "1433" }
-          $DbInput    = $env:NR_CLI_MSSQL_DATABASES
-
-          # Accept either NEW_RELIC_LICENSE_KEY (set automatically by the CLI)
-          # or LICENSE_KEY (set manually in the install command)
-          $LicenseKey = if ($env:NEW_RELIC_LICENSE_KEY) { $env:NEW_RELIC_LICENSE_KEY } `
-                        elseif ($env:LICENSE_KEY)       { $env:LICENSE_KEY }            `
-                        else                            { "" }
-
-          if ([string]::IsNullOrWhiteSpace($LicenseKey)) {
-            Write-Error "License key is required. Set NEW_RELIC_LICENSE_KEY or LICENSE_KEY."
-            exit 1
-          }
-
-          # ── Get password from environment ──────────────────────────────────
-          $Password = $env:NR_CLI_MSSQL_PASSWORD
-          if ([string]::IsNullOrWhiteSpace($Password)) {
-            Write-Error "NR_CLI_MSSQL_PASSWORD is required. Ensure the CLI passed this value."
-            exit 1
-          }
-
-          # ── Resolve OTLP region (1=US, 2=EU) ──────────────────────────────
-          $Region = $env:NR_CLI_OTLP_REGION
-          if ([string]::IsNullOrWhiteSpace($Region)) { $Region = "1" }
-          $OtlpEndpoint = if ($Region.Trim() -eq "2") {
-            "https://otlp.eu01.nr-data.net:4318"
-          } else {
-            "https://otlp.nr-data.net:4318"
-          }
-
-          # ── Build monitored_databases value ───────────────────────────────
-          # Blank → [] (monitor all)
-          # Provided as "db1","db2" → ["db1","db2"]
-          if ([string]::IsNullOrWhiteSpace($DbInput)) {
-            $MonitoredDbs = "[]"
-          } else {
-            $dbNames = [regex]::Matches($DbInput, '"([^"]+)"') |
-                         ForEach-Object { $_.Groups[1].Value }
-            if ($dbNames.Count -eq 0) {
-              $MonitoredDbs = "[]"
-            } else {
-              $quoted = $dbNames | ForEach-Object { "`"$_`"" }
-              $MonitoredDbs = "[" + ($quoted -join ", ") + "]"
-            }
-          }
-
-          Write-Host ""
-          Write-Host "Step 4: Configure NRDOT Collector"
-          Write-Host "  Hostname   : $Hostname"
-          Write-Host "  Port       : $Port"
-          Write-Host "  Username   : $Username"
-          Write-Host "  OTLP       : $OtlpEndpoint"
-          Write-Host "  Databases  : $(if ($MonitoredDbs -eq "[]") { "all" } else { $MonitoredDbs })"
-          Write-Host ""
-
-          # ── Locate config file ─────────────────────────────────────────────
-          $ConfigPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
-
-          if (-not (Test-Path $ConfigPath)) {
-            Write-Error "Config file not found: $ConfigPath`nEnsure NRDOT Collector was installed successfully."
-            exit 1
-          }
-
-          Write-Host "Generating complete NRDOT configuration with SQL Server receiver..."
-
-          # ── Backup existing config ─────────────────────────────────────────
-          $BackupPath = "$ConfigPath.backup"
-          if (Test-Path $ConfigPath) {
-            Copy-Item $ConfigPath $BackupPath -Force
-            Write-Host "Backed up existing config to: $BackupPath"
-          }
-
-          # ── Escape special characters for YAML ─────────────────────────────
-          $SafePassword   = $Password.Replace("''", "''''")
-          $SafeLicenseKey = $LicenseKey.Replace("''", "''''")
-
-          # ── Generate complete config with SQL Server monitoring ────────────
-          $configContent = @"
-          # NRDOT Collector Configuration for SQL Server Monitoring
-          # Generated by New Relic OTel Recipe
-
-          extensions:
-            health_check:
-
-          receivers:
-            otlp:
-              protocols:
-                grpc:
-                http:
-
-            hostmetrics:
-              # Default collection interval is 60s. Lower if you need finer granularity.
-              collection_interval: 60s
-              scrapers:
-                cpu:
-                  metrics:
-                    system.cpu.time:
-                      enabled: false
-                    system.cpu.utilization:
-                      enabled: true
-                load:
-                memory:
-                  metrics:
-                    system.memory.utilization:
-                      enabled: true
-                paging:
-                  metrics:
-                    system.paging.utilization:
-                      enabled: false
-                    system.paging.faults:
-                      enabled: false
-                filesystem:
-                  metrics:
-                    system.filesystem.utilization:
-                      enabled: true
-                disk:
-                  metrics:
-                    system.disk.merged:
-                      enabled: false
-                    system.disk.pending_operations:
-                      enabled: false
-                    system.disk.weighted_io_time:
-                      enabled: false
-                network:
-                  metrics:
-                    system.network.connections:
-                      enabled: false
-               # Uncomment to enable process metrics, which can be noisy but valuable.
-               # processes:
-               # process:
-               #  metrics:
-               #    process.cpu.utilization:
-               #      enabled: true
-               #    process.cpu.time:
-               #      enabled: false
-
-            filelog:
-              include:
-                - /var/log/alternatives.log
-                - /var/log/cloud-init.log
-                - /var/log/auth.log
-                - /var/log/dpkg.log
-                - /var/log/syslog
-                - /var/log/messages
-                - /var/log/secure
-                - /var/log/yum.log
-
-            newrelicsqlserver:
-              hostname: "$Hostname"
-              port: "$Port"
-              username: "$Username"
-              password: '$SafePassword'
-              monitored_databases: $MonitoredDbs
-              # timeout: 30s
-              # collection_interval: 15s
-              # query_monitoring_fetch_interval: 15
-              # query_monitoring_response_time_threshold: 100
-              # query_monitoring_count_threshold: 30
-              # interval_calculator_cache_ttl_minutes: 10
-
-              # Metric Category Toggles - Enable/disable entire categories of metrics
-              # enable_instance_metrics: true
-              # enable_database_metrics: true
-              # enable_user_connection_metrics: true
-              # enable_wait_time_metrics: true
-              # enable_failover_cluster_metrics: true
-              # enable_database_principals_metrics: true
-              # enable_database_role_membership_metrics: true
-              # enable_security_metrics: true
-              # enable_lock_metrics: true
-              # enable_thread_pool_metrics: true
-              # enable_tempdb_metrics: true
-
-          processors:
-            # group system.cpu metrics by cpu
-            metricstransform:
-              transforms:
-                - include: system.cpu.utilization
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [ state ]
-                      aggregation_type: mean
-                - include: system.paging.operations
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [ direction ]
-                      aggregation_type: sum
-
-            # remove system.cpu metrics for states
-            filter/exclude_cpu_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
-
-            filter/exclude_memory_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
-
-            filter/exclude_memory_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
-
-            filter/exclude_filesystem_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
-
-            filter/exclude_filesystem_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_filesystem_inodes_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_system_disk:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
-
-            filter/exclude_system_paging:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.paging.operations" and attributes["type"] == "cached"'
-
-            filter/exclude_network:
-              metrics:
-                datapoint:
-                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
-
-            attributes/exclude_system_paging:
-              include:
-                match_type: strict
-                metric_names:
-                  - system.paging.operations
-              actions:
-                - key: type
-                  action: delete
-
-            transform/clear_metadata:
-              metric_statements:
-                - context: metric
-                  statements:
-                    - set(metric.description, "")
-                    - set(metric.unit, "")
-
-            filter/exec_plan_include:
-              metrics:
-                include:
-                  match_type: strict
-                  metric_names:
-                    - sqlserver.slowquery.query_details
-                    - sqlserver.execution.plan
-                    - sqlserver.blocking_query.details
-                    - sqlserver.activequery.query_details
-
-            filter/exec_plan_exclude:
-              metrics:
-                exclude:
-                  match_type: strict
-                  metric_names:
-                    - sqlserver.slowquery.query_details
-                    - sqlserver.execution.plan
-                    - sqlserver.blocking_query.details
-                    - sqlserver.activequery.query_details
-
-            cumulativetodelta:
-              max_staleness: 5m
-              include:
-                match_type: strict
-                metrics:
-                  - sqlserver.wait_stats.latch.wait_time_ms
-                  - sqlserver.wait_stats.latch.waiting_tasks_count
-                  - sqlserver.wait_stats.wait_time_ms
-                  - sqlserver.wait_stats.waiting_tasks_count
-                  - sqlserver.stats.sql_compilations_per_sec
-                  - sqlserver.stats.sql_recompilations_per_sec
-                  - sqlserver.stats.lock_waits_per_sec
-                  - sqlserver.stats.deadlocks_per_sec
-                  - sqlserver.stats.user_errors_per_sec
-                  - sqlserver.stats.kill_connection_errors_per_sec
-                  - sqlserver.access.page_splits_per_sec
-                  - sqlserver.buffer.checkpoint_pages_per_sec
-                  - sqlserver.bufferpool.batch_requests_per_sec
-                  - sqlserver.instance.transactions_per_sec
-                  - sqlserver.instance.forced_parameterizations_per_sec
-                  - sqlserver.instance.full_scans_rate
-                  - sqlserver.instance.lock_timeouts_rate
-                  - sqlserver.database.log.flushes_per_sec
-                  - sqlserver.database.log.bytes_flushed_per_sec
-                  - sqlserver.database.log.flush_waits_per_sec
-                  - sqlserver.failover_cluster.log_bytes_received_per_sec
-                  - sqlserver.user_connections.authentication.logins_per_sec
-
-            deltatorate:
-              metrics:
-                - sqlserver.wait_stats.latch.wait_time_ms
-                - sqlserver.wait_stats.latch.waiting_tasks_count
-                - sqlserver.wait_stats.wait_time_ms
-                - sqlserver.wait_stats.waiting_tasks_count
-                - sqlserver.stats.sql_compilations_per_sec
-                - sqlserver.stats.sql_recompilations_per_sec
-                - sqlserver.stats.lock_waits_per_sec
-                - sqlserver.stats.deadlocks_per_sec
-                - sqlserver.stats.user_errors_per_sec
-                - sqlserver.stats.kill_connection_errors_per_sec
-                - sqlserver.access.page_splits_per_sec
-                - sqlserver.buffer.checkpoint_pages_per_sec
-                - sqlserver.bufferpool.batch_requests_per_sec
-                - sqlserver.instance.transactions_per_sec
-                - sqlserver.instance.forced_parameterizations_per_sec
-                - sqlserver.instance.full_scans_rate
-                - sqlserver.instance.lock_timeouts_rate
-                - sqlserver.database.log.flushes_per_sec
-                - sqlserver.database.log.bytes_flushed_per_sec
-                - sqlserver.database.log.flush_waits_per_sec
-                - sqlserver.failover_cluster.log_bytes_received_per_sec
-                - sqlserver.user_connections.authentication.logins_per_sec
-
-            transform/host:
-              metric_statements:
-                - context: metric
-                  statements:
-                    - set(metric.description, "")
-                    - set(metric.unit, "")
-
-            transform:
-              trace_statements:
-                - context: span
-                  statements:
-                    - truncate_all(span.attributes, 4095)
-                    - truncate_all(resource.attributes, 4095)
-              log_statements:
-                - context: log
-                  statements:
-                    - truncate_all(log.attributes, 4095)
-                    - truncate_all(resource.attributes, 4095)
-
-            memory_limiter:
-              check_interval: 1s
-              limit_mib: ${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
-
-            batch:
-
-            resourcedetection:
-              detectors: ["system"]
-              system:
-                hostname_sources: ["os"]
-                resource_attributes:
-                  host.id:
-                    enabled: true
-
-            resourcedetection/db_safe:
-              detectors: ["system"]
-              override: false
-              system:
-                hostname_sources: ["os"]
-                resource_attributes:
-                  host.id:
-                    enabled: true
-
-            resourcedetection/cloud:
-              detectors: ["gcp", "ec2", "azure"]
-              timeout: 2s
-              override: true
-
-            resourcedetection/env:
-              detectors: ["env"]
-              timeout: 2s
-              override: true
-
-          connectors:
-            metricsaslogs:
-              include_resource_attributes: true
-              include_scope_info: true
-
-          exporters:
-            otlphttp:
-              endpoint: "$OtlpEndpoint"
-              headers:
-                api-key: '$SafeLicenseKey'
-              compression: gzip
-
-          service:
-            pipelines:
-              metrics/host:
-                receivers: [hostmetrics]
-                processors:
-                  - memory_limiter
-                  - metricstransform
-                  - filter/exclude_cpu_utilization
-                  - filter/exclude_memory_utilization
-                  - filter/exclude_memory_usage
-                  - filter/exclude_filesystem_utilization
-                  - filter/exclude_filesystem_usage
-                  - filter/exclude_filesystem_inodes_usage
-                  - filter/exclude_system_disk
-                  - filter/exclude_network
-                  - attributes/exclude_system_paging
-                  - transform/host
-                  - resourcedetection
-                  - resourcedetection/cloud
-                  - resourcedetection/db_safe
-                  - resourcedetection/env
-                  - cumulativetodelta
-                  - deltatorate
-                  - batch
-                exporters: [otlphttp]
-              traces:
-                receivers: [otlp]
-                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
-                exporters: [otlphttp]
-              metrics:
-                receivers: [newrelicsqlserver, otlp]
-                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_exclude, batch]
-                exporters: [otlphttp]
-              logs:
-                receivers: [metricsaslogs, otlp]
-                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
-                exporters: [otlphttp]
-              metrics/exec_plan_to_logs:
-                receivers: [newrelicsqlserver, otlp]
-            processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_include, batch]
-            exporters: [metricsaslogs]
-            extensions: [health_check]
-          "@
-
-          # Strip leading indentation from config content (10 spaces per line)
-          $configContent = ($configContent -split "`n" | ForEach-Object { 
-            if ($_.Length -ge 10) { $_.Substring(10) } else { $_ } 
-          }) -join "`n"
-
-          # ── Write complete config to file ──────────────────────────────────
-          $configContent | Out-File -FilePath $ConfigPath -Encoding UTF8 -Force
-
-          Write-Host "Configuration file updated successfully"
-          Write-Host ""
-          '
-
-    # ── Step 5: Restart NRDOT Collector service and verify ───────────────────
-    #
-    # Stops and starts the "nrdot-collector-host" Windows service so the new
-    # config.yaml is picked up, then checks sc query STATE == 4 (RUNNING).
-    # ─────────────────────────────────────────────────────────────────────────
-    restart_nrdot:
-      cmds:
-        - |
-          powershell -command '
-          $ServiceName = "nrdot-collector-host"
-
-          Write-Host ""
-          Write-Host "Step 5: Restart the NRDOT Collector Service"
-          Write-Host ""
-
-          # ── Stop service ───────────────────────────────────────────────────
-          Write-Host "Stopping service: $ServiceName ..."
-          $stopOutput = & net stop $ServiceName 2>&1
-          $stopCode   = $LASTEXITCODE
-
-          # Exit code 2 means "service was not running" — treat as OK
-          if ($stopCode -ne 0 -and $stopCode -ne 2) {
-            Write-Warning "net stop exited with code $stopCode`: $stopOutput"
-          } else {
-            Write-Host "Service stopped."
-          }
-
-          # ── Start service ──────────────────────────────────────────────────
-          Write-Host "Starting service: $ServiceName ..."
-          $startOutput = & net start $ServiceName 2>&1
-          $startCode   = $LASTEXITCODE
-
-          if ($startCode -ne 0) {
-            Write-Error "net start failed (exit code $startCode):`n$startOutput"
-            exit 1
-          }
-          Write-Host "Service started."
-          Write-Host ""
-
-          # ── Verify STATE: 4 RUNNING ────────────────────────────────────────
-          Write-Host "Verifying service status ..."
-          $scOutput = & sc.exe query $ServiceName 2>&1
-
-          # sc query returns STATE: 4  RUNNING when the service is up
-          if ($scOutput -match "STATE\s*:\s*4\s+RUNNING") {
-            Write-Host ""
-            Write-Host "Service status: RUNNING (STATE: 4)"
-            Write-Host "NRDOT Collector is collecting SQL Server metrics."
-          } else {
-            # Surface the raw sc query output so the user can diagnose
-            Write-Host $scOutput
-            Write-Error "Service did not reach RUNNING state. Check the output above."
-            exit 1
-          }
-          Write-Host ""
-          '
-
 postInstall:
-  info: |2
-      Installation complete.
+  info: |
+    NRDOT Collector installed.
 
-      Steps completed:
-        1. NRDOT Collector downloaded and installed
-        2. SQL Server monitoring login created and permissions granted
-        3. NRDOT Collector configured with SQL Server connection details
-        4. Service restarted and verified RUNNING
+    Config file : C:\Program Files (x86)\NRDOT Collector Host\config.yaml
 
-      Config file : C:\Program Files (x86)\NRDOT Collector Host\config.yaml
-
-      Manual service commands (if needed):
-        net stop  nrdot-collector-host
-        net start nrdot-collector-host
-        sc query  nrdot-collector-host
-
-      STATE: 4 RUNNING in sc query output confirms the service is active.
-
-      Troubleshooting:
-        MSI install log : %TEMP%\nrdot-install.log
+    Troubleshooting:
+      MSI install log : %TEMP%\nrdot-install.log
