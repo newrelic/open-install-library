@@ -31,6 +31,7 @@ install:
         - task: assert_sqlcmd
         - task: prompt_and_save_config
         - task: assert_db_version
+        - task: create_monitoring_user
         - task: install_nrdot
 
     # ── Prompt user for SQL Server connection details ─────────────────────────
@@ -239,6 +240,176 @@ install:
 
           Write-Host ("  Status : Supported (SQL Server " + $friendlyVersion + ")")
           Write-Host ""
+          '
+
+    # ── Create monitoring user with required permissions ──────────────────────
+    create_monitoring_user:
+      cmds:
+        - |
+          powershell -command '
+          # Load config from temp file
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (Test-Path $configFile) {
+            Get-Content $configFile -Encoding UTF8 | ForEach-Object {
+              if ($_ -match "^(\w+)=(.*)$") {
+                $varName = $matches[1]
+                $varValue = $matches[2].Trim()
+                Set-Variable -Name $varName -Value $varValue
+              }
+            }
+          } else {
+            Write-Host "ERROR: Configuration file not found. Please re-run the installation."
+            exit 1
+          }
+
+          # Prompt for monitoring username
+          Write-Host ""
+          Write-Host "=== SQL Server Monitoring User Setup ==="
+          Write-Host ""
+          $MonitoringUsername = Read-Host "Enter monitoring username (press Enter for default: newrelic)"
+          if ([string]::IsNullOrWhiteSpace($MonitoringUsername)) {
+            $MonitoringUsername = "newrelic"
+          }
+
+          Write-Host ""
+          Write-Host "Creating SQL Server monitoring user..."
+          Write-Host "  Username: $MonitoringUsername"
+
+          # Auto-generate a secure password (alphanumeric only to avoid SQL escaping issues)
+          $MonitoringPassword = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_})
+          Write-Host "  Password: $MonitoringPassword (auto-generated)"
+
+          $Server = $HOSTNAME + "," + $PORT
+          Write-Host "  Server: $Server"
+          Write-Host "  Username: $MonitoringUsername"
+
+          # Create SQL script for user creation and permissions
+          $SQL=@"
+          SET QUOTED_IDENTIFIER OFF;
+          USE [master];
+
+          -- Create login if it does not already exist; update password if it does
+          IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = `"$MonitoringUsername`")
+          BEGIN
+              CREATE LOGIN [$MonitoringUsername] WITH PASSWORD = `"$MonitoringPassword`"
+          END
+          ELSE
+          BEGIN
+              ALTER LOGIN [$MonitoringUsername] WITH PASSWORD = `"$MonitoringPassword`"
+          END
+
+          -- Instance-level permissions
+          GRANT VIEW SERVER STATE   TO [$MonitoringUsername]
+          GRANT VIEW ANY DEFINITION TO [$MonitoringUsername]
+          GRANT VIEW ANY DATABASE   TO [$MonitoringUsername]
+
+          -- Grant read access privileges to all online non-system user databases
+          DECLARE @name SYSNAME
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+              SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`", `"msdb`", `"tempdb`", `"model`", `"rdsadmin`", `"distribution`") and state = 0
+          OPEN db_cursor
+          FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+          BEGIN
+              BEGIN TRY
+                  EXECUTE(`"USE [`" + @name + `"]; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = `"`"$MonitoringUsername`"`") BEGIN CREATE USER [$MonitoringUsername] FOR LOGIN [$MonitoringUsername]; END; GRANT VIEW DATABASE STATE TO [$MonitoringUsername]; GRANT VIEW DEFINITION TO [$MonitoringUsername]; ALTER ROLE db_datareader ADD MEMBER [$MonitoringUsername];`")
+              END TRY
+              BEGIN CATCH
+              END CATCH
+              FETCH next FROM db_cursor INTO @name
+          END
+          CLOSE db_cursor
+          DEALLOCATE db_cursor
+
+          select name from sys.syslogins where name = `"$MonitoringUsername`"
+          "@
+
+          # Write SQL to temp file
+          $SqlFile = Join-Path $env:TEMP "nr-create-monitoring-user.sql"
+          if (Test-Path $SqlFile) { Remove-Item $SqlFile }
+          [System.IO.File]::WriteAllText($SqlFile, $SQL, [System.Text.Encoding]::UTF8)
+
+          # Execute SQL using appropriate authentication method
+          Write-Host ""
+          Write-Host "Executing SQL to create monitoring user..."
+
+          if ($USERNAME -and $PASSWORD) {
+            Write-Host "  Using SQL Authentication..."
+            $SqlOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $SqlFile -W 2>&1 | Out-String
+          } else {
+            Write-Host "  Using Windows Authentication..."
+            $SqlOutput = sqlcmd -S $Server -E -i $SqlFile -W 2>&1 | Out-String
+          }
+
+          $SqlExitCode = $LASTEXITCODE
+
+          # Clean up temp file
+          if (Test-Path $SqlFile) { Remove-Item $SqlFile }
+
+          # Check for SQL errors
+          if ($SqlExitCode -ne 0 -or $SqlOutput -match "Msg \d+, Level \d+") {
+            Write-Host ""
+            Write-Host "ERROR: Failed to create monitoring user!"
+            Write-Host "  SQL Server returned exit code: $SqlExitCode"
+            Write-Host ""
+            Write-Host "Error details:"
+            Write-Host $SqlOutput
+            Write-Host ""
+            exit 1
+          }
+
+          # Verify user was created by checking the output for the username
+          Write-Host ""
+          Write-Host "Verifying monitoring user creation..."
+
+          $verifyQuery = "SET QUOTED_IDENTIFIER OFF; SET NOCOUNT ON; SELECT name FROM sys.syslogins WHERE name = `"$MonitoringUsername`""
+          $verifyFile = Join-Path $env:TEMP "nr-verify-user.sql"
+          [System.IO.File]::WriteAllText($verifyFile, $verifyQuery, [System.Text.Encoding]::UTF8)
+
+          if ($USERNAME -and $PASSWORD) {
+            $verifyOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $verifyFile -h -1 -W 2>&1 | Out-String
+          } else {
+            $verifyOutput = sqlcmd -S $Server -E -i $verifyFile -h -1 -W 2>&1 | Out-String
+          }
+
+          if (Test-Path $verifyFile) { Remove-Item $verifyFile }
+
+          # Check if verification was successful
+          $userCreated = $false
+          if ($verifyOutput.Trim() -match $MonitoringUsername) {
+            $userCreated = $true
+          }
+
+          if ($userCreated) {
+            Write-Host ""
+            Write-Host "=========================================="
+            Write-Host "SUCCESS: Monitoring user created!"
+            Write-Host "=========================================="
+            Write-Host ""
+            Write-Host "Credentials for SQL Server monitoring:"
+            Write-Host "  Username: $MonitoringUsername"
+            Write-Host "  Password: $MonitoringPassword"
+            Write-Host ""
+            Write-Host "IMPORTANT: Save these credentials securely!"
+            Write-Host "You will need them to configure the NRDOT Collector."
+            Write-Host ""
+
+            # Save monitoring user credentials to config file for later use
+            $monitoringConfigFile = Join-Path $env:TEMP "nr-mssql-monitoring-user.txt"
+            $monitoringContent = "MONITORING_USERNAME=$MonitoringUsername`nMONITORING_PASSWORD=$MonitoringPassword"
+            [System.IO.File]::WriteAllText($monitoringConfigFile, $monitoringContent, [System.Text.Encoding]::UTF8)
+          } else {
+            Write-Host ""
+            Write-Host "ERROR: Monitoring user was not created successfully!"
+            Write-Host "Verification query output:"
+            Write-Host $verifyOutput
+            Write-Host ""
+            Write-Host "Please check:"
+            Write-Host "  - SQL Server logs for detailed error messages"
+            Write-Host "  - That the admin user has sufficient permissions"
+            Write-Host "  - That SQL Server is configured for SQL Authentication"
+            Write-Host ""
+            exit 1
+          }
           '
 
     # ── Download and install NRDOT Collector MSI ──────────────────────────────
