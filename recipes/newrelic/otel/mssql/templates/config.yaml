@@ -1,14 +1,5 @@
 # NRDOT Collector Configuration for New Relic SQL Server Integration
 # SQL Server On-Premises/VM Configuration
-#
-# Placeholders replaced at runtime by the recipe:
-#   {MSSQL_HOSTNAME}  - SQL Server hostname or IP
-#   {MSSQL_PORT}      - SQL Server port (default 1433)
-#   {MSSQL_USERNAME}  - SQL login name
-#   {MSSQL_PASSWORD}  - SQL login password  (single-quote-escaped for YAML)
-#   {MONITORED_DBS}   - YAML sequence of databases, or [] for all
-#   {OTLP_ENDPOINT}   - New Relic OTLP endpoint URL
-#   {LICENSE_KEY}     - New Relic license key
 
 extensions:
   health_check:
@@ -56,14 +47,14 @@ receivers:
         metrics:
           system.network.connections:
             enabled: false
-     # Uncomment to enable process metrics, which can be noisy but valuable.
-     # processes:
-     # process:
-     #  metrics:
-     #    process.cpu.utilization:
-     #      enabled: true
-     #    process.cpu.time:
-     #      enabled: false
+      # Uncomment to enable process metrics, which can be noisy but valuable.
+      # processes:
+      # process:
+      #  metrics:
+      #    process.cpu.utilization:
+      #      enabled: true
+      #    process.cpu.time:
+      #      enabled: false
 
   filelog:
     include:
@@ -77,19 +68,19 @@ receivers:
       - /var/log/yum.log
 
   newrelicsqlserver:
-    hostname: "{MSSQL_HOSTNAME}"
-    port: "{MSSQL_PORT}"
-    username: "{MSSQL_USERNAME}"
-    password: '{MSSQL_PASSWORD}'
-    monitored_databases: {MONITORED_DBS}
+    hostname: "<YOUR_DB_HOST>"
+    port: <YOUR_DB_PORT>
+    username: "<USERNAME>"
+    password: "<PASSWORD>"
+    monitored_databases: []
     # timeout: 30s
-    # collection_interval: 15s
+    # collection_interval: 30s
     # query_monitoring_fetch_interval: 15
     # query_monitoring_response_time_threshold: 100
     # query_monitoring_count_threshold: 30
     # interval_calculator_cache_ttl_minutes: 10
 
-    # Metric Category Toggles - Enable/disable entire categories of metrics
+    # Core Metric Category Toggles - Enable/disable entire categories of metrics
     # enable_instance_metrics: true
     # enable_database_metrics: true
     # enable_user_connection_metrics: true
@@ -101,6 +92,7 @@ receivers:
     # enable_lock_metrics: true
     # enable_thread_pool_metrics: true
     # enable_tempdb_metrics: true
+    # enable_database_buffer_metrics: true
 
 processors:
   # group system.cpu metrics by cpu
@@ -110,13 +102,13 @@ processors:
         action: update
         operations:
           - action: aggregate_labels
-            label_set: [ state ]
+            label_set: [state]
             aggregation_type: mean
       - include: system.paging.operations
         action: update
         operations:
           - action: aggregate_labels
-            label_set: [ direction ]
+            label_set: [direction]
             aggregation_type: sum
 
   # remove system.cpu metrics for states
@@ -188,6 +180,7 @@ processors:
       - key: type
         action: delete
 
+  # Transform to clear description and unit fields
   transform/clear_metadata:
     metric_statements:
       - context: metric
@@ -195,6 +188,7 @@ processors:
           - set(metric.description, "")
           - set(metric.unit, "")
 
+  # Filter to only include execution plan and event metrics (for logs conversion)
   filter/exec_plan_include:
     metrics:
       include:
@@ -205,6 +199,7 @@ processors:
           - sqlserver.blocking_query.details
           - sqlserver.activequery.query_details
 
+  # Filter to exclude execution plan and event metrics (from main metrics pipeline)
   filter/exec_plan_exclude:
     metrics:
       exclude:
@@ -220,10 +215,12 @@ processors:
     include:
       match_type: strict
       metrics:
+        # Wait stats (sys.dm_os_wait_stats)
         - sqlserver.wait_stats.latch.wait_time_ms
         - sqlserver.wait_stats.latch.waiting_tasks_count
         - sqlserver.wait_stats.wait_time_ms
         - sqlserver.wait_stats.waiting_tasks_count
+        # Instance stats (sys.dm_os_performance_counters)
         - sqlserver.stats.sql_compilations_per_sec
         - sqlserver.stats.sql_recompilations_per_sec
         - sqlserver.stats.lock_waits_per_sec
@@ -237,10 +234,13 @@ processors:
         - sqlserver.instance.forced_parameterizations_per_sec
         - sqlserver.instance.full_scans_rate
         - sqlserver.instance.lock_timeouts_rate
+        # Database log (sys.dm_os_performance_counters)
         - sqlserver.database.log.flushes_per_sec
         - sqlserver.database.log.bytes_flushed_per_sec
         - sqlserver.database.log.flush_waits_per_sec
+        # Failover cluster
         - sqlserver.failover_cluster.log_bytes_received_per_sec
+        # User connections
         - sqlserver.user_connections.authentication.logins_per_sec
 
   deltatorate:
@@ -287,6 +287,7 @@ processors:
           - truncate_all(log.attributes, 4095)
           - truncate_all(resource.attributes, 4095)
 
+  # used to prevent out of memory situations on the collector
   memory_limiter:
     check_interval: 1s
     limit_mib: ${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
@@ -327,9 +328,9 @@ connectors:
 
 exporters:
   otlphttp:
-    endpoint: "{OTLP_ENDPOINT}"
+    endpoint: "<YOUR_NEWRELIC_OTLP_ENDPOINT>"
     headers:
-      api-key: '{LICENSE_KEY}'
+      api-key: "<YOUR_NEWRELIC_API_KEY>"
     compression: gzip
 
 service:
@@ -359,18 +360,52 @@ service:
       exporters: [otlphttp]
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+      processors:
+        [
+          memory_limiter,
+          transform,
+          resourcedetection,
+          resourcedetection/cloud,
+          resourcedetection/env,
+          batch,
+        ]
       exporters: [otlphttp]
     metrics:
       receivers: [newrelicsqlserver, otlp]
-      processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_exclude, batch]
+      processors:
+        [
+          memory_limiter,
+          transform,
+          resourcedetection,
+          resourcedetection/cloud,
+          resourcedetection/env,
+          filter/exec_plan_exclude,
+          batch,
+        ]
       exporters: [otlphttp]
     logs:
       receivers: [metricsaslogs, otlp]
-      processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+      processors:
+        [
+          memory_limiter,
+          transform,
+          resourcedetection,
+          resourcedetection/cloud,
+          resourcedetection/env,
+          batch,
+        ]
       exporters: [otlphttp]
     metrics/exec_plan_to_logs:
       receivers: [newrelicsqlserver, otlp]
-      processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_include, batch]
+      processors:
+        [
+          memory_limiter,
+          transform,
+          resourcedetection,
+          resourcedetection/cloud,
+          resourcedetection/env,
+          filter/exec_plan_include,
+          batch,
+        ]
       exporters: [metricsaslogs]
   extensions: [health_check]

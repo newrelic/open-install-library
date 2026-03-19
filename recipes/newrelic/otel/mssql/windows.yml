@@ -33,6 +33,7 @@ install:
         - task: assert_db_version
         - task: create_monitoring_user
         - task: install_nrdot
+        - task: configure_nrdot
 
     # ── Prompt user for SQL Server connection details ─────────────────────────
     prompt_and_save_config:
@@ -451,11 +452,172 @@ install:
           Write-Host ""
           '
 
+    # ── Configure NRDOT Collector with SQL Server monitoring ──────────────────
+    configure_nrdot:
+      cmds:
+        - |
+          powershell -command '
+          # Load connection config
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (-not (Test-Path $configFile)) {
+            Write-Host "ERROR: Connection configuration file not found."
+            exit 1
+          }
+
+          $config = @{}
+          Get-Content $configFile -Encoding UTF8 | ForEach-Object {
+            if ($_ -match "^(\w+)=(.*)$") {
+              $config[$matches[1]] = $matches[2].Trim()
+            }
+          }
+
+          # Load monitoring user credentials
+          $monitoringConfigFile = Join-Path $env:TEMP "nr-mssql-monitoring-user.txt"
+          if (-not (Test-Path $monitoringConfigFile)) {
+            Write-Host "ERROR: Monitoring user configuration file not found."
+            exit 1
+          }
+
+          Get-Content $monitoringConfigFile -Encoding UTF8 | ForEach-Object {
+            if ($_ -match "^MONITORING_(\w+)=(.*)$") {
+              $config["MONITORING_" + $matches[1]] = $matches[2].Trim()
+            }
+          }
+
+          Write-Host ""
+          Write-Host "=== Configuring NRDOT Collector ==="
+          Write-Host ""
+          Write-Host "Configuration details:"
+          Write-Host ("  SQL Server: " + $config["HOSTNAME"] + ":" + $config["PORT"])
+          Write-Host ("  Monitoring User: " + $config["MONITORING_USERNAME"])
+          Write-Host ""
+
+          # OTLP endpoint based on region
+          $otlpEndpoint = "https://otlp.nr-data.net"
+          $region = "{{.NEW_RELIC_REGION}}"
+          if ($region -eq "EU") {
+            $otlpEndpoint = "https://otlp.eu01.nr-data.net"
+          } elseif ($region -eq "STAGING") {
+            $otlpEndpoint = "https://staging-otlp.nr-data.net"
+          }
+
+          $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
+
+          # Backup existing config
+          if (Test-Path $configPath) {
+            $backupPath = $configPath + ".backup." + (Get-Date -Format "yyyyMMdd-HHmmss")
+            Write-Host "Backing up existing config to: $backupPath"
+            Copy-Item $configPath $backupPath
+          }
+
+          # Extract values
+          $hostname = $config["HOSTNAME"]
+          $port = $config["PORT"]
+          $username = $config["MONITORING_USERNAME"]
+          $password = $config["MONITORING_PASSWORD"]
+          $licenseKey = "{{.NEW_RELIC_LICENSE_KEY}}"
+
+          Write-Host "Downloading configuration template..."
+          Write-Host ""
+
+          # Download template from GitHub (using fork branch for testing)
+          $templateUrl = "https://raw.githubusercontent.com/pkudikyala/open-install-library/pk-mssql-otel-cli/recipes/newrelic/otel/mssql/templates/config.yaml"
+
+          try {
+            $ProgressPreference = "SilentlyContinue"
+            $templateContent = (Invoke-WebRequest -Uri $templateUrl -UseBasicParsing -ErrorAction Stop).Content
+            $ProgressPreference = "Continue"
+            Write-Host "Template downloaded successfully."
+          } catch {
+            Write-Host "ERROR: Failed to download config template from: $templateUrl"
+            Write-Host "Error: $_"
+            exit 1
+          }
+
+          Write-Host "Applying configuration values..."
+
+          # Replace placeholders with actual values
+          $newConfig = $templateContent
+          $newConfig = $newConfig -replace "<YOUR_DB_HOST>", $hostname
+          $newConfig = $newConfig -replace "<YOUR_DB_PORT>", $port
+          $newConfig = $newConfig -replace "<USERNAME>", $username
+          $newConfig = $newConfig -replace "<PASSWORD>", $password
+          $newConfig = $newConfig -replace "<YOUR_NEWRELIC_OTLP_ENDPOINT>", $otlpEndpoint
+          $newConfig = $newConfig -replace "<YOUR_NEWRELIC_API_KEY>", $licenseKey
+
+          # Fix memory_limiter env variable
+          $newConfig = $newConfig -replace [regex]::Escape(''${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}''), "100"
+
+          Write-Host "Writing configuration file..."
+          [System.IO.File]::WriteAllText($configPath, $newConfig, [System.Text.Encoding]::UTF8)
+
+          Write-Host "Configuration written successfully."
+          Write-Host ""
+
+          # Restart NRDOT service
+          Write-Host "Restarting NRDOT Collector service..."
+          try {
+            $service = Get-Service -Name "NRDOT Collector Host" -ErrorAction SilentlyContinue
+            if ($service) {
+              Restart-Service -Name "NRDOT Collector Host" -Force
+              Start-Sleep -Seconds 3
+
+              $status = (Get-Service -Name "NRDOT Collector Host").Status
+              if ($status -eq "Running") {
+                Write-Host "SUCCESS! Service is running."
+              } else {
+                Write-Host "WARNING: Service status is: $status"
+                Write-Host ""
+                Write-Host "Check Event Viewer for details:"
+                Write-Host "  Applications and Services Logs -> NRDOT Collector Host"
+              }
+            } else {
+              Write-Host "WARNING: NRDOT Collector Host service not found."
+            }
+          } catch {
+            Write-Host "ERROR: Failed to restart service: $_"
+            Write-Host ""
+            Write-Host "Check Event Viewer for details:"
+            Write-Host "  Applications and Services Logs -> NRDOT Collector Host"
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "Configuration complete!"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Config file: $configPath"
+          if (Test-Path $configPath) {
+            $backupPath = $configPath + ".backup.*"
+            $latestBackup = Get-ChildItem $backupPath -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($latestBackup) {
+              Write-Host "Backup: $($latestBackup.FullName)"
+            }
+          }
+          Write-Host ""
+          Write-Host "SQL Server monitoring configured with:"
+          Write-Host "  - newrelicsqlserver receiver"
+          Write-Host "  - cumulativetodelta and deltatorate processors"
+          Write-Host "  - transform/clear_metadata processor"
+          Write-Host "  - filter/exec_plan_include and filter/exec_plan_exclude"
+          Write-Host "  - resourcedetection/db_safe processor"
+          Write-Host "  - metricsaslogs connector"
+          Write-Host "  - metrics and metrics/exec_plan_to_logs pipelines"
+          Write-Host ""
+          Write-Host "To customize metric collection, edit the config file and uncomment:"
+          Write-Host "  - timeout, collection_interval, query_monitoring settings"
+          Write-Host "  - enable_*_metrics toggles (12 categories available)"
+          Write-Host ""
+          Write-Host "Next steps:"
+          Write-Host "  1. Check service status: Get-Service '"'"'NRDOT Collector Host'"'"'"
+          Write-Host "  2. View logs in Event Viewer or collector logs directory"
+          Write-Host "  3. Verify data in New Relic UI (may take 1-2 minutes)"
+          Write-Host ""
+          '
+
 postInstall:
   info: |
     NRDOT Collector installed.
 
     Config file : C:\Program Files (x86)\NRDOT Collector Host\config.yaml
-
-    Troubleshooting:
-      MSI install log : %TEMP%\nrdot-install.log
