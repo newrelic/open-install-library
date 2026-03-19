@@ -456,566 +456,87 @@ install:
     configure_nrdot:
       cmds:
         - |
-          powershell -command '
+          powershell -command "
           # Load connection config
-          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
-          if (-not (Test-Path $configFile)) {
-            Write-Host "ERROR: Connection configuration file not found."
+          `$configFile = Join-Path `$env:TEMP 'nr-mssql-config.txt'
+          if (-not (Test-Path `$configFile)) {
+            Write-Host 'ERROR: Connection configuration file not found.'
             exit 1
           }
 
-          $config = @{}
-          Get-Content $configFile -Encoding UTF8 | ForEach-Object {
-            if ($_ -match "^(\w+)=(.*)$") {
-              $config[$matches[1]] = $matches[2].Trim()
+          `$config = @{}
+          Get-Content `$configFile -Encoding UTF8 | ForEach-Object {
+            if (`$_ -match '^(\w+)=(.*)$') {
+              `$config[`$matches[1]] = `$matches[2].Trim()
             }
           }
 
           # Load monitoring user credentials
-          $monitoringConfigFile = Join-Path $env:TEMP "nr-mssql-monitoring-user.txt"
-          if (-not (Test-Path $monitoringConfigFile)) {
-            Write-Host "ERROR: Monitoring user configuration file not found."
+          `$monitoringConfigFile = Join-Path `$env:TEMP 'nr-mssql-monitoring-user.txt'
+          if (-not (Test-Path `$monitoringConfigFile)) {
+            Write-Host 'ERROR: Monitoring user configuration file not found.'
             exit 1
           }
 
-          Get-Content $monitoringConfigFile -Encoding UTF8 | ForEach-Object {
-            if ($_ -match "^MONITORING_(\w+)=(.*)$") {
-              $config["MONITORING_" + $matches[1]] = $matches[2].Trim()
+          Get-Content `$monitoringConfigFile -Encoding UTF8 | ForEach-Object {
+            if (`$_ -match '^MONITORING_(\w+)=(.*)$') {
+              `$config['MONITORING_' + `$matches[1]] = `$matches[2].Trim()
             }
           }
-
-          Write-Host ""
-          Write-Host "=== Configuring NRDOT Collector ==="
-          Write-Host ""
-          Write-Host "Configuration details:"
-          Write-Host ("  SQL Server: " + $config["HOSTNAME"] + ":" + $config["PORT"])
-          Write-Host ("  Monitoring User: " + $config["MONITORING_USERNAME"])
-          Write-Host ""
 
           # OTLP endpoint based on region
-          $otlpEndpoint = "https://otlp.nr-data.net"
-          $region = "{{.NEW_RELIC_REGION}}"
-          if ($region -eq "EU") {
-            $otlpEndpoint = "https://otlp.eu01.nr-data.net"
-          } elseif ($region -eq "STAGING") {
-            $otlpEndpoint = "https://staging-otlp.nr-data.net"
+          `$otlpEndpoint = 'https://otlp.nr-data.net'
+          `$region = '{{.NEW_RELIC_REGION}}'
+          if (`$region -eq 'EU') {
+            `$otlpEndpoint = 'https://otlp.eu01.nr-data.net'
+          } elseif (`$region -eq 'STAGING') {
+            `$otlpEndpoint = 'https://staging-otlp.nr-data.net'
           }
 
-          $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
+          # Download configuration script
+          `$scriptUrl = 'https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/otel/mssql/scripts/configure-nrdot-sqlserver.ps1'
+          `$scriptPath = Join-Path `$env:TEMP 'configure-nrdot-sqlserver.ps1'
 
-          # Backup existing config
-          if (Test-Path $configPath) {
-            $backupPath = $configPath + ".backup." + (Get-Date -Format "yyyyMMdd-HHmmss")
-            Write-Host "Backing up existing config to: $backupPath"
-            Copy-Item $configPath $backupPath
-          }
-
-          # Extract values
-          $hostname = $config["HOSTNAME"]
-          $port = $config["PORT"]
-          $username = $config["MONITORING_USERNAME"]
-          $password = $config["MONITORING_PASSWORD"]
-          $licenseKey = "{{.NEW_RELIC_LICENSE_KEY}}"
-
-          Write-Host "Preparing configuration template..."
-          Write-Host ""
-
-          # Embedded configuration template
-          $templateContent = @'
-# NRDOT Collector Configuration for New Relic SQL Server Integration
-# SQL Server On-Premises/VM Configuration
-
-extensions:
-  health_check:
-
-receivers:
-  otlp:
-    protocols:
-      grpc:
-      http:
-
-  hostmetrics:
-    # Default collection interval is 60s. Lower if you need finer granularity.
-    collection_interval: 60s
-    scrapers:
-      cpu:
-        metrics:
-          system.cpu.time:
-            enabled: false
-          system.cpu.utilization:
-            enabled: true
-      load:
-      memory:
-        metrics:
-          system.memory.utilization:
-            enabled: true
-      paging:
-        metrics:
-          system.paging.utilization:
-            enabled: false
-          system.paging.faults:
-            enabled: false
-      filesystem:
-        metrics:
-          system.filesystem.utilization:
-            enabled: true
-      disk:
-        metrics:
-          system.disk.merged:
-            enabled: false
-          system.disk.pending_operations:
-            enabled: false
-          system.disk.weighted_io_time:
-            enabled: false
-      network:
-        metrics:
-          system.network.connections:
-            enabled: false
-      # Uncomment to enable process metrics, which can be noisy but valuable.
-      # processes:
-      # process:
-      #  metrics:
-      #    process.cpu.utilization:
-      #      enabled: true
-      #    process.cpu.time:
-      #      enabled: false
-
-  filelog:
-    include:
-      - /var/log/alternatives.log
-      - /var/log/cloud-init.log
-      - /var/log/auth.log
-      - /var/log/dpkg.log
-      - /var/log/syslog
-      - /var/log/messages
-      - /var/log/secure
-      - /var/log/yum.log
-
-  newrelicsqlserver:
-    hostname: "<YOUR_DB_HOST>"
-    port: <YOUR_DB_PORT>
-    username: "<USERNAME>"
-    password: "<PASSWORD>"
-    monitored_databases: []
-    # timeout: 30s
-    # collection_interval: 30s
-    # query_monitoring_fetch_interval: 15
-    # query_monitoring_response_time_threshold: 100
-    # query_monitoring_count_threshold: 30
-    # interval_calculator_cache_ttl_minutes: 10
-
-    # Core Metric Category Toggles - Enable/disable entire categories of metrics
-    # enable_instance_metrics: true
-    # enable_database_metrics: true
-    # enable_user_connection_metrics: true
-    # enable_wait_time_metrics: true
-    # enable_failover_cluster_metrics: true
-    # enable_database_principals_metrics: true
-    # enable_database_role_membership_metrics: true
-    # enable_security_metrics: true
-    # enable_lock_metrics: true
-    # enable_thread_pool_metrics: true
-    # enable_tempdb_metrics: true
-    # enable_database_buffer_metrics: true
-
-processors:
-  # group system.cpu metrics by cpu
-  metricstransform:
-    transforms:
-      - include: system.cpu.utilization
-        action: update
-        operations:
-          - action: aggregate_labels
-            label_set: [state]
-            aggregation_type: mean
-      - include: system.paging.operations
-        action: update
-        operations:
-          - action: aggregate_labels
-            label_set: [direction]
-            aggregation_type: sum
-
-  # remove system.cpu metrics for states
-  filter/exclude_cpu_utilization:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
-        - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
-        - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
-
-  filter/exclude_memory_utilization:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
-        - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
-        - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
-        - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
-        - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
-
-  filter/exclude_memory_usage:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
-        - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
-
-  filter/exclude_filesystem_utilization:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
-
-  filter/exclude_filesystem_usage:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
-        - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
-
-  filter/exclude_filesystem_inodes_usage:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
-        - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
-
-  filter/exclude_system_disk:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
-        - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
-        - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
-        - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
-        - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
-
-  filter/exclude_system_paging:
-    metrics:
-      datapoint:
-        - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
-        - 'metric.name == "system.paging.operations" and attributes["type"] == "cached"'
-
-  filter/exclude_network:
-    metrics:
-      datapoint:
-        - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
-
-  attributes/exclude_system_paging:
-    include:
-      match_type: strict
-      metric_names:
-        - system.paging.operations
-    actions:
-      - key: type
-        action: delete
-
-  # Transform to clear description and unit fields
-  transform/clear_metadata:
-    metric_statements:
-      - context: metric
-        statements:
-          - set(metric.description, "")
-          - set(metric.unit, "")
-
-  # Filter to only include execution plan and event metrics (for logs conversion)
-  filter/exec_plan_include:
-    metrics:
-      include:
-        match_type: strict
-        metric_names:
-          - sqlserver.slowquery.query_details
-          - sqlserver.execution.plan
-          - sqlserver.blocking_query.details
-          - sqlserver.activequery.query_details
-
-  # Filter to exclude execution plan and event metrics (from main metrics pipeline)
-  filter/exec_plan_exclude:
-    metrics:
-      exclude:
-        match_type: strict
-        metric_names:
-          - sqlserver.slowquery.query_details
-          - sqlserver.execution.plan
-          - sqlserver.blocking_query.details
-          - sqlserver.activequery.query_details
-
-  cumulativetodelta:
-    max_staleness: 5m
-    include:
-      match_type: strict
-      metrics:
-        # Wait stats (sys.dm_os_wait_stats)
-        - sqlserver.wait_stats.latch.wait_time_ms
-        - sqlserver.wait_stats.latch.waiting_tasks_count
-        - sqlserver.wait_stats.wait_time_ms
-        - sqlserver.wait_stats.waiting_tasks_count
-        # Instance stats (sys.dm_os_performance_counters)
-        - sqlserver.stats.sql_compilations_per_sec
-        - sqlserver.stats.sql_recompilations_per_sec
-        - sqlserver.stats.lock_waits_per_sec
-        - sqlserver.stats.deadlocks_per_sec
-        - sqlserver.stats.user_errors_per_sec
-        - sqlserver.stats.kill_connection_errors_per_sec
-        - sqlserver.access.page_splits_per_sec
-        - sqlserver.buffer.checkpoint_pages_per_sec
-        - sqlserver.bufferpool.batch_requests_per_sec
-        - sqlserver.instance.transactions_per_sec
-        - sqlserver.instance.forced_parameterizations_per_sec
-        - sqlserver.instance.full_scans_rate
-        - sqlserver.instance.lock_timeouts_rate
-        # Database log (sys.dm_os_performance_counters)
-        - sqlserver.database.log.flushes_per_sec
-        - sqlserver.database.log.bytes_flushed_per_sec
-        - sqlserver.database.log.flush_waits_per_sec
-        # Failover cluster
-        - sqlserver.failover_cluster.log_bytes_received_per_sec
-        # User connections
-        - sqlserver.user_connections.authentication.logins_per_sec
-
-  deltatorate:
-    metrics:
-      - sqlserver.wait_stats.latch.wait_time_ms
-      - sqlserver.wait_stats.latch.waiting_tasks_count
-      - sqlserver.wait_stats.wait_time_ms
-      - sqlserver.wait_stats.waiting_tasks_count
-      - sqlserver.stats.sql_compilations_per_sec
-      - sqlserver.stats.sql_recompilations_per_sec
-      - sqlserver.stats.lock_waits_per_sec
-      - sqlserver.stats.deadlocks_per_sec
-      - sqlserver.stats.user_errors_per_sec
-      - sqlserver.stats.kill_connection_errors_per_sec
-      - sqlserver.access.page_splits_per_sec
-      - sqlserver.buffer.checkpoint_pages_per_sec
-      - sqlserver.bufferpool.batch_requests_per_sec
-      - sqlserver.instance.transactions_per_sec
-      - sqlserver.instance.forced_parameterizations_per_sec
-      - sqlserver.instance.full_scans_rate
-      - sqlserver.instance.lock_timeouts_rate
-      - sqlserver.database.log.flushes_per_sec
-      - sqlserver.database.log.bytes_flushed_per_sec
-      - sqlserver.database.log.flush_waits_per_sec
-      - sqlserver.failover_cluster.log_bytes_received_per_sec
-      - sqlserver.user_connections.authentication.logins_per_sec
-
-  transform/host:
-    metric_statements:
-      - context: metric
-        statements:
-          - set(metric.description, "")
-          - set(metric.unit, "")
-
-  transform:
-    trace_statements:
-      - context: span
-        statements:
-          - truncate_all(span.attributes, 4095)
-          - truncate_all(resource.attributes, 4095)
-    log_statements:
-      - context: log
-        statements:
-          - truncate_all(log.attributes, 4095)
-          - truncate_all(resource.attributes, 4095)
-
-  # used to prevent out of memory situations on the collector
-  memory_limiter:
-    check_interval: 1s
-    limit_mib: 100
-
-  batch:
-
-  resourcedetection:
-    detectors: ["system"]
-    system:
-      hostname_sources: ["os"]
-      resource_attributes:
-        host.id:
-          enabled: true
-
-  resourcedetection/db_safe:
-    detectors: ["system"]
-    override: false
-    system:
-      hostname_sources: ["os"]
-      resource_attributes:
-        host.id:
-          enabled: true
-
-  resourcedetection/cloud:
-    detectors: ["gcp", "ec2", "azure"]
-    timeout: 2s
-    override: true
-
-  resourcedetection/env:
-    detectors: ["env"]
-    timeout: 2s
-    override: true
-
-connectors:
-  metricsaslogs:
-    include_resource_attributes: true
-    include_scope_info: true
-
-exporters:
-  otlphttp:
-    endpoint: "<YOUR_NEWRELIC_OTLP_ENDPOINT>"
-    headers:
-      api-key: "<YOUR_NEWRELIC_API_KEY>"
-    compression: gzip
-
-service:
-  pipelines:
-    metrics/host:
-      receivers: [hostmetrics]
-      processors:
-        - memory_limiter
-        - metricstransform
-        - filter/exclude_cpu_utilization
-        - filter/exclude_memory_utilization
-        - filter/exclude_memory_usage
-        - filter/exclude_filesystem_utilization
-        - filter/exclude_filesystem_usage
-        - filter/exclude_filesystem_inodes_usage
-        - filter/exclude_system_disk
-        - filter/exclude_network
-        - attributes/exclude_system_paging
-        - transform/host
-        - resourcedetection
-        - resourcedetection/cloud
-        - resourcedetection/db_safe
-        - resourcedetection/env
-        - cumulativetodelta
-        - deltatorate
-        - batch
-      exporters: [otlphttp]
-    traces:
-      receivers: [otlp]
-      processors:
-        [
-          memory_limiter,
-          transform,
-          resourcedetection,
-          resourcedetection/cloud,
-          resourcedetection/env,
-          batch,
-        ]
-      exporters: [otlphttp]
-    metrics:
-      receivers: [newrelicsqlserver, otlp]
-      processors:
-        [
-          memory_limiter,
-          transform,
-          resourcedetection,
-          resourcedetection/cloud,
-          resourcedetection/env,
-          filter/exec_plan_exclude,
-          batch,
-        ]
-      exporters: [otlphttp]
-    logs:
-      receivers: [metricsaslogs, otlp]
-      processors:
-        [
-          memory_limiter,
-          transform,
-          resourcedetection,
-          resourcedetection/cloud,
-          resourcedetection/env,
-          batch,
-        ]
-      exporters: [otlphttp]
-    metrics/exec_plan_to_logs:
-      receivers: [newrelicsqlserver, otlp]
-      processors:
-        [
-          memory_limiter,
-          transform,
-          resourcedetection,
-          resourcedetection/cloud,
-          resourcedetection/env,
-          filter/exec_plan_include,
-          batch,
-        ]
-      exporters: [metricsaslogs]
-  extensions: [health_check]
-'@
-
-          Write-Host "Applying configuration values..."
-
-          # Replace placeholders with actual values
-          $newConfig = $templateContent
-          $newConfig = $newConfig -replace "<YOUR_DB_HOST>", $hostname
-          $newConfig = $newConfig -replace "<YOUR_DB_PORT>", $port
-          $newConfig = $newConfig -replace "<USERNAME>", $username
-          $newConfig = $newConfig -replace "<PASSWORD>", $password
-          $newConfig = $newConfig -replace "<YOUR_NEWRELIC_OTLP_ENDPOINT>", $otlpEndpoint
-          $newConfig = $newConfig -replace "<YOUR_NEWRELIC_API_KEY>", $licenseKey
-
-          Write-Host "Writing configuration file..."
-          [System.IO.File]::WriteAllText($configPath, $newConfig, [System.Text.Encoding]::UTF8)
-
-          Write-Host "Configuration written successfully."
-          Write-Host ""
-
-          # Restart NRDOT service
-          Write-Host "Restarting NRDOT Collector service..."
+          Write-Host ''
+          Write-Host 'Downloading configuration script...'
           try {
-            $service = Get-Service -Name "NRDOT Collector Host" -ErrorAction SilentlyContinue
-            if ($service) {
-              Restart-Service -Name "NRDOT Collector Host" -Force
-              Start-Sleep -Seconds 3
-
-              $status = (Get-Service -Name "NRDOT Collector Host").Status
-              if ($status -eq "Running") {
-                Write-Host "SUCCESS! Service is running."
-              } else {
-                Write-Host "WARNING: Service status is: $status"
-                Write-Host ""
-                Write-Host "Check Event Viewer for details:"
-                Write-Host "  Applications and Services Logs -> NRDOT Collector Host"
-              }
-            } else {
-              Write-Host "WARNING: NRDOT Collector Host service not found."
-            }
+            (New-Object System.Net.WebClient).DownloadFile(`$scriptUrl, `$scriptPath)
+            Write-Host 'Script downloaded successfully.'
           } catch {
-            Write-Host "ERROR: Failed to restart service: $_"
-            Write-Host ""
-            Write-Host "Check Event Viewer for details:"
-            Write-Host "  Applications and Services Logs -> NRDOT Collector Host"
+            Write-Host 'ERROR: Failed to download configuration script'
+            Write-Host `$_
             exit 1
           }
 
-          Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "Configuration complete!"
-          Write-Host "=========================================="
-          Write-Host ""
-          Write-Host "Config file: $configPath"
-          if (Test-Path $configPath) {
-            $backupPath = $configPath + ".backup.*"
-            $latestBackup = Get-ChildItem $backupPath -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($latestBackup) {
-              Write-Host "Backup: $($latestBackup.FullName)"
-            }
+          # Execute configuration script
+          Write-Host ''
+          & `$scriptPath ``
+            -Hostname `$config['HOSTNAME'] ``
+            -Port ([int]`$config['PORT']) ``
+            -Username `$config['MONITORING_USERNAME'] ``
+            -Password `$config['MONITORING_PASSWORD'] ``
+            -OtlpEndpoint `$otlpEndpoint ``
+            -LicenseKey '{{.NEW_RELIC_LICENSE_KEY}}'
+
+          if (`$LASTEXITCODE -ne 0) {
+            Write-Host ''
+            Write-Host 'ERROR: Configuration failed'
+            exit 1
           }
-          Write-Host ""
-          Write-Host "SQL Server monitoring configured with:"
-          Write-Host "  - newrelicsqlserver receiver"
-          Write-Host "  - cumulativetodelta and deltatorate processors"
-          Write-Host "  - transform/clear_metadata processor"
-          Write-Host "  - filter/exec_plan_include and filter/exec_plan_exclude"
-          Write-Host "  - resourcedetection/db_safe processor"
-          Write-Host "  - metricsaslogs connector"
-          Write-Host "  - metrics and metrics/exec_plan_to_logs pipelines"
-          Write-Host ""
-          Write-Host "To customize metric collection, edit the config file and uncomment:"
-          Write-Host "  - timeout, collection_interval, query_monitoring settings"
-          Write-Host "  - enable_*_metrics toggles (12 categories available)"
-          Write-Host ""
-          Write-Host "Next steps:"
-          Write-Host "  1. Check service status: Get-Service '"'"'NRDOT Collector Host'"'"'"
-          Write-Host "  2. View logs in Event Viewer or collector logs directory"
-          Write-Host "  3. Verify data in New Relic UI (may take 1-2 minutes)"
-          Write-Host ""
-          '
+
+          # Clean up script
+          Remove-Item `$scriptPath -ErrorAction SilentlyContinue
+          "
 
 postInstall:
   info: |
-    NRDOT Collector installed.
+    NRDOT Collector configured for SQL Server monitoring.
 
-    Config file : C:\Program Files (x86)\NRDOT Collector Host\config.yaml
+    Config file: C:\Program Files (x86)\NRDOT Collector Host\config.yaml
+
+    SQL Server metrics will appear in New Relic within 1-2 minutes.
+    Check your New Relic account for:
+      - SQL Server instance metrics
+      - Database performance metrics
+      - Query execution plans
+      - Wait statistics
