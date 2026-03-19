@@ -276,8 +276,14 @@ install:
           Write-Host "Creating SQL Server monitoring user..."
           Write-Host "  Username: $MonitoringUsername"
 
-          # Auto-generate a secure password (alphanumeric only to avoid SQL escaping issues)
-          $MonitoringPassword = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_})
+          # Auto-generate a secure password that meets Windows complexity requirements
+          # Must contain: uppercase, lowercase, number, and special character
+          $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+          $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+          $numbers = -join ((48..57) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+          $special = -join ("!@#$%^&*".ToCharArray() | Get-Random -Count 2)
+          $allChars = ($upper + $lower + $numbers + $special).ToCharArray()
+          $MonitoringPassword = -join ($allChars | Get-Random -Count $allChars.Length)
           Write-Host "  Password: $MonitoringPassword (auto-generated)"
 
           $Server = $HOSTNAME + "," + $PORT
