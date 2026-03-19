@@ -53,6 +53,8 @@ $scriptPath = Join-Path $env:TEMP "configure-nrdot-sqlserver.ps1"
 Write-Host ""
 Write-Host "Downloading configuration script..."
 try {
+    # Set TLS 1.2 for secure downloads
+    [Net.ServicePointManager]::SecurityProtocol = 'tls12, tls'
     (New-Object System.Net.WebClient).DownloadFile($scriptUrl, $scriptPath)
     Write-Host "Script downloaded successfully."
 } catch {
