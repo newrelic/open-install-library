@@ -6,7 +6,7 @@ param(
     [string]$Hostname,
 
     [Parameter(Mandatory=$true)]
-    [int]$Port,
+    [string]$Port,
 
     [Parameter(Mandatory=$true)]
     [string]$Username,
