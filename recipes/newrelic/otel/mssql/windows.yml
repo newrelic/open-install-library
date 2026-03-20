@@ -30,6 +30,7 @@ install:
       cmds:
         - task: assert_sqlcmd
         - task: prompt_and_save_config
+        - task: validate_sql_connection
         - task: prompt_region_selection
         - task: prompt_license_key
         - task: prompt_monitored_databases
@@ -79,26 +80,6 @@ install:
             $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
             $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
             [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-            
-            # Test connection immediately
-            Write-Host ""
-            Write-Host "Testing connection to SQL Server..."
-            $testQuery = "SELECT @@VERSION"
-            $testResult = sqlcmd -S "$Hostname,$Port" -U $Username -P $Password -Q $testQuery -h -1 -W 2>&1
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host ""
-              Write-Host "ERROR: Connection test failed!"
-              Write-Host "Please verify:"
-              Write-Host "  - Server address: $Hostname"
-              Write-Host "  - Port: $Port"
-              Write-Host "  - Username: $Username"
-              Write-Host "  - Password is correct"
-              Write-Host "  - SQL Server is running and accessible"
-              Write-Host ""
-              Read-Host "Press Enter to exit"
-              exit 1
-            }
-            Write-Host "Connection successful!"
           }
 
           Write-Host ""
@@ -116,8 +97,242 @@ install:
 
           # Also save to a temp file as backup
           $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
-          $configContent = "HOSTNAME=$Hostname`nPORT=$Port`nUSERNAME=$Username`nPASSWORD=$Password"
+          $configContent = "HOSTNAME=$Hostname`nPORT=$Port`nUSERNAME=$Username`nPASSWORD=$Password`nAUTH_CHOICE=$AuthChoice"
           [System.IO.File]::WriteAllText($configFile, $configContent, [System.Text.Encoding]::UTF8)
+          '
+
+    # ── Validate SQL Server connection with retry attempts ─────────────────────
+    validate_sql_connection:
+      cmds:
+        - |
+          powershell -command '
+          # Load config from temp file
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (-not (Test-Path $configFile)) {
+            Write-Host "ERROR: Configuration file not found."
+            exit 1
+          }
+
+          $HOSTNAME = ""
+          $PORT = ""
+          $USERNAME = ""
+          $PASSWORD = ""
+          $AUTH_CHOICE = "1"
+
+          Get-Content $configFile -Encoding UTF8 | ForEach-Object {
+            if ($_ -match "^HOSTNAME=(.*)$") { $HOSTNAME = $matches[1].Trim() }
+            if ($_ -match "^PORT=(.*)$") { $PORT = $matches[1].Trim() }
+            if ($_ -match "^USERNAME=(.*)$") { $USERNAME = $matches[1].Trim() }
+            if ($_ -match "^PASSWORD=(.*)$") { $PASSWORD = $matches[1].Trim() }
+            if ($_ -match "^AUTH_CHOICE=(.*)$") { $AUTH_CHOICE = $matches[1].Trim() }
+          }
+
+          Write-Host ""
+          Write-Host "=== Validating SQL Server Connection ==="
+          Write-Host ""
+
+          $maxAttempts = 3
+          $attempt = 1
+          $connectionSuccess = $false
+
+          while ($attempt -le $maxAttempts -and -not $connectionSuccess) {
+            Write-Host "Attempt $attempt of $maxAttempts"
+            Write-Host ""
+
+            # Validate hostname
+            Write-Host "Validating hostname: $HOSTNAME"
+            $hostValid = $false
+
+            # Try to resolve hostname
+            try {
+              $resolved = [System.Net.Dns]::GetHostAddresses($HOSTNAME)
+              if ($resolved.Count -gt 0) {
+                Write-Host "  ✓ Hostname resolved successfully"
+                $hostValid = $true
+              }
+            } catch {
+              Write-Host "  ✗ ERROR: Cannot resolve hostname `"$HOSTNAME`""
+              Write-Host "    - Check if the hostname or IP address is correct"
+              Write-Host "    - Verify network connectivity"
+              Write-Host "    - Try using IP address instead of hostname"
+            }
+
+            if (-not $hostValid) {
+              Write-Host ""
+              if ($attempt -lt $maxAttempts) {
+                $retry = Read-Host "Enter new hostname/IP (or press Enter to exit)"
+                if ([string]::IsNullOrWhiteSpace($retry)) {
+                  Write-Host "Exiting..."
+                  exit 1
+                }
+                $HOSTNAME = $retry.Trim()
+                $attempt++
+                Write-Host ""
+                continue
+              } else {
+                Write-Host "Maximum attempts reached. Please verify your SQL Server details and try again."
+                exit 1
+              }
+            }
+
+            # Validate port
+            Write-Host "Validating port: $PORT"
+            $portValid = $false
+
+            if ($PORT -match "^\d+$") {
+              $portNum = [int]$PORT
+              if ($portNum -ge 1 -and $portNum -le 65535) {
+                Write-Host "  ✓ Port number is valid"
+                $portValid = $true
+              } else {
+                Write-Host "  ✗ ERROR: Port must be between 1 and 65535"
+              }
+            } else {
+              Write-Host "  ✗ ERROR: Port must be a number"
+            }
+
+            if (-not $portValid) {
+              Write-Host ""
+              if ($attempt -lt $maxAttempts) {
+                $retry = Read-Host "Enter new port (or press Enter to exit)"
+                if ([string]::IsNullOrWhiteSpace($retry)) {
+                  Write-Host "Exiting..."
+                  exit 1
+                }
+                $PORT = $retry.Trim()
+                $attempt++
+                Write-Host ""
+                continue
+              } else {
+                Write-Host "Maximum attempts reached. Please verify your SQL Server details and try again."
+                exit 1
+              }
+            }
+
+            # Validate credentials for SQL Authentication
+            if ($AUTH_CHOICE -eq "2") {
+              if ([string]::IsNullOrWhiteSpace($USERNAME) -or [string]::IsNullOrWhiteSpace($PASSWORD)) {
+                Write-Host "  ✗ ERROR: SQL Authentication requires username and password"
+                Write-Host "    - Username: $(if ($USERNAME) { $USERNAME } else { `"(empty)`" })"
+                Write-Host "    - Password: $(if ($PASSWORD) { `"(set)`" } else { `"(empty)`" })"
+                Write-Host ""
+
+                if ($attempt -lt $maxAttempts) {
+                  Write-Host "Please enter SQL Server credentials:"
+                  $USERNAME = Read-Host "SQL Server username"
+                  $SecurePassword = Read-Host "SQL Server password" -AsSecureString
+                  $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+                  $PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                  [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+                  $attempt++
+                  Write-Host ""
+                  continue
+                } else {
+                  Write-Host "Maximum attempts reached."
+                  Write-Host "ERROR: Cannot proceed without valid SQL Server credentials."
+                  exit 1
+                }
+              }
+            }
+
+            # Test SQL Server connection
+            Write-Host "Testing SQL Server connection..."
+            $Server = "$HOSTNAME,$PORT"
+
+            $testQuery = "SELECT @@VERSION"
+            $testResult = $null
+            $testExitCode = 0
+
+            if ($AUTH_CHOICE -eq "2") {
+              Write-Host "  Using SQL Authentication with user: $USERNAME"
+              $testResult = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -Q $testQuery -h -1 -W 2>&1 | Out-String
+              $testExitCode = $LASTEXITCODE
+            } else {
+              Write-Host "  Using Windows Authentication"
+              $testResult = sqlcmd -S $Server -E -Q $testQuery -h -1 -W 2>&1 | Out-String
+              $testExitCode = $LASTEXITCODE
+            }
+
+            if ($testExitCode -eq 0 -and $testResult -notmatch "Msg \d+, Level \d+") {
+              Write-Host "  ✓ Connection successful!"
+              Write-Host ""
+              Write-Host "SQL Server Version:"
+              Write-Host $testResult.Trim()
+              $connectionSuccess = $true
+            } else {
+              Write-Host "  ✗ Connection failed!"
+              Write-Host ""
+
+              # Analyze error
+              if ($testResult -match "Login failed for user") {
+                Write-Host "ERROR: Invalid username or password"
+                Write-Host "  - Verify username: $USERNAME"
+                Write-Host "  - Verify password is correct"
+                Write-Host "  - Check if SQL Server Authentication is enabled"
+              } elseif ($testResult -match "Cannot open server") {
+                Write-Host "ERROR: Cannot connect to server"
+                Write-Host "  - Verify SQL Server is running on $HOSTNAME"
+                Write-Host "  - Check if port $PORT is correct (default is 1433)"
+                Write-Host "  - Verify firewall allows connection on port $PORT"
+              } elseif ($testResult -match "timeout") {
+                Write-Host "ERROR: Connection timeout"
+                Write-Host "  - Server may be unreachable or not responding"
+                Write-Host "  - Check network connectivity"
+                Write-Host "  - Verify firewall settings"
+              } else {
+                Write-Host "ERROR: Connection test failed"
+                Write-Host ""
+                Write-Host "Error details:"
+                Write-Host $testResult.Trim()
+              }
+
+              Write-Host ""
+
+              if ($attempt -lt $maxAttempts) {
+                Write-Host "What would you like to do?"
+                Write-Host "  1. Retry with same credentials"
+                Write-Host "  2. Enter new username/password"
+                Write-Host "  3. Exit"
+                $choice = Read-Host "Enter choice (1, 2, or 3)"
+
+                if ($choice -eq "2") {
+                  $USERNAME = Read-Host "SQL Server username"
+                  $SecurePassword = Read-Host "SQL Server password" -AsSecureString
+                  $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+                  $PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                  [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+                } elseif ($choice -ne "1") {
+                  Write-Host "Exiting..."
+                  exit 1
+                }
+
+                $attempt++
+                Write-Host ""
+              } else {
+                Write-Host "Maximum attempts reached."
+                Write-Host ""
+                Write-Host "Please verify:"
+                Write-Host "  - SQL Server is running and accessible"
+                Write-Host "  - Hostname/IP: $HOSTNAME"
+                Write-Host "  - Port: $PORT"
+                Write-Host "  - Username: $USERNAME"
+                Write-Host "  - Password is correct"
+                Write-Host "  - SQL Server allows remote connections"
+                Write-Host "  - Firewall allows traffic on port $PORT"
+                Write-Host ""
+                exit 1
+              }
+            }
+          }
+
+          # Update config file with potentially corrected values
+          $configContent = "HOSTNAME=$HOSTNAME`nPORT=$PORT`nUSERNAME=$USERNAME`nPASSWORD=$PASSWORD`nAUTH_CHOICE=$AUTH_CHOICE"
+          [System.IO.File]::WriteAllText($configFile, $configContent, [System.Text.Encoding]::UTF8)
+
+          Write-Host "=========================================="
+          Write-Host "Connection validation successful!"
+          Write-Host "=========================================="
+          Write-Host ""
           '
 
     # ── Prompt user for New Relic region selection ────────────────────────────
@@ -178,29 +393,81 @@ install:
           Write-Host ""
 
           $LicenseKey = ""
+          $maxAttempts = 3
+          $attempt = 1
+          $keyValid = $false
 
           # Check if license key is provided via environment variables
           if ($env:LICENSE_KEY) {
             $LicenseKey = $env:LICENSE_KEY
             Write-Host "Using LICENSE_KEY from environment"
+            $keyValid = $true
           } elseif ($env:NEW_RELIC_LICENSE_KEY) {
             $LicenseKey = $env:NEW_RELIC_LICENSE_KEY
             Write-Host "Using NEW_RELIC_LICENSE_KEY from environment"
+            $keyValid = $true
           } else {
-            # Prompt user for license key
             Write-Host "New Relic License Key not found in environment variables."
             Write-Host ""
-            $SecureLicenseKey = Read-Host "Enter your New Relic License Key" -AsSecureString
-            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureLicenseKey)
-            $LicenseKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
           }
 
-          if ([string]::IsNullOrWhiteSpace($LicenseKey)) {
-            Write-Host ""
-            Write-Host "ERROR: License Key cannot be empty."
-            Write-Host ""
-            exit 1
+          # Validate license key (with retry for manual entry)
+          while ($attempt -le $maxAttempts -and -not $keyValid) {
+            if (-not $keyValid) {
+              if ($attempt -gt 1) {
+                Write-Host "Attempt $attempt of $maxAttempts"
+                Write-Host ""
+              }
+
+              # Prompt user for license key
+              $SecureLicenseKey = Read-Host "Enter your New Relic License Key" -AsSecureString
+              $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureLicenseKey)
+              $LicenseKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+              [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+            }
+
+            # Validate license key
+            if ([string]::IsNullOrWhiteSpace($LicenseKey)) {
+              Write-Host ""
+              Write-Host "  ✗ ERROR: License Key cannot be empty"
+              Write-Host ""
+              $attempt++
+              $keyValid = $false
+            } elseif ($LicenseKey.Length -ne 40) {
+              Write-Host ""
+              Write-Host "  ✗ ERROR: Invalid License Key format"
+              Write-Host "    - License keys are 40 characters long"
+              Write-Host "    - Your input has $($LicenseKey.Length) characters"
+              Write-Host "    - Make sure to copy the complete license key"
+              Write-Host ""
+              $attempt++
+              $keyValid = $false
+            } elseif (-not $LicenseKey.EndsWith("NRAL")) {
+              Write-Host ""
+              Write-Host "  ✗ ERROR: Invalid License Key format"
+              Write-Host "    - License keys end with `"NRAL`""
+              Write-Host "    - Your key ends with: $($LicenseKey.Substring($LicenseKey.Length - 4))"
+              Write-Host "    - Make sure you are using a License Key, not an API Key"
+              Write-Host ""
+              $attempt++
+              $keyValid = $false
+            } else {
+              Write-Host ""
+              Write-Host "  ✓ License Key format is valid"
+              $keyValid = $true
+            }
+
+            if (-not $keyValid -and $attempt -gt $maxAttempts) {
+              Write-Host "Maximum attempts reached."
+              Write-Host "ERROR: Cannot proceed without a valid New Relic License Key."
+              Write-Host ""
+              Write-Host "To find your License Key:"
+              Write-Host "  1. Log in to New Relic"
+              Write-Host "  2. Go to Account Settings"
+              Write-Host "  3. Copy the License Key (40 characters, ends with NRAL)"
+              Write-Host ""
+              exit 1
+            }
           }
 
           Write-Host ""
@@ -316,8 +583,8 @@ install:
           Write-Host "Checking SQL Server version..."
           Write-Host ("  Server : " + $Server)
 
-          # Run query using SQL Auth or Windows Auth depending on available credentials
-          if ($USERNAME -and $PASSWORD) {
+          # Run query using SQL Auth or Windows Auth based on AUTH_CHOICE
+          if ($AUTH_CHOICE -eq "2") {
             Write-Host "  Using SQL Authentication..."
             $raw = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -Q $Query -h -1 -W 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
@@ -406,17 +673,89 @@ install:
             exit 1
           }
 
-          # Prompt for monitoring username
+          # Prompt for monitoring username with validation
           Write-Host ""
           Write-Host "=== SQL Server Monitoring User Setup ==="
           Write-Host ""
-          $MonitoringUsername = Read-Host "Enter monitoring username (press Enter for default: newrelic)"
+
+          $Server = $HOSTNAME + "," + $PORT
+          $MonitoringUsername = ""
+          $userExists = $false
+          $updateExisting = $false
+          $maxAttempts = 3
+          $attempt = 1
+
+          while ($attempt -le $maxAttempts -and [string]::IsNullOrWhiteSpace($MonitoringUsername)) {
+            if ($attempt -gt 1) {
+              Write-Host "Attempt $attempt of $maxAttempts"
+              Write-Host ""
+            }
+
+            $inputUsername = Read-Host "Enter monitoring username (press Enter for default: newrelic)"
+            if ([string]::IsNullOrWhiteSpace($inputUsername)) {
+              $inputUsername = "newrelic"
+            }
+
+            # Check if user already exists
+            Write-Host ""
+            Write-Host "Checking if user `"$inputUsername`" already exists..."
+
+            $checkQuery = "SET QUOTED_IDENTIFIER OFF; SET NOCOUNT ON; SELECT name FROM sys.server_principals WHERE name = `"$inputUsername`" AND type = `"S`""
+            $checkFile = Join-Path $env:TEMP "nr-check-user.sql"
+            [System.IO.File]::WriteAllText($checkFile, $checkQuery, [System.Text.Encoding]::UTF8)
+
+            if ($AUTH_CHOICE -eq "2") {
+              $checkOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $checkFile -h -1 -W 2>&1 | Out-String
+            } else {
+              $checkOutput = sqlcmd -S $Server -E -i $checkFile -h -1 -W 2>&1 | Out-String
+            }
+
+            if (Test-Path $checkFile) { Remove-Item $checkFile }
+
+            if ($checkOutput.Trim() -match $inputUsername) {
+              Write-Host "  ⚠ WARNING: User `"$inputUsername`" already exists in SQL Server"
+              Write-Host ""
+              Write-Host "What would you like to do?"
+              Write-Host "  1. Use a different username"
+              Write-Host "  2. Update the existing user password and permissions"
+              Write-Host "  3. Exit"
+              $choice = Read-Host "Enter choice (1, 2, or 3)"
+
+              if ($choice -eq "2") {
+                Write-Host ""
+                Write-Host "  → Will update password for existing user: $inputUsername"
+                $MonitoringUsername = $inputUsername
+                $userExists = $true
+                $updateExisting = $true
+              } elseif ($choice -eq "3") {
+                Write-Host "Exiting..."
+                exit 1
+              } else {
+                # Choice 1 or invalid - try again
+                Write-Host ""
+                Write-Host "Please enter a different username."
+                Write-Host ""
+                $attempt++
+              }
+            } else {
+              Write-Host "  ✓ User `"$inputUsername`" does not exist - will create new user"
+              $MonitoringUsername = $inputUsername
+              $userExists = $false
+            }
+          }
+
           if ([string]::IsNullOrWhiteSpace($MonitoringUsername)) {
-            $MonitoringUsername = "newrelic"
+            Write-Host ""
+            Write-Host "ERROR: Could not determine a valid monitoring username."
+            exit 1
           }
 
           Write-Host ""
-          Write-Host "Creating SQL Server monitoring user..."
+          if ($updateExisting) {
+            Write-Host "Updating SQL Server monitoring user..."
+          } else {
+            Write-Host "Creating SQL Server monitoring user..."
+          }
           Write-Host "  Username: $MonitoringUsername"
 
           # Auto-generate a secure password that meets Windows complexity requirements
@@ -428,10 +767,7 @@ install:
           $allChars = ($upper + $lower + $numbers + $special).ToCharArray()
           $MonitoringPassword = -join ($allChars | Get-Random -Count $allChars.Length)
           Write-Host "  Password: $MonitoringPassword (auto-generated)"
-
-          $Server = $HOSTNAME + "," + $PORT
           Write-Host "  Server: $Server"
-          Write-Host "  Username: $MonitoringUsername"
 
           # Create SQL script for user creation and permissions
           $SQL=@"
@@ -478,11 +814,11 @@ install:
           if (Test-Path $SqlFile) { Remove-Item $SqlFile }
           [System.IO.File]::WriteAllText($SqlFile, $SQL, [System.Text.Encoding]::UTF8)
 
-          # Execute SQL using appropriate authentication method
+          # Execute SQL using appropriate authentication method based on AUTH_CHOICE
           Write-Host ""
           Write-Host "Executing SQL to create monitoring user..."
 
-          if ($USERNAME -and $PASSWORD) {
+          if ($AUTH_CHOICE -eq "2") {
             Write-Host "  Using SQL Authentication..."
             $SqlOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $SqlFile -W 2>&1 | Out-String
           } else {
@@ -515,7 +851,7 @@ install:
           $verifyFile = Join-Path $env:TEMP "nr-verify-user.sql"
           [System.IO.File]::WriteAllText($verifyFile, $verifyQuery, [System.Text.Encoding]::UTF8)
 
-          if ($USERNAME -and $PASSWORD) {
+          if ($AUTH_CHOICE -eq "2") {
             $verifyOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $verifyFile -h -1 -W 2>&1 | Out-String
           } else {
             $verifyOutput = sqlcmd -S $Server -E -i $verifyFile -h -1 -W 2>&1 | Out-String
@@ -532,12 +868,32 @@ install:
           if ($userCreated) {
             Write-Host ""
             Write-Host "=========================================="
-            Write-Host "SUCCESS: Monitoring user created!"
-            Write-Host "=========================================="
-            Write-Host ""
-            Write-Host "Credentials for SQL Server monitoring:"
-            Write-Host "  Username: $MonitoringUsername"
-            Write-Host "  Password: $MonitoringPassword"
+            if ($updateExisting) {
+              Write-Host "SUCCESS: Monitoring user updated!"
+              Write-Host "=========================================="
+              Write-Host ""
+              Write-Host "Existing user `"$MonitoringUsername`" has been updated with:"
+              Write-Host "  - New password: $MonitoringPassword"
+              Write-Host ""
+              Write-Host "Permissions granted:"
+            } else {
+              Write-Host "SUCCESS: Monitoring user created!"
+              Write-Host "=========================================="
+              Write-Host ""
+              Write-Host "New monitoring user created:"
+              Write-Host "  Username: $MonitoringUsername"
+              Write-Host "  Password: $MonitoringPassword"
+              Write-Host ""
+              Write-Host "Permissions granted:"
+            }
+            Write-Host "  Instance-level:"
+            Write-Host "    - VIEW SERVER STATE (view server performance and state)"
+            Write-Host "    - VIEW ANY DEFINITION (view object definitions)"
+            Write-Host "    - VIEW ANY DATABASE (view all databases)"
+            Write-Host "  Database-level (for all user databases):"
+            Write-Host "    - VIEW DATABASE STATE (view database performance)"
+            Write-Host "    - VIEW DEFINITION (view object definitions)"
+            Write-Host "    - db_datareader role (read data from all tables)"
             Write-Host ""
             Write-Host "IMPORTANT: Save these credentials securely!"
             Write-Host "You will need them to configure the NRDOT Collector."
