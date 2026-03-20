@@ -30,10 +30,13 @@ install:
       cmds:
         - task: assert_sqlcmd
         - task: prompt_and_save_config
+        - task: prompt_region_selection
+        - task: prompt_license_key
         - task: assert_db_version
         - task: create_monitoring_user
         - task: install_nrdot
         - task: configure_nrdot
+        - task: update_config_credentials
         - task: restart_service
         - task: add_compression
         - task: cleanup_traces
@@ -114,6 +117,102 @@ install:
           $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
           $configContent = "HOSTNAME=$Hostname`nPORT=$Port`nUSERNAME=$Username`nPASSWORD=$Password"
           [System.IO.File]::WriteAllText($configFile, $configContent, [System.Text.Encoding]::UTF8)
+          '
+
+    # ── Prompt user for New Relic region selection ────────────────────────────
+    prompt_region_selection:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== New Relic Region Selection ==="
+          Write-Host ""
+          Write-Host "Select your New Relic region:"
+          Write-Host "  1. US Production (otlp.nr-data.net)"
+          Write-Host "  2. EU Production (otlp.eu01.nr-data.net)"
+          Write-Host ""
+
+          $RegionChoice = Read-Host "Enter choice (1 or 2, press Enter for 1)"
+          if ([string]::IsNullOrWhiteSpace($RegionChoice)) { $RegionChoice = "1" }
+
+          if ($RegionChoice -ne "1" -and $RegionChoice -ne "2") {
+            Write-Host ""
+            Write-Host "ERROR: Invalid choice `"$RegionChoice`". Enter 1 for US Production or 2 for EU Production."
+            Write-Host ""
+            exit 1
+          }
+
+          $Endpoint = ""
+          $RegionName = ""
+
+          if ($RegionChoice -eq "1") {
+            $Endpoint = "https://otlp.nr-data.net"
+            $RegionName = "US Production"
+          } else {
+            $Endpoint = "https://otlp.eu01.nr-data.net"
+            $RegionName = "EU Production"
+          }
+
+          Write-Host ""
+          Write-Host "Selected: $RegionName"
+          Write-Host "Endpoint: $Endpoint"
+          Write-Host ""
+
+          # Save endpoint to a temp file for later use
+          $endpointFile = Join-Path $env:TEMP "nr-mssql-endpoint.txt"
+          $endpointContent = "ENDPOINT=$Endpoint`nREGION=$RegionName"
+          [System.IO.File]::WriteAllText($endpointFile, $endpointContent, [System.Text.Encoding]::UTF8)
+
+          Write-Host "Region configuration saved."
+          Write-Host ""
+          '
+
+    # ── Prompt user for New Relic License Key or read from environment ────────
+    prompt_license_key:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== New Relic License Key Configuration ==="
+          Write-Host ""
+
+          $LicenseKey = ""
+
+          # Check if license key is provided via environment variables
+          if ($env:LICENSE_KEY) {
+            $LicenseKey = $env:LICENSE_KEY
+            Write-Host "Using LICENSE_KEY from environment"
+          } elseif ($env:NEW_RELIC_LICENSE_KEY) {
+            $LicenseKey = $env:NEW_RELIC_LICENSE_KEY
+            Write-Host "Using NEW_RELIC_LICENSE_KEY from environment"
+          } else {
+            # Prompt user for license key
+            Write-Host "New Relic License Key not found in environment variables."
+            Write-Host ""
+            $SecureLicenseKey = Read-Host "Enter your New Relic License Key" -AsSecureString
+            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureLicenseKey)
+            $LicenseKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+          }
+
+          if ([string]::IsNullOrWhiteSpace($LicenseKey)) {
+            Write-Host ""
+            Write-Host "ERROR: License Key cannot be empty."
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "License Key configured successfully."
+          Write-Host ""
+
+          # Save license key to a temp file for later use
+          $licenseKeyFile = Join-Path $env:TEMP "nr-mssql-license-key.txt"
+          $licenseKeyContent = "LICENSE_KEY=$LicenseKey"
+          [System.IO.File]::WriteAllText($licenseKeyFile, $licenseKeyContent, [System.Text.Encoding]::UTF8)
+
+          Write-Host "License Key configuration saved."
+          Write-Host ""
           '
 
     # ── Check sqlcmd is installed ─────────────────────────────────────────────
@@ -1009,6 +1108,76 @@ install:
           Write-Host "  1. Check service status: Get-Service NRDOT\ Collector\ Host"
           Write-Host "  2. View logs in Event Viewer"
           Write-Host "  3. Verify data in New Relic UI"
+          Write-Host ""
+          '
+
+    # ── Update config file with endpoint and license key ───────────────────────
+    update_config_credentials:
+      cmds:
+        - |
+          powershell -command '
+          $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
+
+          Write-Host ""
+          Write-Host "=== Updating Config with Credentials ==="
+          Write-Host ""
+
+          # Load endpoint configuration
+          $endpointFile = Join-Path $env:TEMP "nr-mssql-endpoint.txt"
+          if (-not (Test-Path $endpointFile)) {
+            Write-Host "ERROR: Endpoint file not found."
+            exit 1
+          }
+
+          $endpoint = ""
+          $region = ""
+          Get-Content $endpointFile -Encoding UTF8 | ForEach-Object {
+            if ($_ -match "^ENDPOINT=(.*)$") {
+              $endpoint = $matches[1].Trim()
+            }
+            if ($_ -match "^REGION=(.*)$") {
+              $region = $matches[1].Trim()
+            }
+          }
+
+          # Load license key configuration
+          $licenseKeyFile = Join-Path $env:TEMP "nr-mssql-license-key.txt"
+          if (-not (Test-Path $licenseKeyFile)) {
+            Write-Host "ERROR: License key file not found."
+            exit 1
+          }
+
+          $licenseKey = ""
+          Get-Content $licenseKeyFile -Encoding UTF8 | ForEach-Object {
+            if ($_ -match "^LICENSE_KEY=(.*)$") {
+              $licenseKey = $matches[1].Trim()
+            }
+          }
+
+          Write-Host "Credentials loaded:"
+          Write-Host ("  Region: " + $region)
+          Write-Host ("  Endpoint: " + $endpoint)
+          Write-Host ("  License Key: " + $licenseKey.Substring(0, [Math]::Min(10, $licenseKey.Length)) + "...")
+          Write-Host ""
+
+          # Read config file
+          Write-Host "Reading config file..."
+          $config = Get-Content $configPath -Raw -Encoding UTF8
+
+          # Replace endpoint
+          Write-Host "Updating endpoint..."
+          $config = $config -replace "endpoint:\s*\`$\{env:OTEL_EXPORTER_OTLP_ENDPOINT:-[^\}]+\}", "endpoint: $endpoint"
+
+          # Replace license key
+          Write-Host "Updating license key..."
+          $config = $config -replace "api-key:\s*\`$\{env:NEW_RELIC_LICENSE_KEY\}", "api-key: $licenseKey"
+
+          # Write config file
+          Write-Host "Writing config file..."
+          [System.IO.File]::WriteAllText($configPath, $config, [System.Text.Encoding]::UTF8)
+
+          Write-Host ""
+          Write-Host "Config updated successfully!"
           Write-Host ""
           '
 
