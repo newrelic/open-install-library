@@ -37,9 +37,9 @@ install:
         - task: install_nrdot
         - task: configure_nrdot
         - task: update_config_credentials
-        - task: restart_service
         - task: add_compression
         - task: cleanup_traces
+        - task: restart_service
 
     # ── Prompt user for SQL Server connection details ─────────────────────────
     prompt_and_save_config:
@@ -1190,19 +1190,43 @@ install:
           Write-Host "Restarting NRDOT Collector service..."
           Write-Host ""
 
+          # Wait a moment to ensure all config file writes are complete
+          Write-Host "Waiting for config to settle..."
+          Start-Sleep -Seconds 2
+
           Write-Host "Stopping service..."
           net stop "NRDOT Collector Host"
 
           Write-Host ""
+          Write-Host "Waiting before restart..."
+          Start-Sleep -Seconds 2
+
           Write-Host "Starting service..."
-          net start "NRDOT Collector Host"
+          $startResult = net start "NRDOT Collector Host" 2>&1
+          $startExitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "Waiting for service to initialize..."
+          Start-Sleep -Seconds 3
 
           Write-Host ""
           Write-Host "Checking service status..."
-          sc.exe query "NRDOT Collector Host"
+          $service = Get-Service "NRDOT Collector Host" -ErrorAction SilentlyContinue
 
-          Write-Host ""
-          Write-Host "Service restart complete."
+          if ($service -and $service.Status -eq "Running") {
+            Write-Host "SUCCESS: Service is running!"
+            Write-Host ""
+            Write-Host "Service restart complete."
+          } else {
+            Write-Host "WARNING: Service may not have started correctly."
+            Write-Host ("Current status: " + $(if ($service) { $service.Status } else { "Unknown" }))
+            Write-Host ""
+            Write-Host "If the service is not running, try starting it manually:"
+            Write-Host "  Start-Service `"NRDOT Collector Host`""
+            Write-Host ""
+            Write-Host "Check Event Viewer for detailed error information:"
+            Write-Host "  Windows Logs > Application"
+          }
           Write-Host ""
           '
 
