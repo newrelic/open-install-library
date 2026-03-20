@@ -32,6 +32,7 @@ install:
         - task: prompt_and_save_config
         - task: prompt_region_selection
         - task: prompt_license_key
+        - task: prompt_monitored_databases
         - task: assert_db_version
         - task: create_monitoring_user
         - task: install_nrdot
@@ -212,6 +213,46 @@ install:
           [System.IO.File]::WriteAllText($licenseKeyFile, $licenseKeyContent, [System.Text.Encoding]::UTF8)
 
           Write-Host "License Key configuration saved."
+          Write-Host ""
+          '
+
+    # ── Prompt user for monitored databases ────────────────────────────────────
+    prompt_monitored_databases:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== Database Monitoring Configuration ==="
+          Write-Host ""
+          Write-Host "Specify which databases to monitor:"
+          Write-Host "  - Enter database names separated by commas (e.g., adventuredb, myshop, sales)"
+          Write-Host "  - Press Enter to monitor ALL databases (default)"
+          Write-Host ""
+
+          $DatabaseInput = Read-Host "Enter database names (or press Enter for all databases)"
+
+          $MonitoredDatabases = "[]"
+          $DatabaseMessage = "All databases will be monitored"
+
+          if (-not [string]::IsNullOrWhiteSpace($DatabaseInput)) {
+            # Split by comma, trim whitespace, and format as YAML array
+            $dbList = $DatabaseInput -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+            if ($dbList.Count -gt 0) {
+              $MonitoredDatabases = "[" + ($dbList -join ", ") + "]"
+              $DatabaseMessage = "Monitoring specific databases: " + ($dbList -join ", ")
+            }
+          }
+
+          Write-Host ""
+          Write-Host $DatabaseMessage
+          Write-Host ""
+
+          # Save monitored databases to a temp file for later use
+          $dbFile = Join-Path $env:TEMP "nr-mssql-monitored-databases.txt"
+          $dbContent = "MONITORED_DATABASES=$MonitoredDatabases"
+          [System.IO.File]::WriteAllText($dbFile, $dbContent, [System.Text.Encoding]::UTF8)
+
+          Write-Host "Database monitoring configuration saved."
           Write-Host ""
           '
 
@@ -619,12 +660,26 @@ install:
             }
           }
 
+          # Load monitored databases configuration
+          $dbConfigFile = Join-Path $env:TEMP "nr-mssql-monitored-databases.txt"
+          if (-not (Test-Path $dbConfigFile)) {
+            Write-Host "ERROR: Monitored databases configuration file not found."
+            exit 1
+          }
+
+          Get-Content $dbConfigFile -Encoding UTF8 | ForEach-Object {
+            if ($_ -match "^(\w+)=(.*)$") {
+              $config[$matches[1]] = $matches[2].Trim()
+            }
+          }
+
           Write-Host ""
           Write-Host "=== Configuring NRDOT Collector ==="
           Write-Host ""
           Write-Host "Configuration details:"
           Write-Host ("  SQL Server: " + $config["HOSTNAME"] + ":" + $config["PORT"])
           Write-Host ("  Monitoring User: " + $config["MONITORING_USERNAME"])
+          Write-Host ("  Monitored Databases: " + $config["MONITORED_DATABASES"])
           Write-Host ""
 
           $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
@@ -641,6 +696,7 @@ install:
           $port = $config["PORT"]
           $username = $config["MONITORING_USERNAME"]
           $password = $config["MONITORING_PASSWORD"]
+          $monitoredDatabases = $config["MONITORED_DATABASES"]
 
           Write-Host "Reading existing configuration..."
           $existingConfig = Get-Content $configPath -Raw -Encoding UTF8
@@ -652,7 +708,7 @@ install:
           $sqlServerReceiver += "    port: `"" + $port + "`"" + $nl
           $sqlServerReceiver += "    username: `"" + $username + "`"" + $nl
           $sqlServerReceiver += "    password: `"" + $password + "`"" + $nl
-          $sqlServerReceiver += "    monitored_databases: []" + $nl
+          $sqlServerReceiver += "    monitored_databases: " + $monitoredDatabases + $nl
           $sqlServerReceiver += "    # timeout: 30s" + $nl
           $sqlServerReceiver += "    # collection_interval: 30s" + $nl
           $sqlServerReceiver += "    # query_monitoring_fetch_interval: 15" + $nl
