@@ -31,12 +31,13 @@ install:
         - task: assert_sqlcmd
         - task: prompt_and_save_config
         - task: validate_sql_connection
+        - task: assert_db_version
+        - task: create_monitoring_user
+        - task: check_existing_nrdot_installation
+        - task: install_nrdot
         - task: prompt_region_selection
         - task: prompt_license_key
         - task: prompt_monitored_databases
-        - task: assert_db_version
-        - task: create_monitoring_user
-        - task: install_nrdot
         - task: configure_nrdot
         - task: update_config_credentials
         - task: add_compression
@@ -918,6 +919,77 @@ install:
           }
           '
 
+    # ── Check if NRDOT Collector is already installed ─────────────────────────
+    check_existing_nrdot_installation:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== Checking for Existing NRDOT Collector Installation ==="
+          Write-Host ""
+
+          $installPath = "C:\Program Files (x86)\NRDOT Collector Host"
+          $configPath = Join-Path $installPath "config.yaml"
+          $service = Get-Service -Name "NRDOT Collector Host" -ErrorAction SilentlyContinue
+
+          $isInstalled = $false
+
+          # Check if service exists
+          if ($service) {
+            Write-Host "  ✓ NRDOT Collector Host service found"
+            Write-Host ("    Status: " + $service.Status)
+            $isInstalled = $true
+          }
+
+          # Check if installation directory exists
+          if (Test-Path $installPath) {
+            Write-Host "  ✓ Installation directory found: $installPath"
+            $isInstalled = $true
+          }
+
+          # Check if config file exists
+          if (Test-Path $configPath) {
+            Write-Host "  ✓ Configuration file found: $configPath"
+            $isInstalled = $true
+          }
+
+          if ($isInstalled) {
+            Write-Host ""
+            Write-Host "=========================================="
+            Write-Host "NRDOT Collector Host is already installed"
+            Write-Host "=========================================="
+            Write-Host ""
+            Write-Host "Since NRDOT Collector is already installed on your system, you will need to"
+            Write-Host "manually update the configuration file to enable SQL Server monitoring."
+            Write-Host ""
+            Write-Host "Configuration file location:"
+            Write-Host "  $configPath"
+            Write-Host ""
+            Write-Host "To configure the NRDOT Collector for SQL Server monitoring, please follow"
+            Write-Host "the instructions in our documentation:"
+            Write-Host ""
+            Write-Host "  https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/#configure-collector"
+            Write-Host ""
+            Write-Host "The documentation includes:"
+            Write-Host "  - Step-by-step configuration guide"
+            Write-Host "  - Example configuration snippets"
+            Write-Host "  - Required receiver settings for SQL Server"
+            Write-Host "  - Pipeline configuration examples"
+            Write-Host ""
+            Write-Host "After updating the configuration file, restart the service:"
+            Write-Host "  Restart-Service `"NRDOT Collector Host`""
+            Write-Host ""
+            Write-Host "=========================================="
+            Write-Host ""
+            exit 1
+          } else {
+            Write-Host "  ✓ No existing NRDOT Collector installation found"
+            Write-Host ""
+            Write-Host "Proceeding with fresh installation..."
+            Write-Host ""
+          }
+          '
+
     # ── Download and install NRDOT Collector MSI ──────────────────────────────
     install_nrdot:
       cmds:
@@ -1086,22 +1158,18 @@ install:
           $sqlServerReceiver += "    # enable_tempdb_metrics: true" + $nl
           $sqlServerReceiver += "    # enable_database_buffer_metrics: true" + $nl
 
-          # Check if newrelicsqlserver receiver already exists
-          $newConfig = $existingConfig
-          if ($existingConfig -match "newrelicsqlserver:") {
-            Write-Host "SQL Server receiver already exists in configuration, skipping..."
+          # Add SQL Server receiver to configuration
+          Write-Host "Adding SQL Server receiver to configuration..."
+
+          # Find the processors section and insert the SQL Server receiver before it
+          $processorsIndex = $existingConfig.IndexOf("processors:")
+          if ($processorsIndex -gt 0) {
+            $beforeProcessors = $existingConfig.Substring(0, $processorsIndex)
+            $afterProcessors = $existingConfig.Substring($processorsIndex)
+            $newConfig = $beforeProcessors + $sqlServerReceiver + "`r`n" + $afterProcessors
           } else {
-            Write-Host "Adding SQL Server receiver to configuration..."
-            # Find the processors section and insert the SQL Server receiver before it
-            $processorsIndex = $existingConfig.IndexOf("processors:")
-            if ($processorsIndex -gt 0) {
-              $beforeProcessors = $existingConfig.Substring(0, $processorsIndex)
-              $afterProcessors = $existingConfig.Substring($processorsIndex)
-              $newConfig = $beforeProcessors + $sqlServerReceiver + "`r`n" + $afterProcessors
-            } else {
-              Write-Host "ERROR: Could not find processors section in config file"
-              exit 1
-            }
+            Write-Host "ERROR: Could not find processors section in config file"
+            exit 1
           }
 
           # Check if transform/clear_metadata processor already exists
