@@ -61,13 +61,13 @@ install:
 
           Write-Host ""
           Write-Host "Authentication Method:"
-          Write-Host "  1. Windows Authentication (for local or domain SQL Server)"
+          Write-Host "  1. Windows on host (for local or domain SQL Server)"
           Write-Host "  2. SQL Server Authentication (for remote SQL Server)"
           $AuthChoice = Read-Host "Enter choice (1 or 2, press Enter for 1)"
           if ([string]::IsNullOrWhiteSpace($AuthChoice)) { $AuthChoice = "1" }
           if ($AuthChoice -ne "1" -and $AuthChoice -ne "2") {
             Write-Host ""
-            Write-Host "ERROR: Invalid choice '$AuthChoice'. Enter 1 for Windows Authentication or 2 for SQL Authentication."
+            Write-Host "ERROR: Invalid choice '$AuthChoice'. Enter 1 for Windows on host or 2 for SQL Server Authentication."
             Write-Host ""
             exit 1
           }
@@ -76,8 +76,8 @@ install:
           $Password = ""
 
           if ($AuthChoice -eq "2") {
-            $Username = Read-Host "SQL Server username"
-            $SecurePassword = Read-Host "SQL Server password" -AsSecureString
+            $Username = Read-Host "SQL Server root username (e.g., sa)"
+            $SecurePassword = Read-Host "SQL Server root password" -AsSecureString
             $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
             $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
             [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
@@ -87,7 +87,7 @@ install:
           Write-Host "Configuration saved:"
           Write-Host ("  Hostname: " + $Hostname)
           Write-Host ("  Port: " + $Port)
-          Write-Host ("  Auth: " + $(if ($AuthChoice -eq "1") { "Windows Authentication" } else { "SQL Authentication (user: $Username)" }))
+          Write-Host ("  Auth: " + $(if ($AuthChoice -eq "1") { "Windows on host" } else { "SQL Server Authentication (user: $Username)" }))
           Write-Host ""
 
           # Save to environment variables for next task
@@ -219,9 +219,9 @@ install:
                 Write-Host ""
 
                 if ($attempt -lt $maxAttempts) {
-                  Write-Host "Please enter SQL Server credentials:"
-                  $USERNAME = Read-Host "SQL Server username"
-                  $SecurePassword = Read-Host "SQL Server password" -AsSecureString
+                  Write-Host "Please enter SQL Server root credentials:"
+                  $USERNAME = Read-Host "SQL Server root username (e.g., sa)"
+                  $SecurePassword = Read-Host "SQL Server root password" -AsSecureString
                   $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
                   $PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
                   [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
@@ -297,8 +297,8 @@ install:
                 $choice = Read-Host "Enter choice (1, 2, or 3)"
 
                 if ($choice -eq "2") {
-                  $USERNAME = Read-Host "SQL Server username"
-                  $SecurePassword = Read-Host "SQL Server password" -AsSecureString
+                  $USERNAME = Read-Host "SQL Server root username (e.g., sa)"
+                  $SecurePassword = Read-Host "SQL Server root password" -AsSecureString
                   $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
                   $PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
                   [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
@@ -398,17 +398,13 @@ install:
           $attempt = 1
           $keyValid = $false
 
-          # Check if license key is provided via environment variables
-          if ($env:LICENSE_KEY) {
-            $LicenseKey = $env:LICENSE_KEY
-            Write-Host "Using LICENSE_KEY from environment"
-            $keyValid = $true
-          } elseif ($env:NEW_RELIC_LICENSE_KEY) {
+          # Check if license key is provided via environment variable
+          if ($env:NEW_RELIC_LICENSE_KEY) {
             $LicenseKey = $env:NEW_RELIC_LICENSE_KEY
             Write-Host "Using NEW_RELIC_LICENSE_KEY from environment"
             $keyValid = $true
           } else {
-            Write-Host "New Relic License Key not found in environment variables."
+            Write-Host "New Relic License Key not found in environment variable."
             Write-Host ""
           }
 
@@ -477,7 +473,7 @@ install:
 
           # Save license key to a temp file for later use
           $licenseKeyFile = Join-Path $env:TEMP "nr-mssql-license-key.txt"
-          $licenseKeyContent = "LICENSE_KEY=$LicenseKey"
+          $licenseKeyContent = "NEW_RELIC_LICENSE_KEY=$LicenseKey"
           [System.IO.File]::WriteAllText($licenseKeyFile, $licenseKeyContent, [System.Text.Encoding]::UTF8)
 
           Write-Host "License Key configuration saved."
@@ -912,7 +908,7 @@ install:
             Write-Host ""
             Write-Host "Please check:"
             Write-Host "  - SQL Server logs for detailed error messages"
-            Write-Host "  - That the admin user has sufficient permissions"
+            Write-Host "  - That the root user has sufficient permissions"
             Write-Host "  - That SQL Server is configured for SQL Authentication"
             Write-Host ""
             exit 1
@@ -1629,7 +1625,7 @@ install:
 
           $licenseKey = ""
           Get-Content $licenseKeyFile -Encoding UTF8 | ForEach-Object {
-            if ($_ -match "^LICENSE_KEY=(.*)$") {
+            if ($_ -match "^NEW_RELIC_LICENSE_KEY=(.*)$") {
               $licenseKey = $matches[1].Trim()
             }
           }
