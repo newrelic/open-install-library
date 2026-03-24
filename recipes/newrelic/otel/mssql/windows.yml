@@ -32,9 +32,9 @@ install:
         - task: prompt_and_save_config
         - task: validate_sql_connection
         - task: assert_db_version
-        - task: create_monitoring_user
         - task: check_existing_nrdot_installation
         - task: install_nrdot
+        - task: create_monitoring_user
         - task: prompt_region_selection
         - task: prompt_license_key
         - task: prompt_monitored_databases
@@ -926,62 +926,55 @@ install:
 
           $installPath = "C:\Program Files (x86)\NRDOT Collector Host"
           $configPath = Join-Path $installPath "config.yaml"
-          $service = Get-Service -Name "NRDOT Collector Host" -ErrorAction SilentlyContinue
+          $sqlServerConfigured = $false
 
-          $isInstalled = $false
-
-          # Check if service exists
-          if ($service) {
-            Write-Host "  ✓ NRDOT Collector Host service found"
-            Write-Host ("    Status: " + $service.Status)
-            $isInstalled = $true
-          }
-
-          # Check if installation directory exists
-          if (Test-Path $installPath) {
-            Write-Host "  ✓ Installation directory found: $installPath"
-            $isInstalled = $true
-          }
-
-          # Check if config file exists
+          # Check if config file exists and contains SQL Server receiver
           if (Test-Path $configPath) {
-            Write-Host "  ✓ Configuration file found: $configPath"
-            $isInstalled = $true
+            Write-Host "  ✓ NRDOT Collector config file found: $configPath"
+            Write-Host "    Checking for existing SQL Server monitoring configuration..."
+
+            try {
+              $configContent = Get-Content $configPath -Raw -ErrorAction Stop
+
+              # Check if SQL Server receiver is already configured
+              if ($configContent -match "sqlserver") {
+                $sqlServerConfigured = $true
+                Write-Host "  ⚠ WARNING: SQL Server monitoring is already configured!"
+              } else {
+                Write-Host "  ✓ SQL Server monitoring not configured - can proceed"
+              }
+            } catch {
+              Write-Host "  ⚠ WARNING: Could not read config file: $_"
+            }
+          } else {
+            Write-Host "  ✓ No existing NRDOT Collector configuration found"
           }
 
-          if ($isInstalled) {
+          if ($sqlServerConfigured) {
             Write-Host ""
             Write-Host "=========================================="
-            Write-Host "NRDOT Collector Host is already installed"
+            Write-Host "NRDOT Collector Installation"
             Write-Host "=========================================="
             Write-Host ""
-            Write-Host "Since NRDOT Collector is already installed on your system, you will need to"
-            Write-Host "manually update the configuration file to enable SQL Server monitoring."
+            Write-Host "You already installed NRDOT Collector with SQL Server monitoring."
             Write-Host ""
             Write-Host "Configuration file location:"
             Write-Host "  $configPath"
             Write-Host ""
-            Write-Host "To configure the NRDOT Collector for SQL Server monitoring, please follow"
+            Write-Host "If you want to update the NRDOT Collector, please follow"
             Write-Host "the instructions in our documentation:"
             Write-Host ""
             Write-Host "  https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/#configure-collector"
             Write-Host ""
-            Write-Host "The documentation includes:"
-            Write-Host "  - Step-by-step configuration guide"
-            Write-Host "  - Example configuration snippets"
-            Write-Host "  - Required receiver settings for SQL Server"
-            Write-Host "  - Pipeline configuration examples"
-            Write-Host ""
-            Write-Host "After updating the configuration file, restart the service:"
+            Write-Host "After updating the configuration file, restart the NRDOT Collector service:"
             Write-Host "  Restart-Service `"NRDOT Collector Host`""
             Write-Host ""
             Write-Host "=========================================="
             Write-Host ""
             exit 1
           } else {
-            Write-Host "  ✓ No existing NRDOT Collector installation found"
             Write-Host ""
-            Write-Host "Proceeding with fresh installation..."
+            Write-Host "Proceeding with installation..."
             Write-Host ""
           }
           '
