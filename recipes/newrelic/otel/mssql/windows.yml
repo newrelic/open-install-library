@@ -1209,7 +1209,7 @@ install:
           $password = $config["MONITORING_PASSWORD"]
           $monitoredDatabases = $config["MONITORED_DATABASES"]
 
-          Write-Host "Reading existing configuration..."
+          Write-Host "Configuring SQL Server monitoring..."
           $existingConfig = Get-Content $configPath -Raw -Encoding UTF8
 
           # Build the newrelicsqlserver receiver configuration using string concatenation
@@ -1242,7 +1242,6 @@ install:
           $sqlServerReceiver += "    # enable_database_buffer_metrics: true" + $nl
 
           # Add SQL Server receiver to configuration
-          Write-Host "Adding SQL Server receiver to configuration..."
 
           # Find the processors section and insert the SQL Server receiver before it
           $processorsIndex = $existingConfig.IndexOf("processors:")
@@ -1257,9 +1256,8 @@ install:
 
           # Check if transform/clear_metadata processor already exists
           if ($newConfig -match "transform/clear_metadata:") {
-            Write-Host "transform/clear_metadata processor already exists, skipping..."
+            # Already exists, skip
           } else {
-            Write-Host "Adding transform/clear_metadata processor..."
             # Build the transform/clear_metadata processor configuration
             $transformProcessor = $nl + "  # Transform to clear description and unit fields" + $nl
             $transformProcessor += "  transform/clear_metadata:" + $nl
@@ -1272,20 +1270,17 @@ install:
 
             # Try to insert before cumulativetodelta processor (more reliable insertion point)
             if ($newConfig -match "cumulativetodelta:") {
-              Write-Host "Inserting transform/clear_metadata before cumulativetodelta processor..."
               $newConfig = $newConfig -replace "(\s+cumulativetodelta:)", ($transformProcessor + "`$1")
             } else {
               # Fallback: insert after processors: line
-              Write-Host "Inserting transform/clear_metadata after processors: line..."
               $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $transformProcessor)
             }
           }
 
           # Check if filter/exec_plan_include processor already exists
           if ($newConfig -match "filter/exec_plan_include:") {
-            Write-Host "filter/exec_plan_include processor already exists, skipping..."
+            # Already exists, skip
           } else {
-            Write-Host "Adding filter/exec_plan_include processor..."
             # Build the filter/exec_plan_include processor configuration
             $execPlanFilter = "  # Filter to only include execution plan and event metrics (for logs conversion)" + $nl
             $execPlanFilter += "  filter/exec_plan_include:" + $nl
@@ -1301,23 +1296,19 @@ install:
 
             # Insert right after transform/clear_metadata if it exists, otherwise before cumulativetodelta
             if ($newConfig -match "transform/clear_metadata:[\s\S]*?(\r\n\r\n|\n\n)") {
-              Write-Host "Inserting filter/exec_plan_include after transform/clear_metadata processor..."
               $newConfig = $newConfig -replace "(transform/clear_metadata:[\s\S]*?set\(metric\.unit, `"`"\)\r\n)", ("`$1" + $nl + $execPlanFilter)
             } elseif ($newConfig -match "cumulativetodelta:") {
-              Write-Host "Inserting filter/exec_plan_include before cumulativetodelta processor..."
               $newConfig = $newConfig -replace "(\s+cumulativetodelta:)", ($execPlanFilter + "`$1")
             } else {
               # Fallback: insert after processors: line
-              Write-Host "Inserting filter/exec_plan_include after processors: line..."
               $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $execPlanFilter)
             }
           }
 
           # Check if filter/exec_plan_exclude processor already exists
           if ($newConfig -match "filter/exec_plan_exclude:") {
-            Write-Host "filter/exec_plan_exclude processor already exists, skipping..."
+            # Already exists, skip
           } else {
-            Write-Host "Adding filter/exec_plan_exclude processor..."
             # Build the filter/exec_plan_exclude processor configuration
             $execPlanExcludeFilter = "  # Filter to exclude execution plan and event metrics (from main metrics pipeline)" + $nl
             $execPlanExcludeFilter += "  filter/exec_plan_exclude:" + $nl
@@ -1333,23 +1324,19 @@ install:
 
             # Insert right after filter/exec_plan_include if it exists, otherwise before cumulativetodelta
             if ($newConfig -match "filter/exec_plan_include:[\s\S]*?activequery\.query_details\r\n") {
-              Write-Host "Inserting filter/exec_plan_exclude after filter/exec_plan_include processor..."
               $newConfig = $newConfig -replace "(filter/exec_plan_include:[\s\S]*?activequery\.query_details\r\n)", ("`$1" + $nl + $execPlanExcludeFilter)
             } elseif ($newConfig -match "cumulativetodelta:") {
-              Write-Host "Inserting filter/exec_plan_exclude before cumulativetodelta processor..."
               $newConfig = $newConfig -replace "(\s+cumulativetodelta:)", ($execPlanExcludeFilter + "`$1")
             } else {
               # Fallback: insert after processors: line
-              Write-Host "Inserting filter/exec_plan_exclude after processors: line..."
               $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $execPlanExcludeFilter)
             }
           }
 
           # Check if cumulativetodelta processor exists and update/add SQL Server metrics
           if ($newConfig -match "cumulativetodelta:" -and $newConfig -match "sqlserver\.wait_stats\.latch\.wait_time_ms") {
-            Write-Host "cumulativetodelta processor already has SQL Server metrics, skipping..."
+            # Already has SQL Server metrics, skip
           } elseif ($newConfig -match "cumulativetodelta:") {
-            Write-Host "Updating cumulativetodelta processor with SQL Server metrics..."
             # Replace the existing cumulativetodelta with the full configuration
             $cumulativeToDelta = $nl + "  cumulativetodelta:" + $nl
             $cumulativeToDelta += "    max_staleness: 5m" + $nl
@@ -1386,7 +1373,6 @@ install:
             # Replace existing cumulativetodelta section (handle simple definition)
             $newConfig = $newConfig -replace "(\s+cumulativetodelta:[\r\n]+)", $cumulativeToDelta
           } else {
-            Write-Host "Adding cumulativetodelta processor with SQL Server metrics..."
             # Build the complete cumulativetodelta processor configuration
             $cumulativeToDelta = $nl + "  cumulativetodelta:" + $nl
             $cumulativeToDelta += "    max_staleness: 5m" + $nl
@@ -1434,9 +1420,8 @@ install:
 
           # Check if deltatorate processor exists and update/add SQL Server metrics
           if ($newConfig -match "deltatorate:" -and $newConfig -match "sqlserver\.wait_stats\.latch\.wait_time_ms") {
-            Write-Host "deltatorate processor already has SQL Server metrics, skipping..."
+            # Already has SQL Server metrics, skip
           } elseif ($newConfig -match "deltatorate:") {
-            Write-Host "Updating deltatorate processor with SQL Server metrics..."
             # Replace the existing deltatorate with the full configuration
             $deltaToRate = $nl + "  deltatorate:" + $nl
             $deltaToRate += "    metrics:" + $nl
@@ -1465,7 +1450,6 @@ install:
             # Replace existing deltatorate section (handle simple definition)
             $newConfig = $newConfig -replace "(\s+deltatorate:[\r\n]+)", $deltaToRate
           } else {
-            Write-Host "Adding deltatorate processor with SQL Server metrics..."
             # Build the complete deltatorate processor configuration
             $deltaToRate = $nl + "  deltatorate:" + $nl
             $deltaToRate += "    metrics:" + $nl
@@ -1494,13 +1478,10 @@ install:
             $deltaToRate += $nl
             # Insert right after cumulativetodelta if it exists, otherwise before transform/host or batch
             if ($newConfig -match "cumulativetodelta:[\s\S]*?logins_per_sec\r\n") {
-              Write-Host "Inserting deltatorate after cumulativetodelta processor..."
               $newConfig = $newConfig -replace "(cumulativetodelta:[\s\S]*?logins_per_sec\r\n)", ("`$1" + $deltaToRate)
             } elseif ($newConfig -match "transform/host:") {
-              Write-Host "Inserting deltatorate before transform/host processor..."
               $newConfig = $newConfig -replace "(\s+transform/host:)", ($deltaToRate + "`$1")
             } elseif ($newConfig -match "batch:") {
-              Write-Host "Inserting deltatorate before batch processor..."
               $newConfig = $newConfig -replace "(\s+batch:)", ($deltaToRate + "`$1")
             } else {
               # Fallback: insert after processors: line
@@ -1510,9 +1491,8 @@ install:
 
           # Check if resourcedetection/db_safe processor already exists
           if ($newConfig -match "resourcedetection/db_safe:") {
-            Write-Host "resourcedetection/db_safe processor already exists, skipping..."
+            # Already exists, skip
           } else {
-            Write-Host "Adding resourcedetection/db_safe processor..."
             # Build the resourcedetection/db_safe processor configuration
             $resourceDetectionDbSafe = $nl + "  resourcedetection/db_safe:" + $nl
             $resourceDetectionDbSafe += "    detectors: [`"system`"]" + $nl
@@ -1526,10 +1506,8 @@ install:
 
             # Insert right after deltatorate if it exists, otherwise before batch
             if ($newConfig -match "deltatorate:[\s\S]*?logins_per_sec\r\n") {
-              Write-Host "Inserting resourcedetection/db_safe after deltatorate processor..."
               $newConfig = $newConfig -replace "(deltatorate:[\s\S]*?logins_per_sec\r\n)", ("`$1" + $resourceDetectionDbSafe)
             } elseif ($newConfig -match "batch:") {
-              Write-Host "Inserting resourcedetection/db_safe before batch processor..."
               $newConfig = $newConfig -replace "(\s+batch:)", ($resourceDetectionDbSafe + "`$1")
             } else {
               # Fallback: insert after processors: line
@@ -1539,32 +1517,26 @@ install:
 
           # Update the metrics pipeline to include newrelicsqlserver receiver (if not already present)
           if ($newConfig -match "pipelines:[\s\S]*?metrics:[\s\S]*?receivers: \[otlp\]" -and $newConfig -notmatch "pipelines:[\s\S]*?metrics:[\s\S]*?receivers: \[newrelicsqlserver") {
-            Write-Host "Updating metrics pipeline to include newrelicsqlserver receiver..."
             # Be specific to the metrics: pipeline (not metrics/host)
             $newConfig = $newConfig -replace "(pipelines:[\s\S]*?)(metrics:[\s\S]*?receivers: )\[otlp\]", "`$1`$2[newrelicsqlserver, otlp]"
-          } else {
-            Write-Host "Metrics pipeline already includes newrelicsqlserver receiver, skipping..."
           }
 
           # Add transform/clear_metadata to the metrics pipeline processors (if not already present)
           if ($newConfig -match "transform/clear_metadata:" -and $newConfig -notmatch "metrics:[\s\S]*?processors:[\s\S]*?transform/clear_metadata") {
-            Write-Host "Adding transform/clear_metadata to metrics pipeline processors..."
             # Add after memory_limiter in the metrics pipeline
             $newConfig = $newConfig -replace "(metrics:[\s\S]*?processors:[\s\S]*?memory_limiter,)", "`$1`r`n          transform/clear_metadata,"
           }
 
           # Add filter/exec_plan_exclude to the metrics pipeline processors (if not already present)
           if ($newConfig -match "filter/exec_plan_exclude:" -and $newConfig -notmatch "pipelines:[\s\S]*?metrics:[\s\S]*?filter/exec_plan_exclude") {
-            Write-Host "Adding filter/exec_plan_exclude to metrics pipeline processors..."
             # Add before batch in the metrics pipeline (single-line format)
             $newConfig = $newConfig -replace "(pipelines:[\s\S]*?metrics:[\s\S]*?processors: \[[^\]]*)(batch\])", "`$1filter/exec_plan_exclude, `$2"
           }
 
           # Add metricsaslogs connector if not present
           if ($newConfig -match "metricsaslogs:") {
-            Write-Host "metricsaslogs connector already exists, skipping..."
+            # Already exists, skip
           } elseif ($newConfig -match "(?m)^connectors:") {
-            Write-Host "Adding metricsaslogs to existing connectors section..."
             # Add metricsaslogs to existing connectors section
             $metricsAsLogs = "  metricsaslogs:" + $nl
             $metricsAsLogs += "    include_resource_attributes: true" + $nl
@@ -1573,7 +1545,6 @@ install:
             # Insert after connectors: line (only the top-level one)
             $newConfig = $newConfig -replace "(?m)^(connectors:[\r\n]+)", ("`$1" + $metricsAsLogs)
           } else {
-            Write-Host "Adding connectors section with metricsaslogs..."
             $connectorsSection = $nl + "connectors:" + $nl
             $connectorsSection += "  metricsaslogs:" + $nl
             $connectorsSection += "    include_resource_attributes: true" + $nl
@@ -1585,7 +1556,6 @@ install:
 
           # Add metrics/exec_plan_to_logs pipeline if not present
           if ($newConfig -match "filter/exec_plan_include:" -and $newConfig -notmatch "metrics/exec_plan_to_logs:") {
-            Write-Host "Adding metrics/exec_plan_to_logs pipeline..."
             $execPlanPipeline = $nl + "    metrics/exec_plan_to_logs:" + $nl
             $execPlanPipeline += "      receivers: [newrelicsqlserver, otlp]" + $nl
             $execPlanPipeline += "      processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_include, batch]" + $nl
@@ -1595,57 +1565,38 @@ install:
           }
 
           # Remove metricsaslogs from traces pipeline if present (it should only be in logs)
-          Write-Host "Checking traces pipeline for metricsaslogs..."
           $tracesBeforeCleanup = $newConfig
           # Use simple string replacement - more reliable than complex regex
           $newConfig = $newConfig -replace "traces:([\s\S]*?)receivers:\s*\[metricsaslogs,\s*otlp\]", "traces:`$1receivers: [otlp]"
           $newConfig = $newConfig -replace "traces:([\s\S]*?)receivers:\s*\[metricsaslogs\s*,\s*otlp\]", "traces:`$1receivers: [otlp]"
 
-          if ($tracesBeforeCleanup -ne $newConfig) {
-            Write-Host "Removed metricsaslogs from traces pipeline"
-          }
-
-          if ($newConfig -match "traces:[\s\S]*?receivers:\s*\[otlp\]") {
-            Write-Host "Traces pipeline verified - only has [otlp] receivers"
-          } elseif ($newConfig -match "traces:[\s\S]*?receivers:\s*\[metricsaslogs") {
-            Write-Host "WARNING: Failed to remove metricsaslogs from traces pipeline"
-          }
-
           # Update logs pipeline to include metricsaslogs receiver if not present
           if ($newConfig -match "metricsaslogs:" -and $newConfig -match "logs:[\s\S]*?receivers: \[otlp\]" -and $newConfig -notmatch "logs:[\s\S]*?receivers: \[metricsaslogs") {
-            Write-Host "Adding metricsaslogs to logs pipeline receivers..."
             $newConfig = $newConfig -replace "(logs:[\s\S]*?receivers: )\[otlp\]", "`$1[metricsaslogs, otlp]"
           }
 
           # Ensure otlphttp exporter has compression: gzip
           if ($newConfig -notmatch "compression:\s*gzip") {
-            Write-Host "Adding compression: gzip to otlphttp exporter..."
             # Simple approach: find the line after api-key and insert compression
             # Match the api-key line and add compression on the next line at same indentation as headers/endpoint
             $newConfig = $newConfig -replace "(exporters:\r\n\s+otlphttp:\r\n\s+endpoint:[^\r\n]+\r\n\s+headers:\r\n\s+api-key:[^\r\n]+\r\n)", "`$1    compression: gzip`r`n"
-            Write-Host "Added compression: gzip"
-          } else {
-            Write-Host "compression: gzip already exists"
           }
 
           # Add resourcedetection/db_safe to metrics/host pipeline processors (if not already present)
           if ($newConfig -match "resourcedetection/db_safe:" -and $newConfig -match "metrics/host:[\s\S]*?processors:" -and $newConfig -notmatch "metrics/host:[\s\S]*?resourcedetection/db_safe") {
-            Write-Host "Adding resourcedetection/db_safe to metrics/host pipeline processors..."
             # Add after resourcedetection/env in the metrics/host pipeline
             $newConfig = $newConfig -replace "(metrics/host:[\s\S]*?processors:[\s\S]*?resourcedetection/env[\r\n]+)", ("`$1        - resourcedetection/db_safe`r`n")
           }
 
           # Add deltatorate to metrics/host pipeline processors (if not already present)
           if ($newConfig -match "deltatorate:" -and $newConfig -match "metrics/host:[\s\S]*?processors:" -and $newConfig -notmatch "metrics/host:[\s\S]*?deltatorate") {
-            Write-Host "Adding deltatorate to metrics/host pipeline processors..."
             # Add after cumulativetodelta in the metrics/host pipeline
             $newConfig = $newConfig -replace "(metrics/host:[\s\S]*?processors:[\s\S]*?cumulativetodelta[\r\n]+)", ("`$1        - deltatorate`r`n")
           }
 
-          Write-Host "Writing updated configuration..."
           [System.IO.File]::WriteAllText($configPath, $newConfig, [System.Text.Encoding]::UTF8)
 
-          Write-Host "Configuration updated successfully."
+          Write-Host "Configuration applied successfully."
           Write-Host ""
           Write-Host "=========================================="
           Write-Host "Configuration complete!"
@@ -1659,19 +1610,6 @@ install:
               Write-Host "Backup:" $latestBackup.FullName
             }
           }
-          Write-Host ""
-          Write-Host "SQL Server monitoring configured!"
-          Write-Host "Metrics will appear in New Relic within 1-2 minutes."
-          Write-Host ""
-          Write-Host "To customize metric collection, edit the config file and uncomment:"
-          Write-Host "  - timeout, collection_interval, query_monitoring settings"
-          Write-Host "  - enable_*_metrics toggles (12 categories available)"
-          Write-Host ""
-          Write-Host "Next steps:"
-          Write-Host "  1. Check service status: Get-Service NRDOT\ Collector\ Host"
-          Write-Host "  2. View logs in Event Viewer"
-          Write-Host "  3. Verify data in New Relic UI"
-          Write-Host ""
           '
 
     # ── Update config file with endpoint and license key ───────────────────────
@@ -1717,30 +1655,22 @@ install:
             }
           }
 
-          Write-Host "Credentials loaded:"
-          Write-Host ("  Region: " + $region)
-          Write-Host ("  Endpoint: " + $endpoint)
-          Write-Host ("  License Key: " + $licenseKey.Substring(0, [Math]::Min(10, $licenseKey.Length)) + "...")
+          Write-Host "Updating configuration with credentials..."
           Write-Host ""
 
           # Read config file
-          Write-Host "Reading config file..."
           $config = Get-Content $configPath -Raw -Encoding UTF8
 
           # Replace endpoint
-          Write-Host "Updating endpoint..."
           $config = $config -replace "endpoint:\s*\`$\{env:OTEL_EXPORTER_OTLP_ENDPOINT:-[^\}]+\}", "endpoint: $endpoint"
 
           # Replace license key
-          Write-Host "Updating license key..."
           $config = $config -replace "api-key:\s*\`$\{env:NEW_RELIC_LICENSE_KEY\}", "api-key: $licenseKey"
 
           # Write config file
-          Write-Host "Writing config file..."
           [System.IO.File]::WriteAllText($configPath, $config, [System.Text.Encoding]::UTF8)
 
-          Write-Host ""
-          Write-Host "Config updated successfully!"
+          Write-Host "Credentials configured successfully!"
           Write-Host ""
           '
 
@@ -1749,48 +1679,53 @@ install:
       cmds:
         - |
           powershell -command '
+          # Wait a moment to ensure all config file writes are complete
+          Start-Sleep -Seconds 2
+
           Write-Host ""
           Write-Host "Restarting NRDOT Collector service..."
-          Write-Host ""
 
-          # Wait a moment to ensure all config file writes are complete
-          Write-Host "Waiting for config to settle..."
-          Start-Sleep -Seconds 2
+          try {
+            Restart-Service "NRDOT Collector Host" -ErrorAction Stop
+            Start-Sleep -Seconds 3
 
-          Write-Host "Stopping service..."
-          net stop "NRDOT Collector Host"
-
-          Write-Host ""
-          Write-Host "Waiting before restart..."
-          Start-Sleep -Seconds 2
-
-          Write-Host "Starting service..."
-          $startResult = net start "NRDOT Collector Host" 2>&1
-          $startExitCode = $LASTEXITCODE
-
-          Write-Host ""
-          Write-Host "Waiting for service to initialize..."
-          Start-Sleep -Seconds 3
-
-          Write-Host ""
-          Write-Host "Checking service status..."
-          $service = Get-Service "NRDOT Collector Host" -ErrorAction SilentlyContinue
-
-          if ($service -and $service.Status -eq "Running") {
-            Write-Host "SUCCESS: Service is running!"
+            # Verify service is running
+            $service = Get-Service "NRDOT Collector Host" -ErrorAction SilentlyContinue
+            if ($service -and $service.Status -eq "Running") {
+              Write-Host "NRDOT Collector service restarted successfully."
+              Write-Host ""
+              Write-Host "SQL Server monitoring configured!"
+              Write-Host "Metrics will appear in New Relic within 1-2 minutes."
+              Write-Host ""
+              Write-Host "For more information, visit our documentation:"
+              Write-Host "  https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/"
+              Write-Host ""
+            } else {
+              Write-Host ""
+              Write-Host "ERROR: Service restart completed but service is not running."
+              Write-Host ("Current status: " + $(if ($service) { $service.Status } else { "Unknown" }))
+              Write-Host ""
+              Write-Host "Try starting the service manually:"
+              Write-Host "  Start-Service `"NRDOT Collector Host`""
+              Write-Host ""
+              Write-Host "Check Event Viewer for detailed error information:"
+              Write-Host "  Windows Logs > Application"
+              Write-Host ""
+              exit 1
+            }
+          } catch {
             Write-Host ""
-            Write-Host "Service restart complete."
-          } else {
-            Write-Host "WARNING: Service may not have started correctly."
-            Write-Host ("Current status: " + $(if ($service) { $service.Status } else { "Unknown" }))
+            Write-Host "ERROR: Failed to restart NRDOT Collector service."
+            Write-Host "Error: $_"
             Write-Host ""
-            Write-Host "If the service is not running, try starting it manually:"
-            Write-Host "  Start-Service `"NRDOT Collector Host`""
+            Write-Host "Try restarting the service manually:"
+            Write-Host "  Restart-Service `"NRDOT Collector Host`""
             Write-Host ""
             Write-Host "Check Event Viewer for detailed error information:"
             Write-Host "  Windows Logs > Application"
+            Write-Host ""
+            exit 1
           }
-          Write-Host ""
           '
 
     # ── Add compression: gzip to config ────────────────────────────────────────
@@ -1800,7 +1735,6 @@ install:
           powershell -command '
           $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
           if (Test-Path $configPath) {
-            Write-Host "Adding compression: gzip to config..."
             $lines = Get-Content $configPath -Encoding UTF8
             $modified = $false
             $newLines = @()
@@ -1823,7 +1757,6 @@ install:
 
                 if (-not $hasCompression) {
                   $newLines += "    compression: gzip"
-                  Write-Host "Added compression: gzip after api-key line"
                   $modified = $true
                 }
               }
@@ -1831,9 +1764,6 @@ install:
 
             if ($modified) {
               [System.IO.File]::WriteAllLines($configPath, $newLines, [System.Text.Encoding]::UTF8)
-              Write-Host "Config file updated successfully"
-            } else {
-              Write-Host "compression: gzip already exists or api-key not found"
             }
           }
           '
@@ -1845,18 +1775,15 @@ install:
           powershell -command '
           $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
           if (Test-Path $configPath) {
-            Write-Host "Cleaning up traces pipeline..."
             $lines = Get-Content $configPath -Encoding UTF8
             $modified = $false
 
             for ($i = 0; $i -lt $lines.Count; $i++) {
               # Look for traces pipeline and check the next few lines for receivers
               if ($lines[$i] -match "^\s+traces:\s*$") {
-                Write-Host "Found traces pipeline at line $($i + 1)"
                 # Check next 10 lines for receivers
                 for ($j = $i + 1; $j -lt [Math]::Min($i + 10, $lines.Count); $j++) {
                   if ($lines[$j] -match "receivers:.*metricsaslogs") {
-                    Write-Host "Found metricsaslogs in receivers at line $($j + 1), removing..."
                     $lines[$j] = $lines[$j] -replace "metricsaslogs,\s*", ""
                     $lines[$j] = $lines[$j] -replace ",\s*metricsaslogs", ""
                     $modified = $true
@@ -1872,9 +1799,6 @@ install:
 
             if ($modified) {
               [System.IO.File]::WriteAllLines($configPath, $lines, [System.Text.Encoding]::UTF8)
-              Write-Host "Removed metricsaslogs from traces pipeline successfully"
-            } else {
-              Write-Host "Traces pipeline already clean or not found"
             }
           }
           '
