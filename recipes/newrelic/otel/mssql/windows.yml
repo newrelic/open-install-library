@@ -677,8 +677,10 @@ install:
 
           $Server = $HOSTNAME + "," + $PORT
           $MonitoringUsername = ""
+          $MonitoringPassword = ""
           $userExists = $false
           $updateExisting = $false
+          $useExistingPassword = $false
           $maxAttempts = 3
           $attempt = 1
 
@@ -713,20 +715,62 @@ install:
               Write-Host "  ⚠ WARNING: User `"$inputUsername`" already exists in SQL Server"
               Write-Host ""
               Write-Host "What would you like to do?"
-              Write-Host "  1. Use a different username"
-              Write-Host "  2. Update the existing user password and permissions"
-              Write-Host "  3. Exit"
-              $choice = Read-Host "Enter choice (1, 2, or 3)"
+              Write-Host "  1. Create new user (enter different username)"
+              Write-Host "  2. Use existing user"
+              $choice = Read-Host "Enter choice (1 or 2)"
 
               if ($choice -eq "2") {
                 Write-Host ""
-                Write-Host "  → Will update password for existing user: $inputUsername"
-                $MonitoringUsername = $inputUsername
-                $userExists = $true
-                $updateExisting = $true
-              } elseif ($choice -eq "3") {
-                Write-Host "Exiting..."
-                exit 1
+                Write-Host "  → Using existing user: $inputUsername"
+                Write-Host ""
+
+                # Ask for the existing user password
+                Write-Host "Please enter the password for the existing user `"$inputUsername`":"
+                $SecureExistingPassword = Read-Host "Password" -AsSecureString
+                $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureExistingPassword)
+                $existingPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+                Write-Host ""
+                Write-Host "The following permissions will be granted to user `"$inputUsername`":"
+                Write-Host ""
+                Write-Host "  Instance-level permissions:"
+                Write-Host "    - VIEW SERVER STATE   (view server performance and state)"
+                Write-Host "    - VIEW ANY DEFINITION (view object definitions)"
+                Write-Host "    - VIEW ANY DATABASE   (view all databases)"
+                Write-Host ""
+                Write-Host "  Database-level permissions (for all user databases):"
+                Write-Host "    - VIEW DATABASE STATE (view database performance)"
+                Write-Host "    - VIEW DEFINITION     (view object definitions)"
+                Write-Host "    - db_datareader role  (read data from all tables)"
+                Write-Host ""
+
+                $permissionChoice = Read-Host "Can I grant these permissions to the existing user? (yes/no)"
+
+                if ($permissionChoice -eq "yes" -or $permissionChoice -eq "y") {
+                  Write-Host ""
+                  Write-Host "  ✓ Permissions will be granted"
+                  $MonitoringUsername = $inputUsername
+                  $MonitoringPassword = $existingPassword
+                  $userExists = $true
+                  $updateExisting = $true
+                  $useExistingPassword = $true
+                } else {
+                  Write-Host ""
+                  Write-Host "=========================================="
+                  Write-Host "WARNING: Integration stopped by user"
+                  Write-Host "=========================================="
+                  Write-Host ""
+                  Write-Host "Cannot proceed without granting monitoring permissions."
+                  Write-Host "The SQL Server monitoring requires these permissions to collect"
+                  Write-Host "performance metrics and query execution data."
+                  Write-Host ""
+                  Write-Host "Please either:"
+                  Write-Host "  - Re-run and grant the required permissions, or"
+                  Write-Host "  - Create a new monitoring user with the necessary permissions"
+                  Write-Host ""
+                  exit 1
+                }
               } else {
                 # Choice 1 or invalid - try again
                 Write-Host ""
@@ -755,19 +799,55 @@ install:
           }
           Write-Host "  Username: $MonitoringUsername"
 
-          # Auto-generate a secure password that meets Windows complexity requirements
+          # Auto-generate a secure password only if not using existing password
           # Must contain: uppercase, lowercase, number, and special character
-          $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
-          $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
-          $numbers = -join ((48..57) | Get-Random -Count 4 | ForEach-Object {[char]$_})
-          $special = -join ("!@#$%^&*".ToCharArray() | Get-Random -Count 2)
-          $allChars = ($upper + $lower + $numbers + $special).ToCharArray()
-          $MonitoringPassword = -join ($allChars | Get-Random -Count $allChars.Length)
-          Write-Host "  Password: $MonitoringPassword (auto-generated)"
+          if (-not $useExistingPassword) {
+            $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+            $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+            $numbers = -join ((48..57) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+            $special = -join ("!@#$%^&*".ToCharArray() | Get-Random -Count 2)
+            $allChars = ($upper + $lower + $numbers + $special).ToCharArray()
+            $MonitoringPassword = -join ($allChars | Get-Random -Count $allChars.Length)
+            Write-Host "  Password: $MonitoringPassword (auto-generated)"
+          } else {
+            Write-Host "  Password: (using existing password)"
+          }
           Write-Host "  Server: $Server"
 
           # Create SQL script for user creation and permissions
-          $SQL=@"
+          if ($useExistingPassword) {
+            # For existing user with existing password - only grant permissions
+            $SQL=@"
+          SET QUOTED_IDENTIFIER OFF;
+          USE [master];
+
+          -- Instance-level permissions
+          GRANT VIEW SERVER STATE   TO [$MonitoringUsername]
+          GRANT VIEW ANY DEFINITION TO [$MonitoringUsername]
+          GRANT VIEW ANY DATABASE   TO [$MonitoringUsername]
+
+          -- Grant read access privileges to all online non-system user databases
+          DECLARE @name SYSNAME
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+              SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`", `"msdb`", `"tempdb`", `"model`", `"rdsadmin`", `"distribution`") and state = 0
+          OPEN db_cursor
+          FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+          BEGIN
+              BEGIN TRY
+                  EXECUTE(`"USE [`" + @name + `"]; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = `"`"$MonitoringUsername`"`") BEGIN CREATE USER [$MonitoringUsername] FOR LOGIN [$MonitoringUsername]; END; GRANT VIEW DATABASE STATE TO [$MonitoringUsername]; GRANT VIEW DEFINITION TO [$MonitoringUsername]; ALTER ROLE db_datareader ADD MEMBER [$MonitoringUsername];`")
+              END TRY
+              BEGIN CATCH
+              END CATCH
+              FETCH next FROM db_cursor INTO @name
+          END
+          CLOSE db_cursor
+          DEALLOCATE db_cursor
+
+          select name from sys.syslogins where name = `"$MonitoringUsername`"
+          "@
+          } else {
+            # For new user or updating existing user with new password
+            $SQL=@"
           SET QUOTED_IDENTIFIER OFF;
           USE [master];
 
@@ -805,6 +885,7 @@ install:
 
           select name from sys.syslogins where name = `"$MonitoringUsername`"
           "@
+          }
 
           # Write SQL to temp file
           $SqlFile = Join-Path $env:TEMP "nr-create-monitoring-user.sql"
@@ -865,7 +946,16 @@ install:
           if ($userCreated) {
             Write-Host ""
             Write-Host "=========================================="
-            if ($updateExisting) {
+            if ($updateExisting -and $useExistingPassword) {
+              Write-Host "SUCCESS: Monitoring permissions granted!"
+              Write-Host "=========================================="
+              Write-Host ""
+              Write-Host "Existing user `"$MonitoringUsername`" has been configured for monitoring."
+              Write-Host "  Username: $MonitoringUsername"
+              Write-Host "  Password: (using existing password)"
+              Write-Host ""
+              Write-Host "Permissions granted:"
+            } elseif ($updateExisting) {
               Write-Host "SUCCESS: Monitoring user updated!"
               Write-Host "=========================================="
               Write-Host ""
@@ -892,8 +982,12 @@ install:
             Write-Host "    - VIEW DEFINITION (view object definitions)"
             Write-Host "    - db_datareader role (read data from all tables)"
             Write-Host ""
-            Write-Host "IMPORTANT: Save these credentials securely!"
-            Write-Host "You will need them to configure the NRDOT Collector."
+            if ($useExistingPassword) {
+              Write-Host "NOTE: Using your existing password for NRDOT Collector configuration."
+            } else {
+              Write-Host "IMPORTANT: Save these credentials securely!"
+              Write-Host "You will need them to configure the NRDOT Collector."
+            }
             Write-Host ""
 
             # Save monitoring user credentials to config file for later use
