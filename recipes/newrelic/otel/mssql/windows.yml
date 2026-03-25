@@ -1,0 +1,2259 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: mssql-otel-windows-installer
+displayName: Microsoft SQL Server OTel Integration (Windows)
+description: |
+  Sets up Microsoft SQL Server monitoring via the New Relic NRDOT Collector.
+  Downloads and installs the NRDOT Collector MSI on this Windows host.
+repository: https://github.com/newrelic/nrdot-collector-components
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - OTel
+  - OpenTelemetry
+  - SqlServer
+  - MSSQL
+  - Windows
+  - NRDOT
+
+processMatch: []
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_sqlcmd
+        - task: prompt_and_save_config
+        - task: validate_sql_connection
+        - task: assert_db_version
+        - task: check_existing_nrdot_installation
+        - task: install_nrdot
+        - task: create_monitoring_user
+        - task: prompt_region_selection
+        - task: prompt_license_key
+        - task: prompt_monitored_databases
+        - task: configure_nrdot
+        - task: update_config_credentials
+        - task: add_compression
+        - task: cleanup_traces
+        - task: restart_service
+
+    # ── Prompt user for SQL Server connection details ─────────────────────────
+    prompt_and_save_config:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== SQL Server Connection Configuration ==="
+          Write-Host ""
+
+          $Hostname = Read-Host "SQL Server hostname or IP address (press Enter for localhost)"
+          if ([string]::IsNullOrWhiteSpace($Hostname)) { $Hostname = "localhost" }
+
+          $Port = Read-Host "SQL Server port (press Enter for 1433)"
+          if ([string]::IsNullOrWhiteSpace($Port)) { $Port = "1433" }
+
+          Write-Host ""
+          Write-Host "Authentication Method:"
+          Write-Host "  1. Windows on host (for local or domain SQL Server)"
+          Write-Host "  2. SQL Server Authentication (for remote SQL Server)"
+          $AuthChoice = Read-Host "Enter choice (1 or 2, press Enter for 1)"
+          if ([string]::IsNullOrWhiteSpace($AuthChoice)) { $AuthChoice = "1" }
+          if ($AuthChoice -ne "1" -and $AuthChoice -ne "2") {
+            Write-Host ""
+            Write-Host "ERROR: Invalid choice '$AuthChoice'. Enter 1 for Windows on host or 2 for SQL Server Authentication." -ForegroundColor Red
+            Write-Host ""
+            exit 1
+          }
+
+          $Username = ""
+          $Password = ""
+
+          if ($AuthChoice -eq "2") {
+            $Username = Read-Host "SQL Server root username (e.g., sa)"
+            $SecurePassword = Read-Host "SQL Server root password" -AsSecureString
+            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+            $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+          }
+
+          Write-Host ""
+          Write-Host "Configuration saved:"
+          Write-Host ("  Hostname: " + $Hostname)
+          Write-Host ("  Port: " + $Port)
+          Write-Host ("  Auth: " + $(if ($AuthChoice -eq "1") { "Windows on host" } else { "SQL Server Authentication (user: $Username)" }))
+          Write-Host ""
+
+          # Save to environment variables for next task
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_MSSQL_HOSTNAME", $Hostname, "Process")
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_MSSQL_PORT", $Port, "Process")
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_DB_USERNAME", $Username, "Process")
+          [System.Environment]::SetEnvironmentVariable("NR_CLI_DB_PASSWORD", $Password, "Process")
+
+          # Also save to a temp file as backup
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          $configContent = "HOSTNAME=$Hostname`nPORT=$Port`nUSERNAME=$Username`nPASSWORD=$Password`nAUTH_CHOICE=$AuthChoice"
+          try {
+            [System.IO.File]::WriteAllText($configFile, $configContent, [System.Text.Encoding]::UTF8)
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to save configuration file" -ForegroundColor Red
+            Write-Host "  Location: $configFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "Please ensure:"
+            Write-Host "  - You have write access to the TEMP directory"
+            Write-Host "  - Sufficient disk space is available"
+            Write-Host ""
+            exit 1
+          }
+          '
+
+    # ── Validate SQL Server connection with retry attempts ─────────────────────
+    validate_sql_connection:
+      cmds:
+        - |
+          powershell -command '
+          # Load config from temp file
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (-not (Test-Path $configFile)) {
+            Write-Host "ERROR: Configuration file not found." -ForegroundColor Red
+            exit 1
+          }
+
+          $HOSTNAME = ""
+          $PORT = ""
+          $USERNAME = ""
+          $PASSWORD = ""
+          $AUTH_CHOICE = "1"
+
+          try {
+            Get-Content $configFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+              if ($_ -match "^HOSTNAME=(.*)$") { $HOSTNAME = $matches[1].Trim() }
+              if ($_ -match "^PORT=(.*)$") { $PORT = $matches[1].Trim() }
+              if ($_ -match "^USERNAME=(.*)$") { $USERNAME = $matches[1].Trim() }
+              if ($_ -match "^PASSWORD=(.*)$") { $PASSWORD = $matches[1].Trim() }
+              if ($_ -match "^AUTH_CHOICE=(.*)$") { $AUTH_CHOICE = $matches[1].Trim() }
+            }
+          } catch {
+            Write-Host "ERROR: Failed to read configuration file" -ForegroundColor Red
+            Write-Host "  Location: $configFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "The file may be corrupted or locked."
+            Write-Host "Please re-run the installation from the beginning."
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=== Validating SQL Server Connection ==="
+          Write-Host ""
+
+          $maxAttempts = 3
+          $attempt = 1
+          $connectionSuccess = $false
+
+          while ($attempt -le $maxAttempts -and -not $connectionSuccess) {
+            Write-Host "Attempt $attempt of $maxAttempts"
+            Write-Host ""
+
+            # Validate hostname
+            Write-Host "Validating hostname: $HOSTNAME"
+            $hostValid = $false
+
+            # Try to resolve hostname
+            try {
+              $resolved = [System.Net.Dns]::GetHostAddresses($HOSTNAME)
+              if ($resolved.Count -gt 0) {
+                Write-Host "  Hostname resolved successfully" -ForegroundColor Green
+                $hostValid = $true
+              }
+            } catch {
+              Write-Host "  ERROR: Cannot resolve hostname `"$HOSTNAME`"" -ForegroundColor Red
+              Write-Host "    - Check if the hostname or IP address is correct"
+              Write-Host "    - Verify network connectivity"
+              Write-Host "    - Try using IP address instead of hostname"
+            }
+
+            if (-not $hostValid) {
+              Write-Host ""
+              if ($attempt -lt $maxAttempts) {
+                $retry = Read-Host "Enter new hostname/IP (or press Enter to exit)"
+                if ([string]::IsNullOrWhiteSpace($retry)) {
+                  Write-Host "Exiting..."
+                  exit 1
+                }
+                $HOSTNAME = $retry.Trim()
+                $attempt++
+                Write-Host ""
+                continue
+              } else {
+                Write-Host "Maximum attempts reached. Please verify your SQL Server details and try again."
+                exit 1
+              }
+            }
+
+            # Validate port
+            Write-Host "Validating port: $PORT"
+            $portValid = $false
+
+            if ($PORT -match "^\d+$") {
+              $portNum = [int]$PORT
+              if ($portNum -ge 1 -and $portNum -le 65535) {
+                Write-Host "  Port number is valid" -ForegroundColor Green
+                $portValid = $true
+              } else {
+                Write-Host "  ERROR: Port must be between 1 and 65535" -ForegroundColor Red
+              }
+            } else {
+              Write-Host "  ERROR: Port must be a number" -ForegroundColor Red
+            }
+
+            if (-not $portValid) {
+              Write-Host ""
+              if ($attempt -lt $maxAttempts) {
+                $retry = Read-Host "Enter new port (or press Enter to exit)"
+                if ([string]::IsNullOrWhiteSpace($retry)) {
+                  Write-Host "Exiting..."
+                  exit 1
+                }
+                $PORT = $retry.Trim()
+                $attempt++
+                Write-Host ""
+                continue
+              } else {
+                Write-Host "Maximum attempts reached. Please verify your SQL Server details and try again."
+                exit 1
+              }
+            }
+
+            # Validate credentials for SQL Authentication
+            if ($AUTH_CHOICE -eq "2") {
+              if ([string]::IsNullOrWhiteSpace($USERNAME) -or [string]::IsNullOrWhiteSpace($PASSWORD)) {
+                Write-Host "  ERROR: SQL Authentication requires username and password" -ForegroundColor Red
+                Write-Host "    - Username: $(if ($USERNAME) { $USERNAME } else { `"(empty)`" })"
+                Write-Host "    - Password: $(if ($PASSWORD) { `"(set)`" } else { `"(empty)`" })"
+                Write-Host ""
+
+                if ($attempt -lt $maxAttempts) {
+                  Write-Host "Please enter SQL Server root credentials:"
+                  $USERNAME = Read-Host "SQL Server root username (e.g., sa)"
+                  $SecurePassword = Read-Host "SQL Server root password" -AsSecureString
+                  $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+                  $PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                  [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+                  $attempt++
+                  Write-Host ""
+                  continue
+                } else {
+                  Write-Host "Maximum attempts reached."
+                  Write-Host "ERROR: Cannot proceed without valid SQL Server credentials." -ForegroundColor Red
+                  exit 1
+                }
+              }
+            }
+
+            # Test SQL Server connection
+            Write-Host "Testing SQL Server connection..."
+            $Server = "$HOSTNAME,$PORT"
+
+            $testQuery = "SELECT @@VERSION"
+            $testResult = $null
+            $testExitCode = 0
+
+            if ($AUTH_CHOICE -eq "2") {
+              Write-Host "  Using SQL Authentication with user: $USERNAME"
+              $testResult = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -Q $testQuery -t 30 -h -1 -W 2>&1 | Out-String
+              $testExitCode = $LASTEXITCODE
+            } else {
+              Write-Host "  Using Windows Authentication"
+              $testResult = sqlcmd -S $Server -E -Q $testQuery -t 30 -h -1 -W 2>&1 | Out-String
+              $testExitCode = $LASTEXITCODE
+            }
+
+            if ($testExitCode -eq 0 -and $testResult -notmatch "Msg \d+, Level \d+") {
+              Write-Host "  Connection successful!" -ForegroundColor Green
+              Write-Host ""
+              Write-Host "SQL Server Version:"
+              Write-Host $testResult.Trim()
+              $connectionSuccess = $true
+            } else {
+              Write-Host "  Connection failed!" -ForegroundColor Red
+              Write-Host ""
+
+              # Analyze error
+              if ($testResult -match "Login failed for user") {
+                Write-Host "ERROR: Invalid username or password"
+                Write-Host "  - Verify username: $USERNAME"
+                Write-Host "  - Verify password is correct"
+                Write-Host "  - Check if SQL Server Authentication is enabled"
+              } elseif ($testResult -match "Cannot open server") {
+                Write-Host "ERROR: Cannot connect to server"
+                Write-Host "  - Verify SQL Server is running on $HOSTNAME"
+                Write-Host "  - Check if port $PORT is correct (default is 1433)"
+                Write-Host "  - Verify firewall allows connection on port $PORT"
+              } elseif ($testResult -match "timeout") {
+                Write-Host "ERROR: Connection timeout"
+                Write-Host "  - Server may be unreachable or not responding"
+                Write-Host "  - Check network connectivity"
+                Write-Host "  - Verify firewall settings"
+              } else {
+                Write-Host "ERROR: Connection test failed"
+                Write-Host ""
+                Write-Host "Error details:"
+                Write-Host $testResult.Trim()
+              }
+
+              Write-Host ""
+
+              if ($attempt -lt $maxAttempts) {
+                Write-Host "What would you like to do?"
+                Write-Host "  1. Retry with same credentials"
+                Write-Host "  2. Enter new username/password"
+                Write-Host "  3. Exit"
+                $choice = Read-Host "Enter choice (1, 2, or 3)"
+
+                if ($choice -eq "2") {
+                  $USERNAME = Read-Host "SQL Server root username (e.g., sa)"
+                  $SecurePassword = Read-Host "SQL Server root password" -AsSecureString
+                  $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
+                  $PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                  [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+                } elseif ($choice -ne "1") {
+                  Write-Host "Exiting..."
+                  exit 1
+                }
+
+                $attempt++
+                Write-Host ""
+              } else {
+                Write-Host "Maximum attempts reached."
+                Write-Host ""
+                Write-Host "Please verify:"
+                Write-Host "  - SQL Server is running and accessible"
+                Write-Host "  - Hostname/IP: $HOSTNAME"
+                Write-Host "  - Port: $PORT"
+                Write-Host "  - Username: $USERNAME"
+                Write-Host "  - Password is correct"
+                Write-Host "  - SQL Server allows remote connections"
+                Write-Host "  - Firewall allows traffic on port $PORT"
+                Write-Host ""
+                exit 1
+              }
+            }
+          }
+
+          # Update config file with potentially corrected values
+          $configContent = "HOSTNAME=$HOSTNAME`nPORT=$PORT`nUSERNAME=$USERNAME`nPASSWORD=$PASSWORD`nAUTH_CHOICE=$AUTH_CHOICE"
+          try {
+            [System.IO.File]::WriteAllText($configFile, $configContent, [System.Text.Encoding]::UTF8)
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to update configuration file" -ForegroundColor Red
+            Write-Host "  Location: $configFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host "=========================================="
+          Write-Host "Connection validation successful!" -ForegroundColor Green
+          Write-Host "=========================================="
+          Write-Host ""
+          '
+
+    # ── Prompt user for New Relic region selection ────────────────────────────
+    prompt_region_selection:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== New Relic Region Selection ==="
+          Write-Host ""
+          Write-Host "Select your New Relic region:"
+          Write-Host "  1. US Production (otlp.nr-data.net)"
+          Write-Host "  2. EU Production (otlp.eu01.nr-data.net)"
+          Write-Host ""
+
+          $RegionChoice = Read-Host "Enter choice (1 or 2, press Enter for 1)"
+          if ([string]::IsNullOrWhiteSpace($RegionChoice)) { $RegionChoice = "1" }
+
+          if ($RegionChoice -ne "1" -and $RegionChoice -ne "2") {
+            Write-Host ""
+            Write-Host "ERROR: Invalid choice `"$RegionChoice`". Enter 1 for US Production or 2 for EU Production."
+            Write-Host ""
+            exit 1
+          }
+
+          $Endpoint = ""
+          $RegionName = ""
+
+          if ($RegionChoice -eq "1") {
+            $Endpoint = "https://otlp.nr-data.net"
+            $RegionName = "US Production"
+          } else {
+            $Endpoint = "https://otlp.eu01.nr-data.net"
+            $RegionName = "EU Production"
+          }
+
+          Write-Host ""
+          Write-Host "Selected: $RegionName"
+          Write-Host "Endpoint: $Endpoint"
+          Write-Host ""
+
+          # Save endpoint to a temp file for later use
+          $endpointFile = Join-Path $env:TEMP "nr-mssql-endpoint.txt"
+          $endpointContent = "ENDPOINT=$Endpoint`nREGION=$RegionName"
+          try {
+            [System.IO.File]::WriteAllText($endpointFile, $endpointContent, [System.Text.Encoding]::UTF8)
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to save endpoint configuration" -ForegroundColor Red
+            Write-Host "  Location: $endpointFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host "Region configuration saved." -ForegroundColor Green
+          Write-Host ""
+          '
+
+    # ── Prompt user for New Relic License Key or read from environment ────────
+    prompt_license_key:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== New Relic License Key Configuration ==="
+          Write-Host ""
+
+          $LicenseKey = ""
+          $maxAttempts = 3
+          $attempt = 1
+          $keyValid = $false
+
+          # Check if license key is provided via environment variable
+          if ($env:NEW_RELIC_LICENSE_KEY) {
+            $LicenseKey = $env:NEW_RELIC_LICENSE_KEY
+            Write-Host "Using NEW_RELIC_LICENSE_KEY from environment"
+            $keyValid = $true
+          } else {
+            Write-Host "New Relic License Key not found in environment variable."
+            Write-Host ""
+          }
+
+          # Validate license key (with retry for manual entry)
+          while ($attempt -le $maxAttempts -and -not $keyValid) {
+            if (-not $keyValid) {
+              if ($attempt -gt 1) {
+                Write-Host "Attempt $attempt of $maxAttempts"
+                Write-Host ""
+              }
+
+              # Prompt user for license key
+              $SecureLicenseKey = Read-Host "Enter your New Relic License Key" -AsSecureString
+              $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureLicenseKey)
+              $LicenseKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+              [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+            }
+
+            # Validate license key
+            if ([string]::IsNullOrWhiteSpace($LicenseKey)) {
+              Write-Host ""
+              Write-Host "  ERROR: License Key cannot be empty" -ForegroundColor Red
+              Write-Host ""
+              $attempt++
+              $keyValid = $false
+            } elseif ($LicenseKey.Length -ne 40) {
+              Write-Host ""
+              Write-Host "  ERROR: Invalid License Key format" -ForegroundColor Red
+              Write-Host "    - License keys are 40 characters long"
+              Write-Host "    - Your input has $($LicenseKey.Length) characters"
+              Write-Host "    - Make sure to copy the complete license key"
+              Write-Host ""
+              $attempt++
+              $keyValid = $false
+            } elseif (-not $LicenseKey.EndsWith("NRAL")) {
+              Write-Host ""
+              Write-Host "  ERROR: Invalid License Key format" -ForegroundColor Red
+              Write-Host "    - License keys end with `"NRAL`""
+              Write-Host "    - Your key ends with: $($LicenseKey.Substring($LicenseKey.Length - 4))"
+              Write-Host "    - Make sure you are using a License Key, not an API Key"
+              Write-Host ""
+              $attempt++
+              $keyValid = $false
+            } else {
+              Write-Host ""
+              Write-Host "  License Key format is valid" -ForegroundColor Green
+              $keyValid = $true
+            }
+
+            if (-not $keyValid -and $attempt -gt $maxAttempts) {
+              Write-Host "Maximum attempts reached."
+              Write-Host "ERROR: Cannot proceed without a valid New Relic License Key."
+              Write-Host ""
+              Write-Host "To find your License Key:"
+              Write-Host "  1. Log in to New Relic"
+              Write-Host "  2. Go to Account Settings"
+              Write-Host "  3. Copy the License Key (40 characters, ends with NRAL)"
+              Write-Host ""
+              exit 1
+            }
+          }
+
+          Write-Host ""
+          Write-Host "License Key configured successfully." -ForegroundColor Green
+          Write-Host ""
+
+          # Save license key to a temp file for later use
+          $licenseKeyFile = Join-Path $env:TEMP "nr-mssql-license-key.txt"
+          $licenseKeyContent = "NEW_RELIC_LICENSE_KEY=$LicenseKey"
+          try {
+            [System.IO.File]::WriteAllText($licenseKeyFile, $licenseKeyContent, [System.Text.Encoding]::UTF8)
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to save license key configuration" -ForegroundColor Red
+            Write-Host "  Location: $licenseKeyFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "This is a critical security file. Please ensure:"
+            Write-Host "  - You have write access to the TEMP directory"
+            Write-Host "  - Antivirus is not blocking the operation"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host "License Key configuration saved." -ForegroundColor Green
+          Write-Host ""
+          '
+
+    # ── Prompt user for monitored databases ────────────────────────────────────
+    prompt_monitored_databases:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== Database Monitoring Configuration ==="
+          Write-Host ""
+          Write-Host "Specify which databases to monitor:"
+          Write-Host "  - Enter database names separated by commas (e.g., adventuredb, myshop, sales)"
+          Write-Host "  - Press Enter to monitor ALL databases (default)"
+          Write-Host ""
+
+          $DatabaseInput = Read-Host "Enter database names (or press Enter for all databases)"
+
+          $MonitoredDatabases = "[]"
+          $DatabaseMessage = "All databases will be monitored"
+
+          if (-not [string]::IsNullOrWhiteSpace($DatabaseInput)) {
+            # Split by comma, trim whitespace, and format as YAML array
+            $dbList = $DatabaseInput -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+            if ($dbList.Count -gt 0) {
+              $MonitoredDatabases = "[" + ($dbList -join ", ") + "]"
+              $DatabaseMessage = "Monitoring specific databases: " + ($dbList -join ", ")
+            }
+          }
+
+          Write-Host ""
+          Write-Host $DatabaseMessage
+          Write-Host ""
+
+          # Save monitored databases to a temp file for later use
+          $dbFile = Join-Path $env:TEMP "nr-mssql-monitored-databases.txt"
+          $dbContent = "MONITORED_DATABASES=$MonitoredDatabases"
+          try {
+            [System.IO.File]::WriteAllText($dbFile, $dbContent, [System.Text.Encoding]::UTF8)
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to save database monitoring configuration" -ForegroundColor Red
+            Write-Host "  Location: $dbFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host "Database monitoring configuration saved." -ForegroundColor Green
+          Write-Host ""
+          '
+
+    # ── Check sqlcmd is installed ─────────────────────────────────────────────
+    assert_sqlcmd:
+      cmds:
+        - |
+          powershell -command '
+          if (Get-Command sqlcmd -ErrorAction SilentlyContinue) {
+            Write-Host ("sqlcmd found: " + (Get-Command sqlcmd).Source) -ForegroundColor Green
+            exit 0
+          }
+          Write-Host ""
+          Write-Host "ERROR: sqlcmd is not installed or not in PATH." -ForegroundColor Red
+          Write-Host ""
+          Write-Host "sqlcmd is required to create the SQL Server monitoring login."
+          Write-Host "Install it using one of the following methods:"
+          Write-Host ""
+          Write-Host "  Option 1 - SQL Server Command Line Tools (recommended):"
+          Write-Host "    https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility"
+          Write-Host ""
+          Write-Host "  Option 2 - winget:"
+          Write-Host "    winget install Microsoft.SQLServerCommandLineTools"
+          Write-Host ""
+          Write-Host "After installing, re-run this recipe."
+          Write-Host ""
+          exit 1
+          '
+
+    # ── Check SQL Server version (must be 2017 / v14 or later) ───────────────
+    #
+    # Tries Windows Authentication first (works for local or domain SQL Server).
+    # If that fails, tries SQL Authentication using NR_CLI_DB_USERNAME/PASSWORD
+    # if provided. If both fail, the version check is skipped with a notice.
+    # ─────────────────────────────────────────────────────────────────────────
+    assert_db_version:
+      cmds:
+        - |
+          powershell -command '
+          # Load config from temp file
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (Test-Path $configFile) {
+            try {
+              Get-Content $configFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+                if ($_ -match "^(\w+)=(.*)$") {
+                  $varName = $matches[1]
+                  $varValue = $matches[2].Trim()
+                  Set-Variable -Name $varName -Value $varValue
+                  Write-Host ("Loaded: " + $varName + " = " + $varValue)
+                }
+              }
+            } catch {
+              Write-Host "ERROR: Failed to read configuration file" -ForegroundColor Red
+              Write-Host "  Location: $configFile"
+              Write-Host "  Error: $_"
+              Write-Host ""
+              Write-Host "The file may be corrupted or locked."
+              Write-Host "Please re-run the installation from the beginning."
+              Write-Host ""
+              exit 1
+            }
+          } else {
+            Write-Host "ERROR: Configuration file not found. Please re-run the installation." -ForegroundColor Red
+            exit 1
+          }
+
+          $Server = $HOSTNAME + "," + $PORT
+          $sq = [char]39
+          $Query = "SET NOCOUNT ON; SELECT SERVERPROPERTY(" + $sq + "ProductMajorVersion" + $sq + ")"
+
+          Write-Host ""
+          Write-Host "Checking SQL Server version..."
+          Write-Host ("  Server : " + $Server)
+
+          # Run query using SQL Auth or Windows Auth based on AUTH_CHOICE
+          if ($AUTH_CHOICE -eq "2") {
+            Write-Host "  Using SQL Authentication..."
+            $raw = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -Q $Query -t 30 -h -1 -W 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "ERROR: Failed to connect to SQL Server at $Server" -ForegroundColor Red
+              Write-Host "  - Verify the server address and port are reachable"
+              Write-Host "  - Verify the username and password are correct"
+              Write-Host "  - Ensure SQL Server allows remote connections"
+              Write-Host "  - Check that port $PORT is open in the firewall"
+              Write-Host ""
+              exit 1
+            }
+          } else {
+            Write-Host "  Using Windows Authentication..."
+            $raw = sqlcmd -S $Server -E -Q $Query -t 30 -h -1 -W 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host ""
+              Write-Host "ERROR: Windows Authentication failed for $Server" -ForegroundColor Red
+              Write-Host "  - Ensure the current Windows user has access to SQL Server"
+              Write-Host "  - Or re-run and choose SQL Authentication with valid credentials"
+              Write-Host ""
+              exit 1
+            }
+          }
+
+          # Detect SQL-level errors even when sqlcmd exits 0
+          if ($raw -match "Msg \d+, Level \d+") {
+            Write-Host ""
+            Write-Host "ERROR: SQL Server returned an error while checking version:"
+            Write-Host ($raw.Trim())
+            Write-Host ""
+            exit 1
+          }
+
+          $majorVersionMatch = $raw -split "`n" | Where-Object { $_ -match "^\s*\d+\s*$" } | Select-Object -First 1
+          $majorVersion = if ($majorVersionMatch) { $majorVersionMatch.Trim() } else { "" }
+
+          if (-not $majorVersion -or -not ($majorVersion -match "^\d+$")) {
+            Write-Host ""
+            Write-Host "ERROR: Could not determine SQL Server version."
+            Write-Host "  sqlcmd output: " + $raw.Trim()
+            Write-Host ""
+            exit 1
+          }
+
+          $major = [int]$majorVersion
+
+          $versionMap = @{ 8="2000"; 9="2005"; 10="2008"; 11="2012"; 12="2014"; 13="2016"; 14="2017"; 15="2019"; 16="2022" }
+          $friendlyVersion = if ($versionMap.ContainsKey($major)) { $versionMap[$major] } else { "Unknown" }
+
+          Write-Host ("  Version: SQL Server " + $friendlyVersion + " (v" + $major + ")")
+
+          if ($major -lt 14) {
+            Write-Host ""
+            Write-Host ("ERROR: SQL Server " + $friendlyVersion + " (v" + $major + ") is not supported.")
+            Write-Host ""
+            Write-Host "The New Relic MSSQL OTel integration requires SQL Server 2017 (v14) or later."
+            Write-Host "Supported versions: 2017, 2019, 2022"
+            Write-Host ""
+            Write-Host "Please upgrade your SQL Server instance and re-run this recipe."
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host ("  Status : Supported (SQL Server " + $friendlyVersion + ")")
+          Write-Host ""
+          '
+
+    # ── Create monitoring user with required permissions ──────────────────────
+    create_monitoring_user:
+      cmds:
+        - |
+          powershell -command '
+          # Load config from temp file
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (Test-Path $configFile) {
+            try {
+              Get-Content $configFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+                if ($_ -match "^(\w+)=(.*)$") {
+                  $varName = $matches[1]
+                  $varValue = $matches[2].Trim()
+                  Set-Variable -Name $varName -Value $varValue
+                }
+              }
+            } catch {
+              Write-Host "ERROR: Failed to read configuration file" -ForegroundColor Red
+              Write-Host "  Location: $configFile"
+              Write-Host "  Error: $_"
+              Write-Host ""
+              Write-Host "The file may be corrupted or locked."
+              Write-Host "Please re-run the installation from the beginning."
+              Write-Host ""
+              exit 1
+            }
+          } else {
+            Write-Host "ERROR: Configuration file not found. Please re-run the installation." -ForegroundColor Red
+            exit 1
+          }
+
+          # Prompt for monitoring username with validation
+          Write-Host ""
+          Write-Host "=== SQL Server Monitoring User Setup ==="
+          Write-Host ""
+
+          $Server = $HOSTNAME + "," + $PORT
+          $MonitoringUsername = ""
+          $MonitoringPassword = ""
+          $userExists = $false
+          $updateExisting = $false
+          $useExistingPassword = $false
+          $maxAttempts = 3
+          $attempt = 1
+
+          while ($attempt -le $maxAttempts -and [string]::IsNullOrWhiteSpace($MonitoringUsername)) {
+            if ($attempt -gt 1) {
+              Write-Host "Attempt $attempt of $maxAttempts"
+              Write-Host ""
+            }
+
+            $inputUsername = Read-Host "Enter monitoring username (press Enter for default: newrelic)"
+            if ([string]::IsNullOrWhiteSpace($inputUsername)) {
+              $inputUsername = "newrelic"
+            }
+
+            # Check if user already exists
+            Write-Host ""
+            Write-Host "Checking if user `"$inputUsername`" already exists..."
+
+            $checkQuery = "SET QUOTED_IDENTIFIER OFF; SET NOCOUNT ON; SELECT name FROM sys.server_principals WHERE name = `"$inputUsername`" AND type = `"S`""
+            $checkFile = Join-Path $env:TEMP "nr-check-user.sql"
+            try {
+              [System.IO.File]::WriteAllText($checkFile, $checkQuery, [System.Text.Encoding]::UTF8)
+            } catch {
+              Write-Host ""
+              Write-Host "ERROR: Failed to create SQL query file" -ForegroundColor Red
+              Write-Host "  Location: $checkFile"
+              Write-Host "  Error: $_"
+              Write-Host ""
+              exit 1
+            }
+
+            if ($AUTH_CHOICE -eq "2") {
+              $checkOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $checkFile -t 30 -h -1 -W 2>&1 | Out-String
+            } else {
+              $checkOutput = sqlcmd -S $Server -E -i $checkFile -t 30 -h -1 -W 2>&1 | Out-String
+            }
+
+            if (Test-Path $checkFile) { Remove-Item $checkFile }
+
+            if ($checkOutput.Trim() -match $inputUsername) {
+              Write-Host "  WARNING: User `"$inputUsername`" already exists in SQL Server" -ForegroundColor Yellow
+              Write-Host ""
+              Write-Host "What would you like to do?"
+              Write-Host "  1. Create new user (enter different username)"
+              Write-Host "  2. Use existing user"
+              $choice = Read-Host "Enter choice (1 or 2)"
+
+              if ($choice -eq "2") {
+                Write-Host ""
+                Write-Host "  Using existing user: $inputUsername"
+                Write-Host ""
+
+                # Ask for the existing user password
+                Write-Host "Please enter the password for the existing user `"$inputUsername`":"
+                $SecureExistingPassword = Read-Host "Password" -AsSecureString
+                $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureExistingPassword)
+                $existingPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+                Write-Host ""
+                Write-Host "The following permissions will be granted to user `"$inputUsername`":"
+                Write-Host ""
+                Write-Host "  Instance-level permissions:"
+                Write-Host "    - VIEW SERVER STATE   (view server performance and state)"
+                Write-Host "    - VIEW ANY DEFINITION (view object definitions)"
+                Write-Host "    - VIEW ANY DATABASE   (view all databases)"
+                Write-Host ""
+                Write-Host "  Database-level permissions (for all user databases):"
+                Write-Host "    - VIEW DATABASE STATE (view database performance)"
+                Write-Host "    - VIEW DEFINITION     (view object definitions)"
+                Write-Host "    - db_datareader role  (read data from all tables)"
+                Write-Host ""
+
+                $permissionChoice = Read-Host "Can I grant these permissions to the existing user? (yes/no)"
+
+                if ($permissionChoice -eq "yes" -or $permissionChoice -eq "y") {
+                  Write-Host ""
+                  Write-Host "  Permissions will be granted" -ForegroundColor Green
+                  $MonitoringUsername = $inputUsername
+                  $MonitoringPassword = $existingPassword
+                  $userExists = $true
+                  $updateExisting = $true
+                  $useExistingPassword = $true
+                } else {
+                  Write-Host ""
+                  Write-Host "=========================================="
+                  Write-Host "WARNING: Integration stopped by user"
+                  Write-Host "=========================================="
+                  Write-Host ""
+                  Write-Host "Cannot proceed without granting monitoring permissions."
+                  Write-Host "The SQL Server monitoring requires these permissions to collect"
+                  Write-Host "performance metrics and query execution data."
+                  Write-Host ""
+                  Write-Host "Please either:"
+                  Write-Host "  - Re-run and grant the required permissions, or"
+                  Write-Host "  - Create a new monitoring user with the necessary permissions"
+                  Write-Host ""
+                  exit 1
+                }
+              } else {
+                # Choice 1 or invalid - try again
+                Write-Host ""
+                Write-Host "Please enter a different username."
+                Write-Host ""
+                $attempt++
+              }
+            } else {
+              Write-Host "  User `"$inputUsername`" does not exist - will create new user" -ForegroundColor Green
+              $MonitoringUsername = $inputUsername
+              $userExists = $false
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($MonitoringUsername)) {
+            Write-Host ""
+            Write-Host "ERROR: Could not determine a valid monitoring username."
+            exit 1
+          }
+
+          Write-Host ""
+          if ($updateExisting) {
+            Write-Host "Updating SQL Server monitoring user..."
+          } else {
+            Write-Host "Creating SQL Server monitoring user..."
+          }
+          Write-Host "  Username: $MonitoringUsername"
+
+          # Auto-generate a secure password only if not using existing password
+          # Must contain: uppercase, lowercase, number, and special character
+          if (-not $useExistingPassword) {
+            $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+            $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+            $numbers = -join ((48..57) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+            $special = -join ("!@#$%^&*".ToCharArray() | Get-Random -Count 2)
+            $allChars = ($upper + $lower + $numbers + $special).ToCharArray()
+            $MonitoringPassword = -join ($allChars | Get-Random -Count $allChars.Length)
+            Write-Host "  Password: $MonitoringPassword (auto-generated)"
+          } else {
+            Write-Host "  Password: (using existing password)"
+          }
+          Write-Host "  Server: $Server"
+
+          # Create SQL script for user creation and permissions
+          if ($useExistingPassword) {
+            # For existing user with existing password - only grant permissions
+            $SQL=@"
+          SET QUOTED_IDENTIFIER OFF;
+          USE [master];
+
+          -- Instance-level permissions
+          GRANT VIEW SERVER STATE   TO [$MonitoringUsername]
+          GRANT VIEW ANY DEFINITION TO [$MonitoringUsername]
+          GRANT VIEW ANY DATABASE   TO [$MonitoringUsername]
+
+          -- Grant read access privileges to all online non-system user databases
+          DECLARE @name SYSNAME
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+              SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`", `"msdb`", `"tempdb`", `"model`", `"rdsadmin`", `"distribution`") and state = 0
+          OPEN db_cursor
+          FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+          BEGIN
+              BEGIN TRY
+                  EXECUTE(`"USE [`" + @name + `"]; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = `"`"$MonitoringUsername`"`") BEGIN CREATE USER [$MonitoringUsername] FOR LOGIN [$MonitoringUsername]; END; GRANT VIEW DATABASE STATE TO [$MonitoringUsername]; GRANT VIEW DEFINITION TO [$MonitoringUsername]; ALTER ROLE db_datareader ADD MEMBER [$MonitoringUsername];`")
+              END TRY
+              BEGIN CATCH
+              END CATCH
+              FETCH next FROM db_cursor INTO @name
+          END
+          CLOSE db_cursor
+          DEALLOCATE db_cursor
+
+          select name from sys.syslogins where name = `"$MonitoringUsername`"
+          "@
+          } else {
+            # For new user or updating existing user with new password
+            $SQL=@"
+          SET QUOTED_IDENTIFIER OFF;
+          USE [master];
+
+          -- Create login if it does not already exist; update password if it does
+          IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = `"$MonitoringUsername`")
+          BEGIN
+              CREATE LOGIN [$MonitoringUsername] WITH PASSWORD = `"$MonitoringPassword`"
+          END
+          ELSE
+          BEGIN
+              ALTER LOGIN [$MonitoringUsername] WITH PASSWORD = `"$MonitoringPassword`"
+          END
+
+          -- Instance-level permissions
+          GRANT VIEW SERVER STATE   TO [$MonitoringUsername]
+          GRANT VIEW ANY DEFINITION TO [$MonitoringUsername]
+          GRANT VIEW ANY DATABASE   TO [$MonitoringUsername]
+
+          -- Grant read access privileges to all online non-system user databases
+          DECLARE @name SYSNAME
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+              SELECT NAME FROM master.sys.databases WHERE NAME NOT IN (`"master`", `"msdb`", `"tempdb`", `"model`", `"rdsadmin`", `"distribution`") and state = 0
+          OPEN db_cursor
+          FETCH NEXT FROM db_cursor INTO @name WHILE @@FETCH_STATUS = 0
+          BEGIN
+              BEGIN TRY
+                  EXECUTE(`"USE [`" + @name + `"]; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = `"`"$MonitoringUsername`"`") BEGIN CREATE USER [$MonitoringUsername] FOR LOGIN [$MonitoringUsername]; END; GRANT VIEW DATABASE STATE TO [$MonitoringUsername]; GRANT VIEW DEFINITION TO [$MonitoringUsername]; ALTER ROLE db_datareader ADD MEMBER [$MonitoringUsername];`")
+              END TRY
+              BEGIN CATCH
+              END CATCH
+              FETCH next FROM db_cursor INTO @name
+          END
+          CLOSE db_cursor
+          DEALLOCATE db_cursor
+
+          select name from sys.syslogins where name = `"$MonitoringUsername`"
+          "@
+          }
+
+          # Write SQL to temp file
+          $SqlFile = Join-Path $env:TEMP "nr-create-monitoring-user.sql"
+          if (Test-Path $SqlFile) {
+            try {
+              Remove-Item $SqlFile -Force -ErrorAction Stop
+            } catch {
+              Write-Host "WARNING: Could not delete existing temp file: $SqlFile" -ForegroundColor Yellow
+            }
+          }
+          try {
+            [System.IO.File]::WriteAllText($SqlFile, $SQL, [System.Text.Encoding]::UTF8)
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to create SQL script file" -ForegroundColor Red
+            Write-Host "  Location: $SqlFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "This file contains sensitive credentials. Please ensure:"
+            Write-Host "  - You have write access to the TEMP directory"
+            Write-Host "  - Antivirus is not blocking the operation"
+            Write-Host ""
+            exit 1
+          }
+
+          # Execute SQL using appropriate authentication method based on AUTH_CHOICE
+          Write-Host ""
+          Write-Host "Executing SQL to create monitoring user..."
+
+          if ($AUTH_CHOICE -eq "2") {
+            Write-Host "  Using SQL Authentication..."
+            $SqlOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $SqlFile -t 60 -W 2>&1 | Out-String
+          } else {
+            Write-Host "  Using Windows Authentication..."
+            $SqlOutput = sqlcmd -S $Server -E -i $SqlFile -t 60 -W 2>&1 | Out-String
+          }
+
+          $SqlExitCode = $LASTEXITCODE
+
+          # Clean up temp file containing passwords - CRITICAL for security
+          if (Test-Path $SqlFile) {
+            try {
+              Remove-Item $SqlFile -Force -ErrorAction Stop
+            } catch {
+              Write-Host "WARNING: Could not delete temporary SQL file: $SqlFile" -ForegroundColor Yellow
+              Write-Host "  This file contains passwords. Please delete manually for security."
+            }
+          }
+
+          # Check for SQL errors
+          if ($SqlExitCode -ne 0 -or $SqlOutput -match "Msg \d+, Level \d+") {
+            Write-Host ""
+            Write-Host "ERROR: Failed to create monitoring user!"
+            Write-Host "  SQL Server returned exit code: $SqlExitCode"
+            Write-Host ""
+            Write-Host "Error details:"
+            Write-Host $SqlOutput
+            Write-Host ""
+            exit 1
+          }
+
+          # Verify user was created by checking the output for the username
+          Write-Host ""
+          Write-Host "Verifying monitoring user creation..."
+
+          $verifyQuery = "SET QUOTED_IDENTIFIER OFF; SET NOCOUNT ON; SELECT name FROM sys.syslogins WHERE name = `"$MonitoringUsername`""
+          $verifyFile = Join-Path $env:TEMP "nr-verify-user.sql"
+          try {
+            [System.IO.File]::WriteAllText($verifyFile, $verifyQuery, [System.Text.Encoding]::UTF8)
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to create verification SQL file" -ForegroundColor Red
+            Write-Host "  Location: $verifyFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          if ($AUTH_CHOICE -eq "2") {
+            $verifyOutput = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -i $verifyFile -t 30 -h -1 -W 2>&1 | Out-String
+          } else {
+            $verifyOutput = sqlcmd -S $Server -E -i $verifyFile -t 30 -h -1 -W 2>&1 | Out-String
+          }
+
+          # Clean up temp verification file
+          if (Test-Path $verifyFile) {
+            try {
+              Remove-Item $verifyFile -Force -ErrorAction Stop
+            } catch {
+              Write-Host "WARNING: Could not delete temp file: $verifyFile" -ForegroundColor Yellow
+            }
+          }
+
+          # Check if verification was successful
+          $userCreated = $false
+          if ($verifyOutput.Trim() -match $MonitoringUsername) {
+            $userCreated = $true
+          }
+
+          if ($userCreated) {
+            Write-Host ""
+            Write-Host "=========================================="
+            if ($updateExisting -and $useExistingPassword) {
+              Write-Host "SUCCESS: Monitoring permissions granted!"
+              Write-Host "=========================================="
+              Write-Host ""
+              Write-Host "Existing user `"$MonitoringUsername`" has been configured for monitoring."
+              Write-Host "  Username: $MonitoringUsername"
+              Write-Host "  Password: (using existing password)"
+              Write-Host ""
+              Write-Host "Permissions granted:"
+            } elseif ($updateExisting) {
+              Write-Host "SUCCESS: Monitoring user updated!"
+              Write-Host "=========================================="
+              Write-Host ""
+              Write-Host "Existing user `"$MonitoringUsername`" has been updated with:"
+              Write-Host "  - New password: $MonitoringPassword"
+              Write-Host ""
+              Write-Host "Permissions granted:"
+            } else {
+              Write-Host "SUCCESS: Monitoring user created!" -ForegroundColor Green
+              Write-Host "=========================================="
+              Write-Host ""
+              Write-Host "New monitoring user created:" -ForegroundColor Green
+              Write-Host "  Username: $MonitoringUsername"
+              Write-Host "  Password: $MonitoringPassword"
+              Write-Host ""
+              Write-Host "Permissions granted:"
+            }
+            Write-Host "  Instance-level:"
+            Write-Host "    - VIEW SERVER STATE (view server performance and state)"
+            Write-Host "    - VIEW ANY DEFINITION (view object definitions)"
+            Write-Host "    - VIEW ANY DATABASE (view all databases)"
+            Write-Host "  Database-level (for all user databases):"
+            Write-Host "    - VIEW DATABASE STATE (view database performance)"
+            Write-Host "    - VIEW DEFINITION (view object definitions)"
+            Write-Host "    - db_datareader role (read data from all tables)"
+            Write-Host ""
+            if ($useExistingPassword) {
+              Write-Host "NOTE: Using your existing password for NRDOT Collector configuration."
+            } else {
+              Write-Host "IMPORTANT: Save these credentials securely!"
+              Write-Host "You will need them to configure the NRDOT Collector."
+            }
+            Write-Host ""
+
+            # Save monitoring user credentials to config file for later use
+            $monitoringConfigFile = Join-Path $env:TEMP "nr-mssql-monitoring-user.txt"
+            $monitoringContent = "MONITORING_USERNAME=$MonitoringUsername`nMONITORING_PASSWORD=$MonitoringPassword"
+            try {
+              [System.IO.File]::WriteAllText($monitoringConfigFile, $monitoringContent, [System.Text.Encoding]::UTF8)
+            } catch {
+              Write-Host ""
+              Write-Host "ERROR: Failed to save monitoring user credentials" -ForegroundColor Red
+              Write-Host "  Location: $monitoringConfigFile"
+              Write-Host "  Error: $_"
+              Write-Host ""
+              Write-Host "This is a critical file containing passwords. Please ensure:"
+              Write-Host "  - You have write access to the TEMP directory"
+              Write-Host "  - Antivirus is not blocking the operation"
+              Write-Host ""
+              exit 1
+            }
+          } else {
+            Write-Host ""
+            Write-Host "ERROR: Monitoring user was not created successfully!"
+            Write-Host "Verification query output:"
+            Write-Host $verifyOutput
+            Write-Host ""
+            Write-Host "Please check:"
+            Write-Host "  - SQL Server logs for detailed error messages"
+            Write-Host "  - That the root user has sufficient permissions"
+            Write-Host "  - That SQL Server is configured for SQL Authentication"
+            Write-Host ""
+            exit 1
+          }
+          '
+
+    # ── Check if NRDOT Collector is already installed ─────────────────────────
+    check_existing_nrdot_installation:
+      cmds:
+        - |
+          powershell -command '
+          Write-Host ""
+          Write-Host "=== Checking for Existing NRDOT Collector Installation ==="
+          Write-Host ""
+
+          $installPath = "C:\Program Files (x86)\NRDOT Collector Host"
+          $configPath = Join-Path $installPath "config.yaml"
+          $sqlServerConfigured = $false
+
+          # Check if config file exists and contains SQL Server receiver
+          if (Test-Path $configPath) {
+            Write-Host "  NRDOT Collector config file found: $configPath" -ForegroundColor Green
+            Write-Host "    Checking for existing SQL Server monitoring configuration..."
+
+            try {
+              $configContent = Get-Content $configPath -Raw -ErrorAction Stop
+
+              # Check if SQL Server receiver is already configured
+              if ($configContent -match "sqlserver") {
+                $sqlServerConfigured = $true
+                Write-Host "  WARNING: SQL Server monitoring is already configured!" -ForegroundColor Yellow
+              } else {
+                Write-Host "  SQL Server monitoring not configured - can proceed" -ForegroundColor Green
+              }
+            } catch {
+              Write-Host "  WARNING: Could not read config file: $_" -ForegroundColor Yellow
+            }
+          } else {
+            Write-Host "  No existing NRDOT Collector configuration found" -ForegroundColor Green
+          }
+
+          if ($sqlServerConfigured) {
+            Write-Host ""
+            Write-Host "=========================================="
+            Write-Host "NRDOT Collector Installation"
+            Write-Host "=========================================="
+            Write-Host ""
+            Write-Host "You already installed NRDOT Collector with SQL Server monitoring."
+            Write-Host ""
+            Write-Host "Configuration file location:"
+            Write-Host "  $configPath"
+            Write-Host ""
+            Write-Host "If you want to update the NRDOT Collector, please follow"
+            Write-Host "the instructions in our documentation:"
+            Write-Host ""
+            Write-Host "  https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/#configure-collector"
+            Write-Host ""
+            Write-Host "After updating the configuration file, restart the NRDOT Collector service:"
+            Write-Host "  Restart-Service `"NRDOT Collector Host`""
+            Write-Host ""
+            Write-Host "=========================================="
+            Write-Host ""
+            exit 1
+          } else {
+            Write-Host ""
+            Write-Host "Proceeding with installation..."
+            Write-Host ""
+          }
+          '
+
+    # ── Download and install NRDOT Collector MSI ──────────────────────────────
+    install_nrdot:
+      cmds:
+        - |
+          powershell -command '
+          # Check for Administrator privileges
+          $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          if (-not $isAdmin) {
+            Write-Host ""
+            Write-Host "ERROR: Administrator privileges required" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "This installation requires Administrator privileges to:"
+            Write-Host "  - Install MSI packages"
+            Write-Host "  - Create and manage Windows services"
+            Write-Host "  - Write to Program Files directory"
+            Write-Host ""
+            Write-Host "Please run this installation as Administrator:"
+            Write-Host "  1. Right-click on Command Prompt or PowerShell"
+            Write-Host "  2. Select ''Run as Administrator''"
+            Write-Host "  3. Re-run the installation"
+            Write-Host ""
+            exit 1
+          }
+
+          $MsiUrl  = "https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-windows-amd64-latest.msi"
+          $MsiFile = [System.IO.Path]::Combine($env:TEMP, "nrdot-collector-host-windows-amd64-latest.msi")
+          $LogFile = [System.IO.Path]::Combine($env:TEMP, "nrdot-install.log")
+
+          Write-Host ""
+          Write-Host "Downloading NRDOT Collector..."
+          Write-Host ("  URL : " + $MsiUrl)
+          Write-Host ""
+
+          $ProgressPreference = "SilentlyContinue"
+          try {
+            Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiFile -UseBasicParsing -ErrorAction Stop
+            $ProgressPreference = "Continue"
+
+            # Verify download completed successfully
+            if (-not (Test-Path $MsiFile)) {
+              throw "Download completed but MSI file not found at expected location"
+            }
+
+            # Validate file size (MSI should be at least 1MB)
+            $fileInfo = Get-Item $MsiFile
+            if ($fileInfo.Length -lt 1MB) {
+              throw "Downloaded file appears incomplete (size: $($fileInfo.Length) bytes, expected > 1MB)"
+            }
+
+            Write-Host "Download complete." -ForegroundColor Green
+          } catch [System.Net.WebException] {
+            $ProgressPreference = "Continue"
+            Write-Host ""
+            Write-Host "ERROR: Network error downloading NRDOT Collector" -ForegroundColor Red
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "Please check:"
+            Write-Host "  - Internet connection is available"
+            Write-Host "  - Proxy settings if behind a corporate firewall"
+            Write-Host "  - Firewall allows outbound HTTPS connections"
+            Write-Host "  - URL is accessible: $MsiUrl"
+            Write-Host ""
+            exit 1
+          } catch {
+            $ProgressPreference = "Continue"
+            Write-Host ""
+            Write-Host "ERROR: Failed to download NRDOT Collector" -ForegroundColor Red
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "Please check:"
+            Write-Host "  - Internet connection"
+            Write-Host "  - Sufficient disk space in TEMP directory"
+            Write-Host "  - Antivirus not blocking the download"
+            Write-Host ""
+            exit 1
+          }
+          Write-Host ""
+
+          Write-Host "Installing NRDOT Collector (this may take a moment)..."
+          $process = Start-Process -FilePath "msiexec.exe" -ArgumentList ("/qn /i " + [char]34 + $MsiFile + [char]34 + " /l*v " + [char]34 + $LogFile + [char]34) -Wait -PassThru
+
+          if (Test-Path $MsiFile) { Remove-Item $MsiFile -Force }
+
+          if ($process.ExitCode -ne 0) {
+            Write-Host ""
+            Write-Host "ERROR: MSI installation failed" -ForegroundColor Red
+            Write-Host ""
+            $errorMessage = switch ($process.ExitCode) {
+              1602 { "Installation cancelled by user" }
+              1603 { "Fatal error during installation" }
+              1618 { "Another installation is already in progress. Please wait and try again." }
+              1619 { "Installation package could not be opened. Verify the package exists and is valid." }
+              1620 { "Installation package could not be opened. Contact the application vendor." }
+              1633 { "This installation package is not supported on this platform. Contact vendor." }
+              1638 { "Another version of this product is already installed." }
+              1639 { "Invalid command line argument. Consult Windows Installer SDK for detailed info." }
+              1641 { "Windows Installer service could not be accessed. Contact support." }
+              default { "MSI installation failed with exit code: $($process.ExitCode)" }
+            }
+            Write-Host "  Error: $errorMessage"
+            Write-Host ""
+            Write-Host "Installation log file:"
+            Write-Host "  $LogFile"
+            Write-Host ""
+            Write-Host "Common solutions:"
+            Write-Host "  - Ensure you are running as Administrator"
+            Write-Host "  - Close any other installation/update processes"
+            Write-Host "  - Restart Windows and try again"
+            Write-Host "  - Check if another version is installed and uninstall it first"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host "NRDOT Collector installed successfully." -ForegroundColor Green
+          Write-Host ""
+
+          # Wait for service to be registered
+          Write-Host "Waiting for service to be registered..."
+          Start-Sleep -Seconds 2
+
+          # Check if service is running, start it if not
+          Write-Host "Checking NRDOT Collector service status..."
+          $service = Get-Service -Name "NRDOT Collector Host" -ErrorAction SilentlyContinue
+
+          if ($service) {
+            Write-Host ("Service status: " + $service.Status)
+
+            if ($service.Status -ne "Running") {
+              Write-Host "Starting NRDOT Collector service..."
+              try {
+                Start-Service -Name "NRDOT Collector Host" -ErrorAction Stop
+
+                # Wait for service to start with timeout
+                $maxWait = 30
+                $waited = 0
+                while ($waited -lt $maxWait) {
+                  Start-Sleep -Seconds 1
+                  $service = Get-Service "NRDOT Collector Host"
+                  if ($service.Status -eq "Running") { break }
+                  $waited++
+                }
+
+                if ($service.Status -eq "Running") {
+                  Write-Host "Service started successfully." -ForegroundColor Green
+                } else {
+                  throw "Service failed to start within $maxWait seconds (current status: $($service.Status))"
+                }
+              } catch {
+                Write-Host ""
+                Write-Host "ERROR: Failed to start NRDOT Collector service" -ForegroundColor Red
+                Write-Host "  Error: $_"
+                Write-Host ""
+                Write-Host "Please check:"
+                Write-Host "  - Event Viewer: Windows Logs > Application"
+                Write-Host "  - Installation log: $LogFile"
+                Write-Host "  - Service configuration in Services.msc"
+                Write-Host ""
+                Write-Host "Try starting manually:"
+                Write-Host "  Start-Service 'NRDOT Collector Host'"
+                Write-Host ""
+                exit 1
+              }
+            } else {
+              Write-Host "Service is already running." -ForegroundColor Green
+            }
+          } else {
+            Write-Host ""
+            Write-Host "ERROR: NRDOT Collector Host service not found after installation" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "The MSI installation completed but the service was not registered."
+            Write-Host "This indicates the installation was incomplete or failed."
+            Write-Host ""
+            Write-Host "Please try:"
+            Write-Host "  1. Reboot the system and check if service appears"
+            Write-Host "  2. Check installation log: $LogFile"
+            Write-Host "  3. Manually verify installation in Programs and Features"
+            Write-Host "  4. Check Event Viewer for system errors"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host ""
+          '
+
+    # ── Configure NRDOT Collector with SQL Server monitoring ──────────────────
+    configure_nrdot:
+      cmds:
+        - |
+          powershell -command '
+          # Load connection config
+          $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
+          if (-not (Test-Path $configFile)) {
+            Write-Host "ERROR: Connection configuration file not found."
+            exit 1
+          }
+
+          $config = @{}
+          try {
+            Get-Content $configFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+              if ($_ -match "^(\w+)=(.*)$") {
+                $config[$matches[1]] = $matches[2].Trim()
+              }
+            }
+          } catch {
+            Write-Host "ERROR: Failed to read configuration file" -ForegroundColor Red
+            Write-Host "  Location: $configFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "The file may be corrupted or locked."
+            Write-Host "Please re-run the installation from the beginning."
+            Write-Host ""
+            exit 1
+          }
+
+          # Load monitoring user credentials
+          $monitoringConfigFile = Join-Path $env:TEMP "nr-mssql-monitoring-user.txt"
+          if (-not (Test-Path $monitoringConfigFile)) {
+            Write-Host "ERROR: Monitoring user configuration file not found." -ForegroundColor Red
+            exit 1
+          }
+
+          try {
+            Get-Content $monitoringConfigFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+              if ($_ -match "^MONITORING_(\w+)=(.*)$") {
+                $config["MONITORING_" + $matches[1]] = $matches[2].Trim()
+              }
+            }
+          } catch {
+            Write-Host "ERROR: Failed to read monitoring user credentials" -ForegroundColor Red
+            Write-Host "  Location: $monitoringConfigFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          # Load monitored databases configuration
+          $dbConfigFile = Join-Path $env:TEMP "nr-mssql-monitored-databases.txt"
+          if (-not (Test-Path $dbConfigFile)) {
+            Write-Host "ERROR: Monitored databases configuration file not found." -ForegroundColor Red
+            exit 1
+          }
+
+          try {
+            Get-Content $dbConfigFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+              if ($_ -match "^(\w+)=(.*)$") {
+                $config[$matches[1]] = $matches[2].Trim()
+              }
+            }
+          } catch {
+            Write-Host "ERROR: Failed to read database monitoring configuration" -ForegroundColor Red
+            Write-Host "  Location: $dbConfigFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=== Configuring NRDOT Collector ==="
+          Write-Host ""
+          Write-Host "Configuration details:"
+          Write-Host ("  SQL Server: " + $config["HOSTNAME"] + ":" + $config["PORT"])
+          Write-Host ("  Monitoring User: " + $config["MONITORING_USERNAME"])
+          Write-Host ("  Monitored Databases: " + $config["MONITORED_DATABASES"])
+          Write-Host ""
+
+          $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
+
+          # Backup existing config
+          if (Test-Path $configPath) {
+            $backupPath = $configPath + ".backup." + (Get-Date -Format "yyyyMMdd-HHmmss")
+            Write-Host "Backing up existing config to:" $backupPath
+            Copy-Item $configPath $backupPath
+          }
+
+          # Extract values
+          $hostname = $config["HOSTNAME"]
+          $port = $config["PORT"]
+          $username = $config["MONITORING_USERNAME"]
+          $password = $config["MONITORING_PASSWORD"]
+          $monitoredDatabases = $config["MONITORED_DATABASES"]
+
+          Write-Host "Configuring SQL Server monitoring..."
+          $existingConfig = Get-Content $configPath -Raw -Encoding UTF8
+
+          # Build the newrelicsqlserver receiver configuration using string concatenation
+          $nl = "`r`n"
+          $sqlServerReceiver = $nl + "  newrelicsqlserver:" + $nl
+          $sqlServerReceiver += "    hostname: `"" + $hostname + "`"" + $nl
+          $sqlServerReceiver += "    port: `"" + $port + "`"" + $nl
+          $sqlServerReceiver += "    username: `"" + $username + "`"" + $nl
+          $sqlServerReceiver += "    password: `"" + $password + "`"" + $nl
+          $sqlServerReceiver += "    monitored_databases: " + $monitoredDatabases + $nl
+          $sqlServerReceiver += "    # timeout: 30s" + $nl
+          $sqlServerReceiver += "    # collection_interval: 30s" + $nl
+          $sqlServerReceiver += "    # query_monitoring_fetch_interval: 15" + $nl
+          $sqlServerReceiver += "    # query_monitoring_response_time_threshold: 100" + $nl
+          $sqlServerReceiver += "    # query_monitoring_count_threshold: 30" + $nl
+          $sqlServerReceiver += "    # interval_calculator_cache_ttl_minutes: 10" + $nl
+          $sqlServerReceiver += $nl
+          $sqlServerReceiver += "    # Core Metric Category Toggles - Enable/disable entire categories of metrics" + $nl
+          $sqlServerReceiver += "    # enable_instance_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_database_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_user_connection_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_wait_time_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_failover_cluster_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_database_principals_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_database_role_membership_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_security_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_lock_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_thread_pool_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_tempdb_metrics: true" + $nl
+          $sqlServerReceiver += "    # enable_database_buffer_metrics: true" + $nl
+
+          # Add SQL Server receiver to configuration
+
+          # Find the processors section and insert the SQL Server receiver before it
+          $processorsIndex = $existingConfig.IndexOf("processors:")
+          if ($processorsIndex -gt 0) {
+            $beforeProcessors = $existingConfig.Substring(0, $processorsIndex)
+            $afterProcessors = $existingConfig.Substring($processorsIndex)
+            $newConfig = $beforeProcessors + $sqlServerReceiver + "`r`n" + $afterProcessors
+          } else {
+            Write-Host "ERROR: Could not find processors section in config file"
+            exit 1
+          }
+
+          # Check if transform/clear_metadata processor already exists
+          if ($newConfig -match "transform/clear_metadata:") {
+            # Already exists, skip
+          } else {
+            # Build the transform/clear_metadata processor configuration
+            $transformProcessor = $nl + "  # Transform to clear description and unit fields" + $nl
+            $transformProcessor += "  transform/clear_metadata:" + $nl
+            $transformProcessor += "    metric_statements:" + $nl
+            $transformProcessor += "      - context: metric" + $nl
+            $transformProcessor += "        statements:" + $nl
+            $transformProcessor += "          - set(metric.description, `"`")" + $nl
+            $transformProcessor += "          - set(metric.unit, `"`")" + $nl
+            $transformProcessor += $nl
+
+            # Try to insert before cumulativetodelta processor (more reliable insertion point)
+            if ($newConfig -match "cumulativetodelta:") {
+              $newConfig = $newConfig -replace "(\s+cumulativetodelta:)", ($transformProcessor + "`$1")
+            } else {
+              # Fallback: insert after processors: line
+              $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $transformProcessor)
+            }
+          }
+
+          # Check if filter/exec_plan_include processor already exists
+          if ($newConfig -match "filter/exec_plan_include:") {
+            # Already exists, skip
+          } else {
+            # Build the filter/exec_plan_include processor configuration
+            $execPlanFilter = "  # Filter to only include execution plan and event metrics (for logs conversion)" + $nl
+            $execPlanFilter += "  filter/exec_plan_include:" + $nl
+            $execPlanFilter += "    metrics:" + $nl
+            $execPlanFilter += "      include:" + $nl
+            $execPlanFilter += "        match_type: strict" + $nl
+            $execPlanFilter += "        metric_names:" + $nl
+            $execPlanFilter += "          - sqlserver.slowquery.query_details" + $nl
+            $execPlanFilter += "          - sqlserver.execution.plan" + $nl
+            $execPlanFilter += "          - sqlserver.blocking_query.details" + $nl
+            $execPlanFilter += "          - sqlserver.activequery.query_details" + $nl
+            $execPlanFilter += $nl
+
+            # Insert right after transform/clear_metadata if it exists, otherwise before cumulativetodelta
+            if ($newConfig -match "transform/clear_metadata:[\s\S]*?(\r\n\r\n|\n\n)") {
+              $newConfig = $newConfig -replace "(transform/clear_metadata:[\s\S]*?set\(metric\.unit, `"`"\)\r\n)", ("`$1" + $nl + $execPlanFilter)
+            } elseif ($newConfig -match "cumulativetodelta:") {
+              $newConfig = $newConfig -replace "(\s+cumulativetodelta:)", ($execPlanFilter + "`$1")
+            } else {
+              # Fallback: insert after processors: line
+              $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $execPlanFilter)
+            }
+          }
+
+          # Check if filter/exec_plan_exclude processor already exists
+          if ($newConfig -match "filter/exec_plan_exclude:") {
+            # Already exists, skip
+          } else {
+            # Build the filter/exec_plan_exclude processor configuration
+            $execPlanExcludeFilter = "  # Filter to exclude execution plan and event metrics (from main metrics pipeline)" + $nl
+            $execPlanExcludeFilter += "  filter/exec_plan_exclude:" + $nl
+            $execPlanExcludeFilter += "    metrics:" + $nl
+            $execPlanExcludeFilter += "      exclude:" + $nl
+            $execPlanExcludeFilter += "        match_type: strict" + $nl
+            $execPlanExcludeFilter += "        metric_names:" + $nl
+            $execPlanExcludeFilter += "          - sqlserver.slowquery.query_details" + $nl
+            $execPlanExcludeFilter += "          - sqlserver.execution.plan" + $nl
+            $execPlanExcludeFilter += "          - sqlserver.blocking_query.details" + $nl
+            $execPlanExcludeFilter += "          - sqlserver.activequery.query_details" + $nl
+            $execPlanExcludeFilter += $nl
+
+            # Insert right after filter/exec_plan_include if it exists, otherwise before cumulativetodelta
+            if ($newConfig -match "filter/exec_plan_include:[\s\S]*?activequery\.query_details\r\n") {
+              $newConfig = $newConfig -replace "(filter/exec_plan_include:[\s\S]*?activequery\.query_details\r\n)", ("`$1" + $nl + $execPlanExcludeFilter)
+            } elseif ($newConfig -match "cumulativetodelta:") {
+              $newConfig = $newConfig -replace "(\s+cumulativetodelta:)", ($execPlanExcludeFilter + "`$1")
+            } else {
+              # Fallback: insert after processors: line
+              $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $execPlanExcludeFilter)
+            }
+          }
+
+          # Check if cumulativetodelta processor exists and update/add SQL Server metrics
+          if ($newConfig -match "cumulativetodelta:" -and $newConfig -match "sqlserver\.wait_stats\.latch\.wait_time_ms") {
+            # Already has SQL Server metrics, skip
+          } elseif ($newConfig -match "cumulativetodelta:") {
+            # Replace the existing cumulativetodelta with the full configuration
+            $cumulativeToDelta = $nl + "  cumulativetodelta:" + $nl
+            $cumulativeToDelta += "    max_staleness: 5m" + $nl
+            $cumulativeToDelta += "    include:" + $nl
+            $cumulativeToDelta += "      match_type: strict" + $nl
+            $cumulativeToDelta += "      metrics:" + $nl
+            $cumulativeToDelta += "        # Wait stats (sys.dm_os_wait_stats)" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.latch.wait_time_ms" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.latch.waiting_tasks_count" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.wait_time_ms" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.waiting_tasks_count" + $nl
+            $cumulativeToDelta += "        # Instance stats (sys.dm_os_performance_counters)" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.sql_compilations_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.sql_recompilations_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.lock_waits_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.deadlocks_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.user_errors_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.kill_connection_errors_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.access.page_splits_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.buffer.checkpoint_pages_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.bufferpool.batch_requests_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.transactions_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.forced_parameterizations_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.full_scans_rate" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.lock_timeouts_rate" + $nl
+            $cumulativeToDelta += "        # Database log (sys.dm_os_performance_counters)" + $nl
+            $cumulativeToDelta += "        - sqlserver.database.log.flushes_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.database.log.bytes_flushed_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.database.log.flush_waits_per_sec" + $nl
+            $cumulativeToDelta += "        # Failover cluster" + $nl
+            $cumulativeToDelta += "        - sqlserver.failover_cluster.log_bytes_received_per_sec" + $nl
+            $cumulativeToDelta += "        # User connections" + $nl
+            $cumulativeToDelta += "        - sqlserver.user_connections.authentication.logins_per_sec" + $nl
+            # Replace existing cumulativetodelta section (handle simple definition)
+            $newConfig = $newConfig -replace "(\s+cumulativetodelta:[\r\n]+)", $cumulativeToDelta
+          } else {
+            # Build the complete cumulativetodelta processor configuration
+            $cumulativeToDelta = $nl + "  cumulativetodelta:" + $nl
+            $cumulativeToDelta += "    max_staleness: 5m" + $nl
+            $cumulativeToDelta += "    include:" + $nl
+            $cumulativeToDelta += "      match_type: strict" + $nl
+            $cumulativeToDelta += "      metrics:" + $nl
+            $cumulativeToDelta += "        # Wait stats (sys.dm_os_wait_stats)" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.latch.wait_time_ms" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.latch.waiting_tasks_count" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.wait_time_ms" + $nl
+            $cumulativeToDelta += "        - sqlserver.wait_stats.waiting_tasks_count" + $nl
+            $cumulativeToDelta += "        # Instance stats (sys.dm_os_performance_counters)" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.sql_compilations_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.sql_recompilations_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.lock_waits_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.deadlocks_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.user_errors_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.stats.kill_connection_errors_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.access.page_splits_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.buffer.checkpoint_pages_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.bufferpool.batch_requests_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.transactions_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.forced_parameterizations_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.full_scans_rate" + $nl
+            $cumulativeToDelta += "        - sqlserver.instance.lock_timeouts_rate" + $nl
+            $cumulativeToDelta += "        # Database log (sys.dm_os_performance_counters)" + $nl
+            $cumulativeToDelta += "        - sqlserver.database.log.flushes_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.database.log.bytes_flushed_per_sec" + $nl
+            $cumulativeToDelta += "        - sqlserver.database.log.flush_waits_per_sec" + $nl
+            $cumulativeToDelta += "        # Failover cluster" + $nl
+            $cumulativeToDelta += "        - sqlserver.failover_cluster.log_bytes_received_per_sec" + $nl
+            $cumulativeToDelta += "        # User connections" + $nl
+            $cumulativeToDelta += "        - sqlserver.user_connections.authentication.logins_per_sec" + $nl
+            $cumulativeToDelta += $nl
+            # Insert before deltatorate if it exists, otherwise before batch
+            if ($newConfig -match "deltatorate:") {
+              $newConfig = $newConfig -replace "(\s+deltatorate:)", ($cumulativeToDelta + "`$1")
+            } elseif ($newConfig -match "batch:") {
+              $newConfig = $newConfig -replace "(\s+batch:)", ($cumulativeToDelta + "`$1")
+            } else {
+              # Fallback: insert after processors: line
+              $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $cumulativeToDelta)
+            }
+          }
+
+          # Check if deltatorate processor exists and update/add SQL Server metrics
+          if ($newConfig -match "deltatorate:" -and $newConfig -match "sqlserver\.wait_stats\.latch\.wait_time_ms") {
+            # Already has SQL Server metrics, skip
+          } elseif ($newConfig -match "deltatorate:") {
+            # Replace the existing deltatorate with the full configuration
+            $deltaToRate = $nl + "  deltatorate:" + $nl
+            $deltaToRate += "    metrics:" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.latch.wait_time_ms" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.latch.waiting_tasks_count" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.wait_time_ms" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.waiting_tasks_count" + $nl
+            $deltaToRate += "      - sqlserver.stats.sql_compilations_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.sql_recompilations_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.lock_waits_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.deadlocks_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.user_errors_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.kill_connection_errors_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.access.page_splits_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.buffer.checkpoint_pages_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.bufferpool.batch_requests_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.instance.transactions_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.instance.forced_parameterizations_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.instance.full_scans_rate" + $nl
+            $deltaToRate += "      - sqlserver.instance.lock_timeouts_rate" + $nl
+            $deltaToRate += "      - sqlserver.database.log.flushes_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.database.log.bytes_flushed_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.database.log.flush_waits_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.failover_cluster.log_bytes_received_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.user_connections.authentication.logins_per_sec" + $nl
+            # Replace existing deltatorate section (handle simple definition)
+            $newConfig = $newConfig -replace "(\s+deltatorate:[\r\n]+)", $deltaToRate
+          } else {
+            # Build the complete deltatorate processor configuration
+            $deltaToRate = $nl + "  deltatorate:" + $nl
+            $deltaToRate += "    metrics:" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.latch.wait_time_ms" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.latch.waiting_tasks_count" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.wait_time_ms" + $nl
+            $deltaToRate += "      - sqlserver.wait_stats.waiting_tasks_count" + $nl
+            $deltaToRate += "      - sqlserver.stats.sql_compilations_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.sql_recompilations_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.lock_waits_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.deadlocks_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.user_errors_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.stats.kill_connection_errors_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.access.page_splits_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.buffer.checkpoint_pages_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.bufferpool.batch_requests_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.instance.transactions_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.instance.forced_parameterizations_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.instance.full_scans_rate" + $nl
+            $deltaToRate += "      - sqlserver.instance.lock_timeouts_rate" + $nl
+            $deltaToRate += "      - sqlserver.database.log.flushes_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.database.log.bytes_flushed_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.database.log.flush_waits_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.failover_cluster.log_bytes_received_per_sec" + $nl
+            $deltaToRate += "      - sqlserver.user_connections.authentication.logins_per_sec" + $nl
+            $deltaToRate += $nl
+            # Insert right after cumulativetodelta if it exists, otherwise before transform/host or batch
+            if ($newConfig -match "cumulativetodelta:[\s\S]*?logins_per_sec\r\n") {
+              $newConfig = $newConfig -replace "(cumulativetodelta:[\s\S]*?logins_per_sec\r\n)", ("`$1" + $deltaToRate)
+            } elseif ($newConfig -match "transform/host:") {
+              $newConfig = $newConfig -replace "(\s+transform/host:)", ($deltaToRate + "`$1")
+            } elseif ($newConfig -match "batch:") {
+              $newConfig = $newConfig -replace "(\s+batch:)", ($deltaToRate + "`$1")
+            } else {
+              # Fallback: insert after processors: line
+              $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $deltaToRate)
+            }
+          }
+
+          # Check if resourcedetection/db_safe processor already exists
+          if ($newConfig -match "resourcedetection/db_safe:") {
+            # Already exists, skip
+          } else {
+            # Build the resourcedetection/db_safe processor configuration
+            $resourceDetectionDbSafe = $nl + "  resourcedetection/db_safe:" + $nl
+            $resourceDetectionDbSafe += "    detectors: [`"system`"]" + $nl
+            $resourceDetectionDbSafe += "    override: false" + $nl
+            $resourceDetectionDbSafe += "    system:" + $nl
+            $resourceDetectionDbSafe += "      hostname_sources: [`"os`"]" + $nl
+            $resourceDetectionDbSafe += "      resource_attributes:" + $nl
+            $resourceDetectionDbSafe += "        host.id:" + $nl
+            $resourceDetectionDbSafe += "          enabled: true" + $nl
+            $resourceDetectionDbSafe += $nl
+
+            # Insert right after deltatorate if it exists, otherwise before batch
+            if ($newConfig -match "deltatorate:[\s\S]*?logins_per_sec\r\n") {
+              $newConfig = $newConfig -replace "(deltatorate:[\s\S]*?logins_per_sec\r\n)", ("`$1" + $resourceDetectionDbSafe)
+            } elseif ($newConfig -match "batch:") {
+              $newConfig = $newConfig -replace "(\s+batch:)", ($resourceDetectionDbSafe + "`$1")
+            } else {
+              # Fallback: insert after processors: line
+              $newConfig = $newConfig -replace "(processors:[\r\n]+)", ("`$1" + $resourceDetectionDbSafe)
+            }
+          }
+
+          # Update the metrics pipeline to include newrelicsqlserver receiver (if not already present)
+          if ($newConfig -match "pipelines:[\s\S]*?metrics:[\s\S]*?receivers: \[otlp\]" -and $newConfig -notmatch "pipelines:[\s\S]*?metrics:[\s\S]*?receivers: \[newrelicsqlserver") {
+            # Be specific to the metrics: pipeline (not metrics/host)
+            $newConfig = $newConfig -replace "(pipelines:[\s\S]*?)(metrics:[\s\S]*?receivers: )\[otlp\]", "`$1`$2[newrelicsqlserver, otlp]"
+          }
+
+          # Add transform/clear_metadata to the metrics pipeline processors (if not already present)
+          if ($newConfig -match "transform/clear_metadata:" -and $newConfig -notmatch "metrics:[\s\S]*?processors:[\s\S]*?transform/clear_metadata") {
+            # Add after memory_limiter in the metrics pipeline
+            $newConfig = $newConfig -replace "(metrics:[\s\S]*?processors:[\s\S]*?memory_limiter,)", "`$1`r`n          transform/clear_metadata,"
+          }
+
+          # Add filter/exec_plan_exclude to the metrics pipeline processors (if not already present)
+          if ($newConfig -match "filter/exec_plan_exclude:" -and $newConfig -notmatch "pipelines:[\s\S]*?metrics:[\s\S]*?filter/exec_plan_exclude") {
+            # Add before batch in the metrics pipeline (single-line format)
+            $newConfig = $newConfig -replace "(pipelines:[\s\S]*?metrics:[\s\S]*?processors: \[[^\]]*)(batch\])", "`$1filter/exec_plan_exclude, `$2"
+          }
+
+          # Add metricsaslogs connector if not present
+          if ($newConfig -match "metricsaslogs:") {
+            # Already exists, skip
+          } elseif ($newConfig -match "(?m)^connectors:") {
+            # Add metricsaslogs to existing connectors section
+            $metricsAsLogs = "  metricsaslogs:" + $nl
+            $metricsAsLogs += "    include_resource_attributes: true" + $nl
+            $metricsAsLogs += "    include_scope_info: true" + $nl
+            $metricsAsLogs += $nl
+            # Insert after connectors: line (only the top-level one)
+            $newConfig = $newConfig -replace "(?m)^(connectors:[\r\n]+)", ("`$1" + $metricsAsLogs)
+          } else {
+            $connectorsSection = $nl + "connectors:" + $nl
+            $connectorsSection += "  metricsaslogs:" + $nl
+            $connectorsSection += "    include_resource_attributes: true" + $nl
+            $connectorsSection += "    include_scope_info: true" + $nl
+            $connectorsSection += $nl
+            # Insert before top-level exporters section (at start of line, not inside pipelines)
+            $newConfig = $newConfig -replace "(?m)^(exporters:)", ($connectorsSection + "`$1")
+          }
+
+          # Add metrics/exec_plan_to_logs pipeline if not present
+          if ($newConfig -match "filter/exec_plan_include:" -and $newConfig -notmatch "metrics/exec_plan_to_logs:") {
+            $execPlanPipeline = $nl + "    metrics/exec_plan_to_logs:" + $nl
+            $execPlanPipeline += "      receivers: [newrelicsqlserver, otlp]" + $nl
+            $execPlanPipeline += "      processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_include, batch]" + $nl
+            $execPlanPipeline += "      exporters: [metricsaslogs]" + $nl
+            # Insert before extensions section (at end of pipelines)
+            $newConfig = $newConfig -replace "(\s+extensions:)", ($execPlanPipeline + "`$1")
+          }
+
+          # Remove metricsaslogs from traces pipeline if present (it should only be in logs)
+          $tracesBeforeCleanup = $newConfig
+          # Use simple string replacement - more reliable than complex regex
+          $newConfig = $newConfig -replace "traces:([\s\S]*?)receivers:\s*\[metricsaslogs,\s*otlp\]", "traces:`$1receivers: [otlp]"
+          $newConfig = $newConfig -replace "traces:([\s\S]*?)receivers:\s*\[metricsaslogs\s*,\s*otlp\]", "traces:`$1receivers: [otlp]"
+
+          # Update logs pipeline to include metricsaslogs receiver if not present
+          if ($newConfig -match "metricsaslogs:" -and $newConfig -match "logs:[\s\S]*?receivers: \[otlp\]" -and $newConfig -notmatch "logs:[\s\S]*?receivers: \[metricsaslogs") {
+            $newConfig = $newConfig -replace "(logs:[\s\S]*?receivers: )\[otlp\]", "`$1[metricsaslogs, otlp]"
+          }
+
+          # Ensure otlphttp exporter has compression: gzip
+          if ($newConfig -notmatch "compression:\s*gzip") {
+            # Simple approach: find the line after api-key and insert compression
+            # Match the api-key line and add compression on the next line at same indentation as headers/endpoint
+            $newConfig = $newConfig -replace "(exporters:\r\n\s+otlphttp:\r\n\s+endpoint:[^\r\n]+\r\n\s+headers:\r\n\s+api-key:[^\r\n]+\r\n)", "`$1    compression: gzip`r`n"
+          }
+
+          # Add resourcedetection/db_safe to metrics/host pipeline processors (if not already present)
+          if ($newConfig -match "resourcedetection/db_safe:" -and $newConfig -match "metrics/host:[\s\S]*?processors:" -and $newConfig -notmatch "metrics/host:[\s\S]*?resourcedetection/db_safe") {
+            # Add after resourcedetection/env in the metrics/host pipeline
+            $newConfig = $newConfig -replace "(metrics/host:[\s\S]*?processors:[\s\S]*?resourcedetection/env[\r\n]+)", ("`$1        - resourcedetection/db_safe`r`n")
+          }
+
+          # Add deltatorate to metrics/host pipeline processors (if not already present)
+          if ($newConfig -match "deltatorate:" -and $newConfig -match "metrics/host:[\s\S]*?processors:" -and $newConfig -notmatch "metrics/host:[\s\S]*?deltatorate") {
+            # Add after cumulativetodelta in the metrics/host pipeline
+            $newConfig = $newConfig -replace "(metrics/host:[\s\S]*?processors:[\s\S]*?cumulativetodelta[\r\n]+)", ("`$1        - deltatorate`r`n")
+          }
+
+          # Write configuration to Program Files (requires admin privileges)
+          try {
+            [System.IO.File]::WriteAllText($configPath, $newConfig, [System.Text.Encoding]::UTF8)
+          } catch [System.UnauthorizedAccessException] {
+            Write-Host ""
+            Write-Host "ERROR: Access denied writing to config file" -ForegroundColor Red
+            Write-Host "  Location: $configPath"
+            Write-Host ""
+            Write-Host "This operation requires Administrator privileges."
+            Write-Host "Please run this installation as Administrator and try again."
+            Write-Host ""
+            exit 1
+          } catch [System.IO.IOException] {
+            Write-Host ""
+            Write-Host "ERROR: Cannot write to config file" -ForegroundColor Red
+            Write-Host "  Location: $configPath"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "The file may be locked by the NRDOT Collector service."
+            Write-Host "Try stopping the service first:"
+            Write-Host "  Stop-Service 'NRDOT Collector Host'"
+            Write-Host ""
+            exit 1
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to write configuration file" -ForegroundColor Red
+            Write-Host "  Location: $configPath"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "Please check:"
+            Write-Host "  - Running as Administrator"
+            Write-Host "  - Sufficient disk space available"
+            Write-Host "  - Antivirus not blocking the operation"
+            Write-Host ""
+            exit 1
+          }
+
+          # Validate config structure after modifications
+          Write-Host "Validating configuration structure..."
+          try {
+            $validationConfig = Get-Content $configPath -Raw -Encoding UTF8 -ErrorAction Stop
+
+            # Basic YAML structure validation
+            $requiredSections = @("receivers:", "processors:", "exporters:", "service:")
+            $missingSections = @()
+
+            foreach ($section in $requiredSections) {
+              if ($validationConfig -notmatch $section) {
+                $missingSections += $section
+              }
+            }
+
+            if ($missingSections.Count -gt 0) {
+              Write-Host ""
+              Write-Host "ERROR: Configuration structure validation failed" -ForegroundColor Red
+              Write-Host ""
+              Write-Host "Missing required YAML sections:"
+              foreach ($missing in $missingSections) {
+                Write-Host "  - $missing"
+              }
+              Write-Host ""
+              Write-Host "The configuration file may be corrupted."
+              Write-Host "Restoring from backup..."
+              Write-Host ""
+
+              # Attempt to restore from backup
+              $backupPattern = $configPath + ".backup.*"
+              $latestBackup = Get-ChildItem $backupPattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($latestBackup) {
+                Copy-Item $latestBackup.FullName $configPath -Force
+                Write-Host "Configuration restored from backup: $($latestBackup.FullName)" -ForegroundColor Green
+                Write-Host ""
+              }
+
+              Write-Host "Please re-run the installation."
+              Write-Host ""
+              exit 1
+            }
+
+            Write-Host "Configuration structure validated." -ForegroundColor Green
+          } catch {
+            Write-Host ""
+            Write-Host "WARNING: Could not validate configuration structure" -ForegroundColor Yellow
+            Write-Host "  Error: $_"
+            Write-Host ""
+            Write-Host "Continuing anyway, but please verify the service starts correctly."
+            Write-Host ""
+          }
+
+          Write-Host "Configuration applied successfully." -ForegroundColor Green
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "Configuration complete!"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Config file:" $configPath
+          if (Test-Path $configPath) {
+            $backupPath = $configPath + ".backup.*"
+            $latestBackup = Get-ChildItem $backupPath -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($latestBackup) {
+              Write-Host "Backup:" $latestBackup.FullName
+            }
+          }
+          '
+
+    # ── Update config file with endpoint and license key ───────────────────────
+    update_config_credentials:
+      cmds:
+        - |
+          powershell -command '
+          $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
+
+          Write-Host ""
+          Write-Host "=== Updating Config with Credentials ==="
+          Write-Host ""
+
+          # Load endpoint configuration
+          $endpointFile = Join-Path $env:TEMP "nr-mssql-endpoint.txt"
+          if (-not (Test-Path $endpointFile)) {
+            Write-Host "ERROR: Endpoint file not found." -ForegroundColor Red
+            exit 1
+          }
+
+          $endpoint = ""
+          $region = ""
+          try {
+            Get-Content $endpointFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+              if ($_ -match "^ENDPOINT=(.*)$") {
+                $endpoint = $matches[1].Trim()
+              }
+              if ($_ -match "^REGION=(.*)$") {
+                $region = $matches[1].Trim()
+              }
+            }
+          } catch {
+            Write-Host "ERROR: Failed to read endpoint configuration" -ForegroundColor Red
+            Write-Host "  Location: $endpointFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          # Load license key configuration
+          $licenseKeyFile = Join-Path $env:TEMP "nr-mssql-license-key.txt"
+          if (-not (Test-Path $licenseKeyFile)) {
+            Write-Host "ERROR: License key file not found." -ForegroundColor Red
+            exit 1
+          }
+
+          $licenseKey = ""
+          try {
+            Get-Content $licenseKeyFile -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
+              if ($_ -match "^NEW_RELIC_LICENSE_KEY=(.*)$") {
+                $licenseKey = $matches[1].Trim()
+              }
+            }
+          } catch {
+            Write-Host "ERROR: Failed to read license key" -ForegroundColor Red
+            Write-Host "  Location: $licenseKeyFile"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host "Updating configuration with credentials..."
+          Write-Host ""
+
+          # Read config file
+          if (-not (Test-Path $configPath)) {
+            Write-Host "ERROR: Config file not found" -ForegroundColor Red
+            Write-Host "  Location: $configPath"
+            Write-Host ""
+            Write-Host "NRDOT Collector installation may have failed."
+            Write-Host ""
+            exit 1
+          }
+
+          try {
+            $config = Get-Content $configPath -Raw -Encoding UTF8 -ErrorAction Stop
+          } catch {
+            Write-Host "ERROR: Failed to read config file" -ForegroundColor Red
+            Write-Host "  Location: $configPath"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          # Replace endpoint
+          $config = $config -replace "endpoint:\s*\`$\{env:OTEL_EXPORTER_OTLP_ENDPOINT:-[^\}]+\}", "endpoint: $endpoint"
+
+          # Replace license key
+          $config = $config -replace "api-key:\s*\`$\{env:NEW_RELIC_LICENSE_KEY\}", "api-key: $licenseKey"
+
+          # Write config file
+          try {
+            [System.IO.File]::WriteAllText($configPath, $config, [System.Text.Encoding]::UTF8)
+          } catch [System.UnauthorizedAccessException] {
+            Write-Host ""
+            Write-Host "ERROR: Access denied writing credentials to config file" -ForegroundColor Red
+            Write-Host "  Location: $configPath"
+            Write-Host ""
+            Write-Host "Administrator privileges required."
+            Write-Host ""
+            exit 1
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to write credentials to config file" -ForegroundColor Red
+            Write-Host "  Location: $configPath"
+            Write-Host "  Error: $_"
+            Write-Host ""
+            exit 1
+          }
+
+          Write-Host "Credentials configured successfully!" -ForegroundColor Green
+          Write-Host ""
+          '
+
+    # ── Restart NRDOT Collector service ────────────────────────────────────────
+    restart_service:
+      cmds:
+        - |
+          powershell -command '
+          # Wait a moment to ensure all config file writes are complete
+          Start-Sleep -Seconds 2
+
+          Write-Host ""
+          Write-Host "Restarting NRDOT Collector service..."
+
+          try {
+            Restart-Service "NRDOT Collector Host" -ErrorAction Stop
+            Start-Sleep -Seconds 3
+
+            # Verify service is running
+            $service = Get-Service "NRDOT Collector Host" -ErrorAction SilentlyContinue
+            if ($service -and $service.Status -eq "Running") {
+              Write-Host "NRDOT Collector service restarted successfully."
+              Write-Host ""
+              Write-Host "SQL Server monitoring configured!"
+              Write-Host "Metrics will appear in New Relic within 1-2 minutes."
+              Write-Host ""
+              Write-Host "For more information, visit our documentation:"
+              Write-Host "  https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/"
+              Write-Host ""
+            } else {
+              Write-Host ""
+              Write-Host "ERROR: Service restart completed but service is not running."
+              Write-Host ("Current status: " + $(if ($service) { $service.Status } else { "Unknown" }))
+              Write-Host ""
+              Write-Host "Try starting the service manually:"
+              Write-Host "  Start-Service `"NRDOT Collector Host`""
+              Write-Host ""
+              Write-Host "Check Event Viewer for detailed error information:"
+              Write-Host "  Windows Logs > Application"
+              Write-Host ""
+              exit 1
+            }
+          } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to restart NRDOT Collector service."
+            Write-Host "Error: $_"
+            Write-Host ""
+            Write-Host "Try restarting the service manually:"
+            Write-Host "  Restart-Service `"NRDOT Collector Host`""
+            Write-Host ""
+            Write-Host "Check Event Viewer for detailed error information:"
+            Write-Host "  Windows Logs > Application"
+            Write-Host ""
+            exit 1
+          }
+          '
+
+    # ── Add compression: gzip to config ────────────────────────────────────────
+    add_compression:
+      cmds:
+        - |
+          powershell -command '
+          $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
+          if (Test-Path $configPath) {
+            $lines = Get-Content $configPath -Encoding UTF8
+            $modified = $false
+            $newLines = @()
+
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              $newLines += $lines[$i]
+
+              # Check if this line contains api-key and next line does not have compression
+              if ($lines[$i] -match "^\s+api-key:" -and -not $modified) {
+                # Check if compression already exists in the next few lines
+                $hasCompression = $false
+                for ($j = $i + 1; $j -lt [Math]::Min($i + 5, $lines.Count); $j++) {
+                  if ($lines[$j] -match "^\s+compression:") {
+                    $hasCompression = $true
+                    break
+                  }
+                  if ($lines[$j] -match "^\s*$") { continue }
+                  if ($lines[$j] -match "^[a-z]") { break }
+                }
+
+                if (-not $hasCompression) {
+                  $newLines += "    compression: gzip"
+                  $modified = $true
+                }
+              }
+            }
+
+            if ($modified) {
+              try {
+                [System.IO.File]::WriteAllLines($configPath, $newLines, [System.Text.Encoding]::UTF8)
+              } catch {
+                Write-Host "WARNING: Could not add compression to config file" -ForegroundColor Yellow
+                Write-Host "  Error: $_"
+              }
+            }
+          }
+          '
+
+    # ── Remove metricsaslogs from traces pipeline ──────────────────────────────
+    cleanup_traces:
+      cmds:
+        - |
+          powershell -command '
+          $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
+          if (Test-Path $configPath) {
+            $lines = Get-Content $configPath -Encoding UTF8
+            $modified = $false
+
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              # Look for traces pipeline and check the next few lines for receivers
+              if ($lines[$i] -match "^\s+traces:\s*$") {
+                # Check next 10 lines for receivers
+                for ($j = $i + 1; $j -lt [Math]::Min($i + 10, $lines.Count); $j++) {
+                  if ($lines[$j] -match "receivers:.*metricsaslogs") {
+                    $lines[$j] = $lines[$j] -replace "metricsaslogs,\s*", ""
+                    $lines[$j] = $lines[$j] -replace ",\s*metricsaslogs", ""
+                    $modified = $true
+                    break
+                  }
+                  # Stop if we hit another pipeline
+                  if ($lines[$j] -match "^\s+[a-z_]+(/[a-z_]+)?:\s*$") {
+                    break
+                  }
+                }
+              }
+            }
+
+            if ($modified) {
+              try {
+                [System.IO.File]::WriteAllLines($configPath, $lines, [System.Text.Encoding]::UTF8)
+              } catch {
+                Write-Host "WARNING: Could not cleanup traces pipeline in config file" -ForegroundColor Yellow
+                Write-Host "  Error: $_"
+              }
+            }
+          }
+          '
+
+postInstall:
+  info: |
+    NRDOT Collector configured for SQL Server monitoring.
+
+    Config file: C:\Program Files (x86)\NRDOT Collector Host\config.yaml
+
+    SQL Server metrics will appear in New Relic within 1-2 minutes.
+    Check your New Relic account for:
+      - SQL Server instance metrics
+      - Database performance metrics
+      - Query execution plans
+      - Wait statistics
