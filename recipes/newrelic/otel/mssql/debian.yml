@@ -42,25 +42,19 @@ install:
     detect_architecture:
       cmds:
         - |
-          echo "Detecting system architecture..."
           ARCH="amd64"
           IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
           if [ $IS_ARM -gt 0 ] ; then
             ARCH="arm64"
-            echo "Detected ARM64 architecture"
-          else
-            echo "Detected AMD64 architecture"
           fi
 
           # Store architecture for later tasks
           echo "export DETECTED_ARCH=$ARCH" >> /tmp/nr_otel_arch.sh
-          echo "System architecture: $ARCH"
+          echo "✓ System architecture: $ARCH"
 
     check_sqlcmd:
       cmds:
         - |
-          echo "Checking for SQL Server command-line tools..."
-
           # Load detected architecture
           if [ -f /tmp/nr_otel_arch.sh ]; then
             source /tmp/nr_otel_arch.sh
@@ -69,33 +63,20 @@ install:
           # Check if ARM64 - SQL Server has limited ARM support
           ARCH_TYPE=$(uname -m)
           if [ "$ARCH_TYPE" = "aarch64" ] || [ "$DETECTED_ARCH" = "arm64" ]; then
-            echo "" >&2
-            echo "⚠️  WARNING: Running on ARM64 architecture" >&2
-            echo "   Microsoft SQL Server has limited ARM64 support on Linux." >&2
-            echo "   Some features may not be available." >&2
-            echo "" >&2
+            echo "⚠️  Warning: ARM64 has limited SQL Server support" >&2
           fi
 
           # Check common locations for sqlcmd
-          # These paths are consistent across AMD64 and ARM64 if SQL Server is supported
           SQLCMD_PATH=""
 
-          # Method 1: Check if sqlcmd is in PATH
           if command -v sqlcmd &> /dev/null; then
             SQLCMD_PATH=$(command -v sqlcmd)
-            echo "  → Found sqlcmd in PATH"
-          # Method 2: Check default mssql-tools installation (version 17.x)
           elif [ -f "/opt/mssql-tools/bin/sqlcmd" ]; then
             SQLCMD_PATH="/opt/mssql-tools/bin/sqlcmd"
-            echo "  → Found sqlcmd in /opt/mssql-tools/bin/"
-          # Method 3: Check newer mssql-tools18 installation
           elif [ -f "/opt/mssql-tools18/bin/sqlcmd" ]; then
             SQLCMD_PATH="/opt/mssql-tools18/bin/sqlcmd"
-            echo "  → Found sqlcmd in /opt/mssql-tools18/bin/"
-          # Method 4: Check if user has custom installation in /usr/local/bin
           elif [ -f "/usr/local/bin/sqlcmd" ]; then
             SQLCMD_PATH="/usr/local/bin/sqlcmd"
-            echo "  → Found sqlcmd in /usr/local/bin/"
           fi
 
           # If not found, show error
@@ -103,13 +84,7 @@ install:
             echo "" >&2
             echo "❌ ERROR: SQL Server command-line tools (sqlcmd) not found" >&2
             echo "" >&2
-            echo "Microsoft SQL Server must be installed on this system." >&2
-            echo "" >&2
-            echo "To install SQL Server on Ubuntu/Debian:" >&2
-            echo "  1. Visit: https://docs.microsoft.com/en-us/sql/linux/sql-server-linux-setup" >&2
-            echo "  2. Follow the installation guide for your distribution" >&2
-            echo "" >&2
-            echo "To install just the command-line tools:" >&2
+            echo "To install sqlcmd:" >&2
             echo "  curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -" >&2
             echo "  curl https://packages.microsoft.com/config/ubuntu/\$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list" >&2
             echo "  sudo apt-get update" >&2
@@ -118,10 +93,7 @@ install:
             exit 131
           fi
 
-          # Check sqlcmd version
-          SQLCMD_VERSION=$($SQLCMD_PATH -? 2>&1 | head -1 || echo "unknown")
-          echo "✓ Found sqlcmd at: $SQLCMD_PATH"
-          echo "✓ Version: $SQLCMD_VERSION"
+          echo "✓ sqlcmd detected"
 
           # Store sqlcmd path for later tasks
           echo "export SQLCMD_PATH=$SQLCMD_PATH" >> /tmp/nr_otel_arch.sh
