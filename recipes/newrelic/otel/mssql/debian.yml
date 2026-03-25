@@ -116,33 +116,38 @@ install:
             NON_INTERACTIVE=true
           fi
 
-          # Function to read password with asterisks (POSIX-compliant)
+          # Function to read password with asterisks
           read_password() {
             password=""
-            stty -echo -icanon min 1 time 0
 
-            while true; do
-              char=$(dd bs=1 count=1 2>/dev/null)
+            # Save current terminal settings
+            saved_settings=$(stty -g)
 
-              # Check for Enter key (newline or carriage return)
-              if [ -z "$char" ] || [ "$char" = "$(printf '\n')" ] || [ "$char" = "$(printf '\r')" ]; then
+            # Disable echo and canonical mode
+            stty -echo -icanon min 1 time 0 2>/dev/null || stty -echo
+
+            while IFS= read -r -n1 char 2>/dev/null || char=$(dd bs=1 count=1 2>/dev/null); do
+              # Handle Enter key
+              if [ -z "$char" ] || [ "$char" = $'\n' ] || [ "$char" = $'\r' ]; then
                 break
               fi
 
-              # Check for backspace (ASCII 127 or 8)
-              if [ "$char" = "$(printf '\177')" ] || [ "$char" = "$(printf '\b')" ]; then
-                if [ -n "$password" ]; then
+              # Handle backspace
+              if [ "$char" = $'\x7f' ] || [ "$char" = $'\b' ] || [ "$char" = $'\x08' ]; then
+                if [ ${#password} -gt 0 ]; then
                   password="${password%?}"
-                  printf '\b \b'
+                  printf '\b \b' >&2
                 fi
               else
                 password="${password}${char}"
-                printf '*'
+                printf '*' >&2
               fi
             done
 
-            stty echo icanon
-            printf '\n'
+            # Restore terminal settings
+            stty "$saved_settings" 2>/dev/null
+            printf '\n' >&2
+
             echo "$password"
           }
 
