@@ -1,0 +1,60 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: mssql-otel-integration-debian
+displayName: Microsoft SQL Server OpenTelemetry Integration (Debian)
+description: New Relic install recipe for Microsoft SQL Server monitoring using OpenTelemetry on Debian-based systems
+repository: https://github.com/newrelic/nrdot-collector-components
+
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "((8|9|10|11|12)\\.?.*)"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+    platformVersion: "(((20|21|22|24)\\.04)|(20.10))"
+
+keywords:
+  - Integration
+  - SqlServer
+  - MSSQL
+  - OpenTelemetry
+  - Otel
+  - Linux
+  - Debian
+
+processMatch: []
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: detect_architecture
+
+    detect_architecture:
+      cmds:
+        - |
+          echo "Detecting system architecture..."
+          ARCH="amd64"
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+          if [ $IS_ARM -gt 0 ] ; then
+            ARCH="arm64"
+            echo "Detected ARM64 architecture"
+          else
+            echo "Detected AMD64 architecture"
+          fi
+
+          # Store architecture for later tasks
+          echo "export DETECTED_ARCH=$ARCH" >> /tmp/nr_otel_arch.sh
+          echo "System architecture: $ARCH"
+
+postInstall:
+  info: |2
+    ⚙️  The OpenTelemetry Collector configuration will be created in the next steps.
+    This installation will configure OpenTelemetry to collect Microsoft SQL Server metrics.
