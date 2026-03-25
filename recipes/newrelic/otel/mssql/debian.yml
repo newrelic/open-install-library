@@ -130,9 +130,7 @@ install:
       cmds:
         - |
           echo ""
-          echo "==================================================="
-          echo "        SQL Server Connection Validation"
-          echo "==================================================="
+          echo "Configuring SQL Server connection..."
           echo ""
 
           # Load sqlcmd path
@@ -144,9 +142,42 @@ install:
           NON_INTERACTIVE=false
           if [ "${NEW_RELIC_ASSUME_YES}" = "true" ]; then
             NON_INTERACTIVE=true
-            echo "ℹ️  Running in non-interactive mode"
-            echo ""
           fi
+
+          # Function to read password with asterisks
+          read_password() {
+            local password=""
+            local char=""
+
+            # Turn off echoing
+            stty -echo
+
+            # Read character by character
+            while IFS= read -r -n1 char; do
+              # If Enter is pressed, break
+              if [ -z "$char" ]; then
+                break
+              fi
+
+              # If backspace is pressed
+              if [ "$char" = $'\x7f' ] || [ "$char" = $'\x08' ]; then
+                if [ -n "$password" ]; then
+                  password="${password%?}"
+                  printf "\b \b"
+                fi
+              else
+                password="${password}${char}"
+                printf "*"
+              fi
+            done
+
+            # Turn echoing back on
+            stty echo
+            echo ""
+
+            # Return the password via echo
+            echo "$password"
+          }
 
           # Function to validate hostname
           validate_hostname() {
@@ -158,23 +189,7 @@ install:
               return 1
             fi
 
-            # Try to resolve hostname (skip for localhost shortcuts)
-            if [ "$hostname" = "localhost" ] || [ "$hostname" = "127.0.0.1" ] || [ "$hostname" = "::1" ]; then
-              echo "  ✓ Hostname accepted: $hostname"
-              return 0
-            fi
-
-            # For other hostnames, just accept them without strict character validation
-            # This allows any valid DNS name including hyphens, underscores, etc.
-            echo "  ✓ Hostname accepted: $hostname"
-
-            # Optionally test connectivity (but don't fail if unreachable yet)
-            if getent hosts "$hostname" >/dev/null 2>&1 || ping -c 1 -W 2 "$hostname" >/dev/null 2>&1; then
-              echo "  ✓ Hostname is reachable"
-            else
-              echo "  ⚠️  Warning: Cannot verify hostname reachability (will test during connection)"
-            fi
-
+            # Accept all hostnames - validation happens during connection test
             return 0
           }
 
@@ -202,7 +217,6 @@ install:
               return 1
             fi
 
-            echo "  ✓ Port is valid ($port)"
             return 0
           }
 
@@ -222,7 +236,6 @@ install:
               return 1
             fi
 
-            echo "  ✓ Username is valid"
             return 0
           }
 
@@ -242,7 +255,6 @@ install:
               echo "     SQL Server typically requires strong passwords" >&2
             fi
 
-            echo "  ✓ Password provided"
             return 0
           }
 
@@ -256,25 +268,45 @@ install:
           CONNECTION_SUCCESS=false
 
           # Collection phase - gather all inputs with validation
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Step 1: Collect Connection Details"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-
           if [ "$NON_INTERACTIVE" = "false" ]; then
+            # Ask deployment type first
+            echo "Is SQL Server running on this host or remotely?"
+            echo "  1. On this host (default)"
+            echo "  2. Remote host"
+            printf "Choose [1-2]: "
+            read -r DEPLOYMENT_CHOICE
+            DEPLOYMENT_CHOICE="${DEPLOYMENT_CHOICE:-1}"
+            echo ""
+
             # Hostname collection with validation
             HOSTNAME_VALID=false
             HOSTNAME_ATTEMPTS=0
             while [ "$HOSTNAME_VALID" = "false" ] && [ $HOSTNAME_ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-              if [ $HOSTNAME_ATTEMPTS -eq 0 ]; then
-                printf "Enter hostname or IP address [default: localhost]: "
+              if [ "$DEPLOYMENT_CHOICE" = "1" ]; then
+                # On-host: default to localhost
+                if [ $HOSTNAME_ATTEMPTS -eq 0 ]; then
+                  printf "Enter hostname [default: localhost]: "
+                else
+                  printf "Re-enter hostname: "
+                fi
+                read -r INPUT_HOSTNAME
+                INPUT_HOSTNAME="${INPUT_HOSTNAME:-localhost}"
               else
-                printf "Re-enter hostname or IP address: "
+                # Remote: no default, require input
+                if [ $HOSTNAME_ATTEMPTS -eq 0 ]; then
+                  printf "Enter remote hostname or IP address: "
+                else
+                  printf "Re-enter remote hostname or IP address: "
+                fi
+                read -r INPUT_HOSTNAME
+                if [ -z "$INPUT_HOSTNAME" ]; then
+                  echo "  ❌ ERROR: Hostname cannot be empty for remote host" >&2
+                  HOSTNAME_ATTEMPTS=$((HOSTNAME_ATTEMPTS + 1))
+                  echo ""
+                  continue
+                fi
               fi
-              read -r INPUT_HOSTNAME
-              INPUT_HOSTNAME="${INPUT_HOSTNAME:-localhost}"
 
-              echo "Validating hostname..."
               if validate_hostname "$INPUT_HOSTNAME"; then
                 HOSTNAME="$INPUT_HOSTNAME"
                 HOSTNAME_VALID=true
@@ -300,7 +332,6 @@ install:
               read -r INPUT_PORT
               INPUT_PORT="${INPUT_PORT:-1433}"
 
-              echo "Validating port..."
               if validate_port "$INPUT_PORT"; then
                 PORT="$INPUT_PORT"
                 PORT_VALID=true
@@ -326,7 +357,6 @@ install:
               read -r INPUT_USERNAME
               INPUT_USERNAME="${INPUT_USERNAME:-sa}"
 
-              echo "Validating username..."
               if validate_username "$INPUT_USERNAME"; then
                 USERNAME="$INPUT_USERNAME"
                 USERNAME_VALID=true
@@ -349,13 +379,8 @@ install:
               else
                 printf "Re-enter SQL Server password: "
               fi
-              # Use stty to hide password input (POSIX compliant)
-              stty -echo
-              read INPUT_PASSWORD
-              stty echo
-              echo ""
+              INPUT_PASSWORD=$(read_password)
 
-              echo "Validating password..."
               if validate_password "$INPUT_PASSWORD"; then
                 PASSWORD="$INPUT_PASSWORD"
                 PASSWORD_VALID=true
@@ -370,67 +395,41 @@ install:
             fi
           else
             # Non-interactive mode - validate environment variables
-            echo "Using environment variables..."
+            # Determine if self-hosted or remote based on hostname
+            if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ] || [ "$HOSTNAME" = "::1" ]; then
+              echo "Detected self-hosted SQL Server (localhost)"
+            else
+              echo "Detected remote SQL Server ($HOSTNAME)"
+            fi
             echo ""
 
-            echo "Validating hostname..."
             if ! validate_hostname "$HOSTNAME"; then
               echo "❌ Invalid hostname in NR_CLI_DB_HOSTNAME" >&2
               exit 1
             fi
-            echo ""
 
-            echo "Validating port..."
             if ! validate_port "$PORT"; then
               echo "❌ Invalid port in NR_CLI_DB_PORT" >&2
               exit 1
             fi
-            echo ""
 
-            echo "Validating username..."
             if ! validate_username "$USERNAME"; then
               echo "❌ Invalid username in NR_CLI_DB_USERNAME" >&2
               exit 1
             fi
-            echo ""
 
-            echo "Validating password..."
             if ! validate_password "$PASSWORD"; then
               echo "❌ Invalid password in NR_CLI_DB_PASSWORD" >&2
               exit 1
             fi
-            echo ""
           fi
-
-          # Display collected configuration
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Configuration Summary"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Hostname: $HOSTNAME"
-          echo "  Port:     $PORT"
-          echo "  Username: $USERNAME"
-          echo "  Password: ********"
-
-          # Determine if self-hosted or remote
-          if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ] || [ "$HOSTNAME" = "::1" ]; then
-            echo "  Type:     Self-hosted (local)"
-          else
-            echo "  Type:     Remote host"
-          fi
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
 
           # Connection testing phase
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Step 2: Test SQL Server Connection"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
+          echo "Connecting to SQL Server..."
 
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$CONNECTION_SUCCESS" = "false" ]; do
-            echo "Connection attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            echo ""
-
             # Build connection string
             SERVER="$HOSTNAME,$PORT"
             TEST_QUERY="SELECT @@VERSION AS 'SQL Server Version', SERVERPROPERTY('ProductVersion') AS 'Version', SERVERPROPERTY('Edition') AS 'Edition'"
@@ -440,141 +439,118 @@ install:
               SQLCMD_PATH="sqlcmd"
             fi
 
-            echo "→ Connecting to: $SERVER"
-            echo "→ Using username: $USERNAME"
-            echo "→ Authentication: SQL Server Authentication"
-            echo ""
-
             # Attempt connection
             TEST_RESULT=$($SQLCMD_PATH -S "$SERVER" -U "$USERNAME" -P "$PASSWORD" -Q "$TEST_QUERY" -t 30 -h -1 -W 2>&1) || TEST_EXIT_CODE=$?
 
             # Check result
             if [ ${TEST_EXIT_CODE:-0} -eq 0 ] && ! echo "$TEST_RESULT" | grep -q "Msg [0-9]*, Level [0-9]*"; then
-              echo "✅ Connection successful!"
+              # Extract version info for validation
+              # Version numbers: 2017=14.x, 2019=15.x, 2022=16.x, 2025=17.x
+              SQL_YEAR=$(echo "$TEST_RESULT" | grep -oE "SQL Server [0-9]{4}" | grep -oE "[0-9]{4}" | head -1)
+
+              # If year not found, try to get version number (14.x, 15.x, etc.)
+              if [ -z "$SQL_YEAR" ]; then
+                SQL_VERSION=$(echo "$TEST_RESULT" | grep -oE "Version[^0-9]*[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" | head -1 || echo "")
+                if [ -n "$SQL_VERSION" ]; then
+                  MAJOR_VERSION=$(echo "$SQL_VERSION" | cut -d. -f1)
+                  case "$MAJOR_VERSION" in
+                    14) SQL_YEAR="2017" ;;
+                    15) SQL_YEAR="2019" ;;
+                    16) SQL_YEAR="2022" ;;
+                    17) SQL_YEAR="2025" ;;
+                    *) SQL_YEAR="" ;;
+                  esac
+                fi
+              fi
+
+              # Display success message with version validation
+              if [ -n "$SQL_YEAR" ]; then
+                if [ "$SQL_YEAR" -lt 2017 ]; then
+                  echo "❌ Connected but SQL Server $SQL_YEAR is not supported" >&2
+                  echo "   Supported versions: 2017, 2019, 2022, 2025" >&2
+                  echo "   This integration requires SQL Server 2017 or later." >&2
+                  echo "" >&2
+                  exit 131
+                elif [ "$SQL_YEAR" -gt 2025 ]; then
+                  echo "✅ Connection successful! (SQL Server $SQL_YEAR - newer than tested)"
+                else
+                  echo "✅ Connection successful! (SQL Server $SQL_YEAR supported)"
+                fi
+              else
+                echo "✅ Connection successful!"
+              fi
               echo ""
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo "SQL Server Information"
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo "$TEST_RESULT" | grep -v "^$"
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
               CONNECTION_SUCCESS=true
 
               # Save configuration for later tasks
               CONFIG_FILE="/tmp/nr-mssql-config.txt"
+
+              # Determine deployment type
+              DEPLOYMENT_TYPE="remote"
+              if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ] || [ "$HOSTNAME" = "::1" ]; then
+                DEPLOYMENT_TYPE="self-hosted"
+              fi
+
               echo "HOSTNAME=$HOSTNAME" > "$CONFIG_FILE"
               echo "PORT=$PORT" >> "$CONFIG_FILE"
               echo "USERNAME=$USERNAME" >> "$CONFIG_FILE"
               echo "PASSWORD=$PASSWORD" >> "$CONFIG_FILE"
+              echo "SQL_VERSION=$SQL_YEAR" >> "$CONFIG_FILE"
+              echo "DEPLOYMENT_TYPE=$DEPLOYMENT_TYPE" >> "$CONFIG_FILE"
               chmod 600 "$CONFIG_FILE"
 
             else
-              echo "❌ Connection failed!"
-              echo ""
+              echo "❌ Connection failed"
 
               # Detailed error analysis
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo "Error Analysis"
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
               if echo "$TEST_RESULT" | grep -qi "Login failed for user"; then
-                echo "❌ Authentication Error"
+                echo "   Authentication Error: Invalid username or password"
+                echo "   • Verify username: '$USERNAME' and password are correct"
                 echo ""
-                echo "Possible causes:"
-                echo "  • Incorrect username or password"
-                echo "  • SQL Server Authentication not enabled"
-                echo "  • User account locked or disabled"
-                echo ""
-                echo "Solutions:"
-                echo "  • Verify username: '$USERNAME'"
-                echo "  • Check password is correct"
-                echo "  • Enable SQL Server Authentication:"
-                echo "    sudo /opt/mssql/bin/mssql-conf set sqlagent.enabled true"
-                echo "    sudo systemctl restart mssql-server"
 
               elif echo "$TEST_RESULT" | grep -qi "Cannot open server"; then
-                echo "❌ Connection Error"
+                echo "   Connection Error: Cannot reach SQL Server"
+                echo "   • Check: sudo systemctl status mssql-server"
+                echo "   • Verify hostname: $HOSTNAME and port: $PORT"
                 echo ""
-                echo "Possible causes:"
-                echo "  • SQL Server not running"
-                echo "  • Wrong hostname or port"
-                echo "  • Firewall blocking connection"
-                echo ""
-                echo "Solutions:"
-                echo "  • Check SQL Server status:"
-                echo "    sudo systemctl status mssql-server"
-                echo "  • Verify hostname: $HOSTNAME"
-                echo "  • Verify port: $PORT (default is 1433)"
-                echo "  • Check firewall:"
-                echo "    sudo ufw allow $PORT/tcp"
 
               elif echo "$TEST_RESULT" | grep -qi "timeout"; then
-                echo "❌ Timeout Error"
+                echo "   Timeout Error: Server not responding"
+                echo "   • Test: ping $HOSTNAME"
                 echo ""
-                echo "Possible causes:"
-                echo "  • Server unreachable"
-                echo "  • Network issues"
-                echo "  • Firewall blocking traffic"
-                echo ""
-                echo "Solutions:"
-                echo "  • Test network connectivity:"
-                echo "    ping $HOSTNAME"
-                echo "  • Check port is open:"
-                echo "    nc -zv $HOSTNAME $PORT"
-                echo "  • Verify firewall settings"
 
               else
-                echo "❌ Unknown Error"
+                echo "   $TEST_RESULT"
                 echo ""
-                echo "Error details:"
-                echo "$TEST_RESULT"
               fi
 
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo ""
-
               if [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$NON_INTERACTIVE" = "false" ]; then
-                echo "Options:"
-                echo "  1. Retry with same credentials"
-                echo "  2. Enter new credentials"
-                echo "  3. Exit"
-                printf "Choose an option [1-3]: "
+                echo "Retry? (1) Same credentials  (2) New credentials  (3) Exit"
+                printf "Choice [1-3]: "
                 read -r CHOICE
 
                 if [ "$CHOICE" = "2" ]; then
                   echo ""
-                  printf "Enter new username: "
+                  printf "Username: "
                   read USERNAME
-                  printf "Enter new password: "
-                  stty -echo
-                  read PASSWORD
-                  stty echo
+                  printf "Password: "
+                  PASSWORD=$(read_password)
                   echo ""
+                  echo "Connecting to SQL Server..."
                 elif [ "$CHOICE" != "1" ]; then
-                  echo "Exiting..."
                   exit 1
                 fi
 
                 ATTEMPT=$((ATTEMPT + 1))
-                echo ""
               else
-                echo "❌ Maximum attempts reached or running in non-interactive mode" >&2
                 exit 1
               fi
             fi
           done
 
-          if [ "$CONNECTION_SUCCESS" = "true" ]; then
-            echo ""
-            echo "==================================================="
-            echo "✅  SQL Server Connection Validated Successfully"
-            echo "==================================================="
-            echo ""
-          else
-            echo ""
-            echo "==================================================="
-            echo "❌  SQL Server Connection Validation Failed"
-            echo "==================================================="
-            echo ""
+          if [ "$CONNECTION_SUCCESS" = "false" ]; then
+            echo "❌ Could not connect to SQL Server" >&2
             exit 1
           fi
 
