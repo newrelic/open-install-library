@@ -38,6 +38,7 @@ install:
         - task: detect_architecture
         - task: check_sqlcmd
         - task: validate_sql_connection
+        - task: install_nrdot_collector
 
     detect_architecture:
       cmds:
@@ -524,6 +525,56 @@ install:
             echo "❌ Could not connect to SQL Server" >&2
             exit 1
           fi
+
+    install_nrdot_collector:
+      cmds:
+        - |
+          echo ""
+          echo "Installing NRDOT Collector..."
+          echo ""
+
+          # Load detected architecture
+          if [ -f /tmp/nr_otel_arch.sh ]; then
+            source /tmp/nr_otel_arch.sh
+          else
+            echo "❌ ERROR: Architecture not detected" >&2
+            exit 1
+          fi
+
+          # Set download URL based on architecture
+          if [ "$DETECTED_ARCH" = "arm64" ]; then
+            DOWNLOAD_URL="https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-linux-arm64-latest.deb"
+            DEB_FILE="nrdot-collector-host-linux-arm64.deb"
+            echo "→ Downloading NRDOT Collector for ARM64..."
+          else
+            DOWNLOAD_URL="https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-linux-amd64-latest.deb"
+            DEB_FILE="nrdot-collector-host-linux-amd64.deb"
+            echo "→ Downloading NRDOT Collector for AMD64..."
+          fi
+
+          # Download the package
+          if ! curl -L -o "/tmp/$DEB_FILE" "$DOWNLOAD_URL" 2>&1; then
+            echo "❌ Failed to download NRDOT Collector" >&2
+            exit 1
+          fi
+
+          echo "✓ Downloaded NRDOT Collector"
+
+          # Install the package
+          echo "→ Installing NRDOT Collector..."
+          if sudo dpkg -i "/tmp/$DEB_FILE" 2>&1; then
+            echo "✓ NRDOT Collector installed successfully"
+          else
+            echo "❌ Failed to install NRDOT Collector" >&2
+            echo "Attempting to fix dependencies..."
+            sudo apt-get install -f -y
+            exit 1
+          fi
+
+          # Clean up
+          rm -f "/tmp/$DEB_FILE"
+
+          echo ""
 
 postInstall:
   info: |2
