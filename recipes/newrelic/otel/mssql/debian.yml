@@ -116,11 +116,33 @@ install:
             NON_INTERACTIVE=true
           fi
 
-          # Function to read password (hidden input)
+          # Function to read password with asterisks (POSIX-compliant)
           read_password() {
-            stty -echo
-            read password
-            stty echo
+            password=""
+            stty -echo -icanon min 1 time 0
+
+            while true; do
+              char=$(dd bs=1 count=1 2>/dev/null)
+
+              # Check for Enter key (newline or carriage return)
+              if [ -z "$char" ] || [ "$char" = "$(printf '\n')" ] || [ "$char" = "$(printf '\r')" ]; then
+                break
+              fi
+
+              # Check for backspace (ASCII 127 or 8)
+              if [ "$char" = "$(printf '\177')" ] || [ "$char" = "$(printf '\b')" ]; then
+                if [ -n "$password" ]; then
+                  password="${password%?}"
+                  printf '\b \b'
+                fi
+              else
+                password="${password}${char}"
+                printf '*'
+              fi
+            done
+
+            stty echo icanon
+            printf '\n'
             echo "$password"
           }
 
@@ -320,12 +342,11 @@ install:
             PASSWORD_ATTEMPTS=0
             while [ "$PASSWORD_VALID" = "false" ] && [ $PASSWORD_ATTEMPTS -lt $MAX_ATTEMPTS ]; do
               if [ $PASSWORD_ATTEMPTS -eq 0 ]; then
-                printf "Enter SQL Server password (hidden): "
+                printf "Enter SQL Server password: "
               else
-                printf "Re-enter SQL Server password (hidden): "
+                printf "Re-enter SQL Server password: "
               fi
               INPUT_PASSWORD=$(read_password)
-              echo ""
 
               if validate_password "$INPUT_PASSWORD"; then
                 PASSWORD="$INPUT_PASSWORD"
@@ -480,10 +501,8 @@ install:
                   echo ""
                   printf "Username: "
                   read USERNAME
-                  printf "Password (hidden): "
+                  printf "Password: "
                   PASSWORD=$(read_password)
-                  echo ""
-                  echo ""
                   echo "Connecting to SQL Server..."
                 elif [ "$CHOICE" != "1" ]; then
                   exit 1
