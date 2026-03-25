@@ -36,6 +36,7 @@ install:
     default:
       cmds:
         - task: detect_architecture
+        - task: check_sqlcmd
 
     detect_architecture:
       cmds:
@@ -53,6 +54,36 @@ install:
           # Store architecture for later tasks
           echo "export DETECTED_ARCH=$ARCH" >> /tmp/nr_otel_arch.sh
           echo "System architecture: $ARCH"
+
+    check_sqlcmd:
+      cmds:
+        - |
+          echo "Checking for SQL Server command-line tools..."
+
+          # Check if sqlcmd is installed
+          if ! command -v sqlcmd &> /dev/null; then
+            echo "" >&2
+            echo "❌ ERROR: SQL Server command-line tools (sqlcmd) not found" >&2
+            echo "" >&2
+            echo "Microsoft SQL Server must be installed on this system." >&2
+            echo "" >&2
+            echo "To install SQL Server on Ubuntu/Debian:" >&2
+            echo "  1. Visit: https://docs.microsoft.com/en-us/sql/linux/sql-server-linux-setup" >&2
+            echo "  2. Follow the installation guide for your distribution" >&2
+            echo "" >&2
+            echo "To install just the command-line tools:" >&2
+            echo "  curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -" >&2
+            echo "  curl https://packages.microsoft.com/config/ubuntu/\$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list" >&2
+            echo "  sudo apt-get update" >&2
+            echo "  sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev" >&2
+            echo "  echo 'export PATH=\"\$PATH:/opt/mssql-tools/bin\"' >> ~/.bashrc" >&2
+            echo "" >&2
+            exit 131
+          fi
+
+          # Check sqlcmd version
+          SQLCMD_VERSION=$(sqlcmd -? 2>&1 | head -1 || echo "unknown")
+          echo "✓ Found sqlcmd: $SQLCMD_VERSION"
 
 postInstall:
   info: |2
