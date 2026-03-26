@@ -1,0 +1,301 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-docker
+displayName: NRDOT Collector - Docker Stats
+description: New Relic install recipe for Docker container monitoring via the NRDOT OpenTelemetry Collector
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+    platformVersion: "(10|11|12)\\.*"
+  - type: host
+    os: linux
+    platform: ubuntu
+    platformVersion: "(18|20|22|24)\\.04"
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2023"
+  - type: host
+    os: linux
+    platform: centos
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: oracle
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: redhat
+    platformVersion: "(7|8|9)\\.*"
+
+keywords:
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Collector
+  - Docker
+  - Containers
+  - docker_stats
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: install_collector
+        - task: configure_env
+        - task: write_docker_config
+        - task: start_collector
+        - task: assert_collector_status_ok
+
+    assert_pre_req:
+      cmds:
+        - |
+          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false")
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          IS_CURL_INSTALLED=$(which curl | wc -l)
+          if [ $IS_CURL_INSTALLED -eq 0 ] ; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ {{.IS_SYSTEMCTL}} -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        - |
+          if [ ! -S /var/run/docker.sock ]; then
+            echo "Docker socket not found at /var/run/docker.sock. Ensure Docker is installed and running." >&2
+            exit 132
+          fi
+
+    install_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          # Fetch the latest release version from GitHub
+          COLLECTOR_VERSION=$(curl -s https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest \
+            | grep '"tag_name"' \
+            | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
+
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          # Detect package manager
+          if command -v dpkg &>/dev/null; then
+            PKG_MGR="deb"
+            ARCH="amd64"
+            IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+            if [ $IS_ARM -gt 0 ]; then ARCH="arm64"; fi
+
+            if dpkg -l | grep -q "^ii.*nrdot-collector "; then
+              INSTALLED_VERSION=$(dpkg -l nrdot-collector | awk '/^ii/{print $3}')
+              if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+                echo "nrdot-collector ${COLLECTOR_VERSION} is already installed. Skipping download."
+                exit 0
+              else
+                echo "Upgrading nrdot-collector from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+              fi
+            else
+              echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+            fi
+
+            DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.deb"
+            echo "Downloading from: ${DOWNLOAD_URL}"
+            curl -L --output /tmp/nrdot-collector.deb "$DOWNLOAD_URL"
+            if [ $? -ne 0 ]; then echo "Failed to download package." >&2; exit 1; fi
+
+            dpkg -i /tmp/nrdot-collector.deb
+            if [ $? -ne 0 ]; then
+              apt-get install -f -y
+              if [ $? -ne 0 ]; then echo "Failed to install package." >&2; exit 1; fi
+            fi
+            rm -f /tmp/nrdot-collector.deb
+
+          elif command -v rpm &>/dev/null; then
+            PKG_MGR="rpm"
+            ARCH="x86_64"
+            IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+            if [ $IS_ARM -gt 0 ]; then ARCH="arm64"; fi
+
+            if rpm -q nrdot-collector &>/dev/null; then
+              INSTALLED_VERSION=$(rpm -q --queryformat '%{VERSION}' nrdot-collector)
+              if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+                echo "nrdot-collector ${COLLECTOR_VERSION} is already installed. Skipping."
+                exit 0
+              else
+                echo "Upgrading nrdot-collector from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+              fi
+            else
+              echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+            fi
+
+            DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+            echo "Downloading from: ${DOWNLOAD_URL}"
+            curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+            if [ $? -ne 0 ]; then echo "Failed to download package." >&2; exit 1; fi
+
+            rpm -U /tmp/nrdot-collector.rpm
+            if [ $? -ne 0 ]; then echo "Failed to install package." >&2; exit 1; fi
+            rm -f /tmp/nrdot-collector.rpm
+
+          else
+            echo "Unsupported package manager. Expected dpkg or rpm." >&2
+            exit 1
+          fi
+
+          echo "${COLLECTOR_DISTRO} installed successfully."
+      silent: true
+
+    configure_env:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          CONFIG_DIR="/etc/${COLLECTOR_DISTRO}"
+          CONFIG_FILE="${CONFIG_DIR}/${COLLECTOR_DISTRO}.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          # Write or update the license key
+          if grep -q "^NEW_RELIC_LICENSE_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}|" "$CONFIG_FILE"
+          else
+            echo "NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          # Set OTLP endpoint based on region
+          if [ "${NEW_RELIC_REGION}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "${NEW_RELIC_REGION}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+
+          if grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTEL_EXPORTER_OTLP_ENDPOINT=.*|OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          echo "Configuration written to ${CONFIG_FILE}"
+
+    write_docker_config:
+      cmds:
+        - |
+          CONFIG_DIR="/etc/nrdot-collector"
+          DOCKER_CONFIG="${CONFIG_DIR}/docker-config.yaml"
+          OVERRIDE_DIR="/etc/systemd/system/nrdot-collector.service.d"
+          OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
+
+          mkdir -p "$CONFIG_DIR"
+          mkdir -p "$OVERRIDE_DIR"
+
+          # Write the embedded dockerstats OTel config
+          tee "$DOCKER_CONFIG" > /dev/null <<'EOF'
+receivers:
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 20s
+    timeout: 20s
+    api_version: "1.24"
+
+processors:
+  batch:
+    send_batch_size: 1000
+    timeout: 10s
+
+exporters:
+  otlphttp:
+    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NEW_RELIC_LICENSE_KEY}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [docker_stats]
+      processors: [batch]
+      exporters: [otlphttp]
+EOF
+
+          echo "Docker OTel config written to ${DOCKER_CONFIG}"
+
+          # Create systemd override to use the docker config
+          tee "$OVERRIDE_FILE" > /dev/null <<EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/nrdot-collector --config=${DOCKER_CONFIG}
+EOF
+
+          echo "Systemd override created: ${OVERRIDE_FILE}"
+
+    start_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          systemctl daemon-reload
+          systemctl enable "${COLLECTOR_DISTRO}.service"
+          systemctl reload-or-restart "${COLLECTOR_DISTRO}.service"
+          echo "${COLLECTOR_DISTRO} service started and enabled."
+
+    assert_collector_status_ok:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for ${COLLECTOR_DISTRO} to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet "${COLLECTOR_DISTRO}.service"; then
+              echo "${COLLECTOR_DISTRO} is running."
+              HEALTH=$(curl -s http://localhost:13133 2>/dev/null || echo "")
+              if echo "$HEALTH" | grep -q '"status":"Server available"'; then
+                echo "${COLLECTOR_DISTRO} health check passed."
+              fi
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "${COLLECTOR_DISTRO} has not started after installation." >&2
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            journalctl -u "${COLLECTOR_DISTRO}.service" --no-pager --lines=20
+          fi
+          exit 31
+
+postInstall:
+  info: |2
+      Docker OTel config:  /etc/nrdot-collector/docker-config.yaml
+      Env config:          /etc/nrdot-collector/nrdot-collector.conf
+      Systemd override:    /etc/systemd/system/nrdot-collector.service.d/override.conf
+      Service status:      systemctl status nrdot-collector
