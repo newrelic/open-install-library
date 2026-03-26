@@ -74,19 +74,17 @@ install:
     assert_pre_req:
       cmds:
         - |
-          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false")
-          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+          if [ "$(id -u)" != "0" ]; then
             echo "This newrelic install must be run under sudo or root" >&2
             exit 3
           fi
         - |
-          IS_CURL_INSTALLED=$(which curl | wc -l)
-          if [ $IS_CURL_INSTALLED -eq 0 ] ; then
+          if ! command -v curl > /dev/null 2>&1; then
             echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
             exit 16
           fi
         - |
-          if [ {{.IS_SYSTEMCTL}} -eq 0 ]; then
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
             echo "systemd is required for the nrdot-collector service configuration." >&2
             exit 131
           fi
@@ -119,7 +117,7 @@ install:
             echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
           fi
 
-          # RPM uses x86_64 for amd64, arm64 for aarch64
+          # RPM uses x86_64 for amd64, arm64 for aarch64 (matches release asset naming)
           ARCH="x86_64"
           IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
           if [ $IS_ARM -gt 0 ] ; then
@@ -177,6 +175,7 @@ install:
             echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
           fi
 
+          chmod 600 "$CONFIG_FILE"
           echo "Configuration written to ${CONFIG_FILE}"
 
     setup_custom_config:
@@ -206,11 +205,11 @@ install:
           mkdir -p "$OVERRIDE_DIR"
 
           # Write override — empty ExecStart= clears default, second sets custom config
-          tee "$OVERRIDE_FILE" > /dev/null <<EOF
-          [Service]
-          ExecStart=
-          ExecStart=/usr/bin/nrdot-collector --config={{.NR_CLI_CONFIG_FILE_PATH}}
-          EOF
+          printf '%s\n' \
+            '[Service]' \
+            'ExecStart=' \
+            'ExecStart=/usr/bin/nrdot-collector --config={{.NR_CLI_CONFIG_FILE_PATH}}' \
+            > "$OVERRIDE_FILE"
 
           echo "Systemd override created: ${OVERRIDE_FILE}"
 
@@ -237,14 +236,14 @@ install:
               HEALTH=$(curl -s http://localhost:13133 2>/dev/null || echo "")
               if echo "$HEALTH" | grep -q '"status":"Server available"'; then
                 echo "${COLLECTOR_DISTRO} health check passed."
+                exit 0
               fi
-              exit 0
             fi
             sleep 2
           done
 
           echo "${COLLECTOR_DISTRO} has not started after installation." >&2
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+          if [ "{{.IS_SYSTEMCTL}}" -gt 0 ]; then
             journalctl -u "${COLLECTOR_DISTRO}.service" --no-pager --lines=20
           fi
           exit 31
