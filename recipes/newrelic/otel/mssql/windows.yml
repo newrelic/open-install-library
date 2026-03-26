@@ -49,6 +49,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Clean up any existing skip flag from previous runs
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            Remove-Item $skipFlag -Force -ErrorAction SilentlyContinue
+          }
+
           Write-Host ""
           Write-Host "=== SQL Server Connection Configuration ==="
           Write-Host ""
@@ -280,9 +286,6 @@ install:
 
             if ($testExitCode -eq 0 -and $testResult -notmatch "Msg \d+, Level \d+") {
               Write-Host "  Connection successful!" -ForegroundColor Green
-              Write-Host ""
-              Write-Host "SQL Server Version:"
-              Write-Host $testResult.Trim()
               $connectionSuccess = $true
             } else {
               Write-Host "  Connection failed!" -ForegroundColor Red
@@ -290,22 +293,22 @@ install:
 
               # Analyze error
               if ($testResult -match "Login failed for user") {
-                Write-Host "ERROR: Invalid username or password"
+                Write-Host "ERROR: Invalid username or password" -ForegroundColor Red
                 Write-Host "  - Verify username: $USERNAME"
                 Write-Host "  - Verify password is correct"
                 Write-Host "  - Check if SQL Server Authentication is enabled"
               } elseif ($testResult -match "Cannot open server") {
-                Write-Host "ERROR: Cannot connect to server"
+                Write-Host "ERROR: Cannot connect to server" -ForegroundColor Red
                 Write-Host "  - Verify SQL Server is running on $HOSTNAME"
                 Write-Host "  - Check if port $PORT is correct (default is 1433)"
                 Write-Host "  - Verify firewall allows connection on port $PORT"
               } elseif ($testResult -match "timeout") {
-                Write-Host "ERROR: Connection timeout"
+                Write-Host "ERROR: Connection timeout" -ForegroundColor Red
                 Write-Host "  - Server may be unreachable or not responding"
                 Write-Host "  - Check network connectivity"
                 Write-Host "  - Verify firewall settings"
               } else {
-                Write-Host "ERROR: Connection test failed"
+                Write-Host "ERROR: Connection test failed" -ForegroundColor Red
                 Write-Host ""
                 Write-Host "Error details:"
                 Write-Host $testResult.Trim()
@@ -374,6 +377,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           Write-Host ""
           Write-Host "=== New Relic Region Selection ==="
           Write-Host ""
@@ -387,7 +396,7 @@ install:
 
           if ($RegionChoice -ne "1" -and $RegionChoice -ne "2") {
             Write-Host ""
-            Write-Host "ERROR: Invalid choice `"$RegionChoice`". Enter 1 for US Production or 2 for EU Production."
+            Write-Host "ERROR: Invalid choice `"$RegionChoice`". Enter 1 for US Production or 2 for EU Production." -ForegroundColor Red
             Write-Host ""
             exit 1
           }
@@ -431,6 +440,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           Write-Host ""
           Write-Host "=== New Relic License Key Configuration ==="
           Write-Host ""
@@ -498,7 +513,7 @@ install:
 
             if (-not $keyValid -and $attempt -gt $maxAttempts) {
               Write-Host "Maximum attempts reached."
-              Write-Host "ERROR: Cannot proceed without a valid New Relic License Key."
+              Write-Host "ERROR: Cannot proceed without a valid New Relic License Key." -ForegroundColor Red
               Write-Host ""
               Write-Host "To find your License Key:"
               Write-Host "  1. Log in to New Relic"
@@ -540,6 +555,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           Write-Host ""
           Write-Host "=== Database Monitoring Configuration ==="
           Write-Host ""
@@ -629,7 +650,6 @@ install:
                   $varName = $matches[1]
                   $varValue = $matches[2].Trim()
                   Set-Variable -Name $varName -Value $varValue
-                  Write-Host ("Loaded: " + $varName + " = " + $varValue)
                 }
               }
             } catch {
@@ -652,12 +672,9 @@ install:
           $Query = "SET NOCOUNT ON; SELECT SERVERPROPERTY(" + $sq + "ProductMajorVersion" + $sq + ")"
 
           Write-Host ""
-          Write-Host "Checking SQL Server version..."
-          Write-Host ("  Server : " + $Server)
 
           # Run query using SQL Auth or Windows Auth based on AUTH_CHOICE
           if ($AUTH_CHOICE -eq "2") {
-            Write-Host "  Using SQL Authentication..."
             $raw = sqlcmd -S $Server -U $USERNAME -P $PASSWORD -Q $Query -t 30 -h -1 -W 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
               Write-Host ""
@@ -670,7 +687,6 @@ install:
               exit 1
             }
           } else {
-            Write-Host "  Using Windows Authentication..."
             $raw = sqlcmd -S $Server -E -Q $Query -t 30 -h -1 -W 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
               Write-Host ""
@@ -685,7 +701,7 @@ install:
           # Detect SQL-level errors even when sqlcmd exits 0
           if ($raw -match "Msg \d+, Level \d+") {
             Write-Host ""
-            Write-Host "ERROR: SQL Server returned an error while checking version:"
+            Write-Host "ERROR: SQL Server returned an error while checking version:" -ForegroundColor Red
             Write-Host ($raw.Trim())
             Write-Host ""
             exit 1
@@ -696,7 +712,7 @@ install:
 
           if (-not $majorVersion -or -not ($majorVersion -match "^\d+$")) {
             Write-Host ""
-            Write-Host "ERROR: Could not determine SQL Server version."
+            Write-Host "ERROR: Could not determine SQL Server version." -ForegroundColor Red
             Write-Host "  sqlcmd output: " + $raw.Trim()
             Write-Host ""
             exit 1
@@ -707,11 +723,12 @@ install:
           $versionMap = @{ 8="2000"; 9="2005"; 10="2008"; 11="2012"; 12="2014"; 13="2016"; 14="2017"; 15="2019"; 16="2022" }
           $friendlyVersion = if ($versionMap.ContainsKey($major)) { $versionMap[$major] } else { "Unknown" }
 
-          Write-Host ("  Version: SQL Server " + $friendlyVersion + " (v" + $major + ")")
+          Write-Host ("SQL Server Version: " + $friendlyVersion + " (v" + $major + ")")
 
           if ($major -lt 14) {
+            Write-Host ("Status: Not Supported") -ForegroundColor Red
             Write-Host ""
-            Write-Host ("ERROR: SQL Server " + $friendlyVersion + " (v" + $major + ") is not supported.")
+            Write-Host ("ERROR: SQL Server " + $friendlyVersion + " (v" + $major + ") is not supported.") -ForegroundColor Red
             Write-Host ""
             Write-Host "The New Relic MSSQL OTel integration requires SQL Server 2017 (v14) or later."
             Write-Host "Supported versions: 2017, 2019, 2022"
@@ -721,7 +738,7 @@ install:
             exit 1
           }
 
-          Write-Host ("  Status : Supported (SQL Server " + $friendlyVersion + ")")
+          Write-Host ("Status: Supported") -ForegroundColor Green
           Write-Host ""
           '
 
@@ -730,6 +747,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           # Load config from temp file
           $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
           if (Test-Path $configFile) {
@@ -819,12 +842,50 @@ install:
                 Write-Host "  Using existing user: $inputUsername"
                 Write-Host ""
 
-                # Ask for the existing user password
-                Write-Host "Please enter the password for the existing user `"$inputUsername`":"
-                $SecureExistingPassword = Read-Host "Password" -AsSecureString
-                $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureExistingPassword)
-                $existingPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+                # Ask for the existing user password with verification (max 3 attempts)
+                $passwordVerified = $false
+                $existingPassword = ""
+                $passwordAttempt = 1
+                $maxPasswordAttempts = 3
+
+                while ($passwordAttempt -le $maxPasswordAttempts -and -not $passwordVerified) {
+                  if ($passwordAttempt -gt 1) {
+                    Write-Host ""
+                    Write-Host "  Incorrect password. Please try again. (Attempt $passwordAttempt of $maxPasswordAttempts)" -ForegroundColor Yellow
+                  }
+
+                  Write-Host "Please enter the password for the existing user `"$inputUsername`":"
+                  $SecureExistingPassword = Read-Host "Password" -AsSecureString
+                  $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureExistingPassword)
+                  $existingPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                  [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+
+                  # Verify password by attempting to connect
+                  # Note: We know this is a SQL Auth user because the query above filters for type='S'
+                  $testQuery = "SELECT 1"
+                  $testOutput = sqlcmd -S $Server -U $inputUsername -P $existingPassword -Q $testQuery -h -1 -W 2>&1 | Out-String
+                  $testExitCode = $LASTEXITCODE
+
+                  if ($testExitCode -eq 0 -and -not ($testOutput -match "Msg \d+, Level \d+")) {
+                    $passwordVerified = $true
+                    Write-Host ""
+                    Write-Host "  Password verified successfully" -ForegroundColor Green
+                  } else {
+                    if ($passwordAttempt -eq $maxPasswordAttempts) {
+                      Write-Host ""
+                      Write-Host "=========================================="
+                      Write-Host "ERROR: Maximum password attempts reached" -ForegroundColor Red
+                      Write-Host "=========================================="
+                      Write-Host ""
+                      Write-Host "Installation cannot continue with incorrect password."
+                      Write-Host "Please restart the installation and provide the correct password."
+                      Write-Host ""
+                      exit 131
+                    }
+                  }
+
+                  $passwordAttempt++
+                }
 
                 Write-Host ""
                 Write-Host "The following permissions will be granted to user `"$inputUsername`":"
@@ -853,7 +914,7 @@ install:
                 } else {
                   Write-Host ""
                   Write-Host "=========================================="
-                  Write-Host "WARNING: Integration stopped by user"
+                  Write-Host "WARNING: Integration stopped by user" -ForegroundColor Yellow
                   Write-Host "=========================================="
                   Write-Host ""
                   Write-Host "Cannot proceed without granting monitoring permissions."
@@ -887,12 +948,6 @@ install:
           }
 
           Write-Host ""
-          if ($updateExisting) {
-            Write-Host "Updating SQL Server monitoring user..."
-          } else {
-            Write-Host "Creating SQL Server monitoring user..."
-          }
-          Write-Host "  Username: $MonitoringUsername"
 
           # Auto-generate a secure password only if not using existing password
           # Must contain: uppercase, lowercase, number, and special character
@@ -903,11 +958,7 @@ install:
             $special = -join ("!@#$%^&*".ToCharArray() | Get-Random -Count 2)
             $allChars = ($upper + $lower + $numbers + $special).ToCharArray()
             $MonitoringPassword = -join ($allChars | Get-Random -Count $allChars.Length)
-            Write-Host "  Password: $MonitoringPassword (auto-generated)"
-          } else {
-            Write-Host "  Password: (using existing password)"
           }
-          Write-Host "  Server: $Server"
 
           # Create SQL script for user creation and permissions
           if ($useExistingPassword) {
@@ -1033,7 +1084,7 @@ install:
           # Check for SQL errors
           if ($SqlExitCode -ne 0 -or $SqlOutput -match "Msg \d+, Level \d+") {
             Write-Host ""
-            Write-Host "ERROR: Failed to create monitoring user!"
+            Write-Host "ERROR: Failed to create monitoring user!" -ForegroundColor Red
             Write-Host "  SQL Server returned exit code: $SqlExitCode"
             Write-Host ""
             Write-Host "Error details:"
@@ -1084,16 +1135,13 @@ install:
             Write-Host ""
             Write-Host "=========================================="
             if ($updateExisting -and $useExistingPassword) {
-              Write-Host "SUCCESS: Monitoring permissions granted!"
+              Write-Host "SUCCESS: Monitoring permissions granted!" -ForegroundColor Green
               Write-Host "=========================================="
               Write-Host ""
-              Write-Host "Existing user `"$MonitoringUsername`" has been configured for monitoring."
-              Write-Host "  Username: $MonitoringUsername"
-              Write-Host "  Password: (using existing password)"
+              Write-Host "User `"$MonitoringUsername`" configured successfully."
               Write-Host ""
-              Write-Host "Permissions granted:"
             } elseif ($updateExisting) {
-              Write-Host "SUCCESS: Monitoring user updated!"
+              Write-Host "SUCCESS: Monitoring user updated!" -ForegroundColor Green
               Write-Host "=========================================="
               Write-Host ""
               Write-Host "Existing user `"$MonitoringUsername`" has been updated with:"
@@ -1110,15 +1158,20 @@ install:
               Write-Host ""
               Write-Host "Permissions granted:"
             }
-            Write-Host "  Instance-level:"
-            Write-Host "    - VIEW SERVER STATE (view server performance and state)"
-            Write-Host "    - VIEW ANY DEFINITION (view object definitions)"
-            Write-Host "    - VIEW ANY DATABASE (view all databases)"
-            Write-Host "  Database-level (for all user databases):"
-            Write-Host "    - VIEW DATABASE STATE (view database performance)"
-            Write-Host "    - VIEW DEFINITION (view object definitions)"
-            Write-Host "    - db_datareader role (read data from all tables)"
-            Write-Host ""
+
+            # Only show permissions list for new users or updated users (not for existing with existing password)
+            if (-not ($updateExisting -and $useExistingPassword)) {
+              Write-Host "  Instance-level:"
+              Write-Host "    - VIEW SERVER STATE (view server performance and state)"
+              Write-Host "    - VIEW ANY DEFINITION (view object definitions)"
+              Write-Host "    - VIEW ANY DATABASE (view all databases)"
+              Write-Host "  Database-level (for all user databases):"
+              Write-Host "    - VIEW DATABASE STATE (view database performance)"
+              Write-Host "    - VIEW DEFINITION (view object definitions)"
+              Write-Host "    - db_datareader role (read data from all tables)"
+              Write-Host ""
+            }
+
             if ($useExistingPassword) {
               Write-Host "NOTE: Using your existing password for NRDOT Collector configuration."
             } else {
@@ -1146,7 +1199,7 @@ install:
             }
           } else {
             Write-Host ""
-            Write-Host "ERROR: Monitoring user was not created successfully!"
+            Write-Host "ERROR: Monitoring user was not created successfully!" -ForegroundColor Red
             Write-Host "Verification query output:"
             Write-Host $verifyOutput
             Write-Host ""
@@ -1197,15 +1250,15 @@ install:
           if ($sqlServerConfigured) {
             Write-Host ""
             Write-Host "=========================================="
-            Write-Host "NRDOT Collector Installation"
+            Write-Host "SUCCESS: NRDOT Collector Already Installed!" -ForegroundColor Green
             Write-Host "=========================================="
             Write-Host ""
-            Write-Host "You already installed NRDOT Collector with SQL Server monitoring."
+            Write-Host "NRDOT Collector is already installed with SQL Server monitoring." -ForegroundColor Green
             Write-Host ""
             Write-Host "Configuration file location:"
             Write-Host "  $configPath"
             Write-Host ""
-            Write-Host "If you want to update the NRDOT Collector, please follow"
+            Write-Host "If you want to update the configuration, please follow"
             Write-Host "the instructions in our documentation:"
             Write-Host ""
             Write-Host "  https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/#configure-collector"
@@ -1215,7 +1268,12 @@ install:
             Write-Host ""
             Write-Host "=========================================="
             Write-Host ""
-            exit 1
+
+            # Create flag file to signal that NRDOT is already installed and skip remaining tasks
+            $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+            [System.IO.File]::WriteAllText($skipFlag, "NRDOT_ALREADY_INSTALLED", [System.Text.Encoding]::UTF8)
+
+            exit 0
           } else {
             Write-Host ""
             Write-Host "Proceeding with installation..."
@@ -1228,6 +1286,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           # Check for Administrator privileges
           $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
           if (-not $isAdmin) {
@@ -1340,11 +1404,9 @@ install:
           Write-Host ""
 
           # Wait for service to be registered
-          Write-Host "Waiting for service to be registered..."
           Start-Sleep -Seconds 2
 
           # Check if service is running, start it if not
-          Write-Host "Checking NRDOT Collector service status..."
           $service = Get-Service -Name "NRDOT Collector Host" -ErrorAction SilentlyContinue
 
           if ($service) {
@@ -1412,10 +1474,16 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           # Load connection config
           $configFile = Join-Path $env:TEMP "nr-mssql-config.txt"
           if (-not (Test-Path $configFile)) {
-            Write-Host "ERROR: Connection configuration file not found."
+            Write-Host "ERROR: Connection configuration file not found." -ForegroundColor Red
             exit 1
           }
 
@@ -1504,7 +1572,6 @@ install:
           $password = $config["MONITORING_PASSWORD"]
           $monitoredDatabases = $config["MONITORED_DATABASES"]
 
-          Write-Host "Configuring SQL Server monitoring..."
           $existingConfig = Get-Content $configPath -Raw -Encoding UTF8
 
           # Build the newrelicsqlserver receiver configuration using string concatenation
@@ -1545,7 +1612,7 @@ install:
             $afterProcessors = $existingConfig.Substring($processorsIndex)
             $newConfig = $beforeProcessors + $sqlServerReceiver + "`r`n" + $afterProcessors
           } else {
-            Write-Host "ERROR: Could not find processors section in config file"
+            Write-Host "ERROR: Could not find processors section in config file" -ForegroundColor Red
             exit 1
           }
 
@@ -1927,7 +1994,6 @@ install:
           }
 
           # Validate config structure after modifications
-          Write-Host "Validating configuration structure..."
           try {
             $validationConfig = Get-Content $configPath -Raw -Encoding UTF8 -ErrorAction Stop
 
@@ -1968,7 +2034,6 @@ install:
               exit 1
             }
 
-            Write-Host "Configuration structure validated." -ForegroundColor Green
           } catch {
             Write-Host ""
             Write-Host "WARNING: Could not validate configuration structure" -ForegroundColor Yellow
@@ -1978,11 +2043,6 @@ install:
             Write-Host ""
           }
 
-          Write-Host "Configuration applied successfully." -ForegroundColor Green
-          Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "Configuration complete!"
-          Write-Host "=========================================="
           Write-Host ""
           Write-Host "Config file:" $configPath
           if (Test-Path $configPath) {
@@ -1999,6 +2059,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
 
           Write-Host ""
@@ -2111,6 +2177,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           # Wait a moment to ensure all config file writes are complete
           Start-Sleep -Seconds 2
 
@@ -2124,7 +2196,7 @@ install:
             # Verify service is running
             $service = Get-Service "NRDOT Collector Host" -ErrorAction SilentlyContinue
             if ($service -and $service.Status -eq "Running") {
-              Write-Host "NRDOT Collector service restarted successfully."
+              Write-Host "NRDOT Collector service restarted successfully." -ForegroundColor Green
               Write-Host ""
               Write-Host "SQL Server monitoring configured!"
               Write-Host "Metrics will appear in New Relic within 1-2 minutes."
@@ -2132,9 +2204,14 @@ install:
               Write-Host "For more information, visit our documentation:"
               Write-Host "  https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/"
               Write-Host ""
+
+              # Clean up skip flag after successful installation
+              if (Test-Path $skipFlag) {
+                Remove-Item $skipFlag -Force -ErrorAction SilentlyContinue
+              }
             } else {
               Write-Host ""
-              Write-Host "ERROR: Service restart completed but service is not running."
+              Write-Host "ERROR: Service restart completed but service is not running." -ForegroundColor Red
               Write-Host ("Current status: " + $(if ($service) { $service.Status } else { "Unknown" }))
               Write-Host ""
               Write-Host "Try starting the service manually:"
@@ -2147,7 +2224,7 @@ install:
             }
           } catch {
             Write-Host ""
-            Write-Host "ERROR: Failed to restart NRDOT Collector service."
+            Write-Host "ERROR: Failed to restart NRDOT Collector service." -ForegroundColor Red
             Write-Host "Error: $_"
             Write-Host ""
             Write-Host "Try restarting the service manually:"
@@ -2165,6 +2242,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
           if (Test-Path $configPath) {
             $lines = Get-Content $configPath -Encoding UTF8
@@ -2210,6 +2293,12 @@ install:
       cmds:
         - |
           powershell -command '
+          # Check if NRDOT is already installed (skip flag exists)
+          $skipFlag = Join-Path $env:TEMP "nr-mssql-skip-install.flag"
+          if (Test-Path $skipFlag) {
+            exit 0
+          }
+
           $configPath = "C:\Program Files (x86)\NRDOT Collector Host\config.yaml"
           if (Test-Path $configPath) {
             $lines = Get-Content $configPath -Encoding UTF8
