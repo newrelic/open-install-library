@@ -72,19 +72,17 @@ install:
     assert_pre_req:
       cmds:
         - |
-          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false")
-          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+          if [ "$(id -u)" != "0" ]; then
             echo "This newrelic install must be run under sudo or root" >&2
             exit 3
           fi
         - |
-          IS_CURL_INSTALLED=$(which curl | wc -l)
-          if [ $IS_CURL_INSTALLED -eq 0 ] ; then
+          if ! command -v curl > /dev/null 2>&1; then
             echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
             exit 16
           fi
         - |
-          if [ {{.IS_SYSTEMCTL}} -eq 0 ]; then
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
             echo "systemd is required for the nrdot-collector service configuration." >&2
             exit 131
           fi
@@ -111,7 +109,6 @@ install:
 
           # Detect package manager
           if command -v dpkg &>/dev/null; then
-            PKG_MGR="deb"
             ARCH="amd64"
             IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
             if [ $IS_ARM -gt 0 ]; then ARCH="arm64"; fi
@@ -141,7 +138,6 @@ install:
             rm -f /tmp/nrdot-collector.deb
 
           elif command -v rpm &>/dev/null; then
-            PKG_MGR="rpm"
             ARCH="x86_64"
             IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
             if [ $IS_ARM -gt 0 ]; then ARCH="arm64"; fi
@@ -206,55 +202,56 @@ install:
             echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
           fi
 
+          chmod 600 "$CONFIG_FILE"
           echo "Configuration written to ${CONFIG_FILE}"
 
     write_docker_config:
       cmds:
         - |
-          CONFIG_DIR="/etc/nrdot-collector"
-          DOCKER_CONFIG="${CONFIG_DIR}/docker-config.yaml"
+          DOCKER_CONFIG="/etc/nrdot-collector/docker-config.yaml"
           OVERRIDE_DIR="/etc/systemd/system/nrdot-collector.service.d"
           OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
 
-          mkdir -p "$CONFIG_DIR"
+          mkdir -p "/etc/nrdot-collector"
           mkdir -p "$OVERRIDE_DIR"
 
-          # Write the embedded dockerstats OTel config
-          tee "$DOCKER_CONFIG" > /dev/null <<'EOF'
-receivers:
-  docker_stats:
-    endpoint: unix:///var/run/docker.sock
-    collection_interval: 20s
-    timeout: 20s
-    api_version: "1.24"
-
-processors:
-  batch:
-    send_batch_size: 1000
-    timeout: 10s
-
-exporters:
-  otlphttp:
-    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
-    headers:
-      api-key: ${env:NEW_RELIC_LICENSE_KEY}
-
-service:
-  pipelines:
-    metrics:
-      receivers: [docker_stats]
-      processors: [batch]
-      exporters: [otlphttp]
-EOF
+          # Write dockerstats OTel config — printf avoids heredoc column-0 YAML parse issues.
+          # ${env:...} is OTel variable syntax; single-quoted strings prevent bash expansion.
+          printf '%s\n' \
+            'receivers:' \
+            '  docker_stats:' \
+            '    endpoint: unix:///var/run/docker.sock' \
+            '    collection_interval: 20s' \
+            '    timeout: 20s' \
+            '    api_version: "1.24"' \
+            '' \
+            'processors:' \
+            '  batch:' \
+            '    send_batch_size: 1000' \
+            '    timeout: 10s' \
+            '' \
+            'exporters:' \
+            '  otlphttp:' \
+            '    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}' \
+            '    headers:' \
+            '      api-key: ${env:NEW_RELIC_LICENSE_KEY}' \
+            '' \
+            'service:' \
+            '  pipelines:' \
+            '    metrics:' \
+            '      receivers: [docker_stats]' \
+            '      processors: [batch]' \
+            '      exporters: [otlphttp]' \
+            > "$DOCKER_CONFIG"
 
           echo "Docker OTel config written to ${DOCKER_CONFIG}"
 
-          # Create systemd override to use the docker config
-          tee "$OVERRIDE_FILE" > /dev/null <<EOF
-[Service]
-ExecStart=
-ExecStart=/usr/bin/nrdot-collector --config=${DOCKER_CONFIG}
-EOF
+          # Write systemd override — empty ExecStart= clears the default before setting ours
+          printf '%s\n' \
+            '[Service]' \
+            'ExecStart=' \
+            'ExecStart=/usr/bin/nrdot-collector --config=/etc/nrdot-collector/docker-config.yaml' \
+            > "$OVERRIDE_FILE"
 
           echo "Systemd override created: ${OVERRIDE_FILE}"
 
@@ -281,14 +278,14 @@ EOF
               HEALTH=$(curl -s http://localhost:13133 2>/dev/null || echo "")
               if echo "$HEALTH" | grep -q '"status":"Server available"'; then
                 echo "${COLLECTOR_DISTRO} health check passed."
+                exit 0
               fi
-              exit 0
             fi
             sleep 2
           done
 
           echo "${COLLECTOR_DISTRO} has not started after installation." >&2
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+          if [ "{{.IS_SYSTEMCTL}}" -gt 0 ]; then
             journalctl -u "${COLLECTOR_DISTRO}.service" --no-pager --lines=20
           fi
           exit 31
