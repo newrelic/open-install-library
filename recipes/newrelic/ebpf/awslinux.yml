@@ -9,25 +9,32 @@ repository: https://github.com/newrelic/newrelic-ebpf-agent
 installTargets:
   - type: host
     os: linux
-    platform: "ubuntu"
-    platformVersion: "((20|22|24)\\.04)"
+    platform: amazon
+    platformFamily: rhel
   - type: host
     os: linux
-    platform: "debian"
-    platformVersion: "((11|12)\\.?.*)"
+    platform: amazon
+    platformFamily: rhel
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: amazon
+    platformFamily: rhel
+    platformVersion: "2022"
+  - type: host
+    os: linux
+    platform: amazon
+    platformFamily: rhel
+    platformVersion: "(2023\\.*)"
 
 keywords:
   - eBPF
   - Agent
-  - Linux
-  - Ubuntu
-  - Precise
-  - Trusty
-  - Xenial
-  - Bionic
-  - Focal
-  - Jammy
-  - Noble
+  - Amazon Linux
+  - Amazon Linux AMI
+  - Amazon Linux 2
+  - Amazon Linux 2022
+  - Amazon Linux 2023
 
 processMatch: []
 
@@ -39,15 +46,19 @@ install:
   version: "3"
   silent: true
 
+  vars:
+    AMAZON_LINUX_VERSION:
+      sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+    REPO_DIR:
+      sh: if [ {{.AMAZON_LINUX_VERSION}} = "2" ] || [ {{.AMAZON_LINUX_VERSION}} = "2022" ] || [ {{.AMAZON_LINUX_VERSION}} = "2023" ]; then echo "amazonlinux"; else echo "el"; fi
+    ARCH:
+      sh: uname -m
+
   tasks:
     default:
       cmds:
         - task: assert_pre_req
         - task: check_config_file
-        - task: update_apt
-        - task: add_gpg_key
-        - task: add_nr_source
-        - task: update_apt_nr_source
         - task: install_linux_headers
         - task: install_ebpf_agent
         - task: disable_service_for_agent_control
@@ -109,11 +120,11 @@ install:
           KERNEL_VERSION=$(uname -r | cut -d'-' -f1)
           KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d'.' -f1)
           KERNEL_MINOR=$(echo $KERNEL_VERSION | cut -d'.' -f2)
-          
+
           # Convert to comparable format (e.g., 5.4 becomes 504, 4.19 becomes 419)
           KERNEL_NUM=$((KERNEL_MAJOR * 100 + KERNEL_MINOR))
           REQUIRED_KERNEL_NUM=504  # 5.4
-          
+
           if [ $KERNEL_NUM -lt $REQUIRED_KERNEL_NUM ]; then
             echo ""
             echo -e "\e[31mERROR:\e[0m eBPF agent requires Linux kernel version 5.4 or higher." >&2
@@ -149,7 +160,7 @@ install:
           }
 
           create_default_config_file(){
-          
+
               echo "Creating default configuration file at $CONFIG_FILE..."
               # Ensure the directory exists
               if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
@@ -163,7 +174,7 @@ install:
                 NEW_RELIC_OTLP_ENDPOINT="otlp.eu01.nr-data.net:443"
               elif [[ "$NEW_RELIC_REGION" == "US" ]]; then
                 NEW_RELIC_OTLP_ENDPOINT="otlp.nr-data.net:443"
-              fi       
+              fi
 
               # Create the default configuration file
               tee "$CONFIG_FILE" > /dev/null << EOS
@@ -179,11 +190,11 @@ install:
           NEW_RELIC_LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-}"
           # -- The primary lever to control RAM use of the eBPF agent. Specified in MiB.
           TABLE_STORE_DATA_LIMIT_MB=250
-          # Sets the absolute path of the complete directory where the required linux headers are manually downloaded and placed for the eBPF agent to use. 
-          # This is useful under restricted environments where agent is not able to download required linux headers. The required headers are identified by the agent based on the kernel version. 
+          # Sets the absolute path of the complete directory where the required linux headers are manually downloaded and placed for the eBPF agent to use.
+          # This is useful under restricted environments where agent is not able to download required linux headers. The required headers are identified by the agent based on the kernel version.
           # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
           DOWNLOADED_PACKAGED_HEADERS_PATH=""
-          # Sets the absolute path of the complete directory where the linux headers are present for the eBPF agent to use. 
+          # Sets the absolute path of the complete directory where the linux headers are present for the eBPF agent to use.
           # This is useful where required linux headers could not be installed or path could not be determined.
           # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
           DISTRO_KERNEL_HEADERS_PATH=""
@@ -237,7 +248,7 @@ install:
           # Example: "kube-dns,otel-collector,service1"
           DROP_APM_DATA_FOR_ENTITY_NAME=""
 
-          # -- Comma-separated list of entity names to always keep eBPF APM data. default all entity is keepd/enabled 
+          # -- Comma-separated list of entity names to always keep eBPF APM data. default all entity is keepd/enabled
           # This bypasses DROP_APM_DATA_FOR_ENTITY_NAME filter.
           # Example: "critical-service,important-app,must-monitor"
           KEEP_APM_DATA_FOR_ENTITY_NAME=""
@@ -251,7 +262,7 @@ install:
           # Example: "kube-dns,otel-collector,service1"
           DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
 
-          # -- Comma-separated list of entity names to always keep Network metrix data. default all entity is keepd/enabled 
+          # -- Comma-separated list of entity names to always keep Network metrix data. default all entity is keepd/enabled
           # This bypasses DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME filter.
           # Example: "critical-service,important-app,must-monitor"
           KEEP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
@@ -394,77 +405,40 @@ install:
             echo "Directory $NEW_RELIC_LOG_FILE_PATH created successfully."
           fi
           echo "eBPF logs directory: $NEW_RELIC_LOG_FILE_PATH"
-    update_apt:
-      cmds:
-        - |
-          # Get latest definitions and skip any failure because of deprecation
-          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
-          if [ ! -z "$HTTPS_PROXY" ]; then
-            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
-          fi
-          apt-get $OPTIONS update -yq
-      silent: true
-      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
-      ignore_error: true
-
-    add_gpg_key:
-      cmds:
-        - |
-          # Remove the key from the legacy keyring if it exists
-          rm -f /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg 2>/dev/null
-          rm -f /etc/apt/trusted.gpg 2>/dev/null
-          # Add the key to the correct directory
-          curl -s https://download.newrelic.com/infrastructure_agent/gpg/newrelic-infra.gpg | gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-ebpf.gpg
-      silent: true
-
-    add_nr_source:
-      cmds:
-        - |
-          ARCH="amd64"
-          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
-          if [ $IS_ARM -gt 0 ] ; then
-            ARCH="arm64"
-          fi
-          printf "deb [arch="$ARCH"] https://download.newrelic.com/preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-ebpf.list > /dev/null
-      vars:
-        DEBIAN_CODENAME:
-          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
-      silent: true
-
-    update_apt_nr_source:
-      cmds:
-        - |
-          # Get latest definitions and skip any failure because of deprecation
-          OPTIONS="-o DPkg::Lock::Timeout=60 -o Acquire::Check-Valid-Until=false"
-          if [ ! -z "$HTTPS_PROXY" ]; then
-            OPTIONS="$OPTIONS -o Acquire::Http::Proxy={{.HTTPS_PROXY}}"
-          fi
-          apt-get $OPTIONS update -qq -y
-      # apt will return an error if fails to update any of its sources. Ignore these errors and let the "install_infra" task fail.
-      ignore_error: true
 
     install_linux_headers:
       cmds:
         - |
           KERNEL_VERSION=$(uname -r)
-          echo "Installing linux headers for kernel version: $KERNEL_VERSION"
-          if ! apt-get install -yq --no-install-recommends "linux-headers-$KERNEL_VERSION"; then
+          echo "Installing kernel headers for kernel version: $KERNEL_VERSION"
+          if ! yum install -y "kernel-devel-$KERNEL_VERSION" "kernel-headers-$KERNEL_VERSION"; then
             echo ""
-            echo -e "\e[31mERROR:\e[0m Failed to install linux headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
+            echo -e "\e[31mERROR:\e[0m Failed to install kernel headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
             echo ""
           fi
-          echo "Linux headers installed successfully for kernel $KERNEL_VERSION."
+          echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."ignore_error: true
       ignore_error: true
 
     install_ebpf_agent:
       cmds:
         - |
-          export DEBIAN_FRONTEND=noninteractive
           CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
-          OPTIONS="-o DPkg::Lock::Timeout=60"
+
+          if [[ {{.AMAZON_LINUX_VERSION}} != "2" && {{.AMAZON_LINUX_VERSION}} != "2022" && {{.AMAZON_LINUX_VERSION}} != "2023" ]] ; then
+            # Switching to 'yum/el/6' Enterprise Linux repo for older Amazon Linux versions
+            REPO_URL=$(echo -n "https://download.newrelic.com/preview/linux/yum/{{.REPO_DIR}}/6/{{.ARCH}}/newrelic-infra.repo")
+          else
+            REPO_URL=$(echo -n "https://download.newrelic.com/preview/linux/yum/{{.REPO_DIR}}/{{.AMAZON_LINUX_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
+          fi
+
+          IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
+          if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
+            echo "newrelic infrastructure agent is not available for this architecture "{{.ARCH}}". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+            exit 131
+          fi
 
           create_default_config_file(){
-          
+
               echo "Creating default configuration file at $CONFIG_FILE..."
               # Ensure the directory exists
               if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
@@ -478,7 +452,7 @@ install:
                 NEW_RELIC_OTLP_ENDPOINT="otlp.eu01.nr-data.net:443"
               elif [[ "$NEW_RELIC_REGION" == "US" ]]; then
                 NEW_RELIC_OTLP_ENDPOINT="otlp.nr-data.net:443"
-              fi       
+              fi
 
               # Create the default configuration file
               tee "$CONFIG_FILE" > /dev/null << EOS
@@ -494,11 +468,11 @@ install:
           NEW_RELIC_LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-}"
           # -- The primary lever to control RAM use of the eBPF agent. Specified in MiB.
           TABLE_STORE_DATA_LIMIT_MB=250
-          # Sets the absolute path of the complete directory where the required linux headers are manually downloaded and placed for the eBPF agent to use. 
-          # This is useful under restricted environments where agent is not able to download required linux headers. The required headers are identified by the agent based on the kernel version. 
+          # Sets the absolute path of the complete directory where the required linux headers are manually downloaded and placed for the eBPF agent to use.
+          # This is useful under restricted environments where agent is not able to download required linux headers. The required headers are identified by the agent based on the kernel version.
           # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
           DOWNLOADED_PACKAGED_HEADERS_PATH=""
-          # Sets the absolute path of the complete directory where the linux headers are present for the eBPF agent to use. 
+          # Sets the absolute path of the complete directory where the linux headers are present for the eBPF agent to use.
           # This is useful where required linux headers could not be installed or path could not be determined.
           # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
           DISTRO_KERNEL_HEADERS_PATH=""
@@ -530,7 +504,7 @@ install:
           # The eBPF agent collects and reports file logs to New Relic for entities that match this regex. 
           # The entities are identified by their NEW_RELIC_APP_NAME (if provided) or their Kubernetes service name.
           # To forward logs for all entities, use the regex .*. Default is .*
-          KEEP_FILE_LOG_FOR_ENTITY_REGEX=".*" 
+          KEEP_FILE_LOG_FOR_ENTITY_REGEX=".*"
 
           # -- All data drop filters configuration
           # Configure filters to drop all types of data (Network Metrics and APM data) based on config provided
@@ -551,7 +525,7 @@ install:
           # Example: "kube-dns,otel-collector,service1"
           DROP_APM_DATA_FOR_ENTITY_NAME=""
 
-          # -- Comma-separated list of entity names to always keep eBPF APM data. default all entity is keepd/enabled 
+          # -- Comma-separated list of entity names to always keep eBPF APM data. default all entity is keepd/enabled
           # This bypasses DROP_APM_DATA_FOR_ENTITY_NAME filter.
           # Example: "critical-service,important-app,must-monitor"
           KEEP_APM_DATA_FOR_ENTITY_NAME=""
@@ -565,7 +539,7 @@ install:
           # Example: "kube-dns,otel-collector,service1"
           DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
 
-          # -- Comma-separated list of entity names to always keep Network metrix data. default all entity is keepd/enabled 
+          # -- Comma-separated list of entity names to always keep Network metrix data. default all entity is keepd/enabled
           # This bypasses DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME filter.
           # Example: "critical-service,important-app,must-monitor"
           KEEP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
@@ -672,7 +646,17 @@ install:
               fi
           }
 
-          apt-get $OPTIONS install -yq --no-install-recommends newrelic-ebpf-agent || {
+          curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
+          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
+          yum -y -q install newrelic-ebpf-agent || {
+            echo ""
+            echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
+            echo ""
+            exit 1
+          }
+
+          GREP_OUTPUT=$(systemctl status newrelic-ebpf-agent.service | grep "Active:" | grep inactive)
+          if [[ $GREP_OUTPUT ]]; then
             if [[ ! -f "$CONFIG_FILE" ]]; then
 
               # Set default log file path if NEW_RELIC_LOG_FILE_PATH is empty
@@ -700,32 +684,10 @@ install:
               mkdir -p /px;
               sleep 5s;
               systemctl restart newrelic-ebpf-agent.service
-            else
-              echo "Error: newrelic-ebpf-agent installation failed"
-              echo "Attempting to configure the packages again"
-              dpkg --configure -a
-              # Check if there was an error
-              if [ $? -ne 0 ]; then
-                echo "Error found while reconfiguring dpkg database"
-                # Force-Install the Software
-                echo "Attempting to install any missing dependencies or fixes broken packages."
-                apt-get $OPTIONS install -f
-                if [ $? -ne 0 ]; then
-                  exit 1
-                fi
-              fi
             fi
-            # Verify package was actually installed
-            if ! dpkg -l | grep -q "^ii.*newrelic-ebpf-agent"; then
-              echo ""
-              echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
-              echo ""
-              exit 1
-            fi
-          }
-
+          fi
       silent: true
-    
+
     # When the eBPF agent is installed alongside Agent Control, the default services are disabled
     # and the binary execution is orchestrated by Agent Control
     disable_service_for_agent_control:

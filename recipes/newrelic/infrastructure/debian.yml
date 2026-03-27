@@ -232,7 +232,24 @@ install:
           sudo rm -f /etc/apt/trusted.gpg.d/newrelic-infra.gpg 2>/dev/null
           sudo rm -f /etc/apt/trusted.gpg 2>/dev/null
           # Add the key to the correct directory
-          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-infra.gpg
+          # Use SHA256 key for Debian 13 (trixie) to avoid SHA1 deprecation issues
+          CODENAME=""
+          if [ -n "{{.DEBIAN_CODENAME}}" ]; then
+            CODENAME="{{.DEBIAN_CODENAME}}"
+          elif [ -n "{{.DEBIAN_VERSION_CODENAME}}" ]; then
+            CODENAME="{{.DEBIAN_VERSION_CODENAME}}"
+          fi
+
+          if [ "$CODENAME" = "trixie" ]; then
+            curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_rpm_key_sha256.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-infra.gpg
+          else
+            curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-infra.gpg
+          fi
+      vars:
+        DEBIAN_CODENAME:
+          sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
+        DEBIAN_VERSION_CODENAME:
+          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
       silent: true
 
     add_nr_source:
