@@ -1,0 +1,702 @@
+name: oracle-otel-linux-installer
+displayName: Oracle OTel Integration (Linux)
+description: |
+  Sets up Oracle monitoring via the New Relic NRDOT Collector.
+  Downloads and installs the NRDOT Collector on this Linux host.
+repository: https://github.com/newrelic-forks/nrdot-collector-components/tree/feature/otel-oracle-qpm-receiver/receiver/newrelicoraclereceiver
+installTargets:
+  - type: host
+    os: linux
+    platform: "redhat"
+    platformFamily: rhel
+    platformVersion: "((7|8|9)\\.?.*)"
+  - type: host
+    os: linux
+    platform: "oracle"
+    platformFamily: rhel
+    platformVersion: "((7|8|9)\\.?.*)"
+
+keywords:
+  - OTel
+  - OpenTelemetry
+  - Oracle
+  - Linux
+  - NRDOT
+
+processMatch: []
+
+inputVars:
+  - name: NR_CLI_DB_HOSTNAME
+    prompt: "Oracle DB VM hostname or IP (SSH accessible from this host)"
+    secret: false
+  - name: NR_CLI_DB_SSH_USER
+    prompt: "SSH user for Oracle DB VM"
+    secret: false
+    default: "opc"
+  - name: NR_CLI_DB_USERNAME
+    prompt: "Monitoring username (will be created as c##<name> in Oracle). Default: newrelic"
+    secret: false
+    default: "newrelic"
+  - name: NR_CLI_DB_PORT
+    prompt: "Oracle listener port"
+    secret: false
+    default: "1521"
+  - name: NR_CLI_DB_SERVICE
+    prompt: "Oracle CDB service name (e.g. ORCLCDB)"
+    secret: false
+  - name: NR_CLI_LICENSE_KEY
+    prompt: "New Relic Ingest License Key (found under Account Settings > API Keys, type: INGEST - LICENSE)"
+    secret: true
+  - name: NR_CLI_REGION
+    prompt: "New Relic region (US or EU)"
+    secret: false
+    default: "US"
+  - name: NR_CLI_OTLP_PORT
+    prompt: "OTLP endpoint port (443, 4317, or 4318)"
+    secret: false
+    default: "4317"
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    ARCH:
+      sh: uname -m
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: check_db_connection
+        - task: install_nrdot_collector
+        - task: create_db_user
+        - task: grant_privileges
+        - task: configure_nrdot
+        - task: restart_nrdot
+
+    assert_pre_req:
+      cmds:
+        - |
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+          if [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "aarch64" ]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m Unsupported architecture: $ARCH" >&2
+            echo -e "We are supporting only this Supported architecture: Linux with AMD64 and ARM64" >&2
+            echo ""
+            exit 131
+          fi
+          echo -e "\e[32mArchitecture check passed:\e[0m $ARCH is supported."
+
+    check_db_connection:
+      cmds:
+        - |
+          echo ""
+          echo "==> Connecting to Oracle DB VM at {{.NR_CLI_DB_HOSTNAME}} via SSH..."
+
+          # When NR CLI runs under sudo, SSH_AUTH_SOCK is dropped.
+          # Find the SSH agent socket from /tmp so root can use the forwarded key.
+          if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+            SSH_AUTH_SOCK=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1)
+            export SSH_AUTH_SOCK
+          fi
+
+          if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m SSH agent socket not found." >&2
+            echo -e "Please connect to this VM using SSH agent forwarding: ssh -A opc@<this-vm-ip>" >&2
+            echo ""
+            exit 131
+          fi
+
+          DB_VERSION=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+            {{.NR_CLI_DB_SSH_USER}}@{{.NR_CLI_DB_HOSTNAME}} \
+            "printf 'SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF\nSELECT version FROM v\$instance;\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'")
+
+          if [ -z "$DB_VERSION" ] || echo "$DB_VERSION" | grep -qi "error\|ORA-"; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m Failed to retrieve Oracle DB version from {{.NR_CLI_DB_HOSTNAME}}" >&2
+            echo "$DB_VERSION" >&2
+            echo -e "Please verify:" >&2
+            echo -e "  - SSH access is available: ssh {{.NR_CLI_DB_SSH_USER}}@{{.NR_CLI_DB_HOSTNAME}}" >&2
+            echo -e "  - Oracle listener is running on the DB VM: lsnrctl status" >&2
+            echo ""
+            exit 131
+          fi
+
+          echo -e "\e[32mDatabase connection successful.\e[0m Oracle DB version: $DB_VERSION"
+
+          # Version check — must be 19c (major version >= 19)
+          DB_MAJOR_VERSION=$(echo "$DB_VERSION" | cut -d'.' -f1)
+          if [ "$DB_MAJOR_VERSION" -lt 19 ]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m Unsupported Oracle DB version: $DB_VERSION" >&2
+            echo -e "We are supporting Oracle Database 19c or later versions only." >&2
+            echo ""
+            exit 131
+          fi
+          echo -e "\e[32mOracle DB version check passed:\e[0m $DB_VERSION is supported (19c or later)."
+
+    install_nrdot_collector:
+      cmds:
+        - |
+          ARCH=$(uname -m)
+          echo ""
+          echo "==> Installing NRDOT Collector for $ARCH architecture..."
+
+          if [ "$ARCH" = "x86_64" ]; then
+            RPM_URL="https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-linux-amd64-latest.rpm"
+            RPM_FILE="nrdot-collector-host-linux-amd64-latest.rpm"
+          elif [ "$ARCH" = "aarch64" ]; then
+            RPM_URL="https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-linux-arm64-latest.rpm"
+            RPM_FILE="nrdot-collector-host-linux-arm64-latest.rpm"
+          fi
+
+          echo "==> Downloading NRDOT Collector: $RPM_URL"
+          curl -L -o "/tmp/$RPM_FILE" "$RPM_URL"
+
+          echo "==> Installing NRDOT Collector RPM..."
+          if rpm -q nrdot-collector-host &>/dev/null; then
+            echo ""
+            echo -e "\e[33mNRDOT Collector is already installed.\e[0m"
+            echo ""
+            echo "Please follow the steps below to complete the setup:"
+            echo ""
+            echo "  1. Update /etc/nrdot-collector-host/config.yaml with newrelicoraclereceiver"
+            echo "     if not present. Refer to:"
+            echo "     https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/#mdatabase-user"
+            echo ""
+            echo "  2. Make sure the monitoring user (c##{{.NR_CLI_DB_USERNAME}}) is created"
+            echo "     and has the required permissions granted."
+            echo ""
+            echo "  3. After making the above changes, restart the NRDOT Collector:"
+            echo "     sudo systemctl restart nrdot-collector-host"
+            echo ""
+            exit 131
+          fi
+
+          sudo rpm -ivh "/tmp/$RPM_FILE"
+          echo -e "\e[32mNRDOT Collector installed successfully.\e[0m"
+
+    create_db_user:
+      cmds:
+        - |
+          DB_USER="c##{{.NR_CLI_DB_USERNAME}}"
+          echo "==> Creating Oracle monitoring user: $DB_USER ..."
+
+          # Restore SSH agent socket if running under sudo
+          if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+            SSH_AUTH_SOCK=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1)
+            export SSH_AUTH_SOCK
+          fi
+
+          RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+            {{.NR_CLI_DB_SSH_USER}}@{{.NR_CLI_DB_HOSTNAME}} \
+            "printf 'SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF\nSELECT username FROM dba_users WHERE username=UPPER('"'"'$DB_USER'"'"');\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'") || true
+
+          if echo "$RESULT" | grep -qi "$DB_USER"; then
+            echo ""
+            echo -e "\e[33mMonitoring user $DB_USER already exists.\e[0m"
+            echo ""
+            echo "What would you like to do?"
+            echo "  1. Use the existing user $DB_USER (you will be asked for the password)"
+            echo "  2. Create a new username"
+            echo ""
+            read -rp "Enter your choice (1 or 2): " USER_CHOICE
+
+            if [ "$USER_CHOICE" = "1" ]; then
+              echo ""
+              stty -echo
+              read -rp "Enter the existing password for $DB_USER: " NR_CLI_DB_PASSWORD
+              stty echo
+              echo ""
+              echo "$NR_CLI_DB_PASSWORD" > /tmp/nrdot_db_password
+              chmod 600 /tmp/nrdot_db_password
+              echo ""
+              echo -e "\e[32mUsing existing user:\e[0m \e[1m$DB_USER\e[0m"
+
+            elif [ "$USER_CHOICE" = "2" ]; then
+              echo ""
+              echo "  Note: Just type the name without c## prefix. It will be added automatically."
+              echo "        Example: type 'newrelic' → creates 'c##newrelic' in Oracle"
+              echo ""
+              read -rp "Enter new monitoring username: " NEW_USERNAME
+              DB_USER="c##$NEW_USERNAME"
+
+              # Auto-generate a password meeting Oracle password complexity requirements:
+              # - First char guaranteed uppercase (cannot start with digit/special)
+              # - Guaranteed 2+ special chars (# and _), both shell-safe
+              # - Guaranteed uppercase, lowercase, digits
+              # - All parts shuffled randomly — total 15 chars, unique every time
+              _FIRST=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 1)
+              _UPPER=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 2)
+              _LOWER=$(cat /dev/urandom | tr -dc 'a-z' | head -c 6)
+              _DIGITS=$(cat /dev/urandom | tr -dc '0-9' | head -c 4)
+              _REST=$(printf '%s' "${_UPPER}${_LOWER}${_DIGITS}#_" | fold -w1 | shuf | tr -d '\n')
+              NR_CLI_DB_PASSWORD="${_FIRST}${_REST}"
+              unset _FIRST _UPPER _LOWER _DIGITS _REST
+              echo "$NR_CLI_DB_PASSWORD" > /tmp/nrdot_db_password
+              chmod 600 /tmp/nrdot_db_password
+
+              echo ""
+              echo -e "\e[33m╔══════════════════════════════════════════════════════════════╗\e[0m"
+              echo -e "\e[33m║        ⚠  SAVE THIS PASSWORD — SHOWN ONLY ONCE  ⚠           ║\e[0m"
+              echo -e "\e[33m╠══════════════════════════════════════════════════════════════╣\e[0m"
+              echo -e "\e[33m║                                                              ║\e[0m"
+              echo -e "\e[33m║  Oracle monitoring user password:                            ║\e[0m"
+              echo -e "\e[33m║  \e[1m$NR_CLI_DB_PASSWORD\e[0m\e[33m                                             ║\e[0m"
+              echo -e "\e[33m║                                                              ║\e[0m"
+              echo -e "\e[33m║  Copy this password and store it in a safe place.            ║\e[0m"
+              echo -e "\e[33m║  It will be written to the NRDOT config file automatically.  ║\e[0m"
+              echo -e "\e[33m╚══════════════════════════════════════════════════════════════╝\e[0m"
+              echo ""
+
+              echo "==> Creating new Oracle monitoring user: $DB_USER ..."
+              NEW_RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+                {{.NR_CLI_DB_SSH_USER}}@{{.NR_CLI_DB_HOSTNAME}} \
+                "printf 'SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF\nCREATE USER $DB_USER IDENTIFIED BY \"$NR_CLI_DB_PASSWORD\";\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'") || true
+
+              if echo "$NEW_RESULT" | grep -qi "ORA-\|error"; then
+                echo ""
+                echo -e "\e[31mERROR:\e[0m Failed to create monitoring user $DB_USER:" >&2
+                echo "$NEW_RESULT" >&2
+                echo ""
+                exit 131
+              fi
+              echo ""
+              echo -e "\e[32mOracle monitoring user created successfully.\e[0m"
+              echo -e "  Oracle username: \e[1m$DB_USER\e[0m"
+
+            else
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Invalid choice. Please re-run and enter 1 or 2." >&2
+              exit 131
+            fi
+
+          else
+            # User does not exist — create fresh with auto-generated password
+            _FIRST=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 1)
+            _UPPER=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 2)
+            _LOWER=$(cat /dev/urandom | tr -dc 'a-z' | head -c 6)
+            _DIGITS=$(cat /dev/urandom | tr -dc '0-9' | head -c 4)
+            _REST=$(printf '%s' "${_UPPER}${_LOWER}${_DIGITS}#_" | fold -w1 | shuf | tr -d '\n')
+            NR_CLI_DB_PASSWORD="${_FIRST}${_REST}"
+            unset _FIRST _UPPER _LOWER _DIGITS _REST
+            echo "$NR_CLI_DB_PASSWORD" > /tmp/nrdot_db_password
+            chmod 600 /tmp/nrdot_db_password
+
+            echo ""
+            echo -e "\e[33m╔══════════════════════════════════════════════════════════════╗\e[0m"
+            echo -e "\e[33m║        ⚠  SAVE THIS PASSWORD — SHOWN ONLY ONCE  ⚠           ║\e[0m"
+            echo -e "\e[33m╠══════════════════════════════════════════════════════════════╣\e[0m"
+            echo -e "\e[33m║                                                              ║\e[0m"
+            echo -e "\e[33m║  Oracle monitoring user password:                            ║\e[0m"
+            echo -e "\e[33m║  \e[1m$NR_CLI_DB_PASSWORD\e[0m\e[33m                                             ║\e[0m"
+            echo -e "\e[33m║                                                              ║\e[0m"
+            echo -e "\e[33m║  Copy this password and store it in a safe place.            ║\e[0m"
+            echo -e "\e[33m║  It will be written to the NRDOT config file automatically.  ║\e[0m"
+            echo -e "\e[33m╚══════════════════════════════════════════════════════════════╝\e[0m"
+            echo ""
+
+            echo "==> Creating Oracle monitoring user: $DB_USER ..."
+            CREATE_RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+              {{.NR_CLI_DB_SSH_USER}}@{{.NR_CLI_DB_HOSTNAME}} \
+              "printf 'SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF\nCREATE USER $DB_USER IDENTIFIED BY \"$NR_CLI_DB_PASSWORD\";\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'") || true
+
+            if echo "$CREATE_RESULT" | grep -qi "ORA-\|error"; then
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Failed to create monitoring user $DB_USER:" >&2
+              echo "$CREATE_RESULT" >&2
+              echo ""
+              exit 131
+            fi
+            echo ""
+            echo -e "\e[32mOracle monitoring user created successfully.\e[0m"
+            echo -e "  Oracle username: \e[1m$DB_USER\e[0m"
+          fi
+
+          echo "$DB_USER" > /tmp/nrdot_db_user
+
+    grant_privileges:
+      cmds:
+        - |
+          if [ ! -f /tmp/nrdot_db_user ]; then
+            exit 0
+          fi
+
+          DB_USER=$(cat /tmp/nrdot_db_user)
+          rm -f /tmp/nrdot_db_user
+
+          echo ""
+          echo "==> Granting monitoring privileges to $DB_USER ..."
+
+          # Restore SSH agent socket if running under sudo
+          if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+            SSH_AUTH_SOCK=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1)
+            export SSH_AUTH_SOCK
+          fi
+
+          GRANT_RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+            {{.NR_CLI_DB_SSH_USER}}@{{.NR_CLI_DB_HOSTNAME}} \
+            "printf 'SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF\nALTER USER $DB_USER SET CONTAINER_DATA=ALL CONTAINER=CURRENT;\nGRANT CREATE SESSION TO $DB_USER CONTAINER=ALL;\nGRANT SET CONTAINER TO $DB_USER CONTAINER=ALL;\nGRANT CONNECT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SESSION TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SYSSTAT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SESSTAT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$STATNAME TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SYSTEM_EVENT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SHARED_SERVER TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$DISPATCHER TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$CIRCUIT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$RESOURCE_LIMIT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$LOCK TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$DATABASE TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$PARAMETER TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SQLAREA TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SQL TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$SQL_PLAN TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.V_\$PDBS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$INSTANCE TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SGA TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SESSTAT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$STATNAME TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SYSSTAT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SQLAREA TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$LIBRARYCACHE TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$ROWCACHE TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$PGASTAT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$CONTAINERS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$PDBS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$CON_SYSMETRIC TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SYSMETRIC TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$FILESTAT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SYSTEM_EVENT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$ACTIVE_SERVICES TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SESSION TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$SESSION_WAIT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON SYS.GV_\$ROLLSTAT TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON DBA_OBJECTS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON DBA_TABLESPACES TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON DBA_TABLESPACE_USAGE_METRICS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON DBA_DATA_FILES TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON DBA_USERS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON CDB_SERVICES TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON CDB_DATA_FILES TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON CDB_TABLESPACE_USAGE_METRICS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON CDB_USERS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON CDB_PDBS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON ALL_USERS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON ALL_VIEWS TO $DB_USER CONTAINER=ALL;\nGRANT SELECT ON GLOBAL_NAME TO $DB_USER CONTAINER=ALL;\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'") || true
+
+          if echo "$GRANT_RESULT" | grep -qi "ORA-\|error"; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m Failed to grant monitoring privileges to $DB_USER:" >&2
+            echo "$GRANT_RESULT" >&2
+            echo ""
+            exit 131
+          fi
+
+          echo ""
+          echo -e "\e[32mMonitoring privileges granted successfully.\e[0m"
+          echo -e "  Oracle username: \e[1m$DB_USER\e[0m"
+
+    configure_nrdot:
+      cmds:
+        - |
+          echo ""
+          echo "==> Configuring NRDOT Collector for Oracle DB monitoring..."
+
+          DB_USER="c##{{.NR_CLI_DB_USERNAME}}"
+          NR_CLI_DB_PASSWORD=$(cat /tmp/nrdot_db_password)
+          rm -f /tmp/nrdot_db_password
+
+          # Determine OTLP endpoint based on selected region and port
+          NR_REGION="{{.NR_CLI_REGION}}"
+          NR_PORT="{{.NR_CLI_OTLP_PORT}}"
+
+          if [ "${NR_REGION^^}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:${NR_PORT}"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net:${NR_PORT}"
+          fi
+
+          cat > /etc/nrdot-collector-host/config.yaml << EOF
+            extensions:
+              health_check:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                  http:
+              hostmetrics:
+                collection_interval: 60s
+                scrapers:
+                  cpu:
+                    metrics:
+                      system.cpu.time:
+                        enabled: false
+                      system.cpu.utilization:
+                        enabled: true
+                  load:
+                  memory:
+                    metrics:
+                      system.memory.utilization:
+                        enabled: true
+                  paging:
+                    metrics:
+                      system.paging.utilization:
+                        enabled: false
+                      system.paging.faults:
+                        enabled: false
+                  filesystem:
+                    metrics:
+                      system.filesystem.utilization:
+                        enabled: true
+                  disk:
+                    metrics:
+                      system.disk.merged:
+                        enabled: false
+                      system.disk.pending_operations:
+                        enabled: false
+                      system.disk.weighted_io_time:
+                        enabled: false
+                  network:
+                    metrics:
+                      system.network.connections:
+                        enabled: false
+                  # Uncomment to enable process metrics, which can be noisy but valuable.
+                  # processes:
+                  # process:
+                  #   metrics:
+                  #     process.cpu.utilization:
+                  #       enabled: true
+                  #     process.cpu.time:
+                  #       enabled: false
+              filelog:
+                include:
+                  - /var/log/alternatives.log
+                  - /var/log/cloud-init.log
+                  - /var/log/auth.log
+                  - /var/log/dpkg.log
+                  - /var/log/syslog
+                  - /var/log/messages
+                  - /var/log/secure
+                  - /var/log/yum.log
+              oracledb/cdb:
+                endpoint: "{{.NR_CLI_DB_HOSTNAME}}:{{.NR_CLI_DB_PORT}}"
+                username: "$DB_USER"
+                password: "$NR_CLI_DB_PASSWORD"
+                service: "{{.NR_CLI_DB_SERVICE}}"
+                collection_interval: 30s
+                timeout: 30s
+                # enable_tablespace_scraper: true
+                # enable_core_scraper: true
+                # enable_system_scraper: true
+                # enable_connection_scraper: true
+                # enable_container_scraper: true
+                # enable_database_info_scraper: true
+              oracledb/pdb:
+                endpoint: "{{.NR_CLI_DB_HOSTNAME}}:{{.NR_CLI_DB_PORT}}"
+                username: "$DB_USER"
+                password: "$NR_CLI_DB_PASSWORD"
+                service: "{{.NR_CLI_DB_SERVICE}}"
+                collection_interval: 30s
+                timeout: 30s
+                pdb_services: ["ALL"]
+                # query_monitoring_response_time_threshold: 500
+                # query_monitoring_count_threshold: 30
+                # enable_query_monitoring: true
+                # enable_pdb_scraper: true
+
+            processors:
+              metricstransform:
+                transforms:
+                  - include: system.cpu.utilization
+                    action: update
+                    operations:
+                      - action: aggregate_labels
+                        label_set: [ state ]
+                        aggregation_type: mean
+                  - include: system.paging.operations
+                    action: update
+                    operations:
+                      - action: aggregate_labels
+                        label_set: [ direction ]
+                        aggregation_type: sum
+              filter/exclude_cpu_utilization:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
+                    - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
+                    - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
+              filter/exclude_memory_utilization:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
+                    - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
+                    - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
+                    - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
+                    - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
+              filter/exclude_memory_usage:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
+                    - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
+              filter/exclude_filesystem_utilization:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
+              filter/exclude_filesystem_usage:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
+                    - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
+              filter/exclude_filesystem_inodes_usage:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
+                    - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
+              filter/exclude_system_disk:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
+                    - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
+                    - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
+                    - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
+                    - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
+              filter/exclude_system_paging:
+                metrics:
+                  datapoint:
+                    - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
+                    - 'metric.name == "system.paging.operations" and attributes["type"] == "cached"'
+              filter/exclude_network:
+                metrics:
+                  datapoint:
+                    - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
+              attributes/exclude_system_paging:
+                include:
+                  match_type: strict
+                  metric_names:
+                    - system.paging.operations
+                actions:
+                  - key: type
+                    action: delete
+              transform/clear_metadata:
+                metric_statements:
+                  - context: metric
+                    statements:
+                      - set(metric.description, "")
+                      - set(metric.unit, "")
+              filter/exec_plan_and_query_details_include:
+                metrics:
+                  include:
+                    match_type: strict
+                    metric_names:
+                      - newrelicoracledb.execution_plan
+                      - newrelicoracledb.slow_queries.query_details
+              filter/exec_plan_and_query_details_exclude:
+                metrics:
+                  exclude:
+                    match_type: strict
+                    metric_names:
+                      - newrelicoracledb.execution_plan
+                      - newrelicoracledb.slow_queries.query_details
+              cumulativetodelta/oracle:
+                include:
+                  match_type: strict
+                  metrics:
+                    - newrelicoracledb.connection.bytes_received
+                    - newrelicoracledb.connection.bytes_sent
+                    - newrelicoracledb.connection.execute_count
+                    - newrelicoracledb.connection.logons_cumulative
+                    - newrelicoracledb.connection.parse_count_hard
+                    - newrelicoracledb.connection.parse_count_total
+                    - newrelicoracledb.connection.sqlnet_roundtrips
+                    - newrelicoracledb.connection.user_commits
+                    - newrelicoracledb.connection.user_rollbacks
+              transform/host:
+                metric_statements:
+                  - context: metric
+                    statements:
+                      - set(metric.description, "")
+                      - set(metric.unit, "")
+              transform:
+                trace_statements:
+                  - context: span
+                    statements:
+                      - truncate_all(span.attributes, 4095)
+                      - truncate_all(resource.attributes, 4095)
+                log_statements:
+                  - context: log
+                    statements:
+                      - truncate_all(log.attributes, 4095)
+                      - truncate_all(resource.attributes, 4095)
+              memory_limiter:
+                check_interval: 1s
+                limit_mib: \${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
+              batch:
+              resourcedetection:
+                detectors: ["system"]
+                system:
+                  hostname_sources: ["os"]
+                  resource_attributes:
+                    host.id:
+                      enabled: true
+              resourcedetection/db_safe:
+                detectors: ["system"]
+                override: false
+                system:
+                  hostname_sources: ["os"]
+                  resource_attributes:
+                    host.id:
+                      enabled: true
+              resourcedetection/cloud:
+                detectors: ["gcp", "ec2", "azure"]
+                timeout: 2s
+                override: true
+              resourcedetection/env:
+                detectors: ["env"]
+                timeout: 2s
+                override: true
+
+            connectors:
+              metricsaslogs:
+                include_resource_attributes: true
+                include_scope_info: true
+
+            exporters:
+              otlp:
+                endpoint: "$OTLP_ENDPOINT"
+                headers:
+                  api-key: "{{.NR_CLI_LICENSE_KEY}}"
+                compression: gzip
+
+            service:
+              pipelines:
+                metrics/host:
+                  receivers: [hostmetrics]
+                  processors:
+                    - memory_limiter
+                    - metricstransform
+                    - filter/exclude_cpu_utilization
+                    - filter/exclude_memory_utilization
+                    - filter/exclude_memory_usage
+                    - filter/exclude_filesystem_utilization
+                    - filter/exclude_filesystem_usage
+                    - filter/exclude_filesystem_inodes_usage
+                    - filter/exclude_system_disk
+                    - filter/exclude_network
+                    - attributes/exclude_system_paging
+                    - transform/host
+                    - resourcedetection
+                    - resourcedetection/cloud
+                    - resourcedetection/env
+                    - cumulativetodelta/oracle
+                    - batch
+                  exporters: [otlp]
+                traces:
+                  receivers: [otlp]
+                  processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                  exporters: [otlp]
+                metrics:
+                  receivers: [otlp]
+                  processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                  exporters: [otlp]
+                logs:
+                  receivers: [otlp]
+                  processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                  exporters: [otlp]
+                metrics/oracledb:
+                  receivers: [oracledb/cdb, oracledb/pdb]
+                  processors: [memory_limiter, resourcedetection/db_safe, batch, transform/clear_metadata, filter/exec_plan_and_query_details_exclude]
+                  exporters: [otlp]
+                metrics/exec_plan_and_query_details_to_logs:
+                  receivers: [oracledb/cdb, oracledb/pdb]
+                  processors: [filter/exec_plan_and_query_details_include]
+                  exporters: [metricsaslogs]
+                logs/oracledb:
+                  receivers: [metricsaslogs]
+                  processors: [memory_limiter, resourcedetection/db_safe, batch]
+                  exporters: [otlp]
+              extensions: [health_check]
+          EOF
+
+          # Strip the 2 leading spaces added by YAML block scalar processing
+          sed -i 's/^  //' /etc/nrdot-collector-host/config.yaml
+
+          echo -e "\e[32mNRDOT Collector configured successfully.\e[0m"
+          echo -e "  Config file: \e[1m/etc/nrdot-collector-host/config.yaml\e[0m"
+
+    restart_nrdot:
+      cmds:
+        - |
+          echo ""
+          echo "==> Restarting NRDOT Collector..."
+          sudo systemctl restart nrdot-collector-host.service
+
+          echo ""
+          echo "==> NRDOT Collector service status:"
+          echo ""
+          sudo systemctl status nrdot-collector-host.service --no-pager
+
+          if sudo systemctl is-active --quiet nrdot-collector-host.service; then
+            echo ""
+            echo -e "\e[32mNRDOT Collector is running successfully.\e[0m"
+          else
+            echo ""
+            echo -e "\e[31mERROR:\e[0m NRDOT Collector failed to start. Check the status output above." >&2
+            exit 131
+          fi
