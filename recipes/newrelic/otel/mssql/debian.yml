@@ -477,9 +477,10 @@ install:
               echo "❌ Connection failed"
 
               # Detailed error analysis
+              IS_AUTH_ERROR=false
               if echo "$TEST_RESULT" | grep -qi "Login failed for user"; then
+                IS_AUTH_ERROR=true
                 echo "   Authentication Error: Invalid username or password"
-                echo "   • Verify username: '$USERNAME' and password are correct"
                 echo ""
 
               elif echo "$TEST_RESULT" | grep -qi "Cannot open server"; then
@@ -499,23 +500,44 @@ install:
               fi
 
               if [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$NON_INTERACTIVE" = "false" ]; then
-                echo "Retry? (1) Same credentials  (2) New credentials  (3) Exit"
-                printf "Choice [1-3]: "
-                read -r CHOICE
-
-                if [ "$CHOICE" = "2" ]; then
-                  echo ""
-                  printf "Username: "
-                  read USERNAME
+                # For authentication errors, automatically prompt for password re-entry
+                if [ "$IS_AUTH_ERROR" = "true" ]; then
+                  echo "Please re-enter credentials (Attempt $((ATTEMPT + 1))/$MAX_ATTEMPTS)"
+                  printf "Username [current: $USERNAME]: "
+                  read -r NEW_USERNAME
+                  if [ -n "$NEW_USERNAME" ]; then
+                    USERNAME="$NEW_USERNAME"
+                  fi
                   printf "Password: "
                   PASSWORD=$(read_password)
+                  echo ""
                   echo "Connecting to SQL Server..."
-                elif [ "$CHOICE" != "1" ]; then
-                  exit 1
+                else
+                  # For other errors, give user options
+                  echo "Retry? (1) Same credentials  (2) New credentials  (3) Exit"
+                  printf "Choice [1-3]: "
+                  read -r CHOICE
+
+                  if [ "$CHOICE" = "2" ]; then
+                    echo ""
+                    printf "Username: "
+                    read USERNAME
+                    printf "Password: "
+                    PASSWORD=$(read_password)
+                    echo ""
+                    echo "Connecting to SQL Server..."
+                  elif [ "$CHOICE" != "1" ]; then
+                    exit 1
+                  else
+                    echo "Connecting to SQL Server..."
+                  fi
                 fi
 
                 ATTEMPT=$((ATTEMPT + 1))
               else
+                if [ "$NON_INTERACTIVE" = "false" ]; then
+                  echo "❌ Failed to connect after $MAX_ATTEMPTS attempts" >&2
+                fi
                 exit 1
               fi
             fi
@@ -786,19 +808,37 @@ install:
                 # Use existing user
                 USER_CREATION_MODE="existing"
 
-                printf "Enter password for user '$MONITORING_USERNAME': "
-                MONITORING_PASSWORD=$(read_password)
-                echo ""
+                # Retry logic for password validation (max 3 attempts)
+                MAX_PASSWORD_ATTEMPTS=3
+                PASSWORD_ATTEMPT=1
+                PASSWORD_VALID=false
 
-                # Validate connection
-                echo "→ Validating connection with user '$MONITORING_USERNAME'..."
-                if validate_monitoring_user "$MONITORING_USERNAME" "$MONITORING_PASSWORD"; then
-                  echo "✅ Connection successful with user '$MONITORING_USERNAME'"
+                while [ $PASSWORD_ATTEMPT -le $MAX_PASSWORD_ATTEMPTS ] && [ "$PASSWORD_VALID" = "false" ]; do
+                  if [ $PASSWORD_ATTEMPT -eq 1 ]; then
+                    printf "Enter password for user '$MONITORING_USERNAME': "
+                  else
+                    printf "Re-enter password for user '$MONITORING_USERNAME' (Attempt $PASSWORD_ATTEMPT/$MAX_PASSWORD_ATTEMPTS): "
+                  fi
+                  MONITORING_PASSWORD=$(read_password)
                   echo ""
-                else
-                  echo "❌ ERROR: Failed to connect with user '$MONITORING_USERNAME'" >&2
-                  exit 1
-                fi
+
+                  # Validate connection
+                  echo "→ Validating connection with user '$MONITORING_USERNAME'..."
+                  if validate_monitoring_user "$MONITORING_USERNAME" "$MONITORING_PASSWORD"; then
+                    echo "✅ Connection successful with user '$MONITORING_USERNAME'"
+                    echo ""
+                    PASSWORD_VALID=true
+                  else
+                    if [ $PASSWORD_ATTEMPT -lt $MAX_PASSWORD_ATTEMPTS ]; then
+                      echo ""
+                    else
+                      echo "❌ ERROR: Failed to connect with user '$MONITORING_USERNAME' after $MAX_PASSWORD_ATTEMPTS attempts" >&2
+                      exit 1
+                    fi
+                  fi
+
+                  PASSWORD_ATTEMPT=$((PASSWORD_ATTEMPT + 1))
+                done
 
               else
                 # Create new user with different name
