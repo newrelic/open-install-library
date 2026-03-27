@@ -847,6 +847,32 @@ install:
             return 0
           }
 
+          # Function to generate a strong SQL Server password
+          generate_password() {
+            local length=16
+            local uppercase="ABCDEFGHJKLMNPQRSTUVWXYZ"
+            local lowercase="abcdefghjkmnpqrstuvwxyz"
+            local digits="23456789"
+            local special="!@#$%^&*"
+            local all_chars="${uppercase}${lowercase}${digits}${special}"
+
+            # Ensure at least one character from each required category
+            local password=""
+            password="${password}$(echo "$uppercase" | fold -w1 | shuf | head -c2)"
+            password="${password}$(echo "$lowercase" | fold -w1 | shuf | head -c2)"
+            password="${password}$(echo "$digits" | fold -w1 | shuf | head -c2)"
+            password="${password}$(echo "$special" | fold -w1 | shuf | head -c1)"
+
+            # Fill remaining length with random characters from all categories
+            local remaining=$((length - ${#password}))
+            password="${password}$(echo "$all_chars" | fold -w1 | shuf | head -c$remaining)"
+
+            # Shuffle the entire password
+            password=$(echo "$password" | fold -w1 | shuf | tr -d '\n')
+
+            echo "$password"
+          }
+
           MONITORING_USERNAME=""
           MONITORING_PASSWORD=""
           USER_CREATION_MODE=""
@@ -936,31 +962,11 @@ install:
                 echo "✓ Username '$MONITORING_USERNAME' is available"
                 echo ""
 
-                # Ask for password with validation (max 3 attempts)
-                MAX_PASSWORD_ATTEMPTS=3
-                PASSWORD_ATTEMPT=1
-                PASSWORD_VALID=false
-
-                while [ $PASSWORD_ATTEMPT -le $MAX_PASSWORD_ATTEMPTS ] && [ "$PASSWORD_VALID" = "false" ]; do
-                  if [ $PASSWORD_ATTEMPT -eq 1 ]; then
-                    printf "Enter password for new user '$MONITORING_USERNAME': "
-                  else
-                    printf "Re-enter password (Attempt $PASSWORD_ATTEMPT/$MAX_PASSWORD_ATTEMPTS): "
-                  fi
-                  MONITORING_PASSWORD=$(read_password)
-                  echo ""
-
-                  if validate_sql_password "$MONITORING_PASSWORD"; then
-                    PASSWORD_VALID=true
-                  else
-                    if [ $PASSWORD_ATTEMPT -ge $MAX_PASSWORD_ATTEMPTS ]; then
-                      echo "❌ ERROR: Failed to provide valid password after $MAX_PASSWORD_ATTEMPTS attempts" >&2
-                      exit 1
-                    fi
-                  fi
-
-                  PASSWORD_ATTEMPT=$((PASSWORD_ATTEMPT + 1))
-                done
+                # Auto-generate strong password
+                echo "→ Generating secure password for user '$MONITORING_USERNAME'..."
+                MONITORING_PASSWORD=$(generate_password)
+                echo "✓ Password generated successfully"
+                echo ""
               fi
 
             else
@@ -970,31 +976,11 @@ install:
 
               USER_CREATION_MODE="new"
 
-              # Ask for password with validation (max 3 attempts)
-              MAX_PASSWORD_ATTEMPTS=3
-              PASSWORD_ATTEMPT=1
-              PASSWORD_VALID=false
-
-              while [ $PASSWORD_ATTEMPT -le $MAX_PASSWORD_ATTEMPTS ] && [ "$PASSWORD_VALID" = "false" ]; do
-                if [ $PASSWORD_ATTEMPT -eq 1 ]; then
-                  printf "Enter password for new user '$MONITORING_USERNAME': "
-                else
-                  printf "Re-enter password (Attempt $PASSWORD_ATTEMPT/$MAX_PASSWORD_ATTEMPTS): "
-                fi
-                MONITORING_PASSWORD=$(read_password)
-                echo ""
-
-                if validate_sql_password "$MONITORING_PASSWORD"; then
-                  PASSWORD_VALID=true
-                else
-                  if [ $PASSWORD_ATTEMPT -ge $MAX_PASSWORD_ATTEMPTS ]; then
-                    echo "❌ ERROR: Failed to provide valid password after $MAX_PASSWORD_ATTEMPTS attempts" >&2
-                    exit 1
-                  fi
-                fi
-
-                PASSWORD_ATTEMPT=$((PASSWORD_ATTEMPT + 1))
-              done
+              # Auto-generate strong password
+              echo "→ Generating secure password for user '$MONITORING_USERNAME'..."
+              MONITORING_PASSWORD=$(generate_password)
+              echo "✓ Password generated successfully"
+              echo ""
             fi
 
           else
@@ -1151,6 +1137,15 @@ install:
           if [ $SQL_EXIT_CODE -eq 0 ] && ! echo "$SQL_OUTPUT" | grep -q "Msg [0-9]*, Level 1[0-9]"; then
             if [ "$USER_CREATION_MODE" = "new" ]; then
               echo "✅ Monitoring user '$MONITORING_USERNAME' created successfully"
+              echo ""
+              echo "=========================================="
+              echo "Generated Credentials"
+              echo "=========================================="
+              echo "Username: $MONITORING_USERNAME"
+              echo "Password: $MONITORING_PASSWORD"
+              echo ""
+              echo "⚠️  IMPORTANT: Save these credentials securely!"
+              echo "   You will need them to configure the OpenTelemetry collector."
             else
               echo "✅ Permissions granted to user '$MONITORING_USERNAME' successfully"
             fi
