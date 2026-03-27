@@ -412,11 +412,25 @@ install:
               SQLCMD_PATH="sqlcmd"
             fi
 
-            # Attempt connection
-            TEST_RESULT=$($SQLCMD_PATH -S "$SERVER" -U "$USERNAME" -P "$PASSWORD" -Q "$TEST_QUERY" -t 30 -h -1 -W 2>&1) || TEST_EXIT_CODE=$?
+            # Reset exit code for this attempt
+            TEST_EXIT_CODE=0
 
-            # Check result
-            if [ ${TEST_EXIT_CODE:-0} -eq 0 ] && ! echo "$TEST_RESULT" | grep -q "Msg [0-9]*, Level [0-9]*"; then
+            # Attempt connection
+            TEST_RESULT=$($SQLCMD_PATH -S "$SERVER" -U "$USERNAME" -P "$PASSWORD" -Q "$TEST_QUERY" -t 30 -h -1 -W 2>&1)
+            TEST_EXIT_CODE=$?
+
+            # Check result - ensure no errors and successful exit
+            # Check for SQL errors in output (Msg XXXX, Level XX format)
+            # Check for common authentication/connection errors
+            HAS_SQL_ERROR=false
+            if echo "$TEST_RESULT" | grep -qE "Msg [0-9]+, Level (1[0-9]|[2-9][0-9])"; then
+              HAS_SQL_ERROR=true
+            fi
+            if echo "$TEST_RESULT" | grep -qiE "Login failed|Cannot open server|timeout|connection.*refused|permission denied"; then
+              HAS_SQL_ERROR=true
+            fi
+
+            if [ $TEST_EXIT_CODE -eq 0 ] && [ "$HAS_SQL_ERROR" = "false" ]; then
               # Extract version info for validation
               # Version numbers: 2017=14.x, 2019=15.x, 2022=16.x, 2025=17.x
               SQL_YEAR=$(echo "$TEST_RESULT" | grep -oE "SQL Server [0-9]{4}" | grep -oE "[0-9]{4}" | head -1)
