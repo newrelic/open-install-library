@@ -908,91 +908,70 @@ install:
           # Create SQL script
           SQL_SCRIPT="/tmp/nr-mssql-setup.sql"
 
+          # Build SQL script using echo to avoid heredoc YAML issues
           if [ "$USER_CREATION_MODE" = "new" ]; then
-            cat > "$SQL_SCRIPT" <<EOF
-USE [master];
-GO
-CREATE LOGIN [$MONITORING_USERNAME] WITH PASSWORD = '$MONITORING_PASSWORD';
-GO
--- Instance-level permissions
-GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];
-GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];
-GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];
-GO
--- Grant read access privileges to all user databases
-DECLARE @name SYSNAME;
-DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
-SELECT [name]
-FROM [master].[sys].[databases]
-WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')
-AND [state] = 0; -- Only online databases
-OPEN db_cursor;
-FETCH NEXT FROM db_cursor INTO @name;
-WHILE @@FETCH_STATUS = 0
-BEGIN
-  BEGIN TRY
-    PRINT 'Processing database: ' + @name;
-    EXEC('USE [' + @name + '];
-    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'')
-    BEGIN
-      CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME];
-    END;
-    GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME];
-    GRANT VIEW DEFINITION TO [$MONITORING_USERNAME];
-    ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];');
-    PRINT 'Success: ' + @name;
-  END TRY
-  BEGIN CATCH
-    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
-  END CATCH
-  FETCH NEXT FROM db_cursor INTO @name;
-END
-CLOSE db_cursor;
-DEALLOCATE db_cursor;
-GO
-EOF
+            echo "USE [master];" > "$SQL_SCRIPT"
+            echo "CREATE LOGIN [$MONITORING_USERNAME] WITH PASSWORD = '$MONITORING_PASSWORD';" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "DECLARE @name SYSNAME;" >> "$SQL_SCRIPT"
+            echo "DECLARE @sql NVARCHAR(MAX);" >> "$SQL_SCRIPT"
+            echo "DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR" >> "$SQL_SCRIPT"
+            echo "SELECT [name]" >> "$SQL_SCRIPT"
+            echo "FROM [master].[sys].[databases]" >> "$SQL_SCRIPT"
+            echo "WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')" >> "$SQL_SCRIPT"
+            echo "AND [state] = 0;" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "OPEN db_cursor;" >> "$SQL_SCRIPT"
+            echo "FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "WHILE @@FETCH_STATUS = 0" >> "$SQL_SCRIPT"
+            echo "BEGIN" >> "$SQL_SCRIPT"
+            echo "  BEGIN TRY" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Processing database: ' + @name;" >> "$SQL_SCRIPT"
+            echo "    SET @sql = 'USE [' + @name + ']; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'') BEGIN CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME]; END; GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME]; GRANT VIEW DEFINITION TO [$MONITORING_USERNAME]; ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];';" >> "$SQL_SCRIPT"
+            echo "    EXEC sp_executesql @sql;" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Success: ' + @name;" >> "$SQL_SCRIPT"
+            echo "  END TRY" >> "$SQL_SCRIPT"
+            echo "  BEGIN CATCH" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();" >> "$SQL_SCRIPT"
+            echo "  END CATCH" >> "$SQL_SCRIPT"
+            echo "  FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "END" >> "$SQL_SCRIPT"
+            echo "CLOSE db_cursor;" >> "$SQL_SCRIPT"
+            echo "DEALLOCATE db_cursor;" >> "$SQL_SCRIPT"
           else
-            # For existing user, only grant permissions (no CREATE LOGIN)
-            cat > "$SQL_SCRIPT" <<EOF
-USE [master];
-GO
--- Instance-level permissions
-GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];
-GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];
-GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];
-GO
--- Grant read access privileges to all user databases
-DECLARE @name SYSNAME;
-DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
-SELECT [name]
-FROM [master].[sys].[databases]
-WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')
-AND [state] = 0; -- Only online databases
-OPEN db_cursor;
-FETCH NEXT FROM db_cursor INTO @name;
-WHILE @@FETCH_STATUS = 0
-BEGIN
-  BEGIN TRY
-    PRINT 'Processing database: ' + @name;
-    EXEC('USE [' + @name + '];
-    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'')
-    BEGIN
-      CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME];
-    END;
-    GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME];
-    GRANT VIEW DEFINITION TO [$MONITORING_USERNAME];
-    ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];');
-    PRINT 'Success: ' + @name;
-  END TRY
-  BEGIN CATCH
-    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
-  END CATCH
-  FETCH NEXT FROM db_cursor INTO @name;
-END
-CLOSE db_cursor;
-DEALLOCATE db_cursor;
-GO
-EOF
+            echo "USE [master];" > "$SQL_SCRIPT"
+            echo "GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "DECLARE @name SYSNAME;" >> "$SQL_SCRIPT"
+            echo "DECLARE @sql NVARCHAR(MAX);" >> "$SQL_SCRIPT"
+            echo "DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR" >> "$SQL_SCRIPT"
+            echo "SELECT [name]" >> "$SQL_SCRIPT"
+            echo "FROM [master].[sys].[databases]" >> "$SQL_SCRIPT"
+            echo "WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')" >> "$SQL_SCRIPT"
+            echo "AND [state] = 0;" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "OPEN db_cursor;" >> "$SQL_SCRIPT"
+            echo "FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "WHILE @@FETCH_STATUS = 0" >> "$SQL_SCRIPT"
+            echo "BEGIN" >> "$SQL_SCRIPT"
+            echo "  BEGIN TRY" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Processing database: ' + @name;" >> "$SQL_SCRIPT"
+            echo "    SET @sql = 'USE [' + @name + ']; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'') BEGIN CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME]; END; GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME]; GRANT VIEW DEFINITION TO [$MONITORING_USERNAME]; ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];';" >> "$SQL_SCRIPT"
+            echo "    EXEC sp_executesql @sql;" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Success: ' + @name;" >> "$SQL_SCRIPT"
+            echo "  END TRY" >> "$SQL_SCRIPT"
+            echo "  BEGIN CATCH" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();" >> "$SQL_SCRIPT"
+            echo "  END CATCH" >> "$SQL_SCRIPT"
+            echo "  FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "END" >> "$SQL_SCRIPT"
+            echo "CLOSE db_cursor;" >> "$SQL_SCRIPT"
+            echo "DEALLOCATE db_cursor;" >> "$SQL_SCRIPT"
           fi
 
           # Execute the SQL script
