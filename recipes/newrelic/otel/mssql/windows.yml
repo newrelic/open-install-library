@@ -43,6 +43,7 @@ install:
         - task: add_compression
         - task: cleanup_traces
         - task: restart_service
+        - task: cleanup_temp_files
 
     # ── Prompt user for SQL Server connection details ─────────────────────────
     prompt_and_save_config:
@@ -2332,6 +2333,37 @@ install:
                 [System.IO.File]::WriteAllLines($configPath, $lines, [System.Text.Encoding]::UTF8)
               } catch {
                 Write-Host "WARNING: Could not cleanup traces pipeline in config file" -ForegroundColor Yellow
+                Write-Host "  Error: $_"
+              }
+            }
+          }
+          '
+
+    # ── Clean up temporary files ──────────────────────────────
+    cleanup_temp_files:
+      cmds:
+        - |
+          powershell -command '
+          # Clean up temp files - CRITICAL for security (some contain passwords and license keys)
+          $tempFiles = @(
+            @{Path = (Join-Path $env:TEMP "nr-mssql-config.txt"); Sensitive = $true},
+            @{Path = (Join-Path $env:TEMP "nr-mssql-license-key.txt"); Sensitive = $true},
+            @{Path = (Join-Path $env:TEMP "nr-mssql-monitoring-user.txt"); Sensitive = $true},
+            @{Path = (Join-Path $env:TEMP "nr-mssql-endpoint.txt"); Sensitive = $false},
+            @{Path = (Join-Path $env:TEMP "nr-mssql-monitored-databases.txt"); Sensitive = $false},
+            @{Path = (Join-Path $env:TEMP "nr-mssql-skip-install.flag"); Sensitive = $false}
+          )
+
+          foreach ($tempFile in $tempFiles) {
+            if (Test-Path $tempFile.Path) {
+              try {
+                Remove-Item $tempFile.Path -Force -ErrorAction Stop
+                Write-Host "Cleaned up: $(Split-Path $tempFile.Path -Leaf)" -ForegroundColor Green
+              } catch {
+                Write-Host "WARNING: Could not delete temporary file: $($tempFile.Path)" -ForegroundColor Yellow
+                if ($tempFile.Sensitive) {
+                  Write-Host "  This file contains sensitive credentials. Please delete manually for security." -ForegroundColor Yellow
+                }
                 Write-Host "  Error: $_"
               }
             }
