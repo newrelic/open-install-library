@@ -6,7 +6,6 @@ displayName: Microsoft SQL Server OpenTelemetry Integration (Debian)
 description: New Relic install recipe for Microsoft SQL Server monitoring using OpenTelemetry on Debian-based systems
 repository: https://github.com/newrelic/nrdot-collector-components
 
-
 installTargets:
   - type: host
     os: linux
@@ -541,6 +540,16 @@ install:
             exit 1
           fi
 
+          # Check if NRDOT Collector is already installed
+          if dpkg -l | grep -q "nrdot-collector-host"; then
+            echo "ℹ️  NRDOT Collector is already installed on this system" >&2
+            echo "" >&2
+            echo "If you want to update or configure the NRDOT Collector, please refer to the documentation:" >&2
+            echo "https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/" >&2
+            echo "" >&2
+            exit 10
+          fi
+
           # Set download URL based on architecture
           if [ "$DETECTED_ARCH" = "arm64" ]; then
             DOWNLOAD_URL="https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-linux-arm64-latest.deb"
@@ -563,7 +572,7 @@ install:
           # Install the package
           echo "→ Installing NRDOT Collector..."
           if sudo dpkg -i "/tmp/$DEB_FILE" 2>&1; then
-            echo "✓ NRDOT Collector installed successfully"
+            echo "✅ NRDOT Collector installed successfully"
           else
             echo "❌ Failed to install NRDOT Collector" >&2
             echo "Attempting to fix dependencies..."
@@ -574,7 +583,7 @@ install:
           # Verify service is running
           echo "→ Verifying NRDOT Collector service status..."
           if sudo systemctl is-active --quiet nrdot-collector-host; then
-            echo "✓ NRDOT Collector service is running"
+            echo "✅ NRDOT Collector service is running"
           else
             echo "❌ NRDOT Collector service is not running" >&2
             echo "" >&2
