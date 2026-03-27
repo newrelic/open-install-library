@@ -571,6 +571,61 @@ install:
             exit 1
           fi
 
+          # Verify service is running
+          echo "→ Verifying NRDOT Collector service status..."
+          if sudo systemctl is-active --quiet nrdot-collector-host; then
+            echo "✓ NRDOT Collector service is running"
+          else
+            echo "❌ NRDOT Collector service is not running" >&2
+            echo "" >&2
+
+            # Get detailed status information
+            SERVICE_STATUS=$(sudo systemctl status nrdot-collector-host 2>&1 || true)
+
+            # Check if service failed
+            if echo "$SERVICE_STATUS" | grep -q "Active: failed"; then
+              echo "Service Status: FAILED" >&2
+              echo "" >&2
+
+              # Extract failure reason
+              FAILURE_REASON=$(echo "$SERVICE_STATUS" | grep -A 3 "Main PID" | tail -n 3 || echo "$SERVICE_STATUS" | grep "Status:" || echo "Unknown reason")
+              echo "Failure details:" >&2
+              echo "$FAILURE_REASON" >&2
+
+            elif echo "$SERVICE_STATUS" | grep -q "Active: inactive"; then
+              echo "Service Status: INACTIVE (not started)" >&2
+              echo "" >&2
+              echo "Attempting to start the service..." >&2
+              if sudo systemctl start nrdot-collector-host 2>&1; then
+                echo "✓ Service started successfully" >&2
+              else
+                START_ERROR=$(sudo systemctl status nrdot-collector-host 2>&1 | grep -E "(failed|error|Error)" | head -5 || echo "Failed to start service")
+                echo "Failed to start service:" >&2
+                echo "$START_ERROR" >&2
+              fi
+
+            elif echo "$SERVICE_STATUS" | grep -q "could not be found"; then
+              echo "Service Status: NOT FOUND" >&2
+              echo "" >&2
+              echo "The nrdot-collector-host service was not registered during installation." >&2
+              echo "This may indicate an incomplete installation." >&2
+
+            else
+              echo "Service Status: UNKNOWN" >&2
+              echo "" >&2
+              echo "Full status output:" >&2
+              echo "$SERVICE_STATUS" >&2
+            fi
+
+            echo "" >&2
+            echo "To check service status manually, run:" >&2
+            echo "  sudo systemctl status nrdot-collector-host" >&2
+            echo "" >&2
+
+            # Don't exit immediately - let installation continue but warn user
+            echo "⚠️  WARNING: Service verification failed. Please check service status manually." >&2
+          fi
+
           # Clean up
           rm -f "/tmp/$DEB_FILE"
 
