@@ -38,6 +38,7 @@ install:
         - task: check_sqlcmd
         - task: validate_sql_connection
         - task: install_nrdot_collector
+        - task: create_monitoring_user
 
     detect_architecture:
       cmds:
@@ -638,6 +639,407 @@ install:
           # Clean up
           rm -f "/tmp/$DEB_FILE"
 
+          echo ""
+
+    create_monitoring_user:
+      cmds:
+        - |
+          echo ""
+          echo "Configuring SQL Server Monitoring User..."
+          echo ""
+
+          # Load SQL connection config
+          CONFIG_FILE="/tmp/nr-mssql-config.txt"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "❌ ERROR: SQL Server connection configuration not found" >&2
+            exit 1
+          fi
+
+          source "$CONFIG_FILE"
+
+          # Load sqlcmd path
+          if [ -f /tmp/nr_otel_arch.sh ]; then
+            source /tmp/nr_otel_arch.sh
+          fi
+
+          if [ -z "$SQLCMD_PATH" ]; then
+            SQLCMD_PATH="sqlcmd"
+          fi
+
+          # Check if running in non-interactive mode
+          NON_INTERACTIVE=false
+          if [ "${NEW_RELIC_ASSUME_YES}" = "true" ]; then
+            NON_INTERACTIVE=true
+          fi
+
+          # Function to read password with asterisks
+          read_password() {
+            password=""
+            saved_settings=$(stty -g)
+            stty -echo -icanon min 1 time 0 2>/dev/null || stty -echo
+
+            while IFS= read -r -n1 char 2>/dev/null || char=$(dd bs=1 count=1 2>/dev/null); do
+              if [ -z "$char" ] || [ "$char" = $'\n' ] || [ "$char" = $'\r' ]; then
+                break
+              fi
+
+              if [ "$char" = $'\x7f' ] || [ "$char" = $'\b' ] || [ "$char" = $'\x08' ]; then
+                if [ ${#password} -gt 0 ]; then
+                  password="${password%?}"
+                  printf '\b \b' >&2
+                fi
+              else
+                password="${password}${char}"
+                printf '*' >&2
+              fi
+            done
+
+            stty "$saved_settings" 2>/dev/null
+            printf '\n' >&2
+            echo "$password"
+          }
+
+          # Function to check if user exists
+          check_user_exists() {
+            local username="$1"
+            local check_query="SELECT name FROM sys.sql_logins WHERE name = '$username'"
+            local result=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$USERNAME" -P "$PASSWORD" -Q "$check_query" -h -1 -W 2>&1)
+
+            if echo "$result" | grep -q "$username"; then
+              return 0  # User exists
+            else
+              return 1  # User doesn't exist
+            fi
+          }
+
+          # Function to validate monitoring user connection
+          validate_monitoring_user() {
+            local mon_user="$1"
+            local mon_pass="$2"
+            local test_query="SELECT 1"
+
+            local result=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$mon_user" -P "$mon_pass" -Q "$test_query" -h -1 -W 2>&1)
+
+            if [ $? -eq 0 ] && ! echo "$result" | grep -q "Msg [0-9]*, Level [0-9]*"; then
+              return 0  # Connection successful
+            else
+              echo "$result" >&2
+              return 1  # Connection failed
+            fi
+          }
+
+          MONITORING_USERNAME=""
+          MONITORING_PASSWORD=""
+          USER_CREATION_MODE=""
+
+          # Interactive mode
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            echo "SQL Server Monitoring User Setup"
+            echo ""
+
+            # First, ask for username
+            printf "Enter monitoring username [default: newrelic]: "
+            read -r MONITORING_USERNAME
+            MONITORING_USERNAME="${MONITORING_USERNAME:-newrelic}"
+            echo ""
+
+            # Check if user already exists
+            echo "→ Checking if user '$MONITORING_USERNAME' exists..."
+            if check_user_exists "$MONITORING_USERNAME"; then
+              echo "✓ User '$MONITORING_USERNAME' found in SQL Server"
+              echo ""
+
+              # User exists - ask what to do
+              echo "User '$MONITORING_USERNAME' already exists. Please choose:"
+              echo "  1. Use existing user (you'll need to provide password)"
+              echo "  2. Create new monitoring user (choose different username)"
+              printf "Choose [1-2]: "
+              read -r USER_CHOICE
+              echo ""
+
+              if [ "$USER_CHOICE" = "1" ]; then
+                # Use existing user
+                USER_CREATION_MODE="existing"
+
+                printf "Enter password for user '$MONITORING_USERNAME': "
+                MONITORING_PASSWORD=$(read_password)
+                echo ""
+
+                # Validate connection
+                echo "→ Validating connection with user '$MONITORING_USERNAME'..."
+                if validate_monitoring_user "$MONITORING_USERNAME" "$MONITORING_PASSWORD"; then
+                  echo "✅ Connection successful with user '$MONITORING_USERNAME'"
+                  echo ""
+                else
+                  echo "❌ ERROR: Failed to connect with user '$MONITORING_USERNAME'" >&2
+                  exit 1
+                fi
+
+              else
+                # Create new user with different name
+                USER_CREATION_MODE="new"
+
+                printf "Enter new monitoring username: "
+                read -r MONITORING_USERNAME
+                echo ""
+
+                if [ -z "$MONITORING_USERNAME" ]; then
+                  echo "❌ ERROR: Username cannot be empty" >&2
+                  exit 1
+                fi
+
+                # Check if new username also exists
+                echo "→ Checking if user '$MONITORING_USERNAME' exists..."
+                if check_user_exists "$MONITORING_USERNAME"; then
+                  echo "❌ ERROR: User '$MONITORING_USERNAME' already exists" >&2
+                  echo "Please run the installation again with a different username" >&2
+                  exit 1
+                fi
+
+                echo "✓ Username '$MONITORING_USERNAME' is available"
+                echo ""
+
+                # Ask for password
+                printf "Enter password for new user '$MONITORING_USERNAME': "
+                MONITORING_PASSWORD=$(read_password)
+
+                if [ ${#MONITORING_PASSWORD} -lt 8 ]; then
+                  echo "⚠️  WARNING: Password is shorter than 8 characters" >&2
+                  echo "   SQL Server typically requires strong passwords (min 8 chars, uppercase, lowercase, numbers, symbols)" >&2
+                fi
+                echo ""
+              fi
+
+            else
+              # User doesn't exist - proceed with creation
+              echo "✓ Username '$MONITORING_USERNAME' is available"
+              echo ""
+
+              USER_CREATION_MODE="new"
+
+              # Ask for password
+              printf "Enter password for new user '$MONITORING_USERNAME': "
+              MONITORING_PASSWORD=$(read_password)
+
+              if [ ${#MONITORING_PASSWORD} -lt 8 ]; then
+                echo "⚠️  WARNING: Password is shorter than 8 characters" >&2
+                echo "   SQL Server typically requires strong passwords (min 8 chars, uppercase, lowercase, numbers, symbols)" >&2
+              fi
+              echo ""
+            fi
+
+          else
+            # Non-interactive mode - use environment variables
+            MONITORING_USERNAME="${NR_CLI_MONITORING_USERNAME:-newrelic}"
+            MONITORING_PASSWORD="${NR_CLI_MONITORING_PASSWORD}"
+
+            if [ -z "$MONITORING_PASSWORD" ]; then
+              echo "❌ ERROR: NR_CLI_MONITORING_PASSWORD environment variable is required in non-interactive mode" >&2
+              exit 1
+            fi
+
+            # Check if user exists
+            if check_user_exists "$MONITORING_USERNAME"; then
+              USER_CREATION_MODE="existing"
+              echo "→ Using existing user '$MONITORING_USERNAME'"
+
+              # Validate connection
+              if ! validate_monitoring_user "$MONITORING_USERNAME" "$MONITORING_PASSWORD"; then
+                echo "❌ ERROR: Failed to connect with existing user '$MONITORING_USERNAME'" >&2
+                exit 1
+              fi
+            else
+              USER_CREATION_MODE="new"
+              echo "→ Creating new user '$MONITORING_USERNAME'"
+            fi
+          fi
+
+          # Show grants and ask for confirmation
+          echo "=========================================="
+          echo "SQL Server Permissions Required"
+          echo "=========================================="
+          echo ""
+          echo "The following permissions will be granted to user '$MONITORING_USERNAME':"
+          echo ""
+          echo "Instance-level permissions:"
+          echo "  • VIEW SERVER STATE"
+          echo "  • VIEW ANY DEFINITION"
+          echo "  • VIEW ANY DATABASE"
+          echo ""
+          echo "Database-level permissions (for all user databases):"
+          echo "  • VIEW DATABASE STATE"
+          echo "  • VIEW DEFINITION"
+          echo "  • db_datareader role membership"
+          echo ""
+
+          if [ "$USER_CREATION_MODE" = "new" ]; then
+            echo "This will:"
+            echo "  1. Create the user '$MONITORING_USERNAME'"
+            echo "  2. Grant the above permissions"
+          else
+            echo "This will grant the above permissions to the existing user '$MONITORING_USERNAME'"
+          fi
+          echo ""
+
+          GRANT_CONFIRMED=false
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            printf "Do you want to proceed? [yes/no]: "
+            read -r GRANT_RESPONSE
+            echo ""
+
+            if [ "$GRANT_RESPONSE" = "yes" ] || [ "$GRANT_RESPONSE" = "y" ] || [ "$GRANT_RESPONSE" = "YES" ] || [ "$GRANT_RESPONSE" = "Y" ]; then
+              GRANT_CONFIRMED=true
+            fi
+          else
+            # In non-interactive mode, assume yes
+            GRANT_CONFIRMED=true
+          fi
+
+          if [ "$GRANT_CONFIRMED" = "false" ]; then
+            echo "⚠️  Integration stopped by user. Permissions were not granted." >&2
+            echo "The monitoring user cannot function without these permissions." >&2
+            exit 1
+          fi
+
+          # Execute SQL to create user and grant permissions
+          echo "→ Applying SQL Server permissions..."
+          echo ""
+
+          # Create SQL script
+          SQL_SCRIPT="/tmp/nr-mssql-setup.sql"
+
+          if [ "$USER_CREATION_MODE" = "new" ]; then
+            cat > "$SQL_SCRIPT" <<EOF
+USE [master];
+GO
+CREATE LOGIN [$MONITORING_USERNAME] WITH PASSWORD = '$MONITORING_PASSWORD';
+GO
+-- Instance-level permissions
+GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];
+GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];
+GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];
+GO
+-- Grant read access privileges to all user databases
+DECLARE @name SYSNAME;
+DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+SELECT [name]
+FROM [master].[sys].[databases]
+WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')
+AND [state] = 0; -- Only online databases
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @name;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+  BEGIN TRY
+    PRINT 'Processing database: ' + @name;
+    EXEC('USE [' + @name + '];
+    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'')
+    BEGIN
+      CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME];
+    END;
+    GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME];
+    GRANT VIEW DEFINITION TO [$MONITORING_USERNAME];
+    ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];');
+    PRINT 'Success: ' + @name;
+  END TRY
+  BEGIN CATCH
+    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
+  END CATCH
+  FETCH NEXT FROM db_cursor INTO @name;
+END
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+GO
+EOF
+          else
+            # For existing user, only grant permissions (no CREATE LOGIN)
+            cat > "$SQL_SCRIPT" <<EOF
+USE [master];
+GO
+-- Instance-level permissions
+GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];
+GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];
+GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];
+GO
+-- Grant read access privileges to all user databases
+DECLARE @name SYSNAME;
+DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+SELECT [name]
+FROM [master].[sys].[databases]
+WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')
+AND [state] = 0; -- Only online databases
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @name;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+  BEGIN TRY
+    PRINT 'Processing database: ' + @name;
+    EXEC('USE [' + @name + '];
+    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'')
+    BEGIN
+      CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME];
+    END;
+    GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME];
+    GRANT VIEW DEFINITION TO [$MONITORING_USERNAME];
+    ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];');
+    PRINT 'Success: ' + @name;
+  END TRY
+  BEGIN CATCH
+    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
+  END CATCH
+  FETCH NEXT FROM db_cursor INTO @name;
+END
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+GO
+EOF
+          fi
+
+          # Execute the SQL script
+          SQL_OUTPUT=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$USERNAME" -P "$PASSWORD" -i "$SQL_SCRIPT" 2>&1)
+          SQL_EXIT_CODE=$?
+
+          # Check if execution was successful
+          if [ $SQL_EXIT_CODE -eq 0 ] && ! echo "$SQL_OUTPUT" | grep -q "Msg [0-9]*, Level 1[0-9]"; then
+            if [ "$USER_CREATION_MODE" = "new" ]; then
+              echo "✅ Monitoring user '$MONITORING_USERNAME' created successfully"
+            else
+              echo "✅ Permissions granted to user '$MONITORING_USERNAME' successfully"
+            fi
+            echo ""
+
+            # Show processed databases
+            echo "Databases configured:"
+            echo "$SQL_OUTPUT" | grep "Success:" | sed 's/Success: /  • /'
+            echo ""
+
+            # Check for any errors
+            ERROR_COUNT=$(echo "$SQL_OUTPUT" | grep -c "Error on")
+            if [ $ERROR_COUNT -gt 0 ]; then
+              echo "⚠️  Some databases encountered errors:"
+              echo "$SQL_OUTPUT" | grep "Error on"
+              echo ""
+            fi
+
+            # Save monitoring user info to config
+            echo "MONITORING_USERNAME=$MONITORING_USERNAME" >> "$CONFIG_FILE"
+            echo "MONITORING_PASSWORD=$MONITORING_PASSWORD" >> "$CONFIG_FILE"
+            chmod 600 "$CONFIG_FILE"
+
+          else
+            echo "❌ ERROR: Failed to configure monitoring user" >&2
+            echo "" >&2
+            echo "SQL Output:" >&2
+            echo "$SQL_OUTPUT" >&2
+            echo "" >&2
+            rm -f "$SQL_SCRIPT"
+            exit 1
+          fi
+
+          # Clean up SQL script
+          rm -f "$SQL_SCRIPT"
+
+          echo "✅ Monitoring user configuration complete"
           echo ""
 
 postInstall:
