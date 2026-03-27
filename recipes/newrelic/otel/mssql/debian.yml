@@ -724,10 +724,23 @@ install:
           # Function to check if user exists
           check_user_exists() {
             local username="$1"
-            local check_query="SELECT name FROM sys.sql_logins WHERE name = '$username'"
-            local result=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$USERNAME" -P "$PASSWORD" -Q "$check_query" -h -1 -W 2>&1)
+            local check_query="SELECT COUNT(*) AS user_count FROM sys.sql_logins WHERE name = N'$username'"
+            local result
+            local exit_code
 
-            if echo "$result" | grep -q "$username"; then
+            result=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$USERNAME" -P "$PASSWORD" -Q "$check_query" -h -1 -W 2>&1)
+            exit_code=$?
+
+            # Check if query executed successfully
+            if [ $exit_code -ne 0 ] || echo "$result" | grep -qi "Msg [0-9]*, Level [0-9]*"; then
+              echo "⚠️  Warning: Could not check if user exists. Assuming user doesn't exist." >&2
+              return 1
+            fi
+
+            # Extract count from result (remove whitespace)
+            local count=$(echo "$result" | tr -d ' \n\r' | grep -oE '[0-9]+' | head -1)
+
+            if [ -n "$count" ] && [ "$count" -gt 0 ]; then
               return 0  # User exists
             else
               return 1  # User doesn't exist
@@ -773,6 +786,51 @@ install:
             fi
 
             return 0  # Connection successful
+          }
+
+          # Function to validate password meets SQL Server requirements
+          validate_sql_password() {
+            local password="$1"
+            local min_length=8
+            local categories=0
+
+            # Check minimum length
+            if [ ${#password} -lt $min_length ]; then
+              echo "  ❌ Password must be at least $min_length characters long" >&2
+              return 1
+            fi
+
+            # Check for uppercase letters
+            if echo "$password" | grep -q '[A-Z]'; then
+              categories=$((categories + 1))
+            fi
+
+            # Check for lowercase letters
+            if echo "$password" | grep -q '[a-z]'; then
+              categories=$((categories + 1))
+            fi
+
+            # Check for digits
+            if echo "$password" | grep -q '[0-9]'; then
+              categories=$((categories + 1))
+            fi
+
+            # Check for special characters
+            if echo "$password" | grep -q '[^a-zA-Z0-9]'; then
+              categories=$((categories + 1))
+            fi
+
+            # SQL Server requires at least 3 out of 4 categories
+            if [ $categories -lt 3 ]; then
+              echo "  ❌ Password must contain at least 3 of the following:" >&2
+              echo "     • Uppercase letters (A-Z)" >&2
+              echo "     • Lowercase letters (a-z)" >&2
+              echo "     • Digits (0-9)" >&2
+              echo "     • Special characters (!@#\$%^&*)" >&2
+              return 1
+            fi
+
+            return 0
           }
 
           MONITORING_USERNAME=""
@@ -864,15 +922,31 @@ install:
                 echo "✓ Username '$MONITORING_USERNAME' is available"
                 echo ""
 
-                # Ask for password
-                printf "Enter password for new user '$MONITORING_USERNAME': "
-                MONITORING_PASSWORD=$(read_password)
+                # Ask for password with validation (max 3 attempts)
+                MAX_PASSWORD_ATTEMPTS=3
+                PASSWORD_ATTEMPT=1
+                PASSWORD_VALID=false
 
-                if [ ${#MONITORING_PASSWORD} -lt 8 ]; then
-                  echo "⚠️  WARNING: Password is shorter than 8 characters" >&2
-                  echo "   SQL Server typically requires strong passwords (min 8 chars, uppercase, lowercase, numbers, symbols)" >&2
-                fi
-                echo ""
+                while [ $PASSWORD_ATTEMPT -le $MAX_PASSWORD_ATTEMPTS ] && [ "$PASSWORD_VALID" = "false" ]; do
+                  if [ $PASSWORD_ATTEMPT -eq 1 ]; then
+                    printf "Enter password for new user '$MONITORING_USERNAME': "
+                  else
+                    printf "Re-enter password (Attempt $PASSWORD_ATTEMPT/$MAX_PASSWORD_ATTEMPTS): "
+                  fi
+                  MONITORING_PASSWORD=$(read_password)
+                  echo ""
+
+                  if validate_sql_password "$MONITORING_PASSWORD"; then
+                    PASSWORD_VALID=true
+                  else
+                    if [ $PASSWORD_ATTEMPT -ge $MAX_PASSWORD_ATTEMPTS ]; then
+                      echo "❌ ERROR: Failed to provide valid password after $MAX_PASSWORD_ATTEMPTS attempts" >&2
+                      exit 1
+                    fi
+                  fi
+
+                  PASSWORD_ATTEMPT=$((PASSWORD_ATTEMPT + 1))
+                done
               fi
 
             else
@@ -882,15 +956,31 @@ install:
 
               USER_CREATION_MODE="new"
 
-              # Ask for password
-              printf "Enter password for new user '$MONITORING_USERNAME': "
-              MONITORING_PASSWORD=$(read_password)
+              # Ask for password with validation (max 3 attempts)
+              MAX_PASSWORD_ATTEMPTS=3
+              PASSWORD_ATTEMPT=1
+              PASSWORD_VALID=false
 
-              if [ ${#MONITORING_PASSWORD} -lt 8 ]; then
-                echo "⚠️  WARNING: Password is shorter than 8 characters" >&2
-                echo "   SQL Server typically requires strong passwords (min 8 chars, uppercase, lowercase, numbers, symbols)" >&2
-              fi
-              echo ""
+              while [ $PASSWORD_ATTEMPT -le $MAX_PASSWORD_ATTEMPTS ] && [ "$PASSWORD_VALID" = "false" ]; do
+                if [ $PASSWORD_ATTEMPT -eq 1 ]; then
+                  printf "Enter password for new user '$MONITORING_USERNAME': "
+                else
+                  printf "Re-enter password (Attempt $PASSWORD_ATTEMPT/$MAX_PASSWORD_ATTEMPTS): "
+                fi
+                MONITORING_PASSWORD=$(read_password)
+                echo ""
+
+                if validate_sql_password "$MONITORING_PASSWORD"; then
+                  PASSWORD_VALID=true
+                else
+                  if [ $PASSWORD_ATTEMPT -ge $MAX_PASSWORD_ATTEMPTS ]; then
+                    echo "❌ ERROR: Failed to provide valid password after $MAX_PASSWORD_ATTEMPTS attempts" >&2
+                    exit 1
+                  fi
+                fi
+
+                PASSWORD_ATTEMPT=$((PASSWORD_ATTEMPT + 1))
+              done
             fi
 
           else
