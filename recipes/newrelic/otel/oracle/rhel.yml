@@ -195,7 +195,7 @@ install:
             {{.NR_CLI_DB_SSH_USER}}@{{.NR_CLI_DB_HOSTNAME}} \
             "printf 'SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF\nSELECT username FROM dba_users WHERE username=UPPER('"'"'$DB_USER'"'"');\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'") || true
 
-          if echo "$RESULT" | grep -qi "$DB_USER"; then
+          if echo "$RESULT" | grep -qi "^[[:space:]]*${DB_USER}[[:space:]]*$"; then
             echo ""
             echo -e "\e[33mMonitoring user $DB_USER already exists.\e[0m"
             echo ""
@@ -326,7 +326,6 @@ install:
           fi
 
           DB_USER=$(cat /tmp/nrdot_db_user)
-          rm -f /tmp/nrdot_db_user
 
           echo ""
           echo "==> Granting monitoring privileges to $DB_USER ..."
@@ -359,7 +358,8 @@ install:
           echo ""
           echo "==> Configuring NRDOT Collector for Oracle DB monitoring..."
 
-          DB_USER="c##{{.NR_CLI_DB_USERNAME}}"
+          DB_USER=$(cat /tmp/nrdot_db_user)
+          rm -f /tmp/nrdot_db_user
           NR_CLI_DB_PASSWORD=$(cat /tmp/nrdot_db_password)
           rm -f /tmp/nrdot_db_password
 
