@@ -1203,6 +1203,34 @@ install:
             NON_INTERACTIVE=true
           fi
 
+          # Ask for New Relic region/endpoint
+          OTLP_ENDPOINT="https://otlp.nr-data.net"
+          REGION_NAME="US Production"
+
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            echo "New Relic Region Selection"
+            echo ""
+            echo "Select your New Relic region:"
+            echo "  1. US Production (https://otlp.nr-data.net)"
+            echo "  2. EU Production (https://otlp.eu01.nr-data.net)"
+            printf "Choose [1-2] (default: 1): "
+            read -r REGION_CHOICE
+            echo ""
+
+            if [ "$REGION_CHOICE" = "2" ]; then
+              OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+              REGION_NAME="EU Production"
+            fi
+            echo "→ Selected region: $REGION_NAME"
+            echo ""
+          else
+            # Non-interactive mode - use NEW_RELIC_REGION if set
+            if [ "{{.NEW_RELIC_REGION}}" = "EU" ] || [ "{{.NEW_RELIC_REGION}}" = "eu" ]; then
+              OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+              REGION_NAME="EU Production"
+            fi
+          fi
+
           # Ask for monitored databases
           MONITORED_DATABASES_YAML="[]"
           if [ "$NON_INTERACTIVE" = "false" ]; then
@@ -1248,12 +1276,6 @@ install:
               done
               MONITORED_DATABASES_YAML="${MONITORED_DATABASES_YAML}]"
             fi
-          fi
-
-          # Determine OTLP endpoint based on NR region
-          OTLP_ENDPOINT="https://otlp.nr-data.net"
-          if [ "{{.NEW_RELIC_REGION}}" = "EU" ] || [ "{{.NEW_RELIC_REGION}}" = "eu" ]; then
-            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
           fi
 
           cat > /etc/nrdot-collector-host/config.yaml << EOF
