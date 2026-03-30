@@ -1256,9 +1256,28 @@ install:
             OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
           fi
 
-          # Write config to temp file first
-          cat > /tmp/nrdot.yaml <<'END_CONFIG'
-extensions:
+          # Export variables for Python script
+          export OTLP_ENDPOINT
+          export HOSTNAME
+          export PORT
+          export MONITORING_USERNAME
+          export MONITORING_PASSWORD
+          export MONITORED_DATABASES_YAML
+
+          # Generate config using Python to avoid YAML-in-YAML parsing issues
+          python3 <<'PYSCRIPT' > /etc/nrdot-collector-host/config.yaml
+import os
+
+# Get variables from environment
+otlp_endpoint = os.environ.get('OTLP_ENDPOINT', 'https://otlp.nr-data.net')
+hostname = os.environ.get('HOSTNAME', 'localhost')
+port = os.environ.get('PORT', '1433')
+username = os.environ.get('MONITORING_USERNAME', 'newrelic')
+password = os.environ.get('MONITORING_PASSWORD', '')
+monitored_databases = os.environ.get('MONITORED_DATABASES_YAML', '[]')
+
+# Print the YAML config
+print(f"""extensions:
   health_check:
 
 receivers:
@@ -1268,7 +1287,6 @@ receivers:
       http:
 
   hostmetrics:
-    # Default collection interval is 60s. Lower if you need finer granularity.
     collection_interval: 60s
     scrapers:
       cpu:
@@ -1304,14 +1322,6 @@ receivers:
         metrics:
           system.network.connections:
             enabled: false
-      # Uncomment to enable process metrics, which can be noisy but valuable.
-      # processes:
-      # process:
-      #   metrics:
-      #     process.cpu.utilization:
-      #       enabled: true
-      #     process.cpu.time:
-      #       enabled: false
 
   filelog:
     include:
@@ -1325,34 +1335,13 @@ receivers:
       - /var/log/yum.log
 
   newrelicsqlserver:
-    hostname: "$HOSTNAME"
-    port: $PORT
-    username: "$MONITORING_USERNAME"
-    password: "$MONITORING_PASSWORD"
-    monitored_databases: $MONITORED_DATABASES_YAML
-    # timeout: 30s
-    # collection_interval: 30s
-    # query_monitoring_fetch_interval: 15
-    # query_monitoring_response_time_threshold: 100
-    # query_monitoring_count_threshold: 30
-    # interval_calculator_cache_ttl_minutes: 10
-
-    # Core Metric Category Toggles - Enable/disable entire categories of metrics
-    # enable_instance_metrics: true
-    # enable_database_metrics: true
-    # enable_user_connection_metrics: true
-    # enable_wait_time_metrics: true
-    # enable_failover_cluster_metrics: true
-    # enable_database_principals_metrics: true
-    # enable_database_role_membership_metrics: true
-    # enable_security_metrics: true
-    # enable_lock_metrics: true
-    # enable_thread_pool_metrics: true
-    # enable_tempdb_metrics: true
-    # enable_database_buffer_metrics: true
+    hostname: "{hostname}"
+    port: {port}
+    username: "{username}"
+    password: "{password}"
+    monitored_databases: {monitored_databases}
 
 processors:
-  # group system.cpu metrics by cpu
   metricstransform:
     transforms:
       - include: system.cpu.utilization
@@ -1368,7 +1357,6 @@ processors:
             label_set: [ direction ]
             aggregation_type: sum
 
-  # remove system.cpu metrics for states
   filter/exclude_cpu_utilization:
     metrics:
       datapoint:
@@ -1437,7 +1425,6 @@ processors:
       - key: type
         action: delete
 
-  # Transform to clear description and unit fields
   transform/clear_metadata:
     metric_statements:
       - context: metric
@@ -1445,7 +1432,6 @@ processors:
           - set(metric.description, "")
           - set(metric.unit, "")
 
-  # Filter to only include execution plan and event metrics (for logs conversion)
   filter/exec_plan_include:
     metrics:
       include:
@@ -1456,7 +1442,6 @@ processors:
           - sqlserver.blocking_query.details
           - sqlserver.activequery.query_details
 
-  # Filter to exclude execution plan and event metrics (from main metrics pipeline)
   filter/exec_plan_exclude:
     metrics:
       exclude:
@@ -1472,12 +1457,10 @@ processors:
     include:
       match_type: strict
       metrics:
-        # Wait stats (sys.dm_os_wait_stats)
         - sqlserver.wait_stats.latch.wait_time_ms
         - sqlserver.wait_stats.latch.waiting_tasks_count
         - sqlserver.wait_stats.wait_time_ms
         - sqlserver.wait_stats.waiting_tasks_count
-        # Instance stats (sys.dm_os_performance_counters)
         - sqlserver.stats.sql_compilations_per_sec
         - sqlserver.stats.sql_recompilations_per_sec
         - sqlserver.stats.lock_waits_per_sec
@@ -1491,13 +1474,10 @@ processors:
         - sqlserver.instance.forced_parameterizations_per_sec
         - sqlserver.instance.full_scans_rate
         - sqlserver.instance.lock_timeouts_rate
-        # Database log (sys.dm_os_performance_counters)
         - sqlserver.database.log.flushes_per_sec
         - sqlserver.database.log.bytes_flushed_per_sec
         - sqlserver.database.log.flush_waits_per_sec
-        # Failover cluster
         - sqlserver.failover_cluster.log_bytes_received_per_sec
-        # User connections
         - sqlserver.user_connections.authentication.logins_per_sec
 
   deltatorate:
@@ -1544,10 +1524,9 @@ processors:
           - truncate_all(log.attributes, 4095)
           - truncate_all(resource.attributes, 4095)
 
-  # used to prevent out of memory situations on the collector
   memory_limiter:
     check_interval: 1s
-    limit_mib: \${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
+    limit_mib: ${{env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}}
 
   batch:
 
@@ -1585,9 +1564,9 @@ connectors:
 
 exporters:
   otlphttp:
-    endpoint: "$OTLP_ENDPOINT"
+    endpoint: "{otlp_endpoint}"
     headers:
-      api-key: "{{.NEW_RELIC_LICENSE_KEY}}"
+      api-key: "{{{{.NEW_RELIC_LICENSE_KEY}}}}"
     compression: gzip
 
 service:
@@ -1632,10 +1611,8 @@ service:
       processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_include, batch]
       exporters: [metricsaslogs]
   extensions: [health_check]
-END_CONFIG
-
-          # Move to final location
-          mv /tmp/nrdot.yaml /etc/nrdot-collector-host/config.yaml
+""")
+PYSCRIPT
 
           echo -e "\e[32mNRDOT Collector configured successfully.\e[0m"
           echo -e "  Config file: \e[1m/etc/nrdot-collector-host/config.yaml\e[0m"
