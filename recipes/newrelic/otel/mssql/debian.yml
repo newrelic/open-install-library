@@ -40,6 +40,7 @@ install:
         - task: install_nrdot_collector
         - task: create_monitoring_user
         - task: configure_nrdot
+        - task: restart_nrdot_service
 
     detect_architecture:
       cmds:
@@ -1634,6 +1635,38 @@ service:
 
           echo -e "\e[32mNRDOT Collector configured successfully.\e[0m"
           echo -e "  Config file: \e[1m/etc/nrdot-collector-host/config.yaml\e[0m"
+
+    restart_nrdot_service:
+      cmds:
+        - |
+          echo ""
+          echo "==> Restarting NRDOT Collector service..."
+          echo ""
+
+          # Restart the service
+          if sudo systemctl restart nrdot-collector-host 2>&1; then
+            echo "✓ Service restarted successfully"
+          else
+            echo "❌ Failed to restart service" >&2
+            exit 1
+          fi
+
+          # Wait a moment for service to stabilize
+          sleep 2
+
+          # Verify service is running
+          echo "→ Verifying service status..."
+          if sudo systemctl is-active --quiet nrdot-collector-host; then
+            echo "✅ NRDOT Collector service is running"
+            echo ""
+          else
+            echo "❌ NRDOT Collector service failed to start" >&2
+            echo "" >&2
+            echo "Check service logs with:" >&2
+            echo "  sudo journalctl -u nrdot-collector-host -n 50 --no-pager" >&2
+            echo "" >&2
+            exit 1
+          fi
 
 postInstall:
   info: |2
