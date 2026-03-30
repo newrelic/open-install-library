@@ -45,8 +45,6 @@ install:
       sh: curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep tag_name | cut -d '"' -f 4 | sed 's/^v//' || echo "1.11.1"
     COLLECTOR_DISTRO: "nrdot-collector"
     CONFIG_DIR: "/etc/nrdot-collector"
-    OTL_DIR: "/opt/opentelemetry"
-    JMX_CONFIG_URL: "https://raw.githubusercontent.com/newrelic/newrelic-opentelemetry-examples/main/other-examples/collector/kafka/self-host-kafka/jmx-custom-config.yaml"
     COLLECTOR_CONFIG_URL: "https://raw.githubusercontent.com/newrelic/newrelic-opentelemetry-examples/main/other-examples/collector/kafka/self-host-kafka/otel-collector-config.yaml"
 
   tasks:
@@ -55,8 +53,6 @@ install:
         - task: write_recipe_metadata
         - task: assert_pre_req
         - task: install_nrdot
-        - task: download_java_agent
-        - task: create_jmx_config
         - task: create_collector_config
         - task: configure_service
         - task: restart_nrdot
@@ -70,28 +66,19 @@ install:
     assert_pre_req:
       cmds:
         - |
-          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false")
-          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+          if [ "$(id -u)" != "0" ]; then
             echo "This newrelic install must be run under sudo or root" >&2
             exit 3
           fi
         - |
-          BITS=$(getconf LONG_BIT)
-          if [ "$BITS" != "64" ]; then
-            echo "64-bit architecture is required. Detected: ${BITS}-bit system" >&2
-            exit 131
-          fi
-        - |
-          IS_CURL_INSTALLED=$(which curl | wc -l)
-          if [ $IS_CURL_INSTALLED -eq 0 ] ; then
-            echo "curl is required. Please install curl and re-run the installation." >&2
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
             exit 16
           fi
         - |
-          LEVEL="{{.NR_CLI_MONITORING_LEVEL}}"
-          if [ "$LEVEL" != "complete" ] && [ "$LEVEL" != "minimal" ]; then
-            echo "NR_CLI_MONITORING_LEVEL must be 'complete' or 'minimal'. Got: $LEVEL" >&2
-            exit 1
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
           fi
 
     install_nrdot:
@@ -114,37 +101,10 @@ install:
             echo "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" | \
               tee -a {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf > /dev/null
 
-    download_java_agent:
-      cmds:
-        - |
-          echo "Downloading OpenTelemetry Java agent..."
-          mkdir -p {{.OTL_DIR}}
-          AGENT_JAR="{{.OTL_DIR}}/opentelemetry-javaagent.jar"
-          if [ ! -f "$AGENT_JAR" ]; then
-            curl -L -o "$AGENT_JAR" \
-              "https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar" 2>/dev/null
-            echo "Java agent downloaded to $AGENT_JAR"
-          else
-            echo "Java agent already present, skipping download."
-          fi
-
-    create_jmx_config:
-      cmds:
-        - |
-          LEVEL="{{.NR_CLI_MONITORING_LEVEL}}"
-          JMX_CONFIG="{{.CONFIG_DIR}}/jmx-custom-config.yaml"
-          echo "Downloading JMX config..."
-          if [ "$LEVEL" = "minimal" ]; then
-            curl -sf "{{.JMX_CONFIG_URL}}" | sed '/Additional metrics/,$d' > "$JMX_CONFIG"
-          else
-            curl -sf "{{.JMX_CONFIG_URL}}" -o "$JMX_CONFIG"
-          fi
-          echo "JMX config written to $JMX_CONFIG"
-
     create_collector_config:
       cmds:
         - |
-          LEVEL="{{.NR_CLI_MONITORING_LEVEL}}"
+          LEVEL="${NR_CLI_MONITORING_LEVEL:-complete}"
           COLLECTOR_CONFIG="{{.CONFIG_DIR}}/kafka-collector-config.yaml"
           KAFKA_ENV_FILE="{{.CONFIG_DIR}}/kafka-env.conf"
 
@@ -153,7 +113,14 @@ install:
 
           printf "KAFKA_BOOTSTRAP_BROKER_ADDRESSES={{.NR_CLI_KAFKA_BOOTSTRAP_BROKERS}}\n" > "$KAFKA_ENV_FILE"
           printf "KAFKA_CLUSTER_NAME={{.NR_CLI_KAFKA_CLUSTER_NAME}}\n" >> "$KAFKA_ENV_FILE"
-          printf "NEW_RELIC_OTLP_ENDPOINT=${NR_CLI_OTLP_ENDPOINT:-https://otlp.nr-data.net:4317}\n" >> "$KAFKA_ENV_FILE"
+          if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4317"
+          elif [ "{{.NEW_RELIC_REGION}}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net:4317"
+          fi
+          printf "NEW_RELIC_OTLP_ENDPOINT=${OTLP_ENDPOINT}\n" >> "$KAFKA_ENV_FILE"
           printf "KAFKA_METRICS_COLLECTION_INTERVAL=30s\n" >> "$KAFKA_ENV_FILE"
 
           if [ "$LEVEL" = "minimal" ]; then
@@ -177,22 +144,16 @@ install:
     configure_service:
       cmds:
         - |
-          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
-            DROPIN_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
-            mkdir -p "$DROPIN_DIR"
-            NRDOT_BIN=$(command -v nrdot-collector 2>/dev/null || echo "/usr/bin/nrdot-collector")
-            {
-              printf '[Service]\n'
-              printf 'EnvironmentFile={{.CONFIG_DIR}}/kafka-env.conf\n'
-              printf 'ExecStart=\n'
-              printf 'ExecStart=%s --config {{.CONFIG_DIR}}/kafka-collector-config.yaml\n' "$NRDOT_BIN"
-            } > "$DROPIN_DIR/kafka-config.conf"
-            systemctl daemon-reload
-            echo "Systemd drop-in configured."
-          else
-            echo "systemctl not found - systemd is required for service management." >&2
-            exit 1
-          fi
+          DROPIN_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
+          mkdir -p "$DROPIN_DIR"
+          NRDOT_BIN=$(command -v nrdot-collector 2>/dev/null || echo "/usr/bin/nrdot-collector")
+          {
+            printf '[Service]\n'
+            printf 'EnvironmentFile={{.CONFIG_DIR}}/kafka-env.conf\n'
+            printf 'ExecStart=\n'
+            printf 'ExecStart=%s --config {{.CONFIG_DIR}}/kafka-collector-config.yaml\n' "$NRDOT_BIN"
+          } > "$DROPIN_DIR/kafka-config.conf"
+          echo "Systemd drop-in configured."
 
     restart_nrdot:
       cmds:
