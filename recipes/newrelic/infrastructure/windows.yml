@@ -43,6 +43,7 @@ install:
         - task: assert_required_powershell
         - task: collect_meta
         - task: download_infra
+        - task: remove_if_old_version
         - task: stop_existing_service
         - task: install_infra
         - task: start_infra
@@ -74,6 +75,100 @@ install:
           if ($powershellEnabled.Name -ne "powershell.exe") {
             Write-Host -ForegroundColor Red "Powershell is required. Please start Powershell in Administrator, and re-run the newrelic-cli command."
             exit 131;
+          }
+          '
+
+    remove_if_old_version:
+      ignore_error: true
+      cmds:
+        - |
+          powershell -command '
+          $minVersion = [Version]"1.73.0"
+          $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
+
+          # Check if the target version being installed is < 1.73.0
+          if ($AGENT_VERSION) {
+            try {
+              $target = [Version]$AGENT_VERSION
+              if ($target -lt $minVersion) {
+                Write-Host "Target version $AGENT_VERSION is older than $minVersion, running full uninstall before install..."
+              } else {
+                Write-Host "Target version $AGENT_VERSION >= $minVersion, skipping full uninstall"
+                exit 0
+              }
+            } catch {
+              Write-Host "WARNING: Could not parse target version ''$AGENT_VERSION'', falling back to installed version check"
+            }
+          }
+
+          $baseKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall -ErrorAction SilentlyContinue `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+          $wowKeys = Get-ChildItem -Path HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall -ErrorAction SilentlyContinue `
+            | % { $_.Name.TrimStart("HKEY_LOCAL_MACHINE\") }
+          $allKeys = $baseKeys + $wowKeys
+
+          # If no specific target version, check the currently installed version
+          if (-not $AGENT_VERSION) {
+            $installedVersion = $null
+            foreach ($key in $allKeys) {
+              $keyData = Get-Item -LiteralPath "HKLM:\$key" -ErrorAction SilentlyContinue
+              if ($keyData) {
+                $name = $keyData.GetValue("DisplayName")
+                if ($name -and $name -match "New Relic Infrastructure Agent") {
+                  $installedVersion = $keyData.GetValue("DisplayVersion")
+                  break
+                }
+              }
+            }
+
+            if (-not $installedVersion) {
+              Write-Host "No existing New Relic Infrastructure Agent installation found, skipping version check"
+              exit 0
+            }
+
+            try {
+              $current = [Version]$installedVersion
+            } catch {
+              Write-Host "WARNING: Could not parse installed version ''$installedVersion'', skipping removal"
+              exit 0
+            }
+
+            if ($current -ge $minVersion) {
+              Write-Host "Installed version $installedVersion >= $minVersion, skipping full uninstall"
+              exit 0
+            }
+
+            Write-Host "Installed version $installedVersion is older than $minVersion, running full uninstall before upgrade..."
+          }
+
+          try {
+            if (Get-Service "newrelic-infra" -ErrorAction SilentlyContinue) {
+              Stop-Service -Name "newrelic-infra" -Force -PassThru | Out-Null
+            }
+
+            $uninstallIds = New-Object System.Collections.ArrayList
+            foreach ($key in $allKeys) {
+              $keyData = Get-Item -LiteralPath "HKLM:\$key" -ErrorAction SilentlyContinue
+              if ($keyData) {
+                $name = $keyData.GetValue("DisplayName")
+                if ($name -and $name -match "New Relic Infrastructure Agent") {
+                  $keyId = Split-Path $key -Leaf
+                  $uninstallIds.Add($keyId) | Out-Null
+                }
+              }
+            }
+
+            foreach ($uninstallId in $uninstallIds) {
+              $uninstallCommand = "msiexec /x """ + $uninstallId + """ /qn"
+              $er = (Invoke-Expression $uninstallCommand) 2>&1
+              if ($er.Exception) {
+                throw $er.Exception
+              }
+              # wait for uninstall to complete since msiexec returns without waiting
+              Start-Sleep -s 15
+            }
+          } catch {
+            throw $_.Exception
           }
           '
 
