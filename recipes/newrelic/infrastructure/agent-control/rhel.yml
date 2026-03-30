@@ -259,13 +259,14 @@ install:
     assert_agent_control_status_ok:
       cmds:
         - |
-          MAX_RETRIES=150
+          MAX_RETRIES=5
+          INTERVAL_SECONDS=15
           TRIES=0
-          echo "Running agent status check attempt..."
-          # wait for status endpoint to be ready
+
+          echo "Running agent status check..."
           while [ $TRIES -lt $MAX_RETRIES ]; do
             ((TRIES++))
-            statusCheckOutput=$(curl -s http://localhost:51200/status)
+            statusCheckOutput=$(curl -s --noproxy '*' http://localhost:51200/status)
             if [ -z "$statusCheckOutput" ]; then
               # so jq doesn't fail if empty
               statusCheckOutput="{}"
@@ -275,15 +276,9 @@ install:
               echo "Agent status check ok."
               break
             else
+              echo "Agent status check attempt $TRIES/$MAX_RETRIES failed. Status response: $statusCheckOutput"
               if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
-                # Process-based validation attempt
-                IS_AGENT_INSTALLED=$(ps aux | grep newrelic-agent-control | grep -v grep | wc -l)
-                if [ $IS_AGENT_INSTALLED -gt 0 ] ; then
-                  echo "detected newrelic-agent-control process running"
-                  exit 0
-                fi
-
-                echo "New Relic Agent Control has not started after installing. Please try again later, or see our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+                echo "New Relic Agent Control verification failed. Visit https://docs.newrelic.com/docs/new-relic-control/agent-control/troubleshooting/#cli-debug for troubleshooting guidance." >&2
 
                 if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
                   journalctl -u newrelic-agent-control --no-pager
@@ -293,7 +288,7 @@ install:
               fi
             fi
 
-            sleep 2
+            sleep $INTERVAL_SECONDS
           done
 
     signal_recipe_applied:
