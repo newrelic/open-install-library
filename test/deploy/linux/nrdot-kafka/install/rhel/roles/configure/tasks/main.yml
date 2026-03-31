@@ -1,37 +1,69 @@
 ---
-- name: install git
+- name: install git and dependencies
   package:
-    name: git
+    name:
+      - git
+      - curl
     state: present
   become: yes
 
-- name: install Docker
-  package:
-    name: docker
-    state: present
+########################################
+# Docker install — Amazon Linux 2023
+########################################
+- block:
+  - name: al2023 - install docker
+    dnf:
+      name: docker
+      state: present
+
+  - name: al2023 - start and enable docker
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+
+  - name: al2023 - create docker cli-plugins directory
+    file:
+      path: /usr/local/lib/docker/cli-plugins
+      state: directory
+      mode: '0755'
+
+  - name: al2023 - install docker-compose plugin
+    shell: |
+      curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m) \
+        -o /usr/local/lib/docker/cli-plugins/docker-compose
+      chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+    args:
+      creates: /usr/local/lib/docker/cli-plugins/docker-compose
+
+  when: ansible_distribution == 'Amazon'
   become: yes
 
-- name: create docker cli-plugins directory
-  file:
-    path: /usr/local/lib/docker/cli-plugins
-    state: directory
-    mode: '0755'
-  become: yes
+########################################
+# Docker install — RHEL / CentOS
+########################################
+- block:
+  - name: rhel - add Docker CE repo
+    shell: dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+    args:
+      creates: /etc/yum.repos.d/docker-ce.repo
 
-- name: install docker-compose plugin
-  shell: |
-    curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m) \
-      -o /usr/local/lib/docker/cli-plugins/docker-compose
-    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-  args:
-    creates: /usr/local/lib/docker/cli-plugins/docker-compose
-  become: yes
+  - name: rhel - install Docker CE
+    dnf:
+      name:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        - docker-compose-plugin
+      state: present
 
-- name: start and enable Docker
-  systemd:
-    name: docker
-    state: started
-    enabled: yes
+  - name: rhel - start and enable docker
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+
+  when: ansible_distribution in ['RedHat', 'CentOS', 'OracleLinux']
   become: yes
 
 - name: add user to docker group
