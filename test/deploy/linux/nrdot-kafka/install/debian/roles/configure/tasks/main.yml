@@ -1,0 +1,74 @@
+---
+- name: install Docker prerequisites
+  package:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - git
+    update_cache: yes
+    state: present
+  become: yes
+
+- name: add Docker GPG key
+  apt_key:
+    url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
+    state: present
+  become: yes
+
+- name: add Docker apt repository
+  apt_repository:
+    repo: "deb [arch={{ ansible_architecture | replace('x86_64','amd64') | replace('aarch64','arm64') }}] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: install Docker CE
+  package:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+  become: yes
+
+- name: start and enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+  become: yes
+
+- name: add user to docker group
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+  become: yes
+
+- name: reset ssh connection to pick up docker group
+  meta: reset_connection
+
+- name: clone newrelic-opentelemetry-examples (kafka branch)
+  git:
+    repo: "https://github.com/shashank-reddy-nr/newrelic-opentelemetry-examples.git"
+    dest: "/home/{{ ansible_user }}/newrelic-opentelemetry-examples"
+    version: "add-otel-kafka-examples"
+    depth: 1
+    force: yes
+
+- name: start kafka brokers via docker compose
+  shell: |
+    cd /home/{{ ansible_user }}/newrelic-opentelemetry-examples/other-examples/collector/kafka/self-host-kafka
+    docker compose up -d kafka-broker-1 kafka-broker-2 kafka-init
+  become: yes
+
+- name: wait for kafka-broker-1 to be healthy
+  shell: docker inspect kafka-broker-1 | grep -q '"Status": "healthy"'
+  register: kafka_health
+  retries: 20
+  delay: 10
+  until: kafka_health.rc == 0
+  become: yes

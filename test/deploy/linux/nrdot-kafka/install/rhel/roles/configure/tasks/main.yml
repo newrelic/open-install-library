@@ -1,0 +1,67 @@
+---
+- name: install git
+  package:
+    name: git
+    state: present
+  become: yes
+
+- name: install Docker
+  package:
+    name: docker
+    state: present
+  become: yes
+
+- name: create docker cli-plugins directory
+  file:
+    path: /usr/local/lib/docker/cli-plugins
+    state: directory
+    mode: '0755'
+  become: yes
+
+- name: install docker-compose plugin
+  shell: |
+    curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m) \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+  args:
+    creates: /usr/local/lib/docker/cli-plugins/docker-compose
+  become: yes
+
+- name: start and enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+  become: yes
+
+- name: add user to docker group
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+  become: yes
+
+- name: reset ssh connection to pick up docker group
+  meta: reset_connection
+
+- name: clone newrelic-opentelemetry-examples (kafka branch)
+  git:
+    repo: "https://github.com/shashank-reddy-nr/newrelic-opentelemetry-examples.git"
+    dest: "/home/{{ ansible_user }}/newrelic-opentelemetry-examples"
+    version: "add-otel-kafka-examples"
+    depth: 1
+    force: yes
+
+- name: start kafka brokers via docker compose
+  shell: |
+    cd /home/{{ ansible_user }}/newrelic-opentelemetry-examples/other-examples/collector/kafka/self-host-kafka
+    docker compose up -d kafka-broker-1 kafka-broker-2 kafka-init
+  become: yes
+
+- name: wait for kafka-broker-1 to be healthy
+  shell: docker inspect kafka-broker-1 | grep -q '"Status": "healthy"'
+  register: kafka_health
+  retries: 20
+  delay: 10
+  until: kafka_health.rc == 0
+  become: yes
