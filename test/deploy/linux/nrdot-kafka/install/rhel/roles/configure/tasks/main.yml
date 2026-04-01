@@ -5,28 +5,72 @@
     state: present
   become: yes
 
-- name: add Docker CE repo
-  shell: dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
-  args:
-    creates: /etc/yum.repos.d/docker-ce.repo
+########################################
+# Docker install — RHEL / CentOS
+########################################
+- block:
+  - name: add Docker CE repo
+    shell: dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+    args:
+      creates: /etc/yum.repos.d/docker-ce.repo
+
+  - name: install Docker CE with compose and buildx plugins
+    dnf:
+      name:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        - docker-compose-plugin
+        - docker-buildx-plugin
+      state: present
+
+  - name: start and enable Docker
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+
+  when: ansible_distribution in ['RedHat', 'CentOS', 'OracleLinux']
   become: yes
 
-- name: install Docker CE with compose and buildx plugins
-  dnf:
-    name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-compose-plugin
-      - docker-buildx-plugin
-    state: present
-  become: yes
+########################################
+# Docker install — Amazon Linux (2 and 2023)
+########################################
+- block:
+  - name: amazon - install docker
+    package:
+      name: docker
+      state: present
 
-- name: start and enable Docker
-  systemd:
-    name: docker
-    state: started
-    enabled: yes
+  - name: amazon - start and enable docker
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+
+  - name: amazon - create docker cli-plugins directory
+    file:
+      path: /usr/local/lib/docker/cli-plugins
+      state: directory
+      mode: '0755'
+
+  - name: amazon - install docker-compose plugin
+    shell: |
+      VERSION=$(curl -sf https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f4)
+      ARCH=$(uname -m)
+      curl -SL "https://github.com/docker/compose/releases/download/${VERSION}/docker-compose-linux-${ARCH}" \
+        -o /usr/local/lib/docker/cli-plugins/docker-compose
+      chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+  - name: amazon - install docker-buildx plugin
+    shell: |
+      BXVER=$(curl -sf https://api.github.com/repos/docker/buildx/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')
+      ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+      curl -SL "https://github.com/docker/buildx/releases/download/v${BXVER}/buildx-v${BXVER}.linux-${ARCH}" \
+        -o /usr/local/lib/docker/cli-plugins/docker-buildx
+      chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+
+  when: ansible_distribution == 'Amazon'
   become: yes
 
 - name: clone newrelic-opentelemetry-examples (kafka branch)
