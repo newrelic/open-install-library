@@ -283,7 +283,38 @@ install:
             } finally {
               Pop-Location
             }
-            
+
+            # installer.ps1 may restart the service; stop it before modifying config
+            $svc = Get-Service -Name "newrelic-infra" -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq "Running") {
+              Write-Host "Stopping service before config update..."
+              try {
+                Stop-Service -Name "newrelic-infra" -Force -ErrorAction Stop
+                $timeout = 30; $elapsed = 0
+                while ((Get-Service "newrelic-infra" -ErrorAction SilentlyContinue).Status -ne "Stopped" -and $elapsed -lt $timeout) {
+                  Start-Sleep -Seconds 1
+                  $elapsed++
+                }
+              } catch {
+                Write-Host "WARNING: Failed to stop service: $_"
+              }
+            }
+
+            # installer.ps1 preserves existing config on upgrade; update license key explicitly
+            if (Test-Path $InfraConfig) {
+              $cfg = Get-Content $InfraConfig -Raw -Encoding utf8
+              $cfgBefore = $cfg
+              if ($cfg -match "(?m)^license_key:") {
+                $cfg = $cfg -replace "(?m)^license_key: .*", "license_key: $LICENSE_KEY"
+              } else {
+                $cfg = $cfg.TrimEnd() + "`nlicense_key: $LICENSE_KEY`n"
+              }
+              if ($cfg -ne $cfgBefore) {
+                Set-Content -Path $InfraConfig -Value $cfg -NoNewline -Encoding utf8 -ErrorAction Stop
+                Write-Host "License key updated in config"
+              }
+            }
+
             Write-Host "installation completed successfully"
           } else {
             Write-Host "No existing service detected"
@@ -300,6 +331,17 @@ install:
             }
             
             Write-Host "Installation completed successfully"
+          }
+
+          # Strip keys that will be re-added below to avoid duplicates on upgrades
+          if (Test-Path $InfraConfig) {
+            $cfg = Get-Content $InfraConfig -Raw -Encoding utf8
+            $cfg = $cfg -replace "(?m)^staging.*\r?\n", ""
+            $cfg = $cfg -replace "(?m)^enable_process_metrics.*\r?\n", ""
+            $cfg = $cfg -replace "(?m)^status_server_enabled.*\r?\n", ""
+            $cfg = $cfg -replace "(?m)^status_server_port.*\r?\n", ""
+            $cfg = $cfg -replace "(?m)^custom_attributes:.*\r?\n([ \t]+.*\r?\n)*", ""
+            Set-Content -Path $InfraConfig -Value $cfg -NoNewline -Encoding utf8
           }
 
           $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
