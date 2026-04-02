@@ -95,11 +95,6 @@ install:
           fi
           rm -f "$NRDOT_DEB"
           mkdir -p {{.CONFIG_DIR}}
-          grep -q "^NEW_RELIC_LICENSE_KEY" {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf 2>/dev/null && \
-            sed -i 's|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}|' \
-              {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf || \
-            echo "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" | \
-              tee -a {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf > /dev/null
 
     create_collector_config:
       cmds:
@@ -122,6 +117,8 @@ install:
           sed -i "s|\${env:KAFKA_CLUSTER_NAME}|{{.NR_CLI_KAFKA_CLUSTER_NAME}}|g" "$COLLECTOR_CONFIG"
           sed -i "s|\${env:KAFKA_METRICS_COLLECTION_INTERVAL}|30s|g" "$COLLECTOR_CONFIG"
           sed -i "s|\${env:NEW_RELIC_OTLP_ENDPOINT}|${OTLP_ENDPOINT}|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:NEW_RELIC_LICENSE_KEY}|{{.NEW_RELIC_LICENSE_KEY}}|g" "$COLLECTOR_CONFIG"
+          chmod 600 "$COLLECTOR_CONFIG"
 
           if [ "$LEVEL" = "minimal" ]; then
             awk '
