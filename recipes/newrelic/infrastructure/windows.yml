@@ -245,6 +245,7 @@ install:
           function Write-FreshConfig {
             param([string]$Path, [string]$LicenseKey, [string]$Region, [string]$CustomAttrs)
             Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
+            Add-Content -Path $Path -Value "# THIS FILE IS MACHINE GENERATED" -Encoding utf8
             if ($Region -ilike "staging") {
               Add-Content -Path $Path -Value "staging: true" -Encoding utf8
             }
@@ -313,9 +314,10 @@ install:
               exit $process.ExitCode
             }
 
-            # MSI generates config via yamlgen; rewrite fresh to ensure all required
-            # settings are present before start_infra starts the service
+            # MSI starts the service with a yamlgen-generated config (license_key only).
+            # Rewrite config fresh and restart so all required settings take effect.
             Write-FreshConfig -Path $InfraConfig -LicenseKey $LICENSE_KEY -Region $NEW_RELIC_REGION -CustomAttrs $customAttributes
+            Restart-Service -Name "newrelic-infra" -Force -ErrorAction SilentlyContinue
           }
           '
 
