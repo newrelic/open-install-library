@@ -106,13 +106,7 @@ install:
         - |
           LEVEL="${NR_CLI_MONITORING_LEVEL:-complete}"
           COLLECTOR_CONFIG="{{.CONFIG_DIR}}/kafka-collector-config.yaml"
-          KAFKA_ENV_FILE="{{.CONFIG_DIR}}/kafka-env.conf"
 
-          echo "Downloading collector config..."
-          curl -sf "{{.COLLECTOR_CONFIG_URL}}" -o "$COLLECTOR_CONFIG"
-
-          printf "KAFKA_BOOTSTRAP_BROKER_ADDRESSES={{.NR_CLI_KAFKA_BOOTSTRAP_BROKERS}}\n" > "$KAFKA_ENV_FILE"
-          printf "KAFKA_CLUSTER_NAME={{.NR_CLI_KAFKA_CLUSTER_NAME}}\n" >> "$KAFKA_ENV_FILE"
           if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
             OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4317"
           elif [ "{{.NEW_RELIC_REGION}}" = "staging" ]; then
@@ -120,8 +114,16 @@ install:
           else
             OTLP_ENDPOINT="https://otlp.nr-data.net:4317"
           fi
-          printf "NEW_RELIC_OTLP_ENDPOINT=${OTLP_ENDPOINT}\n" >> "$KAFKA_ENV_FILE"
-          printf "KAFKA_METRICS_COLLECTION_INTERVAL=30s\n" >> "$KAFKA_ENV_FILE"
+
+          echo "Downloading collector config..."
+          curl -sf "{{.COLLECTOR_CONFIG_URL}}" -o "$COLLECTOR_CONFIG"
+
+          sed -i "s|\${env:KAFKA_BOOTSTRAP_BROKER_ADDRESSES}|{{.NR_CLI_KAFKA_BOOTSTRAP_BROKERS}}|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:KAFKA_CLUSTER_NAME}|{{.NR_CLI_KAFKA_CLUSTER_NAME}}|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:KAFKA_METRICS_COLLECTION_INTERVAL}|30s|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:NEW_RELIC_OTLP_ENDPOINT}|${OTLP_ENDPOINT}|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:NEW_RELIC_LICENSE_KEY}|{{.NEW_RELIC_LICENSE_KEY}}|g" "$COLLECTOR_CONFIG"
+          chmod 600 "$COLLECTOR_CONFIG"
 
           if [ "$LEVEL" = "minimal" ]; then
             awk '
@@ -144,16 +146,9 @@ install:
     configure_service:
       cmds:
         - |
-          DROPIN_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
-          mkdir -p "$DROPIN_DIR"
-          NRDOT_BIN=$(command -v nrdot-collector 2>/dev/null || echo "/usr/bin/nrdot-collector")
-          {
-            printf '[Service]\n'
-            printf 'EnvironmentFile={{.CONFIG_DIR}}/kafka-env.conf\n'
-            printf 'ExecStart=\n'
-            printf 'ExecStart=%s --config {{.CONFIG_DIR}}/kafka-collector-config.yaml\n' "$NRDOT_BIN"
-          } > "$DROPIN_DIR/kafka-config.conf"
-          echo "Systemd drop-in configured."
+          sed -i 's|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS="--config={{.CONFIG_DIR}}/kafka-collector-config.yaml"|' \
+            {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf
+          echo "NRDOT Collector configured to use kafka config."
 
     restart_nrdot:
       cmds:
