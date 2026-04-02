@@ -139,10 +139,15 @@ install:
     configure_service:
       cmds:
         - |
-          rm -f /etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d/kafka-config.conf
-          sed -i 's|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS="--config={{.CONFIG_DIR}}/kafka-collector-config.yaml"|' \
-            {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf
-          echo "NRDOT Collector configured to use kafka config."
+          OVERRIDE_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
+          OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
+          mkdir -p "$OVERRIDE_DIR"
+          printf '%s\n' \
+            '[Service]' \
+            'ExecStart=' \
+            'ExecStart=/usr/bin/nrdot-collector --config={{.CONFIG_DIR}}/kafka-collector-config.yaml' \
+            > "$OVERRIDE_FILE"
+          echo "Systemd override created: ${OVERRIDE_FILE}"
 
     restart_nrdot:
       cmds:
