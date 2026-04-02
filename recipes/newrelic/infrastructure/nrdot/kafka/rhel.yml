@@ -42,7 +42,13 @@ preInstall:
   discoveryMode:
     - targeted
 
-validationNrql: "SELECT count(*) FROM Metric WHERE kafka.cluster.name = '{{.NR_CLI_KAFKA_CLUSTER_NAME}}' SINCE 10 minutes ago"
+inputVars:
+  - name: NR_CLI_KAFKA_CLUSTER_NAME
+    prompt: "Kafka cluster name: "
+  - name: NR_CLI_KAFKA_BOOTSTRAP_BROKERS
+    prompt: "Kafka bootstrap broker addresses (e.g. localhost:9092,localhost:9093): "
+
+validationNrql: "SELECT count(*) FROM Metric SINCE 10 minutes ago WHERE kafka.cluster.name = '{{.NR_CLI_KAFKA_CLUSTER_NAME}}'"
 
 install:
   version: "3"
@@ -149,13 +155,12 @@ install:
             ' "$COLLECTOR_CONFIG" > "${COLLECTOR_CONFIG}.tmp" && \
               mv "${COLLECTOR_CONFIG}.tmp" "$COLLECTOR_CONFIG"
           fi
-          echo "Collector config written to $COLLECTOR_CONFIG"
 
     configure_service:
       cmds:
         - |
           OVERRIDE_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
-          OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
+          OVERRIDE_FILE="${OVERRIDE_DIR}/kafka-override.conf"
           mkdir -p "$OVERRIDE_DIR"
           printf '%s\n' \
             '[Service]' \
@@ -179,12 +184,29 @@ install:
           while [ $TRIES -lt $MAX_RETRIES ]; do
             TRIES=$((TRIES + 1))
             if systemctl is-active --quiet {{.COLLECTOR_DISTRO}}.service; then
+              echo ""
               echo "NRDOT Collector is running."
+              echo ""
+              echo "Collector config:  /etc/nrdot-collector/kafka-collector-config.yaml"
+              echo ""
+              echo "Useful commands:"
+              echo "  Check status:  sudo systemctl status nrdot-collector"
+              echo "  View logs:     sudo journalctl -u nrdot-collector -f"
+              echo "  Restart:       sudo systemctl restart nrdot-collector"
               exit 0
             fi
             sleep 2
           done
-          echo "NRDOT Collector did not start in time. Check logs:" >&2
+          echo "" >&2
+          echo "NRDOT Collector did not start in time." >&2
+          echo "" >&2
+          echo "Collector config:  /etc/nrdot-collector/kafka-collector-config.yaml" >&2
+          echo "" >&2
+          echo "Useful commands:" >&2
+          echo "  Check status:  sudo systemctl status nrdot-collector" >&2
+          echo "  View logs:     sudo journalctl -u nrdot-collector -f" >&2
+          echo "  Restart:       sudo systemctl restart nrdot-collector" >&2
+          echo "" >&2
           journalctl -u {{.COLLECTOR_DISTRO}}.service --no-pager -n 50 >&2
           exit 31
 
