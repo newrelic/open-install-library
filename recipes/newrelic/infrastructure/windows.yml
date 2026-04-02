@@ -228,50 +228,68 @@ install:
           $AGENT_VERSION = "{{.INFRASTRUCTURE_AGENT_INSTALLER_VERSION}}"
           $MSI_PATH = "$env:TEMP\newrelic-infra.msi"
           $EXTRACT_PATH = "$env:TEMP\\msi_extracted_install"
-          
+
           if ($AGENT_VERSION) {
             Write-Host "Installing specific version of New Relic Infrastructure Agent: $AGENT_VERSION"
           } else {
             Write-Host "Installing latest version of New Relic Infrastructure Agent"
           }
 
-          # Check if service already exists to determine installation method
           $existingService = Get-Service -Name "newrelic-infra" -ErrorAction SilentlyContinue
-          
+
+          $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
+          $customAttributes=@"
+          {{.NRIA_CUSTOM_ATTRIBUTES}}
+          "@
+
+          function Write-FreshConfig {
+            param([string]$Path, [string]$LicenseKey, [string]$Region, [string]$CustomAttrs)
+            Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
+            if ($Region -ilike "staging") {
+              Add-Content -Path $Path -Value "staging: true" -Encoding utf8
+            }
+            Add-Content -Path $Path -Value "license_key: $LicenseKey" -Encoding utf8
+            Add-Content -Path $Path -Value "enable_process_metrics: true" -Encoding utf8
+            Add-Content -Path $Path -Value "status_server_enabled: true" -Encoding utf8
+            Add-Content -Path $Path -Value "status_server_port: 18003" -Encoding utf8
+            if (Test-Path env:HTTPS_PROXY) {
+              Add-Content -Path $Path -Value "proxy: $env:HTTPS_PROXY" -Encoding utf8
+            }
+            Add-Content -Path $Path -Value $CustomAttrs -Encoding utf8
+            Write-Host "Configuration written successfully"
+          }
+
           if ($existingService) {
-            Write-Host "Existing service detected."
-            
-            # Extract MSI to temp folder
-            Write-Host "Extracting MSI to $EXTRACT_PATH..."
+            Write-Host "Existing service detected, performing upgrade..."
+
+            # Write fresh config before calling installer.ps1 — in upgrade mode
+            # installer.ps1 preserves the existing config, so this ensures the service
+            # starts with valid settings (including license_key) on the first start.
+            Write-FreshConfig -Path $InfraConfig -LicenseKey $LICENSE_KEY -Region $NEW_RELIC_REGION -CustomAttrs $customAttributes
+
+            # Extract MSI to get the latest installer.ps1 and binaries
             if (Test-Path $EXTRACT_PATH) {
               Remove-Item -Path $EXTRACT_PATH -Recurse -Force -ErrorAction SilentlyContinue
             }
             New-Item -Path $EXTRACT_PATH -ItemType Directory -Force | Out-Null
-            
-            # Extract using msiexec /a (administrative install - extracts files)
+
             $extractProcess = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a `"$MSI_PATH`" /qn TARGETDIR=`"$EXTRACT_PATH`" /L*v `"$env:TEMP\\msi_extract.log`"" -Wait -NoNewWindow -PassThru
             if ($extractProcess.ExitCode -ne 0) {
               Write-Host -ForegroundColor Red "Failed to extract MSI: Exit code $($extractProcess.ExitCode)"
               exit $extractProcess.ExitCode
             }
-            Write-Host "MSI extracted successfully"
-            
-            # Locate the installer.ps1 in extracted files
+
             $installerScript = Get-ChildItem -Path $EXTRACT_PATH -Filter "installer.ps1" -Recurse | Select-Object -First 1
             if (-not $installerScript) {
               Write-Host -ForegroundColor Red "installer.ps1 not found in extracted MSI"
               exit 1
             }
             Write-Host "Found installer.ps1 at: $($installerScript.FullName)"
-            
-            # Run installer.ps1 directly from extracted location (triggers ZIP installation path)
-            Write-Host "Running installer.ps1 ..."
+
             $scriptDir = $installerScript.DirectoryName
             Push-Location $scriptDir
-            
             try {
               & "$($installerScript.FullName)" -LicenseKey $LICENSE_KEY
-              
               if ($LASTEXITCODE -ne 0) {
                 Write-Host -ForegroundColor Red "installer.ps1 failed with exit code: $LASTEXITCODE"
                 if (Test-Path "C:\\ProgramData\\New Relic\\newrelic-infra\\tmp\\newrelic_installer_debug.log") {
@@ -283,43 +301,8 @@ install:
             } finally {
               Pop-Location
             }
-
-            # installer.ps1 may restart the service; stop it before modifying config
-            $svc = Get-Service -Name "newrelic-infra" -ErrorAction SilentlyContinue
-            if ($svc -and $svc.Status -eq "Running") {
-              Write-Host "Stopping service before config update..."
-              try {
-                Stop-Service -Name "newrelic-infra" -Force -ErrorAction Stop
-                $timeout = 30; $elapsed = 0
-                while ((Get-Service "newrelic-infra" -ErrorAction SilentlyContinue).Status -ne "Stopped" -and $elapsed -lt $timeout) {
-                  Start-Sleep -Seconds 1
-                  $elapsed++
-                }
-              } catch {
-                Write-Host "WARNING: Failed to stop service: $_"
-              }
-            }
-
-            # installer.ps1 preserves existing config on upgrade; update license key explicitly
-            if (Test-Path $InfraConfig) {
-              $cfg = Get-Content $InfraConfig -Raw -Encoding utf8
-              $cfgBefore = $cfg
-              if ($cfg -match "(?m)^license_key:") {
-                $cfg = $cfg -replace "(?m)^license_key: .*", "license_key: $LICENSE_KEY"
-              } else {
-                $cfg = $cfg.TrimEnd() + "`nlicense_key: $LICENSE_KEY`n"
-              }
-              if ($cfg -ne $cfgBefore) {
-                Set-Content -Path $InfraConfig -Value $cfg -NoNewline -Encoding utf8 -ErrorAction Stop
-                Write-Host "License key updated in config"
-              }
-            }
-
-            Write-Host "installation completed successfully"
           } else {
-            Write-Host "No existing service detected"
-            
-            # Fresh install - use MSI directly (faster, standard Windows installation)
+            Write-Host "No existing service detected, performing fresh install..."
             $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/qn /i `"$MSI_PATH`" GENERATE_CONFIG=true LICENSE_KEY=`"$LICENSE_KEY`" /L*v `"$env:TEMP\\msi_install.log`"" -Wait -NoNewWindow -PassThru
             if ($process.ExitCode -ne 0) {
               Write-Host -ForegroundColor Red "MSI installation failed with exit code: $($process.ExitCode)"
@@ -329,52 +312,10 @@ install:
               }
               exit $process.ExitCode
             }
-            
-            Write-Host "Installation completed successfully"
-          }
 
-          # Strip keys that will be re-added below to avoid duplicates on upgrades
-          if (Test-Path $InfraConfig) {
-            $cfg = Get-Content $InfraConfig -Raw -Encoding utf8
-            $cfg = $cfg -replace "(?m)^staging.*\r?\n", ""
-            $cfg = $cfg -replace "(?m)^enable_process_metrics.*\r?\n", ""
-            $cfg = $cfg -replace "(?m)^status_server_enabled.*\r?\n", ""
-            $cfg = $cfg -replace "(?m)^status_server_port.*\r?\n", ""
-            $cfg = $cfg -replace "(?m)^custom_attributes:.*\r?\n([ \t]+.*\r?\n)*", ""
-            Set-Content -Path $InfraConfig -Value $cfg -NoNewline -Encoding utf8
-          }
-
-          $NEW_RELIC_REGION = "{{.NEW_RELIC_REGION}}"
-          if ($NEW_RELIC_REGION -ilike "staging") {
-            Add-Content -Path $InfraConfig -Value "staging: true" -Force -Encoding utf8
-          }
-          Add-Content -Path $InfraConfig -Value "enable_process_metrics: true" -Force -Encoding utf8
-          Add-Content -Path $InfraConfig -Value "status_server_enabled: true" -Force -Encoding utf8
-          Add-Content -Path $InfraConfig -Value "status_server_port: 18003" -Force -Encoding utf8
-          if (Test-Path env:HTTPS_PROXY) {
-            (Get-Content $InfraConfig) | Where-Object {
-              $_ -notmatch "^proxy"
-            } | Set-Content $InfraConfig
-
-            Add-Content -Path $InfraConfig -Value "proxy: $env:HTTPS_PROXY" -Force -Encoding utf8
-          }
-
-          $customAttributes=@"
-          {{.NRIA_CUSTOM_ATTRIBUTES}}
-          "@
-
-          Add-Content -Path $InfraConfig -Value $customAttributes -Force -Encoding utf8
-          
-          # Restart service only for fresh installs to pick up config changes
-          # For upgrades, installer.ps1 already handles the restart
-          if (-not $existingService) {
-            $service = Get-Service -Name "newrelic-infra" -ErrorAction SilentlyContinue
-            if ($service -and $service.Status -eq "Running") {
-              Write-Host "Restarting service to apply configuration changes..."
-              Restart-Service -Name "newrelic-infra" -Force
-              Start-Sleep -Seconds 3
-              Write-Host "Service restarted with updated configuration"
-            }
+            # MSI generates config via yamlgen; rewrite fresh to ensure all required
+            # settings are present before start_infra starts the service
+            Write-FreshConfig -Path $InfraConfig -LicenseKey $LICENSE_KEY -Region $NEW_RELIC_REGION -CustomAttrs $customAttributes
           }
           '
 
