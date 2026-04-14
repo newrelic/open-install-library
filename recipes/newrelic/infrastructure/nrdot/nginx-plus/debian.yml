@@ -43,20 +43,10 @@ preInstall:
       exit 1
     fi
 
-    # Exit 1 if this is not NGINX Plus (standard nginx is handled by nrdot-collector-nginx).
-    # nginx -v outputs to stderr; NGINX Plus builds include "nginx-plus" in the version string.
+    # Exit 1 if this is not NGINX Plus — standard nginx is handled by nrdot-collector-nginx.
     if ! nginx -v 2>&1 | grep -qi "nginx-plus"; then
       exit 1
     fi
-
-    # Exit 1 if the prometheus exporter is not reachable on the default port.
-    # The exporter must be running before the recipe can configure the collector.
-    code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:9113/metrics" 2>/dev/null || echo "000")
-    if [ "$code" = "200" ]; then
-      exit 0
-    fi
-
-    exit 1
 
 inputVars:
   - name: NR_CLI_NGINX_PLUS_PROMETHEUS_ENDPOINT
@@ -124,6 +114,20 @@ install:
         - |
           if ! nginx -v 2>&1 | grep -qi "nginx-plus"; then
             echo "This recipe requires NGINX Plus. Standard NGINX is handled by nrdot-collector-nginx." >&2
+            exit 132
+          fi
+        # Exit 132: NGINX Prometheus Exporter must be running before installation.
+        - |
+          PROMETHEUS_ENDPOINT="{{.NR_CLI_NGINX_PLUS_PROMETHEUS_ENDPOINT}}"
+          if [ -z "$PROMETHEUS_ENDPOINT" ]; then
+            PROMETHEUS_ENDPOINT="127.0.0.1:9113"
+          fi
+          PROMETHEUS_ENDPOINT=$(echo "$PROMETHEUS_ENDPOINT" | sed 's|^https\?://||' | sed 's|/.*||')
+          code=$(curl -s -o /dev/null -w "%{http_code}" "http://${PROMETHEUS_ENDPOINT}/metrics" 2>/dev/null || echo "000")
+          if [ "$code" != "200" ]; then
+            echo "Could not reach the NGINX Prometheus Exporter at http://${PROMETHEUS_ENDPOINT}/metrics (HTTP ${code})." >&2
+            echo "Install and start nginx-prometheus-exporter before re-running this recipe." >&2
+            echo "See https://github.com/nginx/nginx-prometheus-exporter?tab=readme-ov-file#running-the-exporter-binary for instructions." >&2
             exit 132
           fi
 

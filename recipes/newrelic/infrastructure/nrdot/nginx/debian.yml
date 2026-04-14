@@ -43,32 +43,12 @@ preInstall:
       exit 1
     fi
 
-    # Parse the compiled nginx config to find the stub_status location block path.
-    # The PCRE pattern matches the last 'location' directive that contains 'stub_status',
-    # then extracts the URI path (e.g. /nginx_status). Exit 1 if no such block exists,
-    # as the receiver cannot scrape without it.
-    stub_location=$(nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)" || echo "")
-    if [ -z "$stub_location" ]; then
+    # Exit 1 if this is NGINX Plus — handled by nrdot-collector-nginx-plus.
+    if nginx -v 2>&1 | grep -qi "nginx-plus"; then
       exit 1
     fi
 
-    # Walk every non-commented listen directive to find a port where stub_status responds
-    # with HTTP 200. We probe 127.0.0.1 only — the receiver runs on the same host.
-    IFS=$'\n'
-    portlines=$(nginx -Tq 2>/dev/null | grep listen || echo "")
-    for line in $portlines; do
-      if ! echo "$line" | grep -aoPq "#"; then
-        port=$(echo "$line" | grep -aoP "\d+")
-        if [ -n "$port" ]; then
-          code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${port}${stub_location}" 2>/dev/null || echo "000")
-          if [ "$code" = "200" ]; then
-            exit 0
-          fi
-        fi
-      fi
-    done
-
-    exit 1
+    exit 0
 
 inputVars:
   - name: NR_CLI_NGINX_STATUS_URL
@@ -129,6 +109,18 @@ install:
           if ! command -v nginx > /dev/null 2>&1; then
             echo "NGINX is not installed or not in PATH." >&2
             exit 132
+          fi
+        # Exit 132: stub_status endpoint must be reachable before installation.
+        - |
+          STUB_STATUS_URL="{{.NR_CLI_NGINX_STATUS_URL}}"
+          if [ -n "$STUB_STATUS_URL" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$STUB_STATUS_URL" 2>/dev/null || echo "000")
+            if [ "$code" != "200" ]; then
+              echo "Could not reach the NGINX stub_status endpoint at ${STUB_STATUS_URL} (HTTP ${code})." >&2
+              echo "Ensure nginx is running and stub_status is accessible before re-running this recipe." >&2
+              echo "See https://docs.newrelic.com/docs/opentelemetry/integrations/nginx/nginx-otel-host/ for instructions." >&2
+              exit 132
+            fi
           fi
 
     install_collector:
