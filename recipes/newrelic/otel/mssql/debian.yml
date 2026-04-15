@@ -1,0 +1,1704 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: mssql-otel-integration-debian
+displayName: Microsoft SQL Server OpenTelemetry Integration (Debian)
+description: New Relic install recipe for Microsoft SQL Server monitoring using OpenTelemetry on Debian-based systems
+repository: https://github.com/newrelic/nrdot-collector-components
+
+installTargets:
+  - type: host
+    os: linux
+    platform: "debian"
+    platformVersion: "((8|9|10|11|12)\\.?.*)"
+  - type: host
+    os: linux
+    platform: "ubuntu"
+    platformVersion: "(((20|21|22|24)\\.04)|(20.10))"
+
+keywords:
+  - Integration
+  - SqlServer
+  - MSSQL
+  - OpenTelemetry
+  - Otel
+  - Linux
+  - Debian
+
+processMatch: []
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: detect_architecture
+        - task: check_sqlcmd
+        - task: validate_sql_connection
+        - task: install_nrdot_collector
+        - task: create_monitoring_user
+        - task: configure_nrdot
+        - task: restart_nrdot_service
+
+    detect_architecture:
+      cmds:
+        - |
+          ARCH="amd64"
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+          if [ $IS_ARM -gt 0 ] ; then
+            ARCH="arm64"
+          fi
+
+          # Store architecture for later tasks
+          echo "export DETECTED_ARCH=$ARCH" >> /tmp/nr_otel_arch.sh
+          echo "✓ System architecture: $ARCH"
+
+    check_sqlcmd:
+      cmds:
+        - |
+          # Load detected architecture
+          if [ -f /tmp/nr_otel_arch.sh ]; then
+            source /tmp/nr_otel_arch.sh
+          fi
+
+          # Check if ARM64 - SQL Server has limited ARM support
+          ARCH_TYPE=$(uname -m)
+          if [ "$ARCH_TYPE" = "aarch64" ] || [ "$DETECTED_ARCH" = "arm64" ]; then
+            echo "⚠️  Warning: ARM64 has limited SQL Server support" >&2
+          fi
+
+          # Check common locations for sqlcmd
+          SQLCMD_PATH=""
+
+          if command -v sqlcmd &> /dev/null; then
+            SQLCMD_PATH=$(command -v sqlcmd)
+          elif [ -f "/opt/mssql-tools/bin/sqlcmd" ]; then
+            SQLCMD_PATH="/opt/mssql-tools/bin/sqlcmd"
+          elif [ -f "/opt/mssql-tools18/bin/sqlcmd" ]; then
+            SQLCMD_PATH="/opt/mssql-tools18/bin/sqlcmd"
+          elif [ -f "/usr/local/bin/sqlcmd" ]; then
+            SQLCMD_PATH="/usr/local/bin/sqlcmd"
+          fi
+
+          # If not found, show error
+          if [ -z "$SQLCMD_PATH" ]; then
+            echo "" >&2
+            echo "❌ ERROR: SQL Server command-line tools (sqlcmd) not found" >&2
+            echo "" >&2
+            echo "To install sqlcmd:" >&2
+            echo "  curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -" >&2
+            echo "  curl https://packages.microsoft.com/config/ubuntu/\$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list" >&2
+            echo "  sudo apt-get update" >&2
+            echo "  sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev" >&2
+            echo "" >&2
+            exit 131
+          fi
+
+          echo "✓ sqlcmd detected"
+
+          # Store sqlcmd path for later tasks
+          echo "export SQLCMD_PATH=$SQLCMD_PATH" >> /tmp/nr_otel_arch.sh
+
+    validate_sql_connection:
+      cmds:
+        - |
+          echo ""
+          echo "Configuring SQL Server connection..."
+          echo ""
+
+          # Load sqlcmd path
+          if [ -f /tmp/nr_otel_arch.sh ]; then
+            source /tmp/nr_otel_arch.sh
+          fi
+
+          # Check if running in non-interactive mode
+          NON_INTERACTIVE=false
+          if [ "${NEW_RELIC_ASSUME_YES}" = "true" ]; then
+            NON_INTERACTIVE=true
+          fi
+
+          # Function to read password with asterisks
+          read_password() {
+            password=""
+
+            # Save current terminal settings
+            saved_settings=$(stty -g)
+
+            # Disable echo and canonical mode
+            stty -echo -icanon min 1 time 0 2>/dev/null || stty -echo
+
+            while IFS= read -r -n1 char 2>/dev/null || char=$(dd bs=1 count=1 2>/dev/null); do
+              # Handle Enter key
+              if [ -z "$char" ] || [ "$char" = $'\n' ] || [ "$char" = $'\r' ]; then
+                break
+              fi
+
+              # Handle backspace
+              if [ "$char" = $'\x7f' ] || [ "$char" = $'\b' ] || [ "$char" = $'\x08' ]; then
+                if [ ${#password} -gt 0 ]; then
+                  password="${password%?}"
+                  printf '\b \b' >&2
+                fi
+              else
+                password="${password}${char}"
+                printf '*' >&2
+              fi
+            done
+
+            # Restore terminal settings
+            stty "$saved_settings" 2>/dev/null
+            printf '\n' >&2
+
+            echo "$password"
+          }
+
+          # Function to validate hostname
+          validate_hostname() {
+            local hostname="$1"
+
+            # Check if empty
+            if [ -z "$hostname" ]; then
+              echo "  ❌ ERROR: Hostname cannot be empty" >&2
+              return 1
+            fi
+
+            # Accept all hostnames - validation happens during connection test
+            return 0
+          }
+
+          # Function to validate port
+          validate_port() {
+            local port="$1"
+
+            # Check if empty
+            if [ -z "$port" ]; then
+              echo "  ❌ ERROR: Port cannot be empty" >&2
+              return 1
+            fi
+
+            # Check if numeric
+            if ! echo "$port" | grep -qE '^[0-9]+$'; then
+              echo "  ❌ ERROR: Port must contain only numbers" >&2
+              echo "     You entered: '$port'" >&2
+              return 1
+            fi
+
+            # Check range
+            if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+              echo "  ❌ ERROR: Port must be between 1 and 65535" >&2
+              echo "     You entered: $port" >&2
+              return 1
+            fi
+
+            return 0
+          }
+
+          # Function to validate username
+          validate_username() {
+            local username="$1"
+
+            # Check if empty
+            if [ -z "$username" ]; then
+              echo "  ❌ ERROR: Username cannot be empty" >&2
+              return 1
+            fi
+
+            # Check length
+            if [ ${#username} -lt 1 ] || [ ${#username} -gt 128 ]; then
+              echo "  ❌ ERROR: Username must be between 1 and 128 characters" >&2
+              return 1
+            fi
+
+            return 0
+          }
+
+          # Function to validate password
+          validate_password() {
+            local password="$1"
+
+            # Check if empty
+            if [ -z "$password" ]; then
+              echo "  ❌ ERROR: Password cannot be empty" >&2
+              return 1
+            fi
+
+            # Check minimum length
+            if [ ${#password} -lt 8 ]; then
+              echo "  ⚠️  WARNING: Password is shorter than 8 characters" >&2
+              echo "     SQL Server typically requires strong passwords" >&2
+            fi
+
+            return 0
+          }
+
+          # Initialize variables with defaults
+          HOSTNAME="${NR_CLI_DB_HOSTNAME:-localhost}"
+          PORT="${NR_CLI_DB_PORT:-1433}"
+          USERNAME="${NR_CLI_DB_USERNAME:-sa}"
+          PASSWORD="${NR_CLI_DB_PASSWORD:-}"
+
+          MAX_ATTEMPTS=3
+          CONNECTION_SUCCESS=false
+
+          # Collection phase - gather all inputs with validation
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            # Ask deployment type first
+            echo "Is SQL Server running on this host or remotely?"
+            echo "  1. On this host (default)"
+            echo "  2. Remote host"
+            printf "Choose [1-2]: "
+            read -r DEPLOYMENT_CHOICE
+            DEPLOYMENT_CHOICE="${DEPLOYMENT_CHOICE:-1}"
+            echo ""
+
+            # Hostname collection with validation
+            HOSTNAME_VALID=false
+            HOSTNAME_ATTEMPTS=0
+            while [ "$HOSTNAME_VALID" = "false" ] && [ $HOSTNAME_ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+              if [ "$DEPLOYMENT_CHOICE" = "1" ]; then
+                # On-host: default to localhost
+                if [ $HOSTNAME_ATTEMPTS -eq 0 ]; then
+                  printf "Enter hostname [default: localhost]: "
+                else
+                  printf "Re-enter hostname: "
+                fi
+                read -r INPUT_HOSTNAME
+                INPUT_HOSTNAME="${INPUT_HOSTNAME:-localhost}"
+              else
+                # Remote: no default, require input
+                if [ $HOSTNAME_ATTEMPTS -eq 0 ]; then
+                  printf "Enter remote hostname or IP address: "
+                else
+                  printf "Re-enter remote hostname or IP address: "
+                fi
+                read -r INPUT_HOSTNAME
+                if [ -z "$INPUT_HOSTNAME" ]; then
+                  echo "  ❌ ERROR: Hostname cannot be empty for remote host" >&2
+                  HOSTNAME_ATTEMPTS=$((HOSTNAME_ATTEMPTS + 1))
+                  echo ""
+                  continue
+                fi
+              fi
+
+              if validate_hostname "$INPUT_HOSTNAME"; then
+                HOSTNAME="$INPUT_HOSTNAME"
+                HOSTNAME_VALID=true
+              fi
+              HOSTNAME_ATTEMPTS=$((HOSTNAME_ATTEMPTS + 1))
+              echo ""
+            done
+
+            if [ "$HOSTNAME_VALID" = "false" ]; then
+              echo "❌ Failed to get valid hostname after $MAX_ATTEMPTS attempts" >&2
+              exit 1
+            fi
+
+            # Port collection with validation
+            PORT_VALID=false
+            PORT_ATTEMPTS=0
+            while [ "$PORT_VALID" = "false" ] && [ $PORT_ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+              if [ $PORT_ATTEMPTS -eq 0 ]; then
+                printf "Enter port number [default: 1433]: "
+              else
+                printf "Re-enter port number: "
+              fi
+              read -r INPUT_PORT
+              INPUT_PORT="${INPUT_PORT:-1433}"
+
+              if validate_port "$INPUT_PORT"; then
+                PORT="$INPUT_PORT"
+                PORT_VALID=true
+              fi
+              PORT_ATTEMPTS=$((PORT_ATTEMPTS + 1))
+              echo ""
+            done
+
+            if [ "$PORT_VALID" = "false" ]; then
+              echo "❌ Failed to get valid port after $MAX_ATTEMPTS attempts" >&2
+              exit 1
+            fi
+
+            # Username collection with validation
+            USERNAME_VALID=false
+            USERNAME_ATTEMPTS=0
+            while [ "$USERNAME_VALID" = "false" ] && [ $USERNAME_ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+              if [ $USERNAME_ATTEMPTS -eq 0 ]; then
+                printf "Enter SQL Server username [default: sa]: "
+              else
+                printf "Re-enter SQL Server username: "
+              fi
+              read -r INPUT_USERNAME
+              INPUT_USERNAME="${INPUT_USERNAME:-sa}"
+
+              if validate_username "$INPUT_USERNAME"; then
+                USERNAME="$INPUT_USERNAME"
+                USERNAME_VALID=true
+              fi
+              USERNAME_ATTEMPTS=$((USERNAME_ATTEMPTS + 1))
+              echo ""
+            done
+
+            if [ "$USERNAME_VALID" = "false" ]; then
+              echo "❌ Failed to get valid username after $MAX_ATTEMPTS attempts" >&2
+              exit 1
+            fi
+
+            # Password collection with validation
+            PASSWORD_VALID=false
+            PASSWORD_ATTEMPTS=0
+            while [ "$PASSWORD_VALID" = "false" ] && [ $PASSWORD_ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+              if [ $PASSWORD_ATTEMPTS -eq 0 ]; then
+                printf "Enter SQL Server password: "
+              else
+                printf "Re-enter SQL Server password: "
+              fi
+              INPUT_PASSWORD=$(read_password)
+
+              if validate_password "$INPUT_PASSWORD"; then
+                PASSWORD="$INPUT_PASSWORD"
+                PASSWORD_VALID=true
+              fi
+              PASSWORD_ATTEMPTS=$((PASSWORD_ATTEMPTS + 1))
+              echo ""
+            done
+
+            if [ "$PASSWORD_VALID" = "false" ]; then
+              echo "❌ Failed to get valid password after $MAX_ATTEMPTS attempts" >&2
+              exit 1
+            fi
+          else
+            # Non-interactive mode - validate environment variables
+            # Determine if self-hosted or remote based on hostname
+            if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ] || [ "$HOSTNAME" = "::1" ]; then
+              echo "Detected self-hosted SQL Server (localhost)"
+            else
+              echo "Detected remote SQL Server ($HOSTNAME)"
+            fi
+            echo ""
+
+            if ! validate_hostname "$HOSTNAME"; then
+              echo "❌ Invalid hostname in NR_CLI_DB_HOSTNAME" >&2
+              exit 1
+            fi
+
+            if ! validate_port "$PORT"; then
+              echo "❌ Invalid port in NR_CLI_DB_PORT" >&2
+              exit 1
+            fi
+
+            if ! validate_username "$USERNAME"; then
+              echo "❌ Invalid username in NR_CLI_DB_USERNAME" >&2
+              exit 1
+            fi
+
+            if ! validate_password "$PASSWORD"; then
+              echo "❌ Invalid password in NR_CLI_DB_PASSWORD" >&2
+              exit 1
+            fi
+          fi
+
+          # Connection testing phase
+          echo ""
+          echo "Connecting to SQL Server..."
+
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$CONNECTION_SUCCESS" = "false" ]; do
+            # Build connection string
+            SERVER="$HOSTNAME,$PORT"
+            TEST_QUERY="SELECT @@VERSION AS 'SQL Server Version', SERVERPROPERTY('ProductVersion') AS 'Version', SERVERPROPERTY('Edition') AS 'Edition'"
+
+            # Use detected sqlcmd path
+            if [ -z "$SQLCMD_PATH" ]; then
+              SQLCMD_PATH="sqlcmd"
+            fi
+
+            # Reset exit code for this attempt
+            TEST_EXIT_CODE=0
+
+            # Attempt connection
+            TEST_RESULT=$($SQLCMD_PATH -S "$SERVER" -U "$USERNAME" -P "$PASSWORD" -Q "$TEST_QUERY" -t 30 -h -1 -W 2>&1)
+            TEST_EXIT_CODE=$?
+
+            # Check result - ensure no errors and successful exit
+            # Check for SQL errors in output (Msg XXXX, Level XX format)
+            # Check for common authentication/connection errors
+            HAS_SQL_ERROR=false
+            if echo "$TEST_RESULT" | grep -qE "Msg [0-9]+, Level (1[0-9]|[2-9][0-9])"; then
+              HAS_SQL_ERROR=true
+            fi
+            if echo "$TEST_RESULT" | grep -qiE "Login failed|Cannot open server|timeout|connection.*refused|permission denied"; then
+              HAS_SQL_ERROR=true
+            fi
+
+            if [ $TEST_EXIT_CODE -eq 0 ] && [ "$HAS_SQL_ERROR" = "false" ]; then
+              # Extract version info for validation
+              # Version numbers: 2017=14.x, 2019=15.x, 2022=16.x, 2025=17.x
+              SQL_YEAR=$(echo "$TEST_RESULT" | grep -oE "SQL Server [0-9]{4}" | grep -oE "[0-9]{4}" | head -1)
+
+              # If year not found, try to get version number (14.x, 15.x, etc.)
+              if [ -z "$SQL_YEAR" ]; then
+                SQL_VERSION=$(echo "$TEST_RESULT" | grep -oE "Version[^0-9]*[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+" | head -1 || echo "")
+                if [ -n "$SQL_VERSION" ]; then
+                  MAJOR_VERSION=$(echo "$SQL_VERSION" | cut -d. -f1)
+                  case "$MAJOR_VERSION" in
+                    14) SQL_YEAR="2017" ;;
+                    15) SQL_YEAR="2019" ;;
+                    16) SQL_YEAR="2022" ;;
+                    17) SQL_YEAR="2025" ;;
+                    *) SQL_YEAR="" ;;
+                  esac
+                fi
+              fi
+
+              # Display success message with version validation
+              if [ -n "$SQL_YEAR" ]; then
+                if [ "$SQL_YEAR" -lt 2017 ]; then
+                  echo "❌ Connected but SQL Server $SQL_YEAR is not supported" >&2
+                  echo "   Supported versions: 2017, 2019, 2022, 2025" >&2
+                  echo "   This integration requires SQL Server 2017 or later." >&2
+                  echo "" >&2
+                  exit 131
+                elif [ "$SQL_YEAR" -gt 2025 ]; then
+                  echo "✅ Connection successful! (SQL Server $SQL_YEAR - newer than tested)"
+                else
+                  echo "✅ Connection successful! (SQL Server $SQL_YEAR supported)"
+                fi
+              else
+                echo "✅ Connection successful!"
+              fi
+              echo ""
+
+              CONNECTION_SUCCESS=true
+
+              # Save configuration for later tasks
+              CONFIG_FILE="/tmp/nr-mssql-config.txt"
+
+              # Determine deployment type
+              DEPLOYMENT_TYPE="remote"
+              if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ] || [ "$HOSTNAME" = "::1" ]; then
+                DEPLOYMENT_TYPE="self-hosted"
+              fi
+
+              echo "HOSTNAME=$HOSTNAME" > "$CONFIG_FILE"
+              echo "PORT=$PORT" >> "$CONFIG_FILE"
+              echo "USERNAME=$USERNAME" >> "$CONFIG_FILE"
+              echo "PASSWORD=$PASSWORD" >> "$CONFIG_FILE"
+              echo "SQL_VERSION=$SQL_YEAR" >> "$CONFIG_FILE"
+              echo "DEPLOYMENT_TYPE=$DEPLOYMENT_TYPE" >> "$CONFIG_FILE"
+              chmod 600 "$CONFIG_FILE"
+
+            else
+              echo "❌ Connection failed"
+
+              # Detailed error analysis
+              IS_AUTH_ERROR=false
+              if echo "$TEST_RESULT" | grep -qi "Login failed for user"; then
+                IS_AUTH_ERROR=true
+                echo "   Authentication Error: Invalid username or password"
+                echo ""
+
+              elif echo "$TEST_RESULT" | grep -qi "Cannot open server"; then
+                echo "   Connection Error: Cannot reach SQL Server"
+                echo "   • Check: sudo systemctl status mssql-server"
+                echo "   • Verify hostname: $HOSTNAME and port: $PORT"
+                echo ""
+
+              elif echo "$TEST_RESULT" | grep -qi "timeout"; then
+                echo "   Timeout Error: Server not responding"
+                echo "   • Test: ping $HOSTNAME"
+                echo ""
+
+              else
+                echo "   $TEST_RESULT"
+                echo ""
+              fi
+
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$NON_INTERACTIVE" = "false" ]; then
+                # For authentication errors, automatically prompt for password re-entry
+                if [ "$IS_AUTH_ERROR" = "true" ]; then
+                  echo "Please re-enter credentials (Attempt $((ATTEMPT + 1))/$MAX_ATTEMPTS)"
+                  printf "Username [current: $USERNAME]: "
+                  read -r NEW_USERNAME
+                  if [ -n "$NEW_USERNAME" ]; then
+                    USERNAME="$NEW_USERNAME"
+                  fi
+                  printf "Password: "
+                  PASSWORD=$(read_password)
+                  echo ""
+                  echo "Connecting to SQL Server..."
+                else
+                  # For other errors, give user options
+                  echo "Retry? (1) Same credentials  (2) New credentials  (3) Exit"
+                  printf "Choice [1-3]: "
+                  read -r CHOICE
+
+                  if [ "$CHOICE" = "2" ]; then
+                    echo ""
+                    printf "Username: "
+                    read USERNAME
+                    printf "Password: "
+                    PASSWORD=$(read_password)
+                    echo ""
+                    echo "Connecting to SQL Server..."
+                  elif [ "$CHOICE" != "1" ]; then
+                    exit 1
+                  else
+                    echo "Connecting to SQL Server..."
+                  fi
+                fi
+
+                ATTEMPT=$((ATTEMPT + 1))
+              else
+                if [ "$NON_INTERACTIVE" = "false" ]; then
+                  echo "❌ Failed to connect after $MAX_ATTEMPTS attempts" >&2
+                fi
+                exit 1
+              fi
+            fi
+          done
+
+          if [ "$CONNECTION_SUCCESS" = "false" ]; then
+            echo "❌ Could not connect to SQL Server" >&2
+            exit 1
+          fi
+
+    install_nrdot_collector:
+      cmds:
+        - |
+          echo ""
+          echo "Installing NRDOT Collector..."
+          echo ""
+
+          # Load detected architecture
+          if [ -f /tmp/nr_otel_arch.sh ]; then
+            source /tmp/nr_otel_arch.sh
+          else
+            echo "❌ ERROR: Architecture not detected" >&2
+            exit 1
+          fi
+
+          # Check if NRDOT Collector is already installed
+          if dpkg -l | grep -q "nrdot-collector-host"; then
+            echo "✅ NRDOT Collector is already installed on this system"
+            echo ""
+            echo "If you want to update or configure the NRDOT Collector, please refer to the documentation:"
+            echo "https://docs.newrelic.com/docs/opentelemetry/database/otel-mssql/"
+            echo ""
+            exit 0
+          fi
+
+          # Set download URL based on architecture
+          if [ "$DETECTED_ARCH" = "arm64" ]; then
+            DOWNLOAD_URL="https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-linux-arm64-latest.deb"
+            DEB_FILE="nrdot-collector-host-linux-arm64.deb"
+            echo "→ Downloading NRDOT Collector for ARM64..."
+          else
+            DOWNLOAD_URL="https://download.newrelic.com/database-monitoring/nrdot-collector/nrdot-collector-host-linux-amd64-latest.deb"
+            DEB_FILE="nrdot-collector-host-linux-amd64.deb"
+            echo "→ Downloading NRDOT Collector for AMD64..."
+          fi
+
+          # Download the package
+          if ! curl -L -o "/tmp/$DEB_FILE" "$DOWNLOAD_URL" 2>&1; then
+            echo "❌ Failed to download NRDOT Collector" >&2
+            exit 1
+          fi
+
+          echo "✓ Downloaded NRDOT Collector"
+
+          # Install the package
+          echo "→ Installing NRDOT Collector..."
+          if sudo dpkg -i "/tmp/$DEB_FILE" 2>&1; then
+            echo "✅ NRDOT Collector installed successfully"
+          else
+            echo "❌ Failed to install NRDOT Collector" >&2
+            echo "Attempting to fix dependencies..."
+            sudo apt-get install -f -y
+            exit 1
+          fi
+
+          # Verify service is running
+          echo "→ Verifying NRDOT Collector service status..."
+          if sudo systemctl is-active --quiet nrdot-collector-host; then
+            echo "✅ NRDOT Collector service is running"
+          else
+            echo "❌ NRDOT Collector service is not running" >&2
+            echo "" >&2
+
+            # Get detailed status information
+            SERVICE_STATUS=$(sudo systemctl status nrdot-collector-host 2>&1 || true)
+
+            # Check if service failed
+            if echo "$SERVICE_STATUS" | grep -q "Active: failed"; then
+              echo "Service Status: FAILED" >&2
+              echo "" >&2
+
+              # Extract failure reason
+              FAILURE_REASON=$(echo "$SERVICE_STATUS" | grep -A 3 "Main PID" | tail -n 3 || echo "$SERVICE_STATUS" | grep "Status:" || echo "Unknown reason")
+              echo "Failure details:" >&2
+              echo "$FAILURE_REASON" >&2
+
+            elif echo "$SERVICE_STATUS" | grep -q "Active: inactive"; then
+              echo "Service Status: INACTIVE (not started)" >&2
+              echo "" >&2
+              echo "Attempting to start the service..." >&2
+              if sudo systemctl start nrdot-collector-host 2>&1; then
+                echo "✓ Service started successfully" >&2
+              else
+                START_ERROR=$(sudo systemctl status nrdot-collector-host 2>&1 | grep -E "(failed|error|Error)" | head -5 || echo "Failed to start service")
+                echo "Failed to start service:" >&2
+                echo "$START_ERROR" >&2
+              fi
+
+            elif echo "$SERVICE_STATUS" | grep -q "could not be found"; then
+              echo "Service Status: NOT FOUND" >&2
+              echo "" >&2
+              echo "The nrdot-collector-host service was not registered during installation." >&2
+              echo "This may indicate an incomplete installation." >&2
+
+            else
+              echo "Service Status: UNKNOWN" >&2
+              echo "" >&2
+              echo "Full status output:" >&2
+              echo "$SERVICE_STATUS" >&2
+            fi
+
+            echo "" >&2
+            echo "To check service status manually, run:" >&2
+            echo "  sudo systemctl status nrdot-collector-host" >&2
+            echo "" >&2
+
+            # Don't exit immediately - let installation continue but warn user
+            echo "⚠️  WARNING: Service verification failed. Please check service status manually." >&2
+          fi
+
+          # Clean up
+          rm -f "/tmp/$DEB_FILE"
+
+          echo ""
+
+    create_monitoring_user:
+      cmds:
+        - |
+          echo ""
+          echo "Configuring SQL Server Monitoring User..."
+          echo ""
+
+          # Load SQL connection config
+          CONFIG_FILE="/tmp/nr-mssql-config.txt"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "❌ ERROR: SQL Server connection configuration not found" >&2
+            exit 1
+          fi
+
+          source "$CONFIG_FILE"
+
+          # Load sqlcmd path
+          if [ -f /tmp/nr_otel_arch.sh ]; then
+            source /tmp/nr_otel_arch.sh
+          fi
+
+          if [ -z "$SQLCMD_PATH" ]; then
+            SQLCMD_PATH="sqlcmd"
+          fi
+
+          # Check if running in non-interactive mode
+          NON_INTERACTIVE=false
+          if [ "${NEW_RELIC_ASSUME_YES}" = "true" ]; then
+            NON_INTERACTIVE=true
+          fi
+
+          # Function to read password with asterisks
+          read_password() {
+            password=""
+            saved_settings=$(stty -g)
+            stty -echo -icanon min 1 time 0 2>/dev/null || stty -echo
+
+            while IFS= read -r -n1 char 2>/dev/null || char=$(dd bs=1 count=1 2>/dev/null); do
+              if [ -z "$char" ] || [ "$char" = $'\n' ] || [ "$char" = $'\r' ]; then
+                break
+              fi
+
+              if [ "$char" = $'\x7f' ] || [ "$char" = $'\b' ] || [ "$char" = $'\x08' ]; then
+                if [ ${#password} -gt 0 ]; then
+                  password="${password%?}"
+                  printf '\b \b' >&2
+                fi
+              else
+                password="${password}${char}"
+                printf '*' >&2
+              fi
+            done
+
+            stty "$saved_settings" 2>/dev/null
+            printf '\n' >&2
+            echo "$password"
+          }
+
+          # Function to check if user exists
+          check_user_exists() {
+            local username="$1"
+            local check_query="SELECT COUNT(*) AS user_count FROM sys.sql_logins WHERE name = N'$username'"
+            local result
+            local exit_code
+
+            result=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$USERNAME" -P "$PASSWORD" -Q "$check_query" -h -1 -W 2>&1)
+            exit_code=$?
+
+            # Check if query executed successfully
+            if [ $exit_code -ne 0 ] || echo "$result" | grep -qi "Msg [0-9]*, Level [0-9]*"; then
+              echo "⚠️  Warning: Could not check if user exists. Assuming user doesn't exist." >&2
+              return 1
+            fi
+
+            # Extract count from result (remove whitespace)
+            local count=$(echo "$result" | tr -d ' \n\r' | grep -oE '[0-9]+' | head -1)
+
+            if [ -n "$count" ] && [ "$count" -gt 0 ]; then
+              return 0  # User exists
+            else
+              return 1  # User doesn't exist
+            fi
+          }
+
+          # Function to validate monitoring user connection
+          validate_monitoring_user() {
+            local mon_user="$1"
+            local mon_pass="$2"
+            local test_query="SELECT 1 AS test"
+
+            local result
+            local exit_code
+            result=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$mon_user" -P "$mon_pass" -Q "$test_query" -h -1 -W 2>&1)
+            exit_code=$?
+
+            # Check for authentication failures
+            if echo "$result" | grep -qi "Login failed"; then
+              echo "❌ Authentication Error: Invalid password for user '$mon_user'" >&2
+              return 1
+            fi
+
+            # Check for connection errors
+            if echo "$result" | grep -qi "Cannot open server\|timeout"; then
+              echo "❌ Connection Error: Cannot reach SQL Server" >&2
+              echo "$result" >&2
+              return 1
+            fi
+
+            # Check for any SQL errors
+            if echo "$result" | grep -q "Msg [0-9]*, Level [0-9]*"; then
+              echo "❌ SQL Error occurred:" >&2
+              echo "$result" >&2
+              return 1
+            fi
+
+            # Check exit code
+            if [ $exit_code -ne 0 ]; then
+              echo "❌ Connection failed with exit code: $exit_code" >&2
+              echo "$result" >&2
+              return 1
+            fi
+
+            return 0  # Connection successful
+          }
+
+          # Function to validate password meets SQL Server requirements
+          validate_sql_password() {
+            local password="$1"
+            local min_length=8
+            local categories=0
+
+            # Check minimum length
+            if [ ${#password} -lt $min_length ]; then
+              echo "  ❌ Password must be at least $min_length characters long" >&2
+              return 1
+            fi
+
+            # Check for uppercase letters
+            if echo "$password" | grep -q '[A-Z]'; then
+              categories=$((categories + 1))
+            fi
+
+            # Check for lowercase letters
+            if echo "$password" | grep -q '[a-z]'; then
+              categories=$((categories + 1))
+            fi
+
+            # Check for digits
+            if echo "$password" | grep -q '[0-9]'; then
+              categories=$((categories + 1))
+            fi
+
+            # Check for special characters
+            if echo "$password" | grep -q '[^a-zA-Z0-9]'; then
+              categories=$((categories + 1))
+            fi
+
+            # SQL Server requires at least 3 out of 4 categories
+            if [ $categories -lt 3 ]; then
+              echo "  ❌ Password must contain at least 3 of the following:" >&2
+              echo "     • Uppercase letters (A-Z)" >&2
+              echo "     • Lowercase letters (a-z)" >&2
+              echo "     • Digits (0-9)" >&2
+              echo "     • Special characters (!@#\$%^&*)" >&2
+              return 1
+            fi
+
+            return 0
+          }
+
+          # Function to generate a strong SQL Server password
+          generate_password() {
+            local length=16
+            local uppercase="ABCDEFGHJKLMNPQRSTUVWXYZ"
+            local lowercase="abcdefghjkmnpqrstuvwxyz"
+            local digits="23456789"
+            local special="!@#$%^&*"
+            local all_chars="${uppercase}${lowercase}${digits}${special}"
+
+            # Ensure at least one character from each required category
+            local password=""
+            password="${password}$(echo "$uppercase" | fold -w1 | shuf | head -c2)"
+            password="${password}$(echo "$lowercase" | fold -w1 | shuf | head -c2)"
+            password="${password}$(echo "$digits" | fold -w1 | shuf | head -c2)"
+            password="${password}$(echo "$special" | fold -w1 | shuf | head -c1)"
+
+            # Fill remaining length with random characters from all categories
+            local remaining=$((length - ${#password}))
+            password="${password}$(echo "$all_chars" | fold -w1 | shuf | head -c$remaining)"
+
+            # Shuffle the entire password
+            password=$(echo "$password" | fold -w1 | shuf | tr -d '\n')
+
+            echo "$password"
+          }
+
+          MONITORING_USERNAME=""
+          MONITORING_PASSWORD=""
+          USER_CREATION_MODE=""
+
+          # Interactive mode
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            echo "SQL Server Monitoring User Setup"
+            echo ""
+
+            # First, ask for username
+            printf "Enter monitoring username [default: newrelic]: "
+            read -r MONITORING_USERNAME
+            MONITORING_USERNAME="${MONITORING_USERNAME:-newrelic}"
+            echo ""
+
+            # Check if user already exists
+            echo "→ Checking if user '$MONITORING_USERNAME' exists..."
+            if check_user_exists "$MONITORING_USERNAME"; then
+              echo "✓ User '$MONITORING_USERNAME' found in SQL Server"
+              echo ""
+
+              # User exists - ask what to do
+              echo "User '$MONITORING_USERNAME' already exists. Please choose:"
+              echo "  1. Use existing user (you'll need to provide password)"
+              echo "  2. Create new monitoring user (choose different username)"
+              printf "Choose [1-2]: "
+              read -r USER_CHOICE
+              echo ""
+
+              if [ "$USER_CHOICE" = "1" ]; then
+                # Use existing user
+                USER_CREATION_MODE="existing"
+
+                # Retry logic for password validation (max 3 attempts)
+                MAX_PASSWORD_ATTEMPTS=3
+                PASSWORD_ATTEMPT=1
+                PASSWORD_VALID=false
+
+                while [ $PASSWORD_ATTEMPT -le $MAX_PASSWORD_ATTEMPTS ] && [ "$PASSWORD_VALID" = "false" ]; do
+                  if [ $PASSWORD_ATTEMPT -eq 1 ]; then
+                    printf "Enter password for user '$MONITORING_USERNAME': "
+                  else
+                    printf "Re-enter password for user '$MONITORING_USERNAME' (Attempt $PASSWORD_ATTEMPT/$MAX_PASSWORD_ATTEMPTS): "
+                  fi
+                  MONITORING_PASSWORD=$(read_password)
+                  echo ""
+
+                  # Validate connection
+                  echo "→ Validating connection with user '$MONITORING_USERNAME'..."
+                  if validate_monitoring_user "$MONITORING_USERNAME" "$MONITORING_PASSWORD"; then
+                    echo "✅ Connection successful with user '$MONITORING_USERNAME'"
+                    echo ""
+                    PASSWORD_VALID=true
+                  else
+                    if [ $PASSWORD_ATTEMPT -lt $MAX_PASSWORD_ATTEMPTS ]; then
+                      echo ""
+                    else
+                      echo "❌ ERROR: Failed to connect with user '$MONITORING_USERNAME' after $MAX_PASSWORD_ATTEMPTS attempts" >&2
+                      exit 1
+                    fi
+                  fi
+
+                  PASSWORD_ATTEMPT=$((PASSWORD_ATTEMPT + 1))
+                done
+
+              else
+                # Create new user with different name
+                USER_CREATION_MODE="new"
+
+                printf "Enter new monitoring username: "
+                read -r MONITORING_USERNAME
+                echo ""
+
+                if [ -z "$MONITORING_USERNAME" ]; then
+                  echo "❌ ERROR: Username cannot be empty" >&2
+                  exit 1
+                fi
+
+                # Check if new username also exists
+                echo "→ Checking if user '$MONITORING_USERNAME' exists..."
+                if check_user_exists "$MONITORING_USERNAME"; then
+                  echo "❌ ERROR: User '$MONITORING_USERNAME' already exists" >&2
+                  echo "Please run the installation again with a different username" >&2
+                  exit 1
+                fi
+
+                echo "✓ Username '$MONITORING_USERNAME' is available"
+                echo ""
+
+                # Auto-generate strong password
+                echo "→ Generating secure password for user '$MONITORING_USERNAME'..."
+                MONITORING_PASSWORD=$(generate_password)
+                echo "✓ Password generated successfully"
+                echo ""
+              fi
+
+            else
+              # User doesn't exist - proceed with creation
+              echo "✓ Username '$MONITORING_USERNAME' is available"
+              echo ""
+
+              USER_CREATION_MODE="new"
+
+              # Auto-generate strong password
+              echo "→ Generating secure password for user '$MONITORING_USERNAME'..."
+              MONITORING_PASSWORD=$(generate_password)
+              echo "✓ Password generated successfully"
+              echo ""
+            fi
+
+          else
+            # Non-interactive mode - use environment variables
+            MONITORING_USERNAME="${NR_CLI_MONITORING_USERNAME:-newrelic}"
+            MONITORING_PASSWORD="${NR_CLI_MONITORING_PASSWORD}"
+
+            if [ -z "$MONITORING_PASSWORD" ]; then
+              echo "❌ ERROR: NR_CLI_MONITORING_PASSWORD environment variable is required in non-interactive mode" >&2
+              exit 1
+            fi
+
+            # Check if user exists
+            if check_user_exists "$MONITORING_USERNAME"; then
+              USER_CREATION_MODE="existing"
+              echo "→ Using existing user '$MONITORING_USERNAME'"
+
+              # Validate connection
+              if ! validate_monitoring_user "$MONITORING_USERNAME" "$MONITORING_PASSWORD"; then
+                echo "❌ ERROR: Failed to connect with existing user '$MONITORING_USERNAME'" >&2
+                exit 1
+              fi
+            else
+              USER_CREATION_MODE="new"
+              echo "→ Creating new user '$MONITORING_USERNAME'"
+            fi
+          fi
+
+          # Show grants and ask for confirmation
+          echo "=========================================="
+          echo "SQL Server Permissions Required"
+          echo "=========================================="
+          echo ""
+          echo "The following permissions will be granted to user '$MONITORING_USERNAME':"
+          echo ""
+          echo "Instance-level permissions:"
+          echo "  • VIEW SERVER STATE"
+          echo "  • VIEW ANY DEFINITION"
+          echo "  • VIEW ANY DATABASE"
+          echo ""
+          echo "Database-level permissions (for all user databases):"
+          echo "  • VIEW DATABASE STATE"
+          echo "  • VIEW DEFINITION"
+          echo "  • db_datareader role membership"
+          echo ""
+
+          if [ "$USER_CREATION_MODE" = "new" ]; then
+            echo "This will:"
+            echo "  1. Create the user '$MONITORING_USERNAME'"
+            echo "  2. Grant the above permissions"
+          else
+            echo "This will grant the above permissions to the existing user '$MONITORING_USERNAME'"
+          fi
+          echo ""
+
+          GRANT_CONFIRMED=false
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            printf "Do you want to proceed? [yes/no]: "
+            read -r GRANT_RESPONSE
+            echo ""
+
+            if [ "$GRANT_RESPONSE" = "yes" ] || [ "$GRANT_RESPONSE" = "y" ] || [ "$GRANT_RESPONSE" = "YES" ] || [ "$GRANT_RESPONSE" = "Y" ]; then
+              GRANT_CONFIRMED=true
+            fi
+          else
+            # In non-interactive mode, assume yes
+            GRANT_CONFIRMED=true
+          fi
+
+          if [ "$GRANT_CONFIRMED" = "false" ]; then
+            echo "⚠️  Integration stopped by user. Permissions were not granted." >&2
+            echo "The monitoring user cannot function without these permissions." >&2
+            exit 1
+          fi
+
+          # Execute SQL to create user and grant permissions
+          echo "→ Applying SQL Server permissions..."
+          echo ""
+
+          # Create SQL script
+          SQL_SCRIPT="/tmp/nr-mssql-setup.sql"
+
+          # Build SQL script using echo to avoid heredoc YAML issues
+          if [ "$USER_CREATION_MODE" = "new" ]; then
+            echo "USE [master];" > "$SQL_SCRIPT"
+            echo "CREATE LOGIN [$MONITORING_USERNAME] WITH PASSWORD = '$MONITORING_PASSWORD';" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "DECLARE @name SYSNAME;" >> "$SQL_SCRIPT"
+            echo "DECLARE @sql NVARCHAR(MAX);" >> "$SQL_SCRIPT"
+            echo "DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR" >> "$SQL_SCRIPT"
+            echo "SELECT [name]" >> "$SQL_SCRIPT"
+            echo "FROM [master].[sys].[databases]" >> "$SQL_SCRIPT"
+            echo "WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')" >> "$SQL_SCRIPT"
+            echo "AND [state] = 0;" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "OPEN db_cursor;" >> "$SQL_SCRIPT"
+            echo "FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "WHILE @@FETCH_STATUS = 0" >> "$SQL_SCRIPT"
+            echo "BEGIN" >> "$SQL_SCRIPT"
+            echo "  BEGIN TRY" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Processing database: ' + @name;" >> "$SQL_SCRIPT"
+            echo "    SET @sql = 'USE [' + @name + ']; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'') BEGIN CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME]; END; GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME]; GRANT VIEW DEFINITION TO [$MONITORING_USERNAME]; ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];';" >> "$SQL_SCRIPT"
+            echo "    EXEC sp_executesql @sql;" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Success: ' + @name;" >> "$SQL_SCRIPT"
+            echo "  END TRY" >> "$SQL_SCRIPT"
+            echo "  BEGIN CATCH" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();" >> "$SQL_SCRIPT"
+            echo "  END CATCH" >> "$SQL_SCRIPT"
+            echo "  FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "END" >> "$SQL_SCRIPT"
+            echo "CLOSE db_cursor;" >> "$SQL_SCRIPT"
+            echo "DEALLOCATE db_cursor;" >> "$SQL_SCRIPT"
+          else
+            echo "USE [master];" > "$SQL_SCRIPT"
+            echo "GRANT VIEW SERVER STATE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DEFINITION TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "GRANT VIEW ANY DATABASE TO [$MONITORING_USERNAME];" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "DECLARE @name SYSNAME;" >> "$SQL_SCRIPT"
+            echo "DECLARE @sql NVARCHAR(MAX);" >> "$SQL_SCRIPT"
+            echo "DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR" >> "$SQL_SCRIPT"
+            echo "SELECT [name]" >> "$SQL_SCRIPT"
+            echo "FROM [master].[sys].[databases]" >> "$SQL_SCRIPT"
+            echo "WHERE [name] NOT IN ('master', 'msdb', 'tempdb', 'model', 'rdsadmin', 'distribution')" >> "$SQL_SCRIPT"
+            echo "AND [state] = 0;" >> "$SQL_SCRIPT"
+            echo "" >> "$SQL_SCRIPT"
+            echo "OPEN db_cursor;" >> "$SQL_SCRIPT"
+            echo "FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "WHILE @@FETCH_STATUS = 0" >> "$SQL_SCRIPT"
+            echo "BEGIN" >> "$SQL_SCRIPT"
+            echo "  BEGIN TRY" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Processing database: ' + @name;" >> "$SQL_SCRIPT"
+            echo "    SET @sql = 'USE [' + @name + ']; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$MONITORING_USERNAME'') BEGIN CREATE USER [$MONITORING_USERNAME] FOR LOGIN [$MONITORING_USERNAME]; END; GRANT VIEW DATABASE STATE TO [$MONITORING_USERNAME]; GRANT VIEW DEFINITION TO [$MONITORING_USERNAME]; ALTER ROLE db_datareader ADD MEMBER [$MONITORING_USERNAME];';" >> "$SQL_SCRIPT"
+            echo "    EXEC sp_executesql @sql;" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Success: ' + @name;" >> "$SQL_SCRIPT"
+            echo "  END TRY" >> "$SQL_SCRIPT"
+            echo "  BEGIN CATCH" >> "$SQL_SCRIPT"
+            echo "    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();" >> "$SQL_SCRIPT"
+            echo "  END CATCH" >> "$SQL_SCRIPT"
+            echo "  FETCH NEXT FROM db_cursor INTO @name;" >> "$SQL_SCRIPT"
+            echo "END" >> "$SQL_SCRIPT"
+            echo "CLOSE db_cursor;" >> "$SQL_SCRIPT"
+            echo "DEALLOCATE db_cursor;" >> "$SQL_SCRIPT"
+          fi
+
+          # Execute the SQL script
+          SQL_OUTPUT=$($SQLCMD_PATH -S "$HOSTNAME,$PORT" -U "$USERNAME" -P "$PASSWORD" -i "$SQL_SCRIPT" 2>&1)
+          SQL_EXIT_CODE=$?
+
+          # Check if execution was successful
+          if [ $SQL_EXIT_CODE -eq 0 ] && ! echo "$SQL_OUTPUT" | grep -q "Msg [0-9]*, Level 1[0-9]"; then
+            if [ "$USER_CREATION_MODE" = "new" ]; then
+              echo "✅ Monitoring user '$MONITORING_USERNAME' created successfully"
+              echo ""
+              echo "=========================================="
+              echo "Generated Credentials"
+              echo "=========================================="
+              echo "Username: $MONITORING_USERNAME"
+              echo "Password: $MONITORING_PASSWORD"
+              echo ""
+              echo "⚠️  IMPORTANT: Save these credentials securely!"
+              echo "   You will need them to configure the OpenTelemetry collector."
+            else
+              echo "✅ Permissions granted to user '$MONITORING_USERNAME' successfully"
+            fi
+            echo ""
+
+            # Check for any errors
+            ERROR_COUNT=$(echo "$SQL_OUTPUT" | grep -c "Error on")
+            if [ $ERROR_COUNT -gt 0 ]; then
+              echo "⚠️  Some databases encountered errors:"
+              echo "$SQL_OUTPUT" | grep "Error on"
+              echo ""
+            fi
+
+            # Save monitoring user info to config
+            echo "MONITORING_USERNAME=$MONITORING_USERNAME" >> "$CONFIG_FILE"
+            echo "MONITORING_PASSWORD=$MONITORING_PASSWORD" >> "$CONFIG_FILE"
+            chmod 600 "$CONFIG_FILE"
+
+          else
+            echo "❌ ERROR: Failed to configure monitoring user" >&2
+            echo "" >&2
+            echo "SQL Output:" >&2
+            echo "$SQL_OUTPUT" >&2
+            echo "" >&2
+            rm -f "$SQL_SCRIPT"
+            exit 1
+          fi
+
+          # Clean up SQL script
+          rm -f "$SQL_SCRIPT"
+
+          echo "✅ Monitoring user configuration complete"
+          echo ""
+
+    configure_nrdot:
+      cmds:
+        - |
+          echo ""
+          echo "==> Configuring NRDOT Collector for SQL Server monitoring..."
+
+          # Load SQL connection config
+          CONFIG_FILE="/tmp/nr-mssql-config.txt"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "❌ ERROR: SQL Server connection configuration not found" >&2
+            exit 1
+          fi
+
+          source "$CONFIG_FILE"
+
+          # Check if running in non-interactive mode
+          NON_INTERACTIVE=false
+          if [ "${NEW_RELIC_ASSUME_YES}" = "true" ]; then
+            NON_INTERACTIVE=true
+          fi
+
+          # Ask for New Relic region/endpoint
+          OTLP_ENDPOINT="https://otlp.nr-data.net"
+          REGION_NAME="US Production"
+
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            echo "New Relic Region Selection"
+            echo ""
+            echo "Select your New Relic region:"
+            echo "  1. US Production (https://otlp.nr-data.net)"
+            echo "  2. EU Production (https://otlp.eu01.nr-data.net)"
+            printf "Choose [1-2] (default: 1): "
+            read -r REGION_CHOICE
+            echo ""
+
+            if [ "$REGION_CHOICE" = "2" ]; then
+              OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+              REGION_NAME="EU Production"
+            fi
+            echo "→ Selected region: $REGION_NAME"
+            echo ""
+          else
+            # Non-interactive mode - use NEW_RELIC_REGION if set
+            if [ "{{.NEW_RELIC_REGION}}" = "EU" ] || [ "{{.NEW_RELIC_REGION}}" = "eu" ]; then
+              OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+              REGION_NAME="EU Production"
+            fi
+          fi
+
+          # Ask for monitored databases
+          MONITORED_DATABASES_YAML="[]"
+          if [ "$NON_INTERACTIVE" = "false" ]; then
+            echo "Database Monitoring Configuration"
+            echo ""
+            echo "Which databases would you like to monitor?"
+            echo "  • Press Enter to monitor ALL databases (recommended)"
+            echo "  • Or enter specific database names separated by commas (e.g., db1,db2,db3)"
+            printf "Databases [default: ALL]: "
+            read -r DB_INPUT
+            echo ""
+
+            if [ -n "$DB_INPUT" ]; then
+              # User provided specific databases - convert to YAML array format
+              MONITORED_DATABASES_YAML="["
+              IFS=',' read -ra DBS <<< "$DB_INPUT"
+              for i in "${!DBS[@]}"; do
+                DB_NAME=$(echo "${DBS[$i]}" | xargs)  # Trim whitespace
+                if [ $i -gt 0 ]; then
+                  MONITORED_DATABASES_YAML="${MONITORED_DATABASES_YAML}, "
+                fi
+                MONITORED_DATABASES_YAML="${MONITORED_DATABASES_YAML}$DB_NAME"
+              done
+              MONITORED_DATABASES_YAML="${MONITORED_DATABASES_YAML}]"
+              echo "→ Monitoring specific databases: $DB_INPUT"
+            else
+              # Empty input means monitor all databases
+              echo "→ Monitoring all databases"
+            fi
+            echo ""
+          else
+            # Non-interactive mode
+            if [ -n "${NR_CLI_MONITORED_DATABASES}" ]; then
+              # Convert comma-separated to YAML array
+              MONITORED_DATABASES_YAML="["
+              IFS=',' read -ra DBS <<< "${NR_CLI_MONITORED_DATABASES}"
+              for i in "${!DBS[@]}"; do
+                DB_NAME=$(echo "${DBS[$i]}" | xargs)
+                if [ $i -gt 0 ]; then
+                  MONITORED_DATABASES_YAML="${MONITORED_DATABASES_YAML}, "
+                fi
+                MONITORED_DATABASES_YAML="${MONITORED_DATABASES_YAML}$DB_NAME"
+              done
+              MONITORED_DATABASES_YAML="${MONITORED_DATABASES_YAML}]"
+            fi
+          fi
+
+          cat > /etc/nrdot-collector-host/config.yaml << EOF
+          extensions:
+            health_check:
+          
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                http:
+          
+            hostmetrics:
+              # Default collection interval is 60s. Lower if you need finer granularity.
+              collection_interval: 60s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.time:
+                      enabled: false
+                    system.cpu.utilization:
+                      enabled: true
+                load:
+                memory:
+                  metrics:
+                    system.memory.utilization:
+                      enabled: true
+                paging:
+                  metrics:
+                    system.paging.utilization:
+                      enabled: false
+                    system.paging.faults:
+                      enabled: false
+                filesystem:
+                  metrics:
+                    system.filesystem.utilization:
+                      enabled: true
+                disk:
+                  metrics:
+                    system.disk.merged:
+                      enabled: false
+                    system.disk.pending_operations:
+                      enabled: false
+                    system.disk.weighted_io_time:
+                      enabled: false
+                network:
+                  metrics:
+                    system.network.connections:
+                      enabled: false
+                # Uncomment to enable process metrics, which can be noisy but valuable.
+                # processes:
+                # process:
+                #   metrics:
+                #     process.cpu.utilization:
+                #       enabled: true
+                #     process.cpu.time:
+                #       enabled: false
+          
+            filelog:
+              include:
+                - /var/log/alternatives.log
+                - /var/log/cloud-init.log
+                - /var/log/auth.log
+                - /var/log/dpkg.log
+                - /var/log/syslog
+                - /var/log/messages
+                - /var/log/secure
+                - /var/log/yum.log
+          
+            newrelicsqlserver:
+              hostname: "$HOSTNAME"
+              port: "$PORT"
+              username: "$MONITORING_USERNAME"
+              password: "$MONITORING_PASSWORD"
+              monitored_databases: $MONITORED_DATABASES_YAML
+              # timeout: 30s
+              # collection_interval: 30s
+              # query_monitoring_fetch_interval: 15
+              # query_monitoring_response_time_threshold: 100
+              # query_monitoring_count_threshold: 30
+              # interval_calculator_cache_ttl_minutes: 10
+          
+              # Core Metric Category Toggles - Enable/disable entire categories of metrics
+              # enable_instance_metrics: true
+              # enable_database_metrics: true
+              # enable_user_connection_metrics: true
+              # enable_wait_time_metrics: true
+              # enable_failover_cluster_metrics: true
+              # enable_database_principals_metrics: true
+              # enable_database_role_membership_metrics: true
+              # enable_security_metrics: true
+              # enable_lock_metrics: true
+              # enable_thread_pool_metrics: true
+              # enable_tempdb_metrics: true
+              # enable_database_buffer_metrics: true
+          
+          processors:
+            # group system.cpu metrics by cpu
+            metricstransform:
+              transforms:
+                - include: system.cpu.utilization
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [ state ]
+                      aggregation_type: mean
+                - include: system.paging.operations
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [ direction ]
+                      aggregation_type: sum
+          
+            # remove system.cpu metrics for states
+            filter/exclude_cpu_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
+          
+            filter/exclude_memory_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
+          
+            filter/exclude_memory_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
+          
+            filter/exclude_filesystem_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
+          
+            filter/exclude_filesystem_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
+          
+            filter/exclude_filesystem_inodes_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
+          
+            filter/exclude_system_disk:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
+          
+            filter/exclude_system_paging:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
+                  - 'metric.name == "system.paging.operations" and attributes["type"] == "cached"'
+          
+            filter/exclude_network:
+              metrics:
+                datapoint:
+                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
+          
+            attributes/exclude_system_paging:
+              include:
+                match_type: strict
+                metric_names:
+                  - system.paging.operations
+              actions:
+                - key: type
+                  action: delete
+          
+            # Transform to clear description and unit fields
+            transform/clear_metadata:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(metric.description, "")
+                    - set(metric.unit, "")
+          
+            # Filter to only include execution plan and event metrics (for logs conversion)
+            filter/exec_plan_include:
+              metrics:
+                include:
+                  match_type: strict
+                  metric_names:
+                    - sqlserver.slowquery.query_details
+                    - sqlserver.execution.plan
+                    - sqlserver.blocking_query.details
+                    - sqlserver.activequery.query_details
+          
+            # Filter to exclude execution plan and event metrics (from main metrics pipeline)
+            filter/exec_plan_exclude:
+              metrics:
+                exclude:
+                  match_type: strict
+                  metric_names:
+                    - sqlserver.slowquery.query_details
+                    - sqlserver.execution.plan
+                    - sqlserver.blocking_query.details
+                    - sqlserver.activequery.query_details
+          
+            cumulativetodelta:
+              max_staleness: 5m
+              include:
+                match_type: strict
+                metrics:
+                  # Wait stats (sys.dm_os_wait_stats)
+                  - sqlserver.wait_stats.latch.wait_time_ms
+                  - sqlserver.wait_stats.latch.waiting_tasks_count
+                  - sqlserver.wait_stats.wait_time_ms
+                  - sqlserver.wait_stats.waiting_tasks_count
+                  # Instance stats (sys.dm_os_performance_counters)
+                  - sqlserver.stats.sql_compilations_per_sec
+                  - sqlserver.stats.sql_recompilations_per_sec
+                  - sqlserver.stats.lock_waits_per_sec
+                  - sqlserver.stats.deadlocks_per_sec
+                  - sqlserver.stats.user_errors_per_sec
+                  - sqlserver.stats.kill_connection_errors_per_sec
+                  - sqlserver.access.page_splits_per_sec
+                  - sqlserver.buffer.checkpoint_pages_per_sec
+                  - sqlserver.bufferpool.batch_requests_per_sec
+                  - sqlserver.instance.transactions_per_sec
+                  - sqlserver.instance.forced_parameterizations_per_sec
+                  - sqlserver.instance.full_scans_rate
+                  - sqlserver.instance.lock_timeouts_rate
+                  # Database log (sys.dm_os_performance_counters)
+                  - sqlserver.database.log.flushes_per_sec
+                  - sqlserver.database.log.bytes_flushed_per_sec
+                  - sqlserver.database.log.flush_waits_per_sec
+                  # Failover cluster
+                  - sqlserver.failover_cluster.log_bytes_received_per_sec
+                  # User connections
+                  - sqlserver.user_connections.authentication.logins_per_sec
+          
+            deltatorate:
+              metrics:
+                - sqlserver.wait_stats.latch.wait_time_ms
+                - sqlserver.wait_stats.latch.waiting_tasks_count
+                - sqlserver.wait_stats.wait_time_ms
+                - sqlserver.wait_stats.waiting_tasks_count
+                - sqlserver.stats.sql_compilations_per_sec
+                - sqlserver.stats.sql_recompilations_per_sec
+                - sqlserver.stats.lock_waits_per_sec
+                - sqlserver.stats.deadlocks_per_sec
+                - sqlserver.stats.user_errors_per_sec
+                - sqlserver.stats.kill_connection_errors_per_sec
+                - sqlserver.access.page_splits_per_sec
+                - sqlserver.buffer.checkpoint_pages_per_sec
+                - sqlserver.bufferpool.batch_requests_per_sec
+                - sqlserver.instance.transactions_per_sec
+                - sqlserver.instance.forced_parameterizations_per_sec
+                - sqlserver.instance.full_scans_rate
+                - sqlserver.instance.lock_timeouts_rate
+                - sqlserver.database.log.flushes_per_sec
+                - sqlserver.database.log.bytes_flushed_per_sec
+                - sqlserver.database.log.flush_waits_per_sec
+                - sqlserver.failover_cluster.log_bytes_received_per_sec
+                - sqlserver.user_connections.authentication.logins_per_sec
+          
+            transform/host:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(metric.description, "")
+                    - set(metric.unit, "")
+          
+            transform:
+              trace_statements:
+                - context: span
+                  statements:
+                    - truncate_all(span.attributes, 4095)
+                    - truncate_all(resource.attributes, 4095)
+              log_statements:
+                - context: log
+                  statements:
+                    - truncate_all(log.attributes, 4095)
+                    - truncate_all(resource.attributes, 4095)
+          
+            # used to prevent out of memory situations on the collector
+            memory_limiter:
+              check_interval: 1s
+              limit_mib: \${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
+          
+            batch:
+          
+            resourcedetection:
+              detectors: ["system"]
+              system:
+                hostname_sources: ["os"]
+                resource_attributes:
+                  host.id:
+                    enabled: true
+          
+            resourcedetection/db_safe:
+              detectors: ["system"]
+              override: false
+              system:
+                hostname_sources: ["os"]
+                resource_attributes:
+                  host.id:
+                    enabled: true
+          
+            resourcedetection/cloud:
+              detectors: ["gcp", "ec2", "azure"]
+              timeout: 2s
+              override: true
+          
+            resourcedetection/env:
+              detectors: ["env"]
+              timeout: 2s
+              override: true
+          
+          connectors:
+            metricsaslogs:
+              include_resource_attributes: true
+              include_scope_info: true
+          
+          exporters:
+            otlphttp:
+              endpoint: "$OTLP_ENDPOINT"
+              headers:
+                api-key: "{{.NEW_RELIC_LICENSE_KEY}}"
+              compression: gzip
+          
+          service:
+            pipelines:
+              metrics/host:
+                receivers: [hostmetrics]
+                processors:
+                  - memory_limiter
+                  - metricstransform
+                  - filter/exclude_cpu_utilization
+                  - filter/exclude_memory_utilization
+                  - filter/exclude_memory_usage
+                  - filter/exclude_filesystem_utilization
+                  - filter/exclude_filesystem_usage
+                  - filter/exclude_filesystem_inodes_usage
+                  - filter/exclude_system_disk
+                  - filter/exclude_network
+                  - attributes/exclude_system_paging
+                  - transform/host
+                  - resourcedetection
+                  - resourcedetection/cloud
+                  - resourcedetection/db_safe
+                  - resourcedetection/env
+                  - cumulativetodelta
+                  - deltatorate
+                  - batch
+                exporters: [otlphttp]
+              traces:
+                receivers: [otlp]
+                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                exporters: [otlphttp]
+              metrics:
+                receivers: [newrelicsqlserver, otlp]
+                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_exclude, batch]
+                exporters: [otlphttp]
+              logs:
+                receivers: [metricsaslogs, otlp]
+                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                exporters: [otlphttp]
+              metrics/exec_plan_to_logs:
+                receivers: [newrelicsqlserver, otlp]
+                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, filter/exec_plan_include, batch]
+                exporters: [metricsaslogs]
+            extensions: [health_check]
+          EOF
+
+          echo -e "\e[32mNRDOT Collector configured successfully.\e[0m"
+          echo -e "  Config file: \e[1m/etc/nrdot-collector-host/config.yaml\e[0m"
+
+    restart_nrdot_service:
+      cmds:
+        - |
+          echo ""
+          echo "==> Restarting NRDOT Collector service..."
+          echo ""
+
+          # Restart the service
+          if sudo systemctl restart nrdot-collector-host 2>&1; then
+            echo "✓ Service restarted successfully"
+          else
+            echo "❌ Failed to restart service" >&2
+            exit 1
+          fi
+
+          # Wait a moment for service to stabilize
+          sleep 2
+
+          # Verify service is running
+          echo "→ Verifying service status..."
+          if sudo systemctl is-active --quiet nrdot-collector-host; then
+            echo "✅ NRDOT Collector service is running"
+            echo ""
+          else
+            echo "❌ NRDOT Collector service failed to start" >&2
+            echo "" >&2
+            echo "Check service logs with:" >&2
+            echo "  sudo journalctl -u nrdot-collector-host -n 50 --no-pager" >&2
+            echo "" >&2
+            exit 1
+          fi
+
+postInstall:
+  info: |2
+    ✅ Installation complete! The NRDOT Collector has been configured to monitor your SQL Server instance.
+
+    Data should start appearing in New Relic within a few minutes.
+
+    To view your SQL Server metrics:
+    • Go to New Relic One → Infrastructure → Hosts
+    • Go to New Relic One → Databases
+
+    Configuration file: /etc/nrdot-collector-host/config.yaml
+    Service logs: sudo journalctl -u nrdot-collector-host -f
