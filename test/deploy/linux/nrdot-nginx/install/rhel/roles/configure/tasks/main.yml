@@ -1,0 +1,45 @@
+---
+########################################
+# nginx install — Amazon Linux 2
+########################################
+- block:
+  - name: amazon linux 2 - install nginx via amazon-linux-extras
+    shell: amazon-linux-extras install -y nginx1
+    args:
+      creates: /usr/sbin/nginx
+
+  when: ansible_distribution == 'Amazon' and ansible_distribution_major_version == '2'
+  become: yes
+
+########################################
+# nginx install — Amazon Linux 2023 + RHEL / CentOS / Oracle
+########################################
+- block:
+  - name: install nginx
+    package:
+      name: nginx
+      state: present
+
+  when: not (ansible_distribution == 'Amazon' and ansible_distribution_major_version == '2')
+  become: yes
+
+- name: write stub_status config on port 8080
+  copy:
+    dest: /etc/nginx/conf.d/stub_status.conf
+    content: |
+      server {
+          listen 8080;
+          location /nginx_status {
+              stub_status;
+              allow 127.0.0.1;
+              deny all;
+          }
+      }
+  become: yes
+
+- name: start and enable nginx
+  systemd:
+    name: nginx
+    state: restarted
+    enabled: yes
+  become: yes
