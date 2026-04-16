@@ -50,6 +50,8 @@ wp core install --allow-root \
             --admin_password=admin \
             --admin_email=admin@example.com
 
+# Try to detect nginx, if it exists we can start it an exit since if nginx is started
+# there's no need to also start apache.
 if [ $(which nginx) ]; then
 	if [ -d /etc/nginx/sites-available ]; then
 		if [ ! -f /etc/nginx/sites-available/wordpress-site ]; then
@@ -69,8 +71,12 @@ if [ $(which nginx) ]; then
 	fi
 	echo Restarting nginx.
 	systemctl restart nginx
+	# Excellent, if we get here the restart happened successfully.  Let's exit since we don't
+	# need to try to start apache which doesn't coexist with nginx anyway.
 fi
 
+# We should only get here if we didn't detect nginx because we don't attempt to start apache if nginx
+# is already running.
 if [ $(which apache2) ]; then
 	SITE="wordpress"
 	if [[ $(dpkg -l php-fpm) ]]; then
