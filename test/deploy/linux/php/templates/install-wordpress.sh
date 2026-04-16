@@ -22,7 +22,7 @@ fi
 # If on RedHat based distro, assume we are using mariadb, and
 # that it needs to be started post package installation.
 if [ $(which yum) ]; then
-	service mariadb start
+	systemctl start mariadb
 fi
 
 mysql -u root -e \
@@ -104,7 +104,7 @@ if [ $(which apache2) ]; then
 	fi
 
 	echo Restarting apache2.
-	systemctl apache2 reload
+	systemctl reload apache2
 fi
 
 # The presence of httpd indicates we are running on a Linux 2 host.
@@ -112,5 +112,5 @@ fi
 if [ $(which httpd) ]; then
 	cp ~/templates/wordpress-httpd.conf /etc/httpd/conf.d/
 	sed -i -e "s/DocumentRoot \"\/var\/www\/html/DocumentRoot \"\/wordpress/" /etc/httpd/conf/httpd.conf
-	systemctl httpd restart
+	systemctl restart httpd
 fi
