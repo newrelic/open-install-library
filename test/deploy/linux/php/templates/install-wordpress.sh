@@ -73,6 +73,7 @@ if [ $(which nginx) ]; then
 	systemctl restart nginx
 	# Excellent, if we get here the restart happened successfully.  Let's exit since we don't
 	# need to try to start apache which doesn't coexist with nginx anyway.
+	exit 0
 fi
 
 # We should only get here if we didn't detect nginx because we don't attempt to start apache if nginx
@@ -103,7 +104,7 @@ if [ $(which apache2) ]; then
 	fi
 
 	echo Restarting apache2.
-	service apache2 reload
+	systemctl apache2 reload
 fi
 
 # The presence of httpd indicates we are running on a Linux 2 host.
@@ -111,5 +112,5 @@ fi
 if [ $(which httpd) ]; then
 	cp ~/templates/wordpress-httpd.conf /etc/httpd/conf.d/
 	sed -i -e "s/DocumentRoot \"\/var\/www\/html/DocumentRoot \"\/wordpress/" /etc/httpd/conf/httpd.conf
-	service httpd restart
+	systemctl httpd restart
 fi
