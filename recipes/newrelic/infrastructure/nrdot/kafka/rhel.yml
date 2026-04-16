@@ -1,0 +1,212 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-kafka
+displayName: NRDOT Kafka
+description: New Relic install recipe for Kafka monitoring via NRDOT Collector on RHEL/CentOS/Amazon Linux.
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+  - type: host
+    os: linux
+    platform: centos
+  - type: host
+    os: linux
+    platform: oracle
+  - type: host
+    os: linux
+    platform: redhat
+
+keywords:
+  - Kafka
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Messaging
+  - Linux
+  - RHEL
+  - CentOS
+  - Amazon Linux
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+
+inputVars:
+  - name: NR_CLI_KAFKA_CLUSTER_NAME
+    prompt: "Kafka cluster name: "
+  - name: NR_CLI_KAFKA_BOOTSTRAP_BROKERS
+    prompt: "Kafka bootstrap broker addresses (e.g. localhost:9092,localhost:9093): "
+
+validationNrql: "SELECT count(*) FROM Metric SINCE 10 minutes ago WHERE kafka.cluster.name = '{{.NR_CLI_KAFKA_CLUSTER_NAME}}'"
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    # RPM packages use x86_64 for AMD64 (not amd64 as used by .deb)
+    NRDOT_ARCH:
+      sh: if [ "$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "x86_64"; fi
+    NRDOT_VERSION:
+      sh: curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep tag_name | cut -d '"' -f 4 | sed 's/^v//' || echo "1.11.1"
+    COLLECTOR_DISTRO: "nrdot-collector"
+    CONFIG_DIR: "/etc/nrdot-collector"
+    COLLECTOR_CONFIG_URL: "https://raw.githubusercontent.com/newrelic/newrelic-opentelemetry-examples/main/other-examples/collector/kafka/self-host-kafka/otel-collector-config.yaml"
+
+  tasks:
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: install_nrdot
+        - task: create_collector_config
+        - task: configure_service
+        - task: restart_nrdot
+        - task: assert_nrdot_status_ok
+
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    install_nrdot:
+      cmds:
+        - |
+          echo "Installing NRDOT Collector v{{.NRDOT_VERSION}}..."
+          NRDOT_RPM="/tmp/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm"
+          curl "https://github.com/newrelic/nrdot-collector-releases/releases/download/{{.NRDOT_VERSION}}/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm" \
+            --location --output "$NRDOT_RPM" 2>/dev/null
+          rpm -i "$NRDOT_RPM" > /dev/null 2>&1 || \
+            (which dnf >/dev/null 2>&1 && dnf install -y "$NRDOT_RPM" > /dev/null) || \
+            yum install -y "$NRDOT_RPM" > /dev/null
+          if [ $? -ne 0 ]; then
+            echo "Failed to install NRDOT Collector package." >&2
+            exit 1
+          fi
+          rm -f "$NRDOT_RPM"
+
+    create_collector_config:
+      cmds:
+        - |
+          LEVEL="${NR_CLI_MONITORING_LEVEL:-complete}"
+          COLLECTOR_CONFIG="{{.CONFIG_DIR}}/kafka-collector-config.yaml"
+
+          if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4317"
+          elif [ "{{.NEW_RELIC_REGION}}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net:4317"
+          fi
+
+          echo "Downloading collector config..."
+          curl -sf "{{.COLLECTOR_CONFIG_URL}}" -o "$COLLECTOR_CONFIG"
+          if [ $? -ne 0 ] || [ ! -s "$COLLECTOR_CONFIG" ]; then
+            echo "Failed to download collector config from {{.COLLECTOR_CONFIG_URL}}" >&2
+            exit 1
+          fi
+
+          sed -i "s|\${env:KAFKA_BOOTSTRAP_BROKER_ADDRESSES}|{{.NR_CLI_KAFKA_BOOTSTRAP_BROKERS}}|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:KAFKA_CLUSTER_NAME}|{{.NR_CLI_KAFKA_CLUSTER_NAME}}|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:KAFKA_METRICS_COLLECTION_INTERVAL}|30s|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:NEW_RELIC_OTLP_ENDPOINT}|${OTLP_ENDPOINT}|g" "$COLLECTOR_CONFIG"
+          sed -i "s|\${env:NEW_RELIC_LICENSE_KEY}|{{.NEW_RELIC_LICENSE_KEY}}|g" "$COLLECTOR_CONFIG"
+
+          if [ "$LEVEL" = "minimal" ]; then
+            awk '
+              /kafka\.partition\.current_offset:/ { found=1 }
+              found && /enabled: false/ {
+                print
+                print "      kafka.consumer_group.offset:"
+                print "        enabled: false"
+                print "      kafka.consumer_group.offset_sum:"
+                print "        enabled: false"
+                found=0
+                next
+              }
+              { print }
+            ' "$COLLECTOR_CONFIG" > "${COLLECTOR_CONFIG}.tmp" && \
+              mv "${COLLECTOR_CONFIG}.tmp" "$COLLECTOR_CONFIG"
+          fi
+
+    configure_service:
+      cmds:
+        - |
+          OVERRIDE_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
+          OVERRIDE_FILE="${OVERRIDE_DIR}/kafka-override.conf"
+          mkdir -p "$OVERRIDE_DIR"
+          printf '%s\n' \
+            '[Service]' \
+            'ExecStart=' \
+            'ExecStart=/usr/bin/nrdot-collector --config={{.CONFIG_DIR}}/kafka-collector-config.yaml' \
+            > "$OVERRIDE_FILE"
+          echo "Systemd override created: ${OVERRIDE_FILE}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl daemon-reload
+          systemctl reload-or-restart {{.COLLECTOR_DISTRO}}.service
+
+    assert_nrdot_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for NRDOT Collector to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet {{.COLLECTOR_DISTRO}}.service; then
+              echo ""
+              echo "NRDOT Collector is running."
+              echo ""
+              echo "⚙️ Collector config:  /etc/nrdot-collector/kafka-collector-config.yaml"
+              echo ""
+              echo "Useful commands:"
+              echo "  Check status:  sudo systemctl status nrdot-collector"
+              echo "  View logs:     sudo journalctl -u nrdot-collector -f"
+              echo "  Restart:       sudo systemctl restart nrdot-collector"
+              echo ""
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "" >&2
+          echo -e "\033[0;31mNRDOT Collector did not start in time.\033[0m" >&2
+          echo "" >&2
+          echo "⚙️ Check Collector config:  /etc/nrdot-collector/kafka-collector-config.yaml" >&2
+          echo "" >&2
+          echo "Useful commands:" >&2
+          echo "  Check status:  sudo systemctl status nrdot-collector" >&2
+          echo "  View logs:     sudo journalctl -u nrdot-collector -f" >&2
+          echo "  Restart:       sudo systemctl restart nrdot-collector" >&2
+          echo "" >&2
+          journalctl -u {{.COLLECTOR_DISTRO}}.service --no-pager -n 50 >&2
+          exit 31
+

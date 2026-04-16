@@ -1,0 +1,446 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-nginx
+displayName: NRDOT Collector - NGINX
+description: New Relic install recipe for NGINX monitoring via the NRDOT OpenTelemetry Collector (RHEL/CentOS/Amazon Linux)
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "(2023\\..*)"
+  - type: host
+    os: linux
+    platform: centos
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: oracle
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: redhat
+    platformVersion: "(7|8|9)\\.*"
+
+keywords:
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Collector
+  - NGINX
+  - nginx
+  - CentOS 7
+  - CentOS 8
+  - RHEL 7
+  - RHEL 8
+  - RHEL 9
+  - Amazon Linux 2
+
+processMatch:
+  - nginx
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'nginx.%' SINCE 10 minutes ago"
+
+preInstall:
+  info: |2
+      To capture data from the NGINX integration, you'll first need to configure
+      the HTTP stub status module in your nginx config before running this install.
+      See https://docs.newrelic.com/docs/opentelemetry/integrations/nginx/nginx-otel-host/ for instructions.
+
+  requireAtDiscovery: |
+    # Exit 1 (skip recipe) if nginx is not installed.
+    if ! command -v nginx > /dev/null 2>&1; then
+      exit 1
+    fi
+
+    # Exit 1 if this is NGINX Plus — handled by nrdot-collector-nginx-plus.
+    if nginx -v 2>&1 | grep -qi "nginx-plus"; then
+      exit 1
+    fi
+
+    exit 0
+
+inputVars:
+  - name: NR_CLI_NGINX_STATUS_URL
+    prompt: "NGINX stub status URL (optional — auto-detected from your nginx config if left blank)"
+    default: ""
+  - name: NR_CLI_NGINX_DEPLOYMENT_NAME
+    prompt: "Unique deployment name for this NGINX server (e.g. production-web-01)"
+    default: ""
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+    # Evaluated once at recipe startup — before install_collector runs and before the
+    # package postinstall script starts the service. This correctly reflects whether
+    # another recipe (host monitoring, docker, etc.) had already started the collector,
+    # which determines whether nginx should be added additively or installed standalone.
+    COLLECTOR_WAS_RUNNING:
+      sh: systemctl is-active --quiet nrdot-collector.service 2>/dev/null && echo "1" || echo "0"
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: install_collector
+        - task: configure_env
+        - task: write_nginx_config
+        - task: start_collector
+        - task: assert_collector_status_ok
+
+    assert_pre_req:
+      cmds:
+        # Exit 3: newrelic-cli standard code for insufficient privileges.
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        # Exit 16: newrelic-cli standard code for missing required dependency.
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        # Exit 131: newrelic-cli standard code for unsupported init system.
+        # The collector is managed as a systemd service; other init systems are not supported.
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        # Exit 132: newrelic-cli standard code for missing target process.
+        - |
+          if ! command -v nginx > /dev/null 2>&1; then
+            echo "NGINX is not installed or not in PATH." >&2
+            exit 132
+          fi
+        # Exit 132: stub_status endpoint must be reachable before installation.
+        - |
+          STUB_STATUS_URL="{{.NR_CLI_NGINX_STATUS_URL}}"
+          if [ -n "$STUB_STATUS_URL" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$STUB_STATUS_URL" 2>/dev/null || echo "000")
+            if [ "$code" != "200" ]; then
+              echo "Could not reach the NGINX stub_status endpoint at ${STUB_STATUS_URL} (HTTP ${code})." >&2
+              echo "Ensure nginx is running and stub_status is accessible before re-running this recipe." >&2
+              echo "See https://docs.newrelic.com/docs/opentelemetry/integrations/nginx/nginx-otel-host/ for instructions." >&2
+              exit 132
+            fi
+          fi
+
+    install_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          # Always install the latest release. Pinning versions is intentionally avoided
+          # to ensure customers receive the most recent security and bug fixes.
+          COLLECTOR_VERSION=$(curl -s https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest \
+            | grep '"tag_name"' \
+            | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
+
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          # Skip download if the current installed version already matches. This makes
+          # the recipe safe to re-run (idempotent) when only the nginx config changes.
+          if rpm -q nrdot-collector &>/dev/null; then
+            INSTALLED_VERSION=$(rpm -q --queryformat '%{VERSION}' nrdot-collector)
+            if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+              echo "nrdot-collector ${COLLECTOR_VERSION} is already installed. Skipping download."
+              exit 0
+            else
+              echo "Upgrading nrdot-collector from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+            fi
+          else
+            echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          fi
+
+          # RPM release assets use x86_64 for amd64 and arm64 for aarch64.
+          ARCH="x86_64"
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+          if [ $IS_ARM -gt 0 ]; then
+            ARCH="arm64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          # rpm -U handles both fresh install and upgrade in a single command.
+          rpm -U /tmp/nrdot-collector.rpm
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.rpm
+          echo "${COLLECTOR_DISTRO} installed successfully."
+      silent: true
+
+    configure_env:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          CONFIG_DIR="/etc/${COLLECTOR_DISTRO}"
+          CONFIG_FILE="${CONFIG_DIR}/${COLLECTOR_DISTRO}.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          # Use sed to update in-place if the key already exists, otherwise append.
+          # This makes configure_env idempotent across recipe re-runs and upgrades.
+          if grep -q "^NEW_RELIC_LICENSE_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}|" "$CONFIG_FILE"
+          else
+            echo "NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          if [ "${NEW_RELIC_REGION}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "${NEW_RELIC_REGION}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+
+          if grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTEL_EXPORTER_OTLP_ENDPOINT=.*|OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          # 600: only root should read the license key.
+          chmod 600 "$CONFIG_FILE"
+          echo "Configuration written to ${CONFIG_FILE}"
+
+    write_nginx_config:
+      cmds:
+        - |
+          NGINX_OTEL_CONFIG="/etc/nrdot-collector/nginx-config.yaml"
+          CONFIG_FILE="/etc/nrdot-collector/nrdot-collector.conf"
+
+          # Prefer the user-supplied URL. If blank, parse the compiled nginx config to
+          # locate a reachable stub_status endpoint automatically. The same PCRE logic
+          # used in requireAtDiscovery is repeated here because task variables are not
+          # shared between preInstall and install contexts.
+          #
+          # Exit 133: stub_status is unreachable — installation cannot proceed without
+          # a working endpoint for the nginx receiver to scrape.
+          STUB_STATUS_URL="{{.NR_CLI_NGINX_STATUS_URL}}"
+          if [ -z "$STUB_STATUS_URL" ]; then
+            stub_location=$(nginx -T 2>&1 | grep -ozP "(?s:.*\s)\Klocation(?s).*stub_status" | grep -aoP "\/([^\s]+)" || echo "")
+            if [ -n "$stub_location" ]; then
+              portlines=$(nginx -Tq 2>/dev/null | grep listen || echo "")
+              IFS=$'\n'
+              for line in $portlines; do
+                if ! echo "$line" | grep -aoPq "#"; then
+                  port=$(echo "$line" | grep -aoP "\d+")
+                  if [ -n "$port" ]; then
+                    code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${port}${stub_location}" 2>/dev/null || echo "000")
+                    if [ "$code" = "200" ]; then
+                      STUB_STATUS_URL="http://127.0.0.1:${port}${stub_location}"
+                      break
+                    fi
+                  fi
+                fi
+              done
+            fi
+            if [ -z "$STUB_STATUS_URL" ]; then
+              echo "Could not find an accessible nginx stub_status endpoint. Please configure it before running this install." >&2
+              echo "See https://docs.newrelic.com/docs/opentelemetry/integrations/nginx/nginx-otel-host/ for instructions." >&2
+              exit 133
+            fi
+          fi
+
+          # Fall back to the short hostname so every server has a human-readable identity
+          # in New Relic even when the customer does not supply a deployment name.
+          DEPLOYMENT_NAME="{{.NR_CLI_NGINX_DEPLOYMENT_NAME}}"
+          if [ -z "$DEPLOYMENT_NAME" ]; then
+            DEPLOYMENT_NAME=$(hostname -s 2>/dev/null || echo "nginx-host")
+          fi
+
+          echo "Using stub status URL: ${STUB_STATUS_URL}"
+          echo "Using deployment name: ${DEPLOYMENT_NAME}"
+
+          mkdir -p "/etc/nrdot-collector"
+
+          # Write the nginx-specific OTel collector pipeline config.
+          # ${env:VAR} is OTel collector variable expansion syntax — it is intentionally
+          # different from shell variable syntax and must not be expanded at write time,
+          # hence the use of single-quoted strings for those lines.
+          printf '%s\n' \
+            'receivers:' \
+            '  nginx:' \
+            "    endpoint: ${STUB_STATUS_URL}" \
+            '    collection_interval: 30s' \
+            '    metrics:' \
+            '      nginx.requests:' \
+            '        enabled: true' \
+            '      nginx.connections_accepted:' \
+            '        enabled: true' \
+            '      nginx.connections_handled:' \
+            '        enabled: true' \
+            '      nginx.connections_current:' \
+            '        enabled: true' \
+            '' \
+            'processors:' \
+            '  resourcedetection:' \
+            '    detectors: [ec2, system]' \
+            '    ec2:' \
+            '      resource_attributes:' \
+            '        host.name:' \
+            '          enabled: false' \
+            '        host.id:' \
+            '          enabled: true' \
+            '    system:' \
+            '      resource_attributes:' \
+            '        host.name:' \
+            '          enabled: false' \
+            '        host.id:' \
+            '          enabled: true' \
+            '' \
+            '  resource/nginx:' \
+            '    attributes:' \
+            '      - key: nginx.server.endpoint' \
+            "        value: \"${STUB_STATUS_URL}\"" \
+            '        action: upsert' \
+            '      - key: nginx.deployment.name' \
+            "        value: \"${DEPLOYMENT_NAME}\"" \
+            '        action: upsert' \
+            '' \
+            '  batch:' \
+            '    timeout: 30s' \
+            '    send_batch_size: 1024' \
+            '' \
+            '  transform/nginx_metrics:' \
+            '    metric_statements:' \
+            '      - context: resource' \
+            '        statements:' \
+            '          - set(attributes["nginx.display.name"], Concat(["server", attributes["nginx.deployment.name"]], ":"))' \
+            '' \
+            '  transform/metadata_nullify:' \
+            '    metric_statements:' \
+            '      - context: metric' \
+            '        statements:' \
+            '          - set(description, "")' \
+            '          - set(unit, "")' \
+            '' \
+            'exporters:' \
+            '  otlp_http:' \
+            '    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}' \
+            '    headers:' \
+            '      api-key: ${env:NEW_RELIC_LICENSE_KEY}' \
+            '' \
+            'service:' \
+            '  pipelines:' \
+            '    metrics/nginx:' \
+            '      receivers: [nginx]' \
+            '      processors: [resourcedetection, resource/nginx, batch, transform/nginx_metrics, transform/metadata_nullify]' \
+            '      exporters: [otlp_http]' \
+            > "$NGINX_OTEL_CONFIG"
+
+          echo "NGINX OTel config written to ${NGINX_OTEL_CONFIG}"
+
+          # Determine which collector configs to activate.
+          #
+          # The nrdot-collector package ships a default config.yaml (host monitoring).
+          # Its postinstall script starts the service with that file automatically, so by
+          # the time write_nginx_config runs the service may already be active — even on a
+          # fresh nginx install. COLLECTOR_WAS_RUNNING is captured before install_collector
+          # executes to avoid this race.
+          #
+          # Additive mode  (COLLECTOR_WAS_RUNNING=1): the collector was intentionally
+          #   started by a prior recipe. Read the existing OTELCOL_OPTIONS and append
+          #   nginx-config.yaml only if it is not already present. This preserves the
+          #   exact set of active integrations without accidentally including config.yaml
+          #   (which is always on disk from the package install regardless of whether the
+          #   customer ever requested host monitoring).
+          #
+          # Standalone mode (COLLECTOR_WAS_RUNNING=0): this is the first recipe to run.
+          #   Load only nginx-config.yaml to avoid silently enabling host monitoring
+          #   that the customer never requested.
+          EXISTING_OPTIONS=$(grep "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
+          if [ "{{.COLLECTOR_WAS_RUNNING}}" = "1" ]; then
+            if echo "$EXISTING_OPTIONS" | grep -q "nginx-config.yaml"; then
+              OTELCOL_OPTIONS="$EXISTING_OPTIONS"
+            else
+              OTELCOL_OPTIONS="${EXISTING_OPTIONS} --config=${NGINX_OTEL_CONFIG}"
+            fi
+          else
+            OTELCOL_OPTIONS="--config=${NGINX_OTEL_CONFIG}"
+          fi
+          OTELCOL_OPTIONS="${OTELCOL_OPTIONS# }"
+
+          if grep -q "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"|" "$CONFIG_FILE"
+          else
+            echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          echo "OTELCOL_OPTIONS updated in ${CONFIG_FILE}: ${OTELCOL_OPTIONS}"
+
+    start_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          systemctl daemon-reload
+          if systemctl is-active --quiet "${COLLECTOR_DISTRO}.service" 2>/dev/null; then
+            # Restart (not reload) because OTELCOL_OPTIONS changed. The collector does
+            # not support live config reload — a full process restart is required.
+            echo "${COLLECTOR_DISTRO} is already running. Restarting to apply updated config list..."
+            systemctl restart "${COLLECTOR_DISTRO}.service"
+          else
+            # Enable ensures the service survives host reboots, not just this session.
+            echo "${COLLECTOR_DISTRO} is not running. Enabling and starting..."
+            systemctl enable "${COLLECTOR_DISTRO}.service"
+            systemctl start "${COLLECTOR_DISTRO}.service"
+          fi
+          echo "${COLLECTOR_DISTRO} service started and enabled."
+
+    assert_collector_status_ok:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for ${COLLECTOR_DISTRO} to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet "${COLLECTOR_DISTRO}.service"; then
+              echo "${COLLECTOR_DISTRO} is running."
+              exit 0
+            fi
+            sleep 2
+          done
+
+          # Exit 31: newrelic-cli standard code for service failed to start.
+          echo "${COLLECTOR_DISTRO} has not started after installation." >&2
+          if [ "{{.IS_SYSTEMCTL}}" -gt 0 ]; then
+            journalctl -u "${COLLECTOR_DISTRO}.service" --no-pager --lines=20
+          fi
+          exit 31
+
+postInstall:
+  info: |2
+      NGINX OTel config: /etc/nrdot-collector/nginx-config.yaml
+      Env config:        /etc/nrdot-collector/nrdot-collector.conf
+      Service status:    systemctl status nrdot-collector
+      Stub status docs:  https://docs.newrelic.com/docs/opentelemetry/integrations/nginx/nginx-otel-host/

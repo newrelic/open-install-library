@@ -1,0 +1,441 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-nginx-plus
+displayName: NRDOT Collector - NGINX Plus
+description: New Relic install recipe for NGINX Plus monitoring via the NRDOT OpenTelemetry Collector (RHEL/CentOS/Amazon Linux)
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "(2023\\..*)"
+  - type: host
+    os: linux
+    platform: centos
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: oracle
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: redhat
+    platformVersion: "(7|8|9)\\.*"
+
+keywords:
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Collector
+  - NGINX Plus
+  - nginx-plus
+  - CentOS 7
+  - CentOS 8
+  - RHEL 7
+  - RHEL 8
+  - RHEL 9
+  - Amazon Linux 2
+  - Amazon Linux 2023
+
+processMatch:
+  - nginx
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'nginxplus_%' SINCE 10 minutes ago"
+
+preInstall:
+  info: |2
+      To capture data from the NGINX Plus integration, you'll first need to install
+      and run the NGINX Prometheus Exporter before running this install.
+      See https://docs.newrelic.com/docs/opentelemetry/integrations/nginx-plus/nginx-plus-otel/ for instructions.
+
+  requireAtDiscovery: |
+    # Exit 1 (skip recipe) if nginx is not installed.
+    if ! command -v nginx > /dev/null 2>&1; then
+      exit 1
+    fi
+
+    # Exit 1 if this is not NGINX Plus — standard nginx is handled by nrdot-collector-nginx.
+    if ! nginx -v 2>&1 | grep -qi "nginx-plus"; then
+      exit 1
+    fi
+
+inputVars:
+  - name: NR_CLI_NGINX_PLUS_PROMETHEUS_ENDPOINT
+    prompt: "NGINX Prometheus Exporter endpoint (host:port, e.g. 127.0.0.1:9113)"
+    default: "127.0.0.1:9113"
+  - name: NR_CLI_NGINX_PLUS_STATUS_URL
+    prompt: "NGINX Plus API status URL (e.g. http://127.0.0.1:8080/api) — used as the nginx.server.endpoint attribute"
+    default: ""
+  - name: NR_CLI_NGINX_PLUS_DEPLOYMENT_NAME
+    prompt: "Unique deployment name for this NGINX Plus server (e.g. production-web-01)"
+    default: ""
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+    # Evaluated once at recipe startup — before install_collector runs and before the
+    # package postinstall script starts the service. This correctly reflects whether
+    # another recipe (host monitoring, docker, etc.) had already started the collector,
+    # which determines whether nginx-plus should be added additively or installed standalone.
+    COLLECTOR_WAS_RUNNING:
+      sh: systemctl is-active --quiet nrdot-collector.service 2>/dev/null && echo "1" || echo "0"
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: install_collector
+        - task: configure_env
+        - task: write_nginx_plus_config
+        - task: start_collector
+        - task: assert_collector_status_ok
+
+    assert_pre_req:
+      cmds:
+        # Exit 3: newrelic-cli standard code for insufficient privileges.
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        # Exit 16: newrelic-cli standard code for missing required dependency.
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        # Exit 131: newrelic-cli standard code for unsupported init system.
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        # Exit 132: newrelic-cli standard code for missing target process.
+        - |
+          if ! command -v nginx > /dev/null 2>&1; then
+            echo "NGINX Plus is not installed or not in PATH." >&2
+            exit 132
+          fi
+        # Exit 132: ensure this is NGINX Plus, not standard NGINX.
+        - |
+          if ! nginx -v 2>&1 | grep -qi "nginx-plus"; then
+            echo "This recipe requires NGINX Plus. Standard NGINX is handled by nrdot-collector-nginx." >&2
+            exit 132
+          fi
+        # Exit 132: NGINX Prometheus Exporter must be running before installation.
+        - |
+          PROMETHEUS_ENDPOINT="{{.NR_CLI_NGINX_PLUS_PROMETHEUS_ENDPOINT}}"
+          if [ -z "$PROMETHEUS_ENDPOINT" ]; then
+            PROMETHEUS_ENDPOINT="127.0.0.1:9113"
+          fi
+          PROMETHEUS_ENDPOINT=$(echo "$PROMETHEUS_ENDPOINT" | sed 's|^https\?://||' | sed 's|/.*||')
+          code=$(curl -s -o /dev/null -w "%{http_code}" "http://${PROMETHEUS_ENDPOINT}/metrics" 2>/dev/null || echo "000")
+          if [ "$code" != "200" ]; then
+            echo "Could not reach the NGINX Prometheus Exporter at http://${PROMETHEUS_ENDPOINT}/metrics (HTTP ${code})." >&2
+            echo "Install and start nginx-prometheus-exporter before re-running this recipe." >&2
+            echo "See https://github.com/nginx/nginx-prometheus-exporter?tab=readme-ov-file#running-the-exporter-binary for instructions." >&2
+            exit 132
+          fi
+
+    install_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          # Always install the latest release. Pinning versions is intentionally avoided
+          # to ensure customers receive the most recent security and bug fixes.
+          COLLECTOR_VERSION=$(curl -s https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest \
+            | grep '"tag_name"' \
+            | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
+
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          # Skip download if the current installed version already matches. This makes
+          # the recipe safe to re-run (idempotent) when only the nginx-plus config changes.
+          if rpm -q nrdot-collector &>/dev/null; then
+            INSTALLED_VERSION=$(rpm -q --queryformat '%{VERSION}' nrdot-collector)
+            if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+              echo "nrdot-collector ${COLLECTOR_VERSION} is already installed. Skipping download."
+              exit 0
+            else
+              echo "Upgrading nrdot-collector from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+            fi
+          else
+            echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          fi
+
+          # RPM release assets use x86_64 for amd64 and arm64 for aarch64.
+          ARCH="x86_64"
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+          if [ $IS_ARM -gt 0 ]; then
+            ARCH="arm64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          # rpm -U handles both fresh install and upgrade in a single command.
+          rpm -U /tmp/nrdot-collector.rpm
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.rpm
+          echo "${COLLECTOR_DISTRO} installed successfully."
+      silent: true
+
+    configure_env:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          CONFIG_DIR="/etc/${COLLECTOR_DISTRO}"
+          CONFIG_FILE="${CONFIG_DIR}/${COLLECTOR_DISTRO}.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          # Use sed to update in-place if the key already exists, otherwise append.
+          # This makes configure_env idempotent across recipe re-runs and upgrades.
+          if grep -q "^NEW_RELIC_LICENSE_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}|" "$CONFIG_FILE"
+          else
+            echo "NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          if [ "${NEW_RELIC_REGION}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "${NEW_RELIC_REGION}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+
+          if grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTEL_EXPORTER_OTLP_ENDPOINT=.*|OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          # 600: only root should read the license key.
+          chmod 600 "$CONFIG_FILE"
+          echo "Configuration written to ${CONFIG_FILE}"
+
+    write_nginx_plus_config:
+      cmds:
+        - |
+          NGINX_PLUS_OTEL_CONFIG="/etc/nrdot-collector/nginx-plus-config.yaml"
+          CONFIG_FILE="/etc/nrdot-collector/nrdot-collector.conf"
+
+          # Use the user-supplied prometheus endpoint, or fall back to the default.
+          # The prometheus receiver expects host:port format without protocol or path.
+          PROMETHEUS_ENDPOINT="{{.NR_CLI_NGINX_PLUS_PROMETHEUS_ENDPOINT}}"
+          if [ -z "$PROMETHEUS_ENDPOINT" ]; then
+            PROMETHEUS_ENDPOINT="127.0.0.1:9113"
+          fi
+          # Strip protocol and /metrics path if the user passed a full URL.
+          PROMETHEUS_ENDPOINT=$(echo "$PROMETHEUS_ENDPOINT" | sed 's|^https\?://||' | sed 's|/.*||')
+
+          # Verify the exporter is reachable before writing config.
+          # Exit 133: prometheus exporter unreachable — collector cannot scrape without it.
+          code=$(curl -s -o /dev/null -w "%{http_code}" "http://${PROMETHEUS_ENDPOINT}/metrics" 2>/dev/null || echo "000")
+          if [ "$code" != "200" ]; then
+            echo "Could not reach the NGINX Prometheus Exporter at http://${PROMETHEUS_ENDPOINT}/metrics (HTTP ${code})." >&2
+            echo "Ensure nginx-prometheus-exporter is running before re-running this install." >&2
+            echo "See https://docs.newrelic.com/docs/opentelemetry/integrations/nginx-plus/nginx-plus-otel/ for instructions." >&2
+            exit 133
+          fi
+
+          # Use the user-supplied status URL for the nginx.server.endpoint attribute.
+          # Falls back to the prometheus endpoint URL if not provided.
+          STATUS_URL="{{.NR_CLI_NGINX_PLUS_STATUS_URL}}"
+          if [ -z "$STATUS_URL" ]; then
+            STATUS_URL="http://${PROMETHEUS_ENDPOINT}/metrics"
+          fi
+
+          # Fall back to the short hostname so every server has a human-readable identity
+          # in New Relic even when the customer does not supply a deployment name.
+          DEPLOYMENT_NAME="{{.NR_CLI_NGINX_PLUS_DEPLOYMENT_NAME}}"
+          if [ -z "$DEPLOYMENT_NAME" ]; then
+            DEPLOYMENT_NAME=$(hostname -s 2>/dev/null || echo "nginx-plus-host")
+          fi
+
+          echo "Using prometheus endpoint: ${PROMETHEUS_ENDPOINT}"
+          echo "Using status URL: ${STATUS_URL}"
+          echo "Using deployment name: ${DEPLOYMENT_NAME}"
+
+          mkdir -p "/etc/nrdot-collector"
+
+          # Write the NGINX Plus OTel collector pipeline config.
+          # The prometheus receiver scrapes from the nginx-prometheus-exporter which
+          # exposes NGINX Plus metrics in Prometheus format.
+          # ${env:VAR} is OTel collector variable expansion syntax — must not be expanded
+          # at write time, hence the use of single-quoted strings for those lines.
+          printf '%s\n' \
+            'receivers:' \
+            '  prometheus:' \
+            '    config:' \
+            '      scrape_configs:' \
+            '        - job_name: nginx-plus' \
+            '          scrape_interval: 30s' \
+            '          static_configs:' \
+            "            - targets: ['${PROMETHEUS_ENDPOINT}']" \
+            '' \
+            'processors:' \
+            '  batch:' \
+            '    timeout: 30s' \
+            '    send_batch_size: 1024' \
+            '' \
+            '  filter/nginx_metrics:' \
+            '    metrics:' \
+            '      include:' \
+            '        match_type: regexp' \
+            '        metric_names:' \
+            '          - nginxplus_connections_.*' \
+            '          - nginxplus_http_requests_.*' \
+            '          - nginxplus_ssl_.*' \
+            '' \
+            '  resourcedetection:' \
+            '    detectors: [ec2, system]' \
+            '    ec2:' \
+            '      resource_attributes:' \
+            '        host.name:' \
+            '          enabled: false' \
+            '        host.id:' \
+            '          enabled: true' \
+            '    system:' \
+            '      resource_attributes:' \
+            '        host.name:' \
+            '          enabled: false' \
+            '        host.id:' \
+            '          enabled: true' \
+            '' \
+            '  resource/nginx:' \
+            '    attributes:' \
+            '      - key: nginx.server.endpoint' \
+            "        value: \"${STATUS_URL}\"" \
+            '        action: upsert' \
+            '      - key: nginx.deployment.name' \
+            "        value: \"${DEPLOYMENT_NAME}\"" \
+            '        action: upsert' \
+            '' \
+            '  transform/nginx:' \
+            '    metric_statements:' \
+            '      - context: resource' \
+            '        statements:' \
+            '          - set(attributes["nginx.display.name"], Concat(["server", attributes["nginx.deployment.name"]], ":"))' \
+            '          - delete_key(attributes, "service.name")' \
+            '' \
+            '  transform/metadata_nullify:' \
+            '    metric_statements:' \
+            '      - context: metric' \
+            '        statements:' \
+            '          - set(description, "")' \
+            '          - set(unit, "")' \
+            '' \
+            'exporters:' \
+            '  otlp_http:' \
+            '    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}' \
+            '    headers:' \
+            '      api-key: ${env:NEW_RELIC_LICENSE_KEY}' \
+            '' \
+            'service:' \
+            '  pipelines:' \
+            '    metrics/nginx:' \
+            '      receivers: [prometheus]' \
+            '      processors: [batch, filter/nginx_metrics, resourcedetection, resource/nginx, transform/nginx, transform/metadata_nullify]' \
+            '      exporters: [otlp_http]' \
+            > "$NGINX_PLUS_OTEL_CONFIG"
+
+          echo "NGINX Plus OTel config written to ${NGINX_PLUS_OTEL_CONFIG}"
+
+          # Determine which collector configs to activate.
+          #
+          # Additive mode  (COLLECTOR_WAS_RUNNING=1): read the existing OTELCOL_OPTIONS
+          #   and append nginx-plus-config.yaml only if not already present.
+          #
+          # Standalone mode (COLLECTOR_WAS_RUNNING=0): load only nginx-plus-config.yaml
+          #   to avoid silently enabling host monitoring the customer never requested.
+          EXISTING_OPTIONS=$(grep "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
+          if [ "{{.COLLECTOR_WAS_RUNNING}}" = "1" ]; then
+            if echo "$EXISTING_OPTIONS" | grep -q "nginx-plus-config.yaml"; then
+              OTELCOL_OPTIONS="$EXISTING_OPTIONS"
+            else
+              OTELCOL_OPTIONS="${EXISTING_OPTIONS} --config=${NGINX_PLUS_OTEL_CONFIG}"
+            fi
+          else
+            OTELCOL_OPTIONS="--config=${NGINX_PLUS_OTEL_CONFIG}"
+          fi
+          OTELCOL_OPTIONS="${OTELCOL_OPTIONS# }"
+
+          if grep -q "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"|" "$CONFIG_FILE"
+          else
+            echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          echo "OTELCOL_OPTIONS updated in ${CONFIG_FILE}: ${OTELCOL_OPTIONS}"
+
+    start_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          systemctl daemon-reload
+          if systemctl is-active --quiet "${COLLECTOR_DISTRO}.service" 2>/dev/null; then
+            echo "${COLLECTOR_DISTRO} is already running. Restarting to apply updated config list..."
+            systemctl restart "${COLLECTOR_DISTRO}.service"
+          else
+            echo "${COLLECTOR_DISTRO} is not running. Enabling and starting..."
+            systemctl enable "${COLLECTOR_DISTRO}.service"
+            systemctl start "${COLLECTOR_DISTRO}.service"
+          fi
+          echo "${COLLECTOR_DISTRO} service started and enabled."
+
+    assert_collector_status_ok:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for ${COLLECTOR_DISTRO} to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet "${COLLECTOR_DISTRO}.service"; then
+              echo "${COLLECTOR_DISTRO} is running."
+              exit 0
+            fi
+            sleep 2
+          done
+
+          # Exit 31: newrelic-cli standard code for service failed to start.
+          echo "${COLLECTOR_DISTRO} has not started after installation." >&2
+          if [ "{{.IS_SYSTEMCTL}}" -gt 0 ]; then
+            journalctl -u "${COLLECTOR_DISTRO}.service" --no-pager --lines=20
+          fi
+          exit 31
+
+postInstall:
+  info: |2
+      NGINX Plus OTel config: /etc/nrdot-collector/nginx-plus-config.yaml
+      Env config:             /etc/nrdot-collector/nrdot-collector.conf
+      Service status:         systemctl status nrdot-collector
+      NGINX Plus docs:        https://docs.newrelic.com/docs/opentelemetry/integrations/nginx-plus/nginx-plus-otel/
