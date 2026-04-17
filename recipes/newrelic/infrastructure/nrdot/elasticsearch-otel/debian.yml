@@ -1,0 +1,748 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: elasticsearch-otel-integration
+displayName: Elasticsearch OpenTelemetry Integration
+description: New Relic install recipe for Elasticsearch monitoring via NRDOT Collector on Debian/Ubuntu
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+  - type: host
+    os: linux
+    platform: ubuntu
+
+keywords:
+  - Elasticsearch
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - Debian
+  - Ubuntu
+
+processMatch:
+  - elasticsearch
+
+preInstall:
+  discoveryMode:
+    - targeted
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'elasticsearch.%' AND instrumentation.provider = 'opentelemetry' AND elasticsearch.cluster.name = '{{.NR_CLI_ES_CLUSTER_NAME}}' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+inputVars:
+  - name: "NR_CLI_ES_CLUSTER_NAME"
+    prompt: "Elasticsearch cluster name"
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    NRDOT_ARCH:
+      sh: if [ "$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "amd64"; fi
+    NRDOT_VERSION:
+      sh: curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep tag_name | cut -d '"' -f 4 | sed 's/^v//' || echo "1.11.1"
+    COLLECTOR_DISTRO: "nrdot-collector"
+    CONFIG_DIR: "/etc/nrdot-collector"
+
+  tasks:
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: install_nrdot
+        - task: create_collector_config
+        - task: configure_service
+        - task: restart_nrdot
+        - task: assert_nrdot_status_ok
+
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    install_nrdot:
+      cmds:
+        - |
+          echo "Installing NRDOT Collector v{{.NRDOT_VERSION}}..."
+          NRDOT_DEB="/tmp/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.deb"
+          curl "https://github.com/newrelic/nrdot-collector-releases/releases/download/{{.NRDOT_VERSION}}/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.deb" \
+            --location --output "$NRDOT_DEB" 2>/dev/null
+          dpkg -i "$NRDOT_DEB" > /dev/null
+          if [ $? -ne 0 ]; then
+            dpkg --configure -a > /dev/null
+            apt-get -o DPkg::Lock::Timeout=60 install -f -y > /dev/null
+          fi
+          rm -f "$NRDOT_DEB"
+          mkdir -p {{.CONFIG_DIR}}
+          grep -q "^NEW_RELIC_LICENSE_KEY" {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf 2>/dev/null && \
+            sed -i 's|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}|' \
+              {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf || \
+            echo "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" | \
+              tee -a {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf > /dev/null
+
+    create_collector_config:
+      cmds:
+        - |
+          CONFIG_PRESET="${NR_CLI_CONFIG_PRESET:-comprehensive}"
+          COLLECTOR_CONFIG="{{.CONFIG_DIR}}/elasticsearch-collector-config.yaml"
+          ES_ENV_FILE="{{.CONFIG_DIR}}/elasticsearch-env.conf"
+
+          ES_ENDPOINT="${NR_CLI_ES_ENDPOINT:-http://localhost:9200}"
+          ES_CLUSTER_NAME="{{.NR_CLI_ES_CLUSTER_NAME}}"
+          ES_USERNAME="${NR_CLI_ES_USERNAME:-}"
+          ES_PASSWORD="${NR_CLI_ES_PASSWORD:-}"
+          ES_CERT_PATH="${NR_CLI_ES_CERT_PATH:-}"
+
+          echo "Creating Elasticsearch collector config..."
+
+          cat > "$COLLECTOR_CONFIG" << 'EOF'
+          receivers:
+            elasticsearch:
+              endpoint: ${ES_ENDPOINT}
+              collection_interval: 15s
+          EOF
+
+          if [ -n "$ES_USERNAME" ]; then
+            cat >> "$COLLECTOR_CONFIG" << EOF
+              username: \${ES_USERNAME}
+          EOF
+          fi
+
+          if [ -n "$ES_PASSWORD" ]; then
+            cat >> "$COLLECTOR_CONFIG" << EOF
+              password: \${ES_PASSWORD}
+          EOF
+          fi
+
+          if [ -n "$ES_CERT_PATH" ]; then
+            cat >> "$COLLECTOR_CONFIG" << EOF
+              tls:
+                ca_file: \${ES_CERT_PATH}
+                insecure_skip_verify: false
+          EOF
+          fi
+
+          # Add metrics configuration based on preset
+          if [ "$CONFIG_PRESET" = "optimized" ]; then
+            # Optimized preset: All comprehensive metrics PLUS additional disabled metrics
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              metrics:
+                elasticsearch.os.cpu.usage:
+                  enabled: true
+                elasticsearch.cluster.data_nodes:
+                  enabled: true
+                elasticsearch.cluster.health:
+                  enabled: true
+                elasticsearch.cluster.in_flight_fetch:
+                  enabled: true
+                elasticsearch.cluster.nodes:
+                  enabled: true
+                elasticsearch.cluster.pending_tasks:
+                  enabled: true
+                elasticsearch.cluster.shards:
+                  enabled: true
+                elasticsearch.cluster.state_update.time:
+                  enabled: true
+                elasticsearch.index.documents:
+                  enabled: true
+                elasticsearch.index.operations.merge.current:
+                  enabled: true
+                elasticsearch.index.operations.time:
+                  enabled: true
+                elasticsearch.node.cache.count:
+                  enabled: true
+                elasticsearch.node.cache.evictions:
+                  enabled: true
+                elasticsearch.node.cache.memory.usage:
+                  enabled: true
+                elasticsearch.node.shards.size:
+                  enabled: true
+                elasticsearch.node.cluster.io:
+                  enabled: true
+                elasticsearch.node.documents:
+                  enabled: true
+                elasticsearch.node.disk.io.read:
+                  enabled: true
+                elasticsearch.node.disk.io.write:
+                  enabled: true
+                elasticsearch.node.fs.disk.available:
+                  enabled: true
+                elasticsearch.node.fs.disk.total:
+                  enabled: true
+                elasticsearch.node.http.connections:
+                  enabled: true
+                elasticsearch.node.ingest.documents.current:
+                  enabled: true
+                elasticsearch.node.ingest.operations.failed:
+                  enabled: true
+                elasticsearch.node.open_files:
+                  enabled: true
+                elasticsearch.node.operations.completed:
+                  enabled: true
+                elasticsearch.node.operations.current:
+                  enabled: true
+                elasticsearch.node.operations.get.completed:
+                  enabled: true
+                elasticsearch.node.operations.time:
+                  enabled: true
+                elasticsearch.node.shards.reserved.size:
+                  enabled: true
+                elasticsearch.index.shards.size:
+                  enabled: true
+                elasticsearch.os.cpu.load_avg.1m:
+                  enabled: true
+                elasticsearch.os.cpu.load_avg.5m:
+                  enabled: true
+                elasticsearch.os.cpu.load_avg.15m:
+                  enabled: true
+                elasticsearch.os.memory:
+                  enabled: true
+                jvm.gc.collections.count:
+                  enabled: true
+                jvm.gc.collections.elapsed:
+                  enabled: true
+                jvm.memory.heap.max:
+                  enabled: true
+                jvm.memory.heap.used:
+                  enabled: true
+                jvm.memory.heap.utilization:
+                  enabled: true
+                jvm.threads.count:
+                  enabled: true
+                elasticsearch.index.segments.count:
+                  enabled: true
+                elasticsearch.index.operations.completed:
+                  enabled: true
+                elasticsearch.node.script.cache_evictions:
+                  enabled: false
+                elasticsearch.node.cluster.connections:
+                  enabled: false
+                elasticsearch.node.pipeline.ingest.documents.preprocessed:
+                  enabled: false
+                elasticsearch.node.thread_pool.tasks.queued:
+                  enabled: false
+                elasticsearch.cluster.published_states.full:
+                  enabled: false
+                jvm.memory.pool.max:
+                  enabled: false
+                elasticsearch.node.script.compilation_limit_triggered:
+                  enabled: false
+                elasticsearch.node.shards.data_set.size:
+                  enabled: false
+                elasticsearch.node.pipeline.ingest.documents.current:
+                  enabled: false
+                elasticsearch.cluster.state_update.count:
+                  enabled: false
+                elasticsearch.node.fs.disk.free:
+                  enabled: false
+                jvm.memory.nonheap.used:
+                  enabled: false
+                jvm.memory.pool.used:
+                  enabled: false
+                elasticsearch.node.translog.size:
+                  enabled: false
+                elasticsearch.node.thread_pool.threads:
+                  enabled: false
+                elasticsearch.cluster.state_queue:
+                  enabled: false
+                elasticsearch.node.translog.operations:
+                  enabled: false
+                elasticsearch.memory.indexing_pressure:
+                  enabled: false
+                elasticsearch.node.ingest.documents:
+                  enabled: false
+                jvm.classes.loaded:
+                  enabled: false
+                jvm.memory.heap.committed:
+                  enabled: false
+                elasticsearch.breaker.memory.limit:
+                  enabled: false
+                elasticsearch.indexing_pressure.memory.total.replica_rejections:
+                  enabled: false
+                elasticsearch.breaker.memory.estimated:
+                  enabled: false
+                elasticsearch.cluster.published_states.differences:
+                  enabled: false
+                jvm.memory.nonheap.committed:
+                  enabled: false
+                elasticsearch.node.translog.uncommitted.size:
+                  enabled: false
+                elasticsearch.node.script.compilations:
+                  enabled: false
+                elasticsearch.node.pipeline.ingest.operations.failed:
+                  enabled: false
+                elasticsearch.indexing_pressure.memory.limit:
+                  enabled: false
+                elasticsearch.breaker.tripped:
+                  enabled: false
+                elasticsearch.indexing_pressure.memory.total.primary_rejections:
+                  enabled: false
+                elasticsearch.node.thread_pool.tasks.finished:
+                  enabled: false
+          EOF
+          else
+            # Comprehensive preset - enable all important metrics
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              metrics:
+                elasticsearch.os.cpu.usage:
+                  enabled: true
+                elasticsearch.cluster.data_nodes:
+                  enabled: true
+                elasticsearch.cluster.health:
+                  enabled: true
+                elasticsearch.cluster.in_flight_fetch:
+                  enabled: true
+                elasticsearch.cluster.nodes:
+                  enabled: true
+                elasticsearch.cluster.pending_tasks:
+                  enabled: true
+                elasticsearch.cluster.shards:
+                  enabled: true
+                elasticsearch.cluster.state_update.time:
+                  enabled: true
+                elasticsearch.index.documents:
+                  enabled: true
+                elasticsearch.index.operations.merge.current:
+                  enabled: true
+                elasticsearch.index.operations.time:
+                  enabled: true
+                elasticsearch.node.cache.count:
+                  enabled: true
+                elasticsearch.node.cache.evictions:
+                  enabled: true
+                elasticsearch.node.cache.memory.usage:
+                  enabled: true
+                elasticsearch.node.shards.size:
+                  enabled: true
+                elasticsearch.node.cluster.io:
+                  enabled: true
+                elasticsearch.node.documents:
+                  enabled: true
+                elasticsearch.node.disk.io.read:
+                  enabled: true
+                elasticsearch.node.disk.io.write:
+                  enabled: true
+                elasticsearch.node.fs.disk.available:
+                  enabled: true
+                elasticsearch.node.fs.disk.total:
+                  enabled: true
+                elasticsearch.node.http.connections:
+                  enabled: true
+                elasticsearch.node.ingest.documents.current:
+                  enabled: true
+                elasticsearch.node.ingest.operations.failed:
+                  enabled: true
+                elasticsearch.node.open_files:
+                  enabled: true
+                elasticsearch.node.operations.completed:
+                  enabled: true
+                elasticsearch.node.operations.current:
+                  enabled: true
+                elasticsearch.node.operations.get.completed:
+                  enabled: true
+                elasticsearch.node.operations.time:
+                  enabled: true
+                elasticsearch.node.shards.reserved.size:
+                  enabled: true
+                elasticsearch.index.shards.size:
+                  enabled: true
+                elasticsearch.os.cpu.load_avg.1m:
+                  enabled: true
+                elasticsearch.os.cpu.load_avg.5m:
+                  enabled: true
+                elasticsearch.os.cpu.load_avg.15m:
+                  enabled: true
+                elasticsearch.os.memory:
+                  enabled: true
+                jvm.gc.collections.count:
+                  enabled: true
+                jvm.gc.collections.elapsed:
+                  enabled: true
+                jvm.memory.heap.max:
+                  enabled: true
+                jvm.memory.heap.used:
+                  enabled: true
+                jvm.memory.heap.utilization:
+                  enabled: true
+                jvm.threads.count:
+                  enabled: true
+                elasticsearch.index.segments.count:
+                  enabled: true
+                elasticsearch.index.operations.completed:
+                  enabled: true
+          EOF
+          fi
+
+          # Add hostmetrics receiver if enabled
+          COLLECT_HOST_METRICS="${NR_CLI_COLLECT_HOST_METRICS:-false}"
+          if [ "$COLLECT_HOST_METRICS" = "true" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            hostmetrics:
+              collection_interval: 60s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.utilization: {enabled: true}
+                    system.cpu.time: {enabled: true}
+                load:
+                  metrics:
+                    system.cpu.load_average.1m: {enabled: true}
+                    system.cpu.load_average.5m: {enabled: true}
+                    system.cpu.load_average.15m: {enabled: true}
+                memory:
+                  metrics:
+                    system.memory.usage: {enabled: true}
+                    system.memory.utilization: {enabled: true}
+                disk:
+                  metrics:
+                    system.disk.io: {enabled: true}
+                    system.disk.operations: {enabled: true}
+                filesystem:
+                  metrics:
+                    system.filesystem.usage: {enabled: true}
+                    system.filesystem.utilization: {enabled: true}
+                network:
+                  metrics:
+                    system.network.io: {enabled: true}
+                    system.network.packets: {enabled: true}
+                process:
+                  metrics:
+                    process.cpu.utilization:
+                      enabled: true
+          EOF
+          fi
+
+          # Add filelog receiver if log paths are provided
+          ES_LOG_PATHS="${NR_CLI_ES_LOG_PATHS:-}"
+          if [ -n "$ES_LOG_PATHS" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            filelog:
+              include:
+          EOF
+            # Split comma-separated log paths and add each one (POSIX-compliant)
+            OLD_IFS="$IFS"
+            IFS=','
+            for LOG_PATH in $ES_LOG_PATHS; do
+              # Trim whitespace
+              LOG_PATH=$(echo "$LOG_PATH" | xargs)
+              if [ -n "$LOG_PATH" ]; then
+                echo "                - $LOG_PATH" >> "$COLLECTOR_CONFIG"
+              fi
+            done
+            IFS="$OLD_IFS"
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              start_at: beginning
+          EOF
+          fi
+
+          cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+          processors:
+            memory_limiter:
+              check_interval: 60s
+              limit_mib: 100
+            cumulativetodelta: {}
+          EOF
+
+          # Add cardinality reduction processors for optimized preset
+          if [ "$CONFIG_PRESET" = "optimized" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            attributes/cluster_state_aggregate:
+              include:
+                match_type: strict
+                metric_names:
+                  - elasticsearch.cluster.state_update.time
+              actions:
+                - key: type
+                  action: delete
+                - key: state
+                  action: delete
+          EOF
+          fi
+
+          cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            resource/cluster_name:
+              attributes:
+                - key: elasticsearch.cluster.name
+                  value: ${ES_CLUSTER_NAME}
+                  action: upsert
+            resourcedetection:
+              detectors: [system]
+              system:
+                resource_attributes:
+                  host.name:
+                    enabled: true
+                  host.id:
+                    enabled: true
+                  os.type:
+                    enabled: true
+          EOF
+
+          # Add batch processor with different settings based on preset
+          if [ "$CONFIG_PRESET" = "optimized" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            batch:
+              timeout: 30s
+              send_batch_size: 2048
+              send_batch_max_size: 4096
+          EOF
+          else
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            batch:
+              timeout: 10s
+              send_batch_size: 1024
+          EOF
+          fi
+
+          # Add cardinality reduction and metadata optimization for optimized preset
+          if [ "$CONFIG_PRESET" = "optimized" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            attributes/cardinality_reduction:
+              actions:
+                - key: process.pid
+                  action: delete
+                - key: process.parent_pid
+                  action: delete
+            transform/metadata_nullify:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(description, "")
+                    - set(unit, "")
+          EOF
+          fi
+
+          # Add resource/static_override processor if custom attributes are provided
+          CUSTOM_ATTRIBUTES="${NR_CLI_CUSTOM_ATTRIBUTES:-}"
+          if [ -n "$CUSTOM_ATTRIBUTES" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            resource/static_override:
+              attributes:
+          EOF
+            # Split comma-separated key:value pairs and add each one (POSIX-compliant)
+            OLD_IFS="$IFS"
+            IFS=','
+            for ATTR_PAIR in $CUSTOM_ATTRIBUTES; do
+              # Trim whitespace
+              ATTR_PAIR=$(echo "$ATTR_PAIR" | xargs)
+              if [ -n "$ATTR_PAIR" ]; then
+                # Split key:value
+                ATTR_KEY=$(echo "$ATTR_PAIR" | cut -d':' -f1 | xargs)
+                ATTR_VALUE=$(echo "$ATTR_PAIR" | cut -d':' -f2- | xargs)
+                if [ -n "$ATTR_KEY" ] && [ -n "$ATTR_VALUE" ]; then
+                  cat >> "$COLLECTOR_CONFIG" << EOF
+                - key: $ATTR_KEY
+                  value: "$ATTR_VALUE"
+                  action: upsert
+          EOF
+                fi
+              fi
+            done
+            IFS="$OLD_IFS"
+          fi
+
+          cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+          exporters:
+            otlphttp:
+              endpoint: ${NEW_RELIC_OTLP_ENDPOINT}
+              headers:
+                api-key: ${NEW_RELIC_LICENSE_KEY}
+          EOF
+
+          # Add enhanced exporter settings for optimized preset
+          if [ "$CONFIG_PRESET" = "optimized" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              compression: gzip
+              timeout: 30s
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
+          EOF
+          else
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              compression: gzip
+          EOF
+          fi
+
+          cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+          service:
+            pipelines:
+              metrics/elasticsearch:
+                receivers: [elasticsearch]
+          EOF
+
+          # Build processor list based on preset
+          if [ "$CONFIG_PRESET" = "optimized" ]; then
+            if [ -n "$CUSTOM_ATTRIBUTES" ]; then
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+                processors: [memory_limiter, resourcedetection, resource/cluster_name, attributes/cardinality_reduction, attributes/cluster_state_aggregate, cumulativetodelta, transform/metadata_nullify, resource/static_override, batch]
+          EOF
+            else
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+                processors: [memory_limiter, resourcedetection, resource/cluster_name, attributes/cardinality_reduction, attributes/cluster_state_aggregate, cumulativetodelta, transform/metadata_nullify, batch]
+          EOF
+            fi
+          else
+            if [ -n "$CUSTOM_ATTRIBUTES" ]; then
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+                processors: [memory_limiter, resourcedetection, resource/cluster_name, cumulativetodelta, resource/static_override, batch]
+          EOF
+            else
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+                processors: [memory_limiter, resourcedetection, resource/cluster_name, cumulativetodelta, batch]
+          EOF
+            fi
+          fi
+
+          cat >> "$COLLECTOR_CONFIG" << 'EOF'
+                exporters: [otlphttp]
+          EOF
+
+          # Add logs pipeline if log paths are provided
+          if [ -n "$ES_LOG_PATHS" ]; then
+            if [ -n "$CUSTOM_ATTRIBUTES" ]; then
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              logs:
+                receivers: [filelog]
+                processors: [memory_limiter, resourcedetection, resource/cluster_name, resource/static_override, batch]
+                exporters: [otlphttp]
+          EOF
+            else
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              logs:
+                receivers: [filelog]
+                processors: [memory_limiter, resourcedetection, resource/cluster_name, batch]
+                exporters: [otlphttp]
+          EOF
+            fi
+          fi
+
+          # Add host metrics pipeline if enabled
+          if [ "$COLLECT_HOST_METRICS" = "true" ]; then
+            if [ -n "$CUSTOM_ATTRIBUTES" ]; then
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              metrics/host:
+                receivers: [hostmetrics]
+                processors: [memory_limiter, resourcedetection, resource/static_override, batch]
+                exporters: [otlphttp]
+          EOF
+            else
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              metrics/host:
+                receivers: [hostmetrics]
+                processors: [memory_limiter, resourcedetection, batch]
+                exporters: [otlphttp]
+          EOF
+            fi
+          fi
+
+          printf "ES_ENDPOINT=%s\n" "$ES_ENDPOINT" > "$ES_ENV_FILE"
+          printf "ES_CLUSTER_NAME=%s\n" "$ES_CLUSTER_NAME" >> "$ES_ENV_FILE"
+          if [ -n "$ES_USERNAME" ]; then
+            printf "ES_USERNAME=%s\n" "$ES_USERNAME" >> "$ES_ENV_FILE"
+          fi
+          if [ -n "$ES_PASSWORD" ]; then
+            printf "ES_PASSWORD=%s\n" "$ES_PASSWORD" >> "$ES_ENV_FILE"
+          fi
+          if [ -n "$ES_CERT_PATH" ]; then
+            printf "ES_CERT_PATH=%s\n" "$ES_CERT_PATH" >> "$ES_ENV_FILE"
+          fi
+
+          if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "{{.NEW_RELIC_REGION}}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+          printf "NEW_RELIC_OTLP_ENDPOINT=%s\n" "$OTLP_ENDPOINT" >> "$ES_ENV_FILE"
+          printf "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}\n" >> "$ES_ENV_FILE"
+
+          echo "Collector config written to $COLLECTOR_CONFIG"
+
+    configure_service:
+      cmds:
+        - |
+          DROPIN_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
+          mkdir -p "$DROPIN_DIR"
+          NRDOT_BIN=$(command -v nrdot-collector 2>/dev/null || echo "/usr/bin/nrdot-collector")
+          {
+            printf '[Service]\n'
+            printf 'EnvironmentFile={{.CONFIG_DIR}}/elasticsearch-env.conf\n'
+            printf 'ExecStart=\n'
+            printf 'ExecStart=%s --config {{.CONFIG_DIR}}/elasticsearch-collector-config.yaml\n' "$NRDOT_BIN"
+          } > "$DROPIN_DIR/elasticsearch-config.conf"
+          echo "Systemd drop-in configured."
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl daemon-reload
+          systemctl reload-or-restart {{.COLLECTOR_DISTRO}}.service
+
+    assert_nrdot_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for NRDOT Collector to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet {{.COLLECTOR_DISTRO}}.service; then
+              echo "NRDOT Collector is running."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "NRDOT Collector did not start in time. Check logs:" >&2
+          journalctl -u {{.COLLECTOR_DISTRO}}.service --no-pager -n 50 >&2
+          exit 31
+
+postInstall:
+  info: |2
+      ✅ NRDOT Collector is now monitoring Elasticsearch!
+
+      📁 Configuration files:
+        • OTel config: /etc/nrdot-collector/elasticsearch-collector-config.yaml
+        • Environment:  /etc/nrdot-collector/elasticsearch-env.conf
+        • Systemd:      /etc/systemd/system/nrdot-collector.service.d/elasticsearch-config.conf
+
+      🔍 Commands:
+        Service status: systemctl status nrdot-collector
+        View logs:      journalctl -u nrdot-collector -f
+        Health check:   curl http://localhost:13133
+
+      ✨ Data should appear in New Relic within 3-5 minutes.
+         Query: FROM Metric SELECT * WHERE metricName LIKE 'elasticsearch.%' SINCE 10 minutes ago
