@@ -1,0 +1,42 @@
+---
+- name: install rabbitmq signing keys and repos
+  shell: |
+    curl -s https://packagecloud.io/install/repositories/rabbitmq/erlang/script.rpm.sh | bash
+    curl -s https://packagecloud.io/install/repositories/rabbitmq/rabbitmq-server/script.rpm.sh | bash
+  become: yes
+
+- name: install erlang and rabbitmq-server
+  shell: |
+    yum makecache -y --disablerepo='*' --enablerepo='rabbitmq_erlang' --enablerepo='rabbitmq_rabbitmq-server' || true
+    yum install -y --enablerepo='rabbitmq_erlang' --enablerepo='rabbitmq_rabbitmq-server' erlang rabbitmq-server
+  become: yes
+
+- name: enable rabbitmq management plugin
+  shell: rabbitmq-plugins enable rabbitmq_management
+  become: yes
+
+- name: create rabbitmq admin user
+  shell: |
+    systemctl start rabbitmq-server
+    rabbitmqctl add_user admin admin 2>/dev/null || true
+    rabbitmqctl set_user_tags admin administrator
+    rabbitmqctl set_permissions -p / admin ".*" ".*" ".*"
+  become: yes
+
+- name: start and enable rabbitmq
+  systemd:
+    name: rabbitmq-server
+    state: restarted
+    enabled: yes
+  become: yes
+
+- name: wait for management API to be ready
+  shell: |
+    for i in $(seq 1 30); do
+      if curl -sf -u admin:admin http://localhost:15672/api/overview > /dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 2
+    done
+    exit 1
+  become: yes

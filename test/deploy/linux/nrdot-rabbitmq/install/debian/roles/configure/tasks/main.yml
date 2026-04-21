@@ -1,0 +1,84 @@
+---
+- name: install dependencies
+  apt:
+    name:
+      - curl
+      - gnupg
+      - apt-transport-https
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: add rabbitmq team signing key
+  shell: |
+    curl -1sLf "https://keys.openpgp.org/vks/v1/by-fingerprint/0A9AF2115F4687BD29803A206B73A36E6026DFCA" | gpg --dearmor -o /usr/share/keyrings/com.rabbitmq.team.gpg
+  become: yes
+
+- name: detect ubuntu codename
+  shell: lsb_release -cs
+  register: ubuntu_codename
+  become: yes
+
+- name: add rabbitmq apt repositories
+  copy:
+    dest: /etc/apt/sources.list.d/rabbitmq.list
+    content: |
+      deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb1.rabbitmq.com/rabbitmq-erlang/ubuntu/{{ ubuntu_codename.stdout }} {{ ubuntu_codename.stdout }} main
+      deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb2.rabbitmq.com/rabbitmq-erlang/ubuntu/{{ ubuntu_codename.stdout }} {{ ubuntu_codename.stdout }} main
+      deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb1.rabbitmq.com/rabbitmq-server/ubuntu/{{ ubuntu_codename.stdout }} {{ ubuntu_codename.stdout }} main
+      deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb2.rabbitmq.com/rabbitmq-server/ubuntu/{{ ubuntu_codename.stdout }} {{ ubuntu_codename.stdout }} main
+  become: yes
+
+- name: install erlang and rabbitmq-server
+  apt:
+    name:
+      - erlang-base
+      - erlang-asn1
+      - erlang-crypto
+      - erlang-eldap
+      - erlang-ftp
+      - erlang-inets
+      - erlang-mnesia
+      - erlang-os-mon
+      - erlang-parsetools
+      - erlang-public-key
+      - erlang-runtime-tools
+      - erlang-snmp
+      - erlang-ssl
+      - erlang-syntax-tools
+      - erlang-tftp
+      - erlang-tools
+      - erlang-xmerl
+      - rabbitmq-server
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: enable rabbitmq management plugin
+  shell: rabbitmq-plugins enable rabbitmq_management
+  become: yes
+
+- name: create rabbitmq admin user
+  shell: |
+    rabbitmqctl add_user admin admin 2>/dev/null || true
+    rabbitmqctl set_user_tags admin administrator
+    rabbitmqctl set_permissions -p / admin ".*" ".*" ".*"
+  become: yes
+
+- name: start and enable rabbitmq
+  systemd:
+    name: rabbitmq-server
+    state: restarted
+    enabled: yes
+  become: yes
+
+- name: wait for management API to be ready
+  shell: |
+    for i in $(seq 1 30); do
+      if curl -sf -u admin:admin http://localhost:15672/api/overview > /dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 2
+    done
+    exit 1
+  become: yes

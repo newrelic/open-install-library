@@ -1,0 +1,300 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-rabbitmq
+displayName: NRDOT RabbitMQ
+description: New Relic install recipe for RabbitMQ monitoring via NRDOT Collector on RHEL/CentOS/Amazon Linux.
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+  - type: host
+    os: linux
+    platform: centos
+  - type: host
+    os: linux
+    platform: oracle
+  - type: host
+    os: linux
+    platform: redhat
+
+keywords:
+  - RabbitMQ
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Messaging
+  - Queue
+  - Linux
+  - RHEL
+  - CentOS
+  - Amazon Linux
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+
+inputVars:
+  - name: NR_CLI_RABBITMQ_DEPLOYMENT_NAME
+    prompt: "RabbitMQ deployment name (used to identify this instance in New Relic): "
+  - name: NR_CLI_RABBITMQ_ENDPOINT
+    prompt: "RabbitMQ management API endpoint (e.g. http://localhost:15672): "
+    default: "http://localhost:15672"
+  - name: NR_CLI_RABBITMQ_USERNAME
+    prompt: "RabbitMQ username: "
+    default: "admin"
+  - name: NR_CLI_RABBITMQ_PASSWORD
+    prompt: "RabbitMQ password: "
+    secret: true
+
+validationNrql: "SELECT count(*) FROM Metric SINCE 10 minutes ago WHERE metricName LIKE 'rabbitmq.%' AND instrumentation.provider = 'opentelemetry' AND rabbitmq.deployment.name = '{{.NR_CLI_RABBITMQ_DEPLOYMENT_NAME}}'"
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    NRDOT_ARCH:
+      sh: if [ "$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "x86_64"; fi
+    NRDOT_VERSION:
+      sh: curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep tag_name | cut -d '"' -f 4 | sed 's/^v//' || echo "1.11.1"
+    COLLECTOR_DISTRO: "nrdot-collector"
+    CONFIG_DIR: "/etc/nrdot-collector"
+
+  tasks:
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: install_nrdot
+        - task: create_collector_config
+        - task: configure_service
+        - task: restart_nrdot
+        - task: assert_nrdot_status_ok
+
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    install_nrdot:
+      cmds:
+        - |
+          echo "Installing NRDOT Collector v{{.NRDOT_VERSION}}..."
+          NRDOT_RPM="/tmp/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm"
+          curl "https://github.com/newrelic/nrdot-collector-releases/releases/download/{{.NRDOT_VERSION}}/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm" \
+            --location --output "$NRDOT_RPM" 2>/dev/null
+          rpm -i "$NRDOT_RPM" > /dev/null 2>&1 || \
+            (which dnf >/dev/null 2>&1 && dnf install -y "$NRDOT_RPM" > /dev/null) || \
+            yum install -y "$NRDOT_RPM" > /dev/null
+          if [ $? -ne 0 ]; then
+            echo "Failed to install NRDOT Collector package." >&2
+            exit 1
+          fi
+          rm -f "$NRDOT_RPM"
+          mkdir -p {{.CONFIG_DIR}}
+          grep -q "^NEW_RELIC_LICENSE_KEY" {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf 2>/dev/null && \
+            sed -i 's|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}|' \
+              {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf || \
+            echo "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" | \
+              tee -a {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf > /dev/null
+
+    create_collector_config:
+      cmds:
+        - |
+          COLLECTOR_CONFIG="{{.CONFIG_DIR}}/rabbitmq-collector-config.yaml"
+          ENV_FILE="{{.CONFIG_DIR}}/rabbitmq-env.conf"
+
+          echo "Creating RabbitMQ collector configuration..."
+          cat > "$COLLECTOR_CONFIG" << 'EOF'
+          receivers:
+            rabbitmq:
+              endpoint: ${RABBITMQ_ENDPOINT}
+              username: ${RABBITMQ_USERNAME}
+              password: ${RABBITMQ_PASSWORD}
+              collection_interval: 30s
+              metrics:
+                rabbitmq.consumer.count:
+                  enabled: true
+                rabbitmq.message.delivered:
+                  enabled: true
+                rabbitmq.message.published:
+                  enabled: true
+                rabbitmq.message.acknowledged:
+                  enabled: true
+                rabbitmq.message.dropped:
+                  enabled: true
+                rabbitmq.message.current:
+                  enabled: true
+                rabbitmq.node.disk_free:
+                  enabled: true
+                rabbitmq.node.disk_free_limit:
+                  enabled: true
+                rabbitmq.node.disk_free_alarm:
+                  enabled: true
+                rabbitmq.node.mem_used:
+                  enabled: true
+                rabbitmq.node.mem_limit:
+                  enabled: true
+                rabbitmq.node.mem_alarm:
+                  enabled: true
+                rabbitmq.node.fd_used:
+                  enabled: true
+                rabbitmq.node.fd_total:
+                  enabled: true
+                rabbitmq.node.sockets_used:
+                  enabled: true
+                rabbitmq.node.sockets_total:
+                  enabled: true
+                rabbitmq.node.proc_used:
+                  enabled: true
+                rabbitmq.node.proc_total:
+                  enabled: true
+                rabbitmq.node.uptime:
+                  enabled: true
+                rabbitmq.node.run_queue:
+                  enabled: true
+          processors:
+            resourcedetection:
+              detectors: [system]
+              system:
+                resource_attributes:
+                  host.name:
+                    enabled: true
+                  host.id:
+                    enabled: true
+            resource:
+              attributes:
+                - action: upsert
+                  key: instrumentation.provider
+                  value: opentelemetry
+                - action: upsert
+                  key: rabbitmq.server.endpoint
+                  value: ${RABBITMQ_ENDPOINT}
+                - action: upsert
+                  key: rabbitmq.deployment.name
+                  value: ${RABBITMQ_DEPLOYMENT_NAME}
+            batch:
+              timeout: 30s
+              send_batch_size: 512
+            transform/rabbitmq_metrics:
+              metric_statements:
+                - context: resource
+                  statements:
+                    - set(attributes["rabbitmq.display.name"], Concat(["server", attributes["rabbitmq.deployment.name"]], ":"))
+            transform/metadata_nullify:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(description, "")
+                    - set(unit, "")
+          exporters:
+            otlphttp:
+              endpoint: ${NEW_RELIC_OTLP_ENDPOINT}
+              headers:
+                api-key: ${NEW_RELIC_LICENSE_KEY}
+              compression: gzip
+          extensions:
+            health_check:
+              endpoint: 0.0.0.0:13133
+          service:
+            extensions: [health_check]
+            pipelines:
+              metrics:
+                receivers: [rabbitmq]
+                processors: [resourcedetection, resource, batch, transform/rabbitmq_metrics, transform/metadata_nullify]
+                exporters: [otlphttp]
+          EOF
+
+          printf "RABBITMQ_ENDPOINT=%s\n" "{{.NR_CLI_RABBITMQ_ENDPOINT}}" > "$ENV_FILE"
+          printf "RABBITMQ_USERNAME=%s\n" "{{.NR_CLI_RABBITMQ_USERNAME}}" >> "$ENV_FILE"
+          printf "RABBITMQ_PASSWORD=%s\n" "{{.NR_CLI_RABBITMQ_PASSWORD}}" >> "$ENV_FILE"
+          printf "RABBITMQ_DEPLOYMENT_NAME=%s\n" "{{.NR_CLI_RABBITMQ_DEPLOYMENT_NAME}}" >> "$ENV_FILE"
+
+          if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "{{.NEW_RELIC_REGION}}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+          printf "NEW_RELIC_OTLP_ENDPOINT=%s\n" "$OTLP_ENDPOINT" >> "$ENV_FILE"
+          printf "NEW_RELIC_LICENSE_KEY=%s\n" "{{.NEW_RELIC_LICENSE_KEY}}" >> "$ENV_FILE"
+
+          echo "Collector config written to $COLLECTOR_CONFIG"
+
+    configure_service:
+      cmds:
+        - |
+          DROPIN_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
+          mkdir -p "$DROPIN_DIR"
+          NRDOT_BIN=$(command -v nrdot-collector 2>/dev/null || echo "/usr/bin/nrdot-collector")
+          {
+            printf '[Service]\n'
+            printf 'EnvironmentFile={{.CONFIG_DIR}}/rabbitmq-env.conf\n'
+            printf 'ExecStart=\n'
+            printf 'ExecStart=%s --config {{.CONFIG_DIR}}/rabbitmq-collector-config.yaml\n' "$NRDOT_BIN"
+          } > "$DROPIN_DIR/rabbitmq-config.conf"
+          echo "Systemd drop-in configured."
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl daemon-reload
+          systemctl reload-or-restart {{.COLLECTOR_DISTRO}}.service
+
+    assert_nrdot_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for NRDOT Collector to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet {{.COLLECTOR_DISTRO}}.service; then
+              echo "NRDOT Collector is running."
+              echo ""
+              echo "Configuration: {{.CONFIG_DIR}}/rabbitmq-collector-config.yaml"
+              echo "Environment:   {{.CONFIG_DIR}}/rabbitmq-env.conf"
+              echo ""
+              echo "Useful commands:"
+              echo "  Check status:  sudo systemctl status nrdot-collector"
+              echo "  View logs:     sudo journalctl -u nrdot-collector -f"
+              echo "  Restart:       sudo systemctl restart nrdot-collector"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "NRDOT Collector did not start in time." >&2
+          journalctl -u {{.COLLECTOR_DISTRO}}.service --no-pager -n 50 >&2
+          exit 31
+
+postInstall:
+  info: |2
+      RabbitMQ OTel Collector config: /etc/nrdot-collector/rabbitmq-collector-config.yaml
+      Service status: systemctl status nrdot-collector
+      View logs: journalctl -u nrdot-collector -f
