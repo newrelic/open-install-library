@@ -1,20 +1,16 @@
 ---
 - name: install docker
-  shell: |
-    if command -v docker &>/dev/null; then
-      echo "Docker already installed"
-      exit 0
-    fi
-    apt-get update -y
-    apt-get install -y ca-certificates curl
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-    apt-get update -y
-    apt-get install -y docker-ce docker-ce-cli containerd.io
-    systemctl start docker
-    systemctl enable docker
+  apt:
+    name: docker.io
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: start and enable docker
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
   become: yes
 
 - name: run rabbitmq container with management plugin
