@@ -1,0 +1,44 @@
+---
+- name: install docker
+  shell: |
+    if command -v docker &>/dev/null; then
+      echo "Docker already installed"
+      exit 0
+    fi
+    if [ -f /etc/os-release ]; then
+      . /etc/os-release
+      if [ "$ID" = "amzn" ]; then
+        yum install -y docker
+        systemctl start docker
+        systemctl enable docker
+      else
+        yum install -y yum-utils
+        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        yum install -y docker-ce docker-ce-cli containerd.io
+        systemctl start docker
+        systemctl enable docker
+      fi
+    fi
+  become: yes
+
+- name: run rabbitmq container with management plugin
+  shell: |
+    docker run -d \
+      --name rabbitmq \
+      -p 5672:5672 \
+      -p 15672:15672 \
+      -e RABBITMQ_DEFAULT_USER=admin \
+      -e RABBITMQ_DEFAULT_PASS=admin \
+      rabbitmq:3-management
+  become: yes
+
+- name: wait for management API to be ready
+  shell: |
+    for i in $(seq 1 30); do
+      if curl -sf -u admin:admin http://localhost:15672/api/overview > /dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 2
+    done
+    exit 1
+  become: yes
