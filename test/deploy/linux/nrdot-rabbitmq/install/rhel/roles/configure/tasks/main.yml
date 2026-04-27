@@ -1,33 +1,35 @@
 ---
-- name: install rabbitmq signing keys and repos
+- name: install docker
   shell: |
-    curl -s https://packagecloud.io/install/repositories/rabbitmq/erlang/script.rpm.sh | bash
-    curl -s https://packagecloud.io/install/repositories/rabbitmq/rabbitmq-server/script.rpm.sh | bash
+    if command -v docker &>/dev/null; then
+      echo "Docker already installed"
+      exit 0
+    fi
+    if [ -f /etc/os-release ]; then
+      . /etc/os-release
+      if [ "$ID" = "amzn" ]; then
+        yum install -y docker
+        systemctl start docker
+        systemctl enable docker
+      else
+        yum install -y yum-utils
+        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        yum install -y docker-ce docker-ce-cli containerd.io
+        systemctl start docker
+        systemctl enable docker
+      fi
+    fi
   become: yes
 
-- name: install erlang and rabbitmq-server
+- name: run rabbitmq container with management plugin
   shell: |
-    yum makecache -y --disablerepo='*' --enablerepo='rabbitmq_erlang' --enablerepo='rabbitmq_rabbitmq-server' || true
-    yum install -y --enablerepo='rabbitmq_erlang' --enablerepo='rabbitmq_rabbitmq-server' erlang rabbitmq-server
-  become: yes
-
-- name: enable rabbitmq management plugin
-  shell: rabbitmq-plugins enable rabbitmq_management
-  become: yes
-
-- name: create rabbitmq admin user
-  shell: |
-    systemctl start rabbitmq-server
-    rabbitmqctl add_user admin admin 2>/dev/null || true
-    rabbitmqctl set_user_tags admin administrator
-    rabbitmqctl set_permissions -p / admin ".*" ".*" ".*"
-  become: yes
-
-- name: start and enable rabbitmq
-  systemd:
-    name: rabbitmq-server
-    state: restarted
-    enabled: yes
+    docker run -d \
+      --name rabbitmq \
+      -p 5672:5672 \
+      -p 15672:15672 \
+      -e RABBITMQ_DEFAULT_USER=admin \
+      -e RABBITMQ_DEFAULT_PASS=admin \
+      rabbitmq:3-management
   become: yes
 
 - name: wait for management API to be ready
