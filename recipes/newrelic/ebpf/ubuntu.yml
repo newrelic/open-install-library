@@ -43,7 +43,9 @@ install:
     default:
       cmds:
         - task: assert_pre_req
-        - task: check_config_file
+        - task: check_legacy_version
+        - task: validate_inputs
+        - task: create_config
         - task: update_apt
         - task: add_gpg_key
         - task: add_nr_source
@@ -134,11 +136,96 @@ install:
             echo "Directory /px already exists. Continuing with installation."
           fi
 
-    check_config_file:
+    check_legacy_version:
       cmds:
         - |
+          # Check if newrelic-ebpf-agent is already installed with version 1.3.0 or below
+          if dpkg -l newrelic-ebpf-agent 2>/dev/null | grep -q "^ii"; then
+            INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' newrelic-ebpf-agent 2>/dev/null)
 
-          CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
+            if [[ -n "$INSTALLED_VERSION" ]]; then
+              # Extract major.minor.patch version (remove any suffix like -1, ~beta, etc.)
+              VERSION_CLEAN=$(echo "$INSTALLED_VERSION" | sed 's/[-~].*//' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+
+              if [[ -n "$VERSION_CLEAN" ]]; then
+                # Compare version - check if it's 1.3.0 or below
+                MAJOR=$(echo "$VERSION_CLEAN" | cut -d. -f1)
+                MINOR=$(echo "$VERSION_CLEAN" | cut -d. -f2)
+                PATCH=$(echo "$VERSION_CLEAN" | cut -d. -f3)
+
+                # Version is legacy if: major < 1, OR (major == 1 AND minor < 3), OR (major == 1 AND minor == 3 AND patch == 0)
+                IS_LEGACY=false
+                if [[ "$MAJOR" -lt 1 ]]; then
+                  IS_LEGACY=true
+                elif [[ "$MAJOR" -eq 1 ]]; then
+                  if [[ "$MINOR" -lt 3 ]]; then
+                    IS_LEGACY=true
+                  elif [[ "$MINOR" -eq 3 && "$PATCH" -eq 0 ]]; then
+                    IS_LEGACY=true
+                  fi
+                fi
+
+                if [[ "$IS_LEGACY" == "true" ]]; then
+                  echo ""
+                  echo -e "\e[31mERROR:\e[0m Detected newrelic-ebpf-agent version $INSTALLED_VERSION which uses legacy .conf configuration format."
+                  echo "Please remove the existing setup and do a fresh installation."
+                  echo ""
+                  echo "To remove the existing installation, run:"
+                  echo "  sudo apt-get purge newrelic-ebpf-agent"
+                  echo ""
+                  exit 25
+                fi
+              fi
+            fi
+          fi
+          echo "No legacy version detected. Proceeding with installation."
+
+    validate_inputs:
+      cmds:
+        - |
+          # Validate required inputs BEFORE creating config file
+
+          # Validate NEW_RELIC_LICENSE_KEY
+          if [[ -z "${NEW_RELIC_LICENSE_KEY:-}" ]]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m NEW_RELIC_LICENSE_KEY is required but not set. Aborting installation."
+            echo ""
+            exit 1
+          fi
+          echo "License key validated."
+
+          # Validate DEPLOYMENT_NAME (required unless Agent Control mode)
+          if [[ -z "${DEPLOYMENT_NAME:-}" && "${NEW_RELIC_AGENT_CONTROL:-}" != "true" ]]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m DEPLOYMENT_NAME is required but not set. Aborting installation."
+            echo ""
+            exit 1
+          fi
+          echo "Deployment name validated."
+
+          # Set default log file path if not provided
+          if [[ -z "${NEW_RELIC_LOG_FILE_PATH:-}" ]]; then
+            export NEW_RELIC_LOG_FILE_PATH="/var/log/newrelic-ebpf-agent"
+          fi
+
+          # Validate log directory can be created
+          if [[ ! -d "$NEW_RELIC_LOG_FILE_PATH" ]]; then
+            echo "Creating log directory $NEW_RELIC_LOG_FILE_PATH..."
+            if ! mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Failed to create log directory $NEW_RELIC_LOG_FILE_PATH. Aborting installation."
+              echo ""
+              exit 20
+            fi
+          fi
+          echo "Log directory validated: $NEW_RELIC_LOG_FILE_PATH"
+          echo "All input validations passed."
+
+    create_config:
+      cmds:
+        - |
+          CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.yaml"
+          CONFIG_DIR="/etc/newrelic-ebpf-agent"
 
           # Function to log errors and exit
           log_error_and_exit() {
@@ -148,252 +235,254 @@ install:
               exit 1
           }
 
-          create_default_config_file(){
-          
-              echo "Creating default configuration file at $CONFIG_FILE..."
+          # Handle custom config file path
+          if [[ -n "${CONFIG_FILE_PATH:-}" ]]; then
+            if [[ -f "$CONFIG_FILE_PATH" ]]; then
+              echo "Using custom configuration file: $CONFIG_FILE_PATH"
               # Ensure the directory exists
-              if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
-                echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
+              mkdir -p "$CONFIG_DIR" || log_error_and_exit "Failed to create directory $CONFIG_DIR."
+              # Create symbolic link to custom config
+              if [[ "$(realpath "$CONFIG_FILE_PATH")" != "$(realpath "$CONFIG_FILE")" ]]; then
+                ln -sf "$(realpath "$CONFIG_FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link."
+                echo "Symbolic link created successfully."
               fi
+              echo "Configuration file ready at $CONFIG_FILE"
+            else
+              log_error_and_exit "Custom configuration file $CONFIG_FILE_PATH does not exist."
+            fi
+          fi
 
-              if [[ "$NEW_RELIC_REGION" == "staging" ]]; then
-                NEW_RELIC_OTLP_ENDPOINT="staging-otlp.nr-data.net:443"
-              elif [[ "$NEW_RELIC_REGION" == "EU" ]]; then
-                NEW_RELIC_OTLP_ENDPOINT="otlp.eu01.nr-data.net:443"
-              elif [[ "$NEW_RELIC_REGION" == "US" ]]; then
-                NEW_RELIC_OTLP_ENDPOINT="otlp.nr-data.net:443"
-              fi       
+          # Create default YAML configuration file
+          echo "Creating YAML configuration file at $CONFIG_FILE..."
 
-              # Create the default configuration file
-              tee "$CONFIG_FILE" > /dev/null << EOS
+          # Ensure the directory exists
+          mkdir -p "$CONFIG_DIR" || log_error_and_exit "Failed to create directory $CONFIG_DIR."
+
+          # Set default log file path
+          LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-/var/log/newrelic-ebpf-agent}"
+
+          # Create the YAML configuration file
+          tee "$CONFIG_FILE" > /dev/null << EOS
+          # eBPF Agent Configuration File (YAML format)
+          # Documentation: https://github.com/newrelic/newrelic-ebpf-agent
+
           # -- The license key to use.
-          NEW_RELIC_LICENSE_KEY="${NEW_RELIC_LICENSE_KEY:-}"
+          licenseKey: "${NEW_RELIC_LICENSE_KEY}"
           # -- Unique name for the deployment to identify data posting via eBPF Agent
-          DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-}"
-          # -- Endpoint to export data to Newrelic
-          OTLP_ENDPOINT="${NEW_RELIC_OTLP_ENDPOINT:-}"
-          # -- To configure the log level in increasing order of verboseness. [OFF, FATAL, ERROR, WARNING, INFO, DEBUG]
-          NEW_RELIC_LOG_LEVEL=INFO
+          deploymentName: "${DEPLOYMENT_NAME:-}"
+          # -- If using a customSecretLicenseKey, you must supply your
+          # region "US"/"EU". Otherwise, leave this value as an empty string.
+          region: "${NEW_RELIC_REGION}"
+          # -- Custom OTLP endpoint URL. When set, this takes precedence over the region-based static endpoints.
+          customOtlpEndpoint: ""
+          # Only overridden when both customOtlpEndpoint and this field are explicitly set.
+          customOtlpEndpointTlsEnabled: true
+          # -- Path to custom certificates for OTLP endpoint TLS.
+          customOtlpEndpointTlsCertPath: ""
+          # -- To configure the log level in increasing order of verboseness.
+          # -- OFF, FATAL, ERROR, WARNING, INFO, DEBUG
+          logLevel: "INFO"
           # -- To configure log file path of eBPF Agent. If logging to this path fails, logs will be directed to stdout.
-          NEW_RELIC_LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-}"
-          # -- The primary lever to control RAM use of the eBPF agent. Specified in MiB.
-          TABLE_STORE_DATA_LIMIT_MB=250
-          # Sets the absolute path of the complete directory where the required linux headers are manually downloaded and placed for the eBPF agent to use. 
-          # This is useful under restricted environments where agent is not able to download required linux headers. The required headers are identified by the agent based on the kernel version. 
-          # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
-          DOWNLOADED_PACKAGED_HEADERS_PATH=""
-          # Sets the absolute path of the complete directory where the linux headers are present for the eBPF agent to use. 
-          # This is useful where required linux headers could not be installed or path could not be determined.
-          # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
-          DISTRO_KERNEL_HEADERS_PATH=""
+          logFilePath: "${LOG_FILE_PATH}"
+          # -- Sets the path of the directory where the required linux headers
+          # are downloaded and placed for the eBPF agent to use.
+          # -- This is useful under restricted environments where agent is not
+          # able to download required linux headers. The required headers are
+          # identified by the agent based on the kernel version.
+          downloadedPackagedHeadersPath: ""
+          # -- Sets the path of the installed distribution linux headers.
+          # This is useful when auto discovery of distribution linux headers
+          # path fails.
+          distroKernelHeadersPath: ""
+          # -- Enable APM data reporting. When enabled, the agent collects
+          # and reports application performance monitoring data.
+          # Controls APM data reporting. Accepted values: 'true' (always send),
+          # 'false' (never send), 'auto' (send only when neither APM nor
+          # OTel agent is attached)
+          reportApmData: "${REPORT_APM_DATA:-auto}"
+          # -- Enable network metrics reporting. When enabled, the agent
+          # collects and reports network metrics including TCP statistics.
+          # Controls network metrics reporting.
+          # Accepted values: 'true' (always send), 'false' (never send)
+          # and 'auto'
+          reportNetworkMetrics: "${REPORT_NETWORK_METRICS:-auto}"
+          # -- Enable log reporting. When enabled, the agent
+          # collects and reports logs. Controls log reporting.
+          # Accepted values: 'true' (always send), 'false' (never send)
+          # and 'auto' (send only when APM is not attached)
+          reportLogs: "${REPORT_LOGS:-false}"
+          # -- Enable AI monitoring. When enabled, the agent collects and reports AI monitoring data.
+          # Accepted values: 'true' (always send), 'false' (never send) and 'auto'
+          reportAiMetrics: "false"
+          # -- Enable GenAI capture message content. When enabled, the agent captures
+          # message content for GenAI interactions. Use with caution.
+          genAICaptureMessageContent: false
           # Capability to include/exclude port from entity name, default: true. ex: python:frosty_merkle:[80]
           # Set it to false, to exclude ports from entity name, ex: python:frosty_merkle
-          INCLUDE_PORT_IN_SERVER_ENTITY_IDENTIFICATION="true"
-          # -- Enable APM data reporting. When enabled, the agent collects and reports application performance monitoring data
-          APM_DATA_REPORTING="${APM_DATA_REPORTING:-true}"
-          # -- Enable TCP statistics reporting. When enabled, the agent collects and reports low level tcp metrics and starts network monitoring
-          NETWORK_METRICS_REPORTING="true"
-          # Enable JVM metrics reporting. When enabled, the agent collects and reports JVM metrics for Java applications
-          JVM_METRICS_REPORTING=true
-          # Enable log reporting. When enabled, the agent collects and reports logs.
-          LOG_REPORTING="${LOG_REPORTING:-false}"
-          # Enable log reporting for entity monitored by the eBPF Agent.
-          APPLICATION_LOG_REPORTING_ENABLED="${APPLICATION_LOG_REPORTING_ENABLED:-false}"
-          # Regex to match log file path to include for entity log reporting
-          APPLICATION_LOG_FILE_REGEX=".*\\.log$"
-          # -- Maximum number of log samples to collect per minute from an entity.
-          # The internal maxSamplesStored is calculated proportionally based on the harvest cycle (5 seconds):
-          # maxSamplesStored = maxSamplesPerMinute / (60 / 5) = maxSamplesPerMinute / 12
-          # For the default value of 10000, this results in ~833 samples stored per harvest cycle.
-          # Once this limit is reached, events are sampled to maintain an even distribution across the harvest cycle.
-          MAX_LOG_SAMPLES_PER_MINUTE=10000
-          # The eBPF agent collects and reports STDOUT/STDERR STREAM logs to New Relic for entities that match this regex. 
-          # The entities are identified by their NEW_RELIC_APP_NAME (if provided) or their Kubernetes service name.
-          # To forward logs for all entities, use the regex .*. Default is .*
-          KEEP_STDSTREAM_LOG_FOR_ENTITY_REGEX=".*"
-          # The eBPF agent collects and reports file logs to New Relic for entities that match this regex. 
-          # The entities are identified by their NEW_RELIC_APP_NAME (if provided) or their Kubernetes service name.
-          # To forward logs for all entities, use the regex .*. Default is .*
-          KEEP_FILE_LOG_FOR_ENTITY_REGEX=".*"
+          includePortInServerEntityIdentification: true
+
+          # -- Custom labels to be added to all entities reported by the eBPF agent.
+          # These labels are sent as the NEW_RELIC_LABELS environment variable in the format "key1:value1;key2:value2".
+          # Example:
+          # entityLabels:
+          #   datacenter: "us-east-1"
+          #   cluster: "prod-cluster"
+          #   environment: "production"
+          entityLabels: {}
 
           # -- All data drop filters configuration
           # Configure filters to drop all types of data (Network Metrics and APM data) based on config provided
-
-          # -- Regular expression pattern to match entity names for dropping ALL data (TCP stats + APM data)
-          # Example: "java-app|otel-collector|\\bservice1\\b"
-          DROP_ALL_DATA_FOR_ENTITY_NAME_REGEX=""
-
-          # -- Regular expression pattern to match entity names to always keep ALL data for. This bypasses all drop filters.
-          # Example: "critical-service|important-app|\\bmust-monitor\\b"
-          KEEP_ALL_DATA_FOR_ENTITY_NAME_REGEX=""
-
-          # -- Drop all data for applications/entities that have NewRelic/OpenTelemetry APM agents running
-          DROP_ALL_DATA_FOR_APM_AGENT_ENABLED_ENTITY="false"
+          allDataFilters:
+            # -- Define a regex to match k8s service names to drop. Example "kube-dns|otel-collector|\\bblah\\b"
+            # RENAMED from 'dropServiceNameRegex' for clarity. The old name
+            # is deprecated but still supported for backward compatibility.
+            # Use either dropServiceNameRegex or keepServiceNameRegex to filter service names, not both.
+            # If both are provided, keepServiceNameRegex takes precedence.
+            dropServiceNameRegex: ""
+            # -- This config acts as a bypass for the dropServiceNameRegex config.
+            # Service names that match this regex will not have their data dropped by the dropServiceNameRegex.
+            # Use either dropServiceNameRegex or keepServiceNameRegex to filter service names, not both.
+            # If both are provided, keepServiceNameRegex takes precedence.
+            # RENAMED from 'allowServiceNameRegex' for clarity. The old name
+            # is deprecated but still supported for backward compatibility.
+            keepServiceNameRegex: ""
+            # -- Drop all data for applications/entities that have NewRelic/OTEL APM agents running
+            dropApmAgentEnabledEntity: false
 
           # -- APM data filters configuration
-
-          # -- Comma-separated list of entity names for dropping eBPF APM data
-          # Example: "kube-dns,otel-collector,service1"
-          DROP_APM_DATA_FOR_ENTITY_NAME=""
-
-          # -- Comma-separated list of entity names to always keep eBPF APM data. default all entity is keepd/enabled 
-          # This bypasses DROP_APM_DATA_FOR_ENTITY_NAME filter.
-          # Example: "critical-service,important-app,must-monitor"
-          KEEP_APM_DATA_FOR_ENTITY_NAME=""
-
-          # -- Drop eBPF APM data for applications/entities that have NewRelic/OpenTelemetry APM agents running
-          DROP_EAPM_DATA_FOR_APM_AGENT_ENABLED_ENTITY="true"
+          # Configure filters to drop ebpf APM data based on config provided
+          apmDataFilters:
+            # -- List of entity names to drop ebpf APM data for
+            dropEntityName: []
+            # -- List of entity names to always keep APM data. By default all entities are kept/enabled
+            # -- This config bypasses dropEntityName filter.
+            keepEntityName: []
+            # -- Enable JVM metrics reporting. When enabled, the agent collects and reports JVM metrics for Java applications
+            jvmMetricsReporting: true
 
           # -- Network metrics Data filter / TCP stats filters
+          # Configure filters to drop/keep Network metrics data based on config provided
+          networkMetricsDataFilter:
+            # -- List of entity names to drop Network metrics data for
+            dropEntityName: []
+            # -- List of entity names to always keep Network metrics data. By default all entities are kept/enabled
+            # -- This config bypasses dropEntityName filter.
+            keepEntityName: []
 
-          # -- Comma-separated list of entity names for dropping Network metrix data.
-          # Example: "kube-dns,otel-collector,service1"
-          DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
+          # -- Log data filters configuration
+          # Configure filters to drop/keep log data based on the config provided
+          logDataFilters:
+            # -- Application/entity log reporting filters
+            applicationLogReporting:
+              # -- Enable log collection from entities matching the filters below
+              enabled: ${APPLICATION_LOG_REPORTING_ENABLED:-true}
+              # -- Regex to match log file names to include
+              fileRegex: ".*.log$"
+              # -- Minimum log level to report (e.g., TRACE, DEBUG, INFO, WARN, ERROR). Default: INFO
+              logLevelThreshold: "${APPLICATION_LOG_LEVEL_THRESHOLD:-INFO}"
+              # -- Maximum number of log samples to collect per minute from an entity.
+              # The internal maxSamplesStored is calculated proportionally based on the harvest cycle (5 seconds):
+              # maxSamplesStored = maxSamplesPerMinute / (60 / 5) = maxSamplesPerMinute / 12
+              # For the default value of 10000, this results in ~833 samples stored per harvest cycle.
+              # Once this limit is reached, events are sampled to maintain an even distribution across the harvest cycle.
+              maxSamplesPerMinute: 10000
+              # -- Regex to match entity names to keep logs from stdout and stderr
+              keepStdStreamEntityRegex: ".*"
+              # -- Regex to match entity names to keep logs from log files
+              keepFileEntityRegex: ".*"
 
-          # -- Comma-separated list of entity names to always keep Network metrix data. default all entity is keepd/enabled 
-          # This bypasses DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME filter.
-          # Example: "critical-service,important-app,must-monitor"
-          KEEP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
+          # -- The source connectors (and data export scripts) to enable.
+          # Note that socket_tracer tracks http, mysql, redis, mongodb, amqp, cassandra, dns, and postgresql
+          # while tcp_stats tracks TCP metrics.
+          # stirlingSources: "socket_tracer,tcp_stats"
 
-          # To toggle the protocols to enable for tracing in the socket_tracer. There is an ability to configure span export if it is enabled.
-          # Each protocol has the flexibility to selectively enable the type of data to export.
-          # Metrics are sent by default when a protocol is enabled and it supports metrics. Note: AMQP, Kafka, DNS do not report metrics.
-          # PROTOCOLS_<protocol-name>_SPANS_SAMPLING_LATENCY represents the sampling latency threshold for the spans to export. [Options: p1, p10, p50, p90, p99].
+          # The protocols to enable for tracing in the socket_tracer.
+          # There is an ability to configure span export if it is enabled.
+          # Each protocol has the flexibility to selectively enable the type
+          # of OTLP data to export.
+          # Metrics are sent by default when a protocol is enabled and it
+          # supports metrics. Note: AMQP, Kafka, DNS do not report metrics.
+          # samplingLatency represents the sampling latency threshold for the spans to export.
+          # Options: p1, p10, p50, p90, p99.
+          protocols:
+            global:
+              # Controls maximum unlinked spans reported per protocol. Set to 0 to disable limit.
+              # Unlinked spans are spans that the eBPF agent captures but cannot associate with its parent.
+              max_unlinked_spans: 100
+              # Reserves a configurable percentage of the unlinked span quota for error spans,
+              # ensuring error visibility even when normal spans arrive first.
+              unlinked_spans_error_quota_percentage: 30
+            http:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+                # -- samplingErrorRate represents the error rate threshold
+                # for an HTTP route where surpassing it would mean the
+                # corresponding spans of the route are exported.
+                # Options: 1-100
+                samplingErrorRate: ""
+            thrift:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+                samplingErrorRate: ""
+            mysql:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            pgsql:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            cass:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            redis:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            mongodb:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            kafka:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            amqp:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            dns:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            dynamodb:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            mssql:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
 
-          # Controls maximum unlinked spans reported per protocol. Set to 0 to disable limit
-          PROTOCOLS_SPANS_UNLINKED_MAX="100"
-          # -- To Enable/Disable the metrics, spans, sampling of latency and error rate of HTTP
-          PROTOCOLS_HTTP_ENABLED="true"
-          PROTOCOLS_HTTP_SPANS_ENABLED="true"
-          PROTOCOLS_HTTP_SPANS_SAMPLING_LATENCY="p50"
-          # PROTOCOLS_HTTP_SPANS_SAMPLING_ERROR_RATE represents the error rate threshold for an HTTP route where surpassing it would mean the corresponds spans of the route are exported. [Options: 1-100]
-          PROTOCOLS_HTTP_SPANS_SAMPLING_ERROR_RATE=""
-
-          # -- To Enable/Disable the metrics, spans, sampling of latency and error rate of Thrift
-          PROTOCOLS_THRIFT_ENABLED="true"
-          PROTOCOLS_THRIFT_SPANS_ENABLED="true"
-          PROTOCOLS_THRIFT_SPANS_SAMPLING_LATENCY="p50"
-          PROTOCOLS_THRIFT_SPANS_SAMPLING_ERROR_RATE=""
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of MySQL DB
-          PROTOCOLS_MYSQL_ENABLED="true"
-          PROTOCOLS_MYSQL_SPANS_ENABLED="true"
-          PROTOCOLS_MYSQL_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of PostgreSQL DB
-          PROTOCOLS_PGSQL_ENABLED="true"
-          PROTOCOLS_PGSQL_SPANS_ENABLED="true"
-          PROTOCOLS_PGSQL_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of Cassandra DB
-          PROTOCOLS_CASS_ENABLED="true"
-          PROTOCOLS_CASS_SPANS_ENABLED="true"
-          PROTOCOLS_CASS_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of Redis DB
-          PROTOCOLS_REDIS_ENABLED="true"
-          PROTOCOLS_REDIS_SPANS_ENABLED="true"
-          PROTOCOLS_REDIS_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of MongoDB
-          PROTOCOLS_MONGODB_ENABLED="true"
-          PROTOCOLS_MONGODB_SPANS_ENABLED="true"
-          PROTOCOLS_MONGODB_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the spans and sampling latency of Kafka
-          PROTOCOLS_KAFKA_ENABLED="true"
-          PROTOCOLS_KAFKA_SPANS_ENABLED="true"
-          PROTOCOLS_KAFKA_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the spans and sampling latency of AMQP
-          PROTOCOLS_AMQP_ENABLED="true"
-          PROTOCOLS_AMQP_SPANS_ENABLED="true"
-          PROTOCOLS_AMQP_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the spans and sampling latency of DNS
-          PROTOCOLS_DNS_ENABLED="true"
-          PROTOCOLS_DNS_SPANS_ENABLED="true"
-          PROTOCOLS_DNS_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of Dynamo DB
-          PROTOCOLS_DYNAMODB_ENABLED="true"
-          PROTOCOLS_DYNAMODB_SPANS_ENABLED="true"
-          PROTOCOLS_DYNAMODB_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of MSSQL DB
-          PROTOCOLS_MSSQL_ENABLED="true"
-          PROTOCOLS_MSSQL_SPANS_ENABLED="true"
-          PROTOCOLS_MSSQL_SPANS_SAMPLING_LATENCY="p50"
           EOS
 
-              source "$CONFIG_FILE"
-              echo "Default configuration file created successfully at $CONFIG_FILE."
+          echo "YAML configuration file created successfully at $CONFIG_FILE"
 
-          }
-
-          check_custom_config_file() {
-              FILE_PATH="$1"
-              if [[ -f "$FILE_PATH" ]]; then
-                  echo "Custom configuration file exists at $FILE_PATH. Proceeding with installation."
-
-                  # Ensure the directory exists
-                  if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
-                      echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                      mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
-                  fi
-
-                  if [[ "$(realpath "$FILE_PATH")" == "$(realpath "$CONFIG_FILE")" ]]; then
-                    echo "Custom config file and target config file are the same. Skipping symlink creation."
-                  else
-                    # Create a symbolic link
-                    echo "Creating symbolic link from $FILE_PATH to $CONFIG_FILE..."
-                    ln -sf "$(realpath "$FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link from $(realpath "$FILE_PATH") to $CONFIG_FILE."
-                    echo "Symbolic link created successfully."
-                  fi
-
-                source "$CONFIG_FILE"
-              else
-                  log_error_and_exit "Custom configuration file $FILE_PATH does not exist or is not a valid file. Aborting installation."
-              fi
-          }
-
-          # Delete the existing configuration file if it exists. Helpful in case if user runs the installer multiple times.
-          if [[ -f "$CONFIG_FILE" ]]; then
-            rm -f "$CONFIG_FILE" || log_error_and_exit "Failed to delete existing configuration file at $CONFIG_FILE."
-          fi
-
-          # Set default log file path if NEW_RELIC_LOG_FILE_PATH is empty
-          if [ -z "${NEW_RELIC_LOG_FILE_PATH:-}" ]; then
-            NEW_RELIC_LOG_FILE_PATH="/var/log/newrelic-ebpf-agent"
-          fi
-
-          # Check if CONFIG_FILE_PATH is set and not empty
-          if [[ -z "$CONFIG_FILE_PATH" ]]; then
-            create_default_config_file
-          else
-            echo "Using custom configuration file path: $CONFIG_FILE_PATH"
-            check_custom_config_file $CONFIG_FILE_PATH
-          fi
-
-          if [[ -z "$NEW_RELIC_LICENSE_KEY" ]]; then
-              log_error_and_exit "NEW_RELIC_LICENSE_KEY is not found in the config file $CONFIG_FILE. Aborting installation."
-          fi
-
-          if [[ -z "$DEPLOYMENT_NAME" && "${NEW_RELIC_AGENT_CONTROL:-}" != "true" ]]; then
-              log_error_and_exit "DEPLOYMENT_NAME is empty. Aborting installation."
-          fi
-          echo "Required config is found."
-
-          if [[ ! -d "$NEW_RELIC_LOG_FILE_PATH" ]]; then
-            echo "Directory $NEW_RELIC_LOG_FILE_PATH does not exist. Attempting to create it..."
-            if ! mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
-              echo -e "\e[31mERROR:\e[0m Failed to create directory $NEW_RELIC_LOG_FILE_PATH. Aborting installation."
-              exit 20
-            fi
-            echo "Directory $NEW_RELIC_LOG_FILE_PATH created successfully."
-          fi
-          echo "eBPF logs directory: $NEW_RELIC_LOG_FILE_PATH"
     update_apt:
       cmds:
         - |
@@ -460,269 +549,34 @@ install:
       cmds:
         - |
           export DEBIAN_FRONTEND=noninteractive
-          CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf"
           OPTIONS="-o DPkg::Lock::Timeout=60"
 
-          create_default_config_file(){
-          
-              echo "Creating default configuration file at $CONFIG_FILE..."
-              # Ensure the directory exists
-              if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
-                echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
-              fi
-
-              if [[ "$NEW_RELIC_REGION" == "staging" ]]; then
-                NEW_RELIC_OTLP_ENDPOINT="staging-otlp.nr-data.net:443"
-              elif [[ "$NEW_RELIC_REGION" == "EU" ]]; then
-                NEW_RELIC_OTLP_ENDPOINT="otlp.eu01.nr-data.net:443"
-              elif [[ "$NEW_RELIC_REGION" == "US" ]]; then
-                NEW_RELIC_OTLP_ENDPOINT="otlp.nr-data.net:443"
-              fi       
-
-              # Create the default configuration file
-              tee "$CONFIG_FILE" > /dev/null << EOS
-          # -- The license key to use.
-          NEW_RELIC_LICENSE_KEY="${NEW_RELIC_LICENSE_KEY:-}"
-          # -- Unique name for the deployment to identify data posting via eBPF Agent
-          DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-}"
-          # -- Endpoint to export data to Newrelic
-          OTLP_ENDPOINT="${NEW_RELIC_OTLP_ENDPOINT:-}"
-          # -- To configure the log level in increasing order of verboseness. [OFF, FATAL, ERROR, WARNING, INFO, DEBUG]
-          NEW_RELIC_LOG_LEVEL=INFO
-          # -- To configure log file path of eBPF Agent. If logging to this path fails, logs will be directed to stdout.
-          NEW_RELIC_LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-}"
-          # -- The primary lever to control RAM use of the eBPF agent. Specified in MiB.
-          TABLE_STORE_DATA_LIMIT_MB=250
-          # Sets the absolute path of the complete directory where the required linux headers are manually downloaded and placed for the eBPF agent to use. 
-          # This is useful under restricted environments where agent is not able to download required linux headers. The required headers are identified by the agent based on the kernel version. 
-          # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
-          DOWNLOADED_PACKAGED_HEADERS_PATH=""
-          # Sets the absolute path of the complete directory where the linux headers are present for the eBPF agent to use. 
-          # This is useful where required linux headers could not be installed or path could not be determined.
-          # ---- USE ONLY AFTER NEW RELIC SUPPORT RECOMMENDATION ----
-          DISTRO_KERNEL_HEADERS_PATH=""
-          # Capability to include/exclude port from entity name, default: true. ex: python:frosty_merkle:[80]
-          # Set it to false, to exclude ports from entity name, ex: python:frosty_merkle
-          INCLUDE_PORT_IN_SERVER_ENTITY_IDENTIFICATION="true"
-          # -- Enable APM data reporting. When enabled, the agent collects and reports application performance monitoring data
-          APM_DATA_REPORTING="${APM_DATA_REPORTING:-true}"
-          # -- Enable TCP statistics reporting. When enabled, the agent collects and reports low level tcp metrics and starts network monitoring
-          NETWORK_METRICS_REPORTING="true"
-          # Enable JVM metrics reporting. When enabled, the agent collects and reports JVM metrics for Java applications
-          JVM_METRICS_REPORTING=true
-          # Enable log reporting. When enabled, the agent collects and reports logs.
-          LOG_REPORTING="${LOG_REPORTING:-false}"
-          # Enable log reporting for entity monitored by the eBPF Agent.
-          APPLICATION_LOG_REPORTING_ENABLED="${APPLICATION_LOG_REPORTING_ENABLED:-false}"
-          # Regex to match log file path to include for entity log reporting
-          APPLICATION_LOG_FILE_REGEX=".*\\.log$"
-          # -- Maximum number of log samples to collect per minute from an entity.
-          # The internal maxSamplesStored is calculated proportionally based on the harvest cycle (5 seconds):
-          # maxSamplesStored = maxSamplesPerMinute / (60 / 5) = maxSamplesPerMinute / 12
-          # For the default value of 10000, this results in ~833 samples stored per harvest cycle.
-          # Once this limit is reached, events are sampled to maintain an even distribution across the harvest cycle.
-          MAX_LOG_SAMPLES_PER_MINUTE=10000
-          # The eBPF agent collects and reports STDOUT/STDERR STREAM logs to New Relic for entities that match this regex. 
-          # The entities are identified by their NEW_RELIC_APP_NAME (if provided) or their Kubernetes service name.
-          # To forward logs for all entities, use the regex .*. Default is .*
-          KEEP_STDSTREAM_LOG_FOR_ENTITY_REGEX=".*"
-          # The eBPF agent collects and reports file logs to New Relic for entities that match this regex. 
-          # The entities are identified by their NEW_RELIC_APP_NAME (if provided) or their Kubernetes service name.
-          # To forward logs for all entities, use the regex .*. Default is .*
-          KEEP_FILE_LOG_FOR_ENTITY_REGEX=".*" 
-
-          # -- All data drop filters configuration
-          # Configure filters to drop all types of data (Network Metrics and APM data) based on config provided
-
-          # -- Regular expression pattern to match entity names for dropping ALL data (TCP stats + APM data)
-          # Example: "java-app|otel-collector|\\bservice1\\b"
-          DROP_ALL_DATA_FOR_ENTITY_NAME_REGEX=""
-
-          # -- Regular expression pattern to match entity names to always keep ALL data for. This bypasses all drop filters.
-          # Example: "critical-service|important-app|\\bmust-monitor\\b"
-          KEEP_ALL_DATA_FOR_ENTITY_NAME_REGEX=""
-          # -- Drop all data for applications/entities that have NewRelic/OpenTelemetry APM agents running
-          DROP_ALL_DATA_FOR_APM_AGENT_ENABLED_ENTITY="false"
-
-          # -- APM data filters configuration
-
-          # -- Comma-separated list of entity names for dropping eBPF APM data
-          # Example: "kube-dns,otel-collector,service1"
-          DROP_APM_DATA_FOR_ENTITY_NAME=""
-
-          # -- Comma-separated list of entity names to always keep eBPF APM data. default all entity is keepd/enabled 
-          # This bypasses DROP_APM_DATA_FOR_ENTITY_NAME filter.
-          # Example: "critical-service,important-app,must-monitor"
-          KEEP_APM_DATA_FOR_ENTITY_NAME=""
-
-          # -- Drop eBPF APM data for applications/entities that have NewRelic/OpenTelemetry APM agents running
-          DROP_EAPM_DATA_FOR_APM_AGENT_ENABLED_ENTITY="true"
-
-          # -- Network metrics Data filter / TCP stats filters
-
-          # -- Comma-separated list of entity names for dropping Network metrix data.
-          # Example: "kube-dns,otel-collector,service1"
-          DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
-
-          # -- Comma-separated list of entity names to always keep Network metrix data. default all entity is keepd/enabled 
-          # This bypasses DROP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME filter.
-          # Example: "critical-service,important-app,must-monitor"
-          KEEP_NETWORK_METRICS_DATA_FOR_ENTITY_NAME=""
-
-          # To toggle the protocols to enable for tracing in the socket_tracer. There is an ability to configure span export if it is enabled.
-          # Each protocol has the flexibility to selectively enable the type of data to export.
-          # Metrics are sent by default when a protocol is enabled and it supports metrics. Note: AMQP, Kafka, DNS do not report metrics.
-          # PROTOCOLS_<protocol-name>_SPANS_SAMPLING_LATENCY represents the sampling latency threshold for the spans to export. [Options: p1, p10, p50, p90, p99].
-
-          # Controls maximum unlinked spans reported per protocol. Set to 0 to disable limit
-          PROTOCOLS_SPANS_UNLINKED_MAX="100"
-          # -- To Enable/Disable the metrics, spans, sampling of latency and error rate of HTTP
-          PROTOCOLS_HTTP_ENABLED="true"
-          PROTOCOLS_HTTP_SPANS_ENABLED="true"
-          PROTOCOLS_HTTP_SPANS_SAMPLING_LATENCY="p50"
-          # PROTOCOLS_HTTP_SPANS_SAMPLING_ERROR_RATE represents the error rate threshold for an HTTP route where surpassing it would mean the corresponds spans of the route are exported. [Options: 1-100]
-          PROTOCOLS_HTTP_SPANS_SAMPLING_ERROR_RATE=""
-
-          # -- To Enable/Disable the metrics, spans, sampling of latency and error rate of Thrift
-          PROTOCOLS_THRIFT_ENABLED="true"
-          PROTOCOLS_THRIFT_SPANS_ENABLED="true"
-          PROTOCOLS_THRIFT_SPANS_SAMPLING_LATENCY="p50"
-          PROTOCOLS_THRIFT_SPANS_SAMPLING_ERROR_RATE=""
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of MySQL DB
-          PROTOCOLS_MYSQL_ENABLED="true"
-          PROTOCOLS_MYSQL_SPANS_ENABLED="true"
-          PROTOCOLS_MYSQL_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of PostgreSQL DB
-          PROTOCOLS_PGSQL_ENABLED="true"
-          PROTOCOLS_PGSQL_SPANS_ENABLED="true"
-          PROTOCOLS_PGSQL_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of Cassandra DB
-          PROTOCOLS_CASS_ENABLED="true"
-          PROTOCOLS_CASS_SPANS_ENABLED="true"
-          PROTOCOLS_CASS_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of Redis DB
-          PROTOCOLS_REDIS_ENABLED="true"
-          PROTOCOLS_REDIS_SPANS_ENABLED="true"
-          PROTOCOLS_REDIS_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of MongoDB
-          PROTOCOLS_MONGODB_ENABLED="true"
-          PROTOCOLS_MONGODB_SPANS_ENABLED="true"
-          PROTOCOLS_MONGODB_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the spans and sampling latency of Kafka
-          PROTOCOLS_KAFKA_ENABLED="true"
-          PROTOCOLS_KAFKA_SPANS_ENABLED="true"
-          PROTOCOLS_KAFKA_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the spans and sampling latency of AMQP
-          PROTOCOLS_AMQP_ENABLED="true"
-          PROTOCOLS_AMQP_SPANS_ENABLED="true"
-          PROTOCOLS_AMQP_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the spans and sampling latency of DNS
-          PROTOCOLS_DNS_ENABLED="true"
-          PROTOCOLS_DNS_SPANS_ENABLED="true"
-          PROTOCOLS_DNS_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of Dynamo DB
-          PROTOCOLS_DYNAMODB_ENABLED="true"
-          PROTOCOLS_DYNAMODB_SPANS_ENABLED="true"
-          PROTOCOLS_DYNAMODB_SPANS_SAMPLING_LATENCY="p50"
-
-          # -- To Enable/Disable the metrics, spans, sampling latency rate of MSSQL DB
-          PROTOCOLS_MSSQL_ENABLED="true"
-          PROTOCOLS_MSSQL_SPANS_ENABLED="true"
-          PROTOCOLS_MSSQL_SPANS_SAMPLING_LATENCY="p50"
-          EOS
-
-              source "$CONFIG_FILE"
-              echo "Default configuration file created successfully at $CONFIG_FILE."
-
-          }
-
-          check_custom_config_file() {
-              FILE_PATH="$1"
-              if [[ -f "$FILE_PATH" ]]; then
-                  echo "Custom configuration file exists at $FILE_PATH. Proceeding with installation."
-
-                  # Ensure the directory exists
-                  if [[ ! -d "/etc/newrelic-ebpf-agent/" ]]; then
-                      echo "Creating directory /etc/newrelic-ebpf-agent/..."
-                      mkdir -p "/etc/newrelic-ebpf-agent/" || log_error_and_exit "Failed to create directory /etc/newrelic-ebpf-agent/."
-                  fi
-
-                  if [[ "$(realpath "$FILE_PATH")" == "$(realpath "$CONFIG_FILE")" ]]; then
-                    echo "Custom config file and target config file are the same. Skipping symlink creation."
-                  else
-                    # Create a symbolic link
-                    echo "Creating symbolic link from $FILE_PATH to $CONFIG_FILE..."
-                    ln -sf "$(realpath "$FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link from $(realpath "$FILE_PATH") to $CONFIG_FILE."
-                    echo "Symbolic link created successfully."
-                  fi
-
-                source "$CONFIG_FILE"
-              else
-                  log_error_and_exit "Custom configuration file $FILE_PATH does not exist or is not a valid file. Aborting installation."
-              fi
-          }
-
+          # Install the eBPF agent package
           apt-get $OPTIONS install -yq --no-install-recommends newrelic-ebpf-agent || {
-            if [[ ! -f "$CONFIG_FILE" ]]; then
-
-              # Set default log file path if NEW_RELIC_LOG_FILE_PATH is empty
-              if [ -z "${NEW_RELIC_LOG_FILE_PATH:-}" ]; then
-                NEW_RELIC_LOG_FILE_PATH="/var/log/newrelic-ebpf-agent"
-              fi
-
-              # Check if CONFIG_FILE_PATH is set and not empty
-              if [[ -z "$CONFIG_FILE_PATH" ]]; then
-                create_default_config_file
-              else
-                check_custom_config_file $CONFIG_FILE_PATH
-              fi
-
-              if [[ ! -d "$NEW_RELIC_LOG_FILE_PATH" ]]; then
-                echo "Directory $NEW_RELIC_LOG_FILE_PATH does not exist. Attempting to create it..."
-                if ! mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
-                  echo -e "\e[31mERROR:\e[0m Failed to create directory $NEW_RELIC_LOG_FILE_PATH. Aborting installation."
-                  exit 20
-                fi
-                echo "Directory $NEW_RELIC_LOG_FILE_PATH created successfully."
-              fi
-              echo "eBPF logs directory: $NEW_RELIC_LOG_FILE_PATH"
-
-              mkdir -p /px;
-              sleep 5s;
-              systemctl restart newrelic-ebpf-agent.service
-            else
-              echo "Error: newrelic-ebpf-agent installation failed"
-              echo "Attempting to configure the packages again"
-              dpkg --configure -a
-              # Check if there was an error
+            echo "Error: newrelic-ebpf-agent installation failed"
+            echo "Attempting to configure the packages again"
+            dpkg --configure -a
+            # Check if there was an error
+            if [ $? -ne 0 ]; then
+              echo "Error found while reconfiguring dpkg database"
+              # Force-Install the Software
+              echo "Attempting to install any missing dependencies or fixes broken packages."
+              apt-get $OPTIONS install -f
               if [ $? -ne 0 ]; then
-                echo "Error found while reconfiguring dpkg database"
-                # Force-Install the Software
-                echo "Attempting to install any missing dependencies or fixes broken packages."
-                apt-get $OPTIONS install -f
-                if [ $? -ne 0 ]; then
-                  exit 1
-                fi
+                exit 1
               fi
-            fi
-            # Verify package was actually installed
-            if ! dpkg -l | grep -q "^ii.*newrelic-ebpf-agent"; then
-              echo ""
-              echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
-              echo ""
-              exit 1
             fi
           }
+
+          # Verify package was actually installed
+          if ! dpkg -l | grep -q "^ii.*newrelic-ebpf-agent"; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
+            echo ""
+            exit 1
+          fi
+
+          echo "eBPF agent package installed successfully."
 
       silent: true
     
@@ -743,5 +597,5 @@ install:
 
 postInstall:
   info: |2
-      ⚙️  The eBPF Agent configuration file can be found in /etc/newrelic-ebpf-agent/newrelic-ebpf-agent.conf
+      ⚙️  The eBPF Agent configuration file can be found in /etc/newrelic-ebpf-agent/newrelic-ebpf-agent.yaml
       Edit this file to make changes or configure advanced features for the agent.
