@@ -1,0 +1,49 @@
+---
+- debug:
+    msg: Install ElasticSearch 7.16+ for NRDOT Testing (Basic - No Auth)
+
+- name: Update packages
+  shell: yum update -y
+  become: yes
+
+- name: Install java
+  shell: yum install java-1.8.0-openjdk -y
+  become: yes
+
+- name: Add gpg key
+  shell: sudo rpm --import https://packages.elastic.co/GPG-KEY-elasticsearch
+  become: yes
+
+- name: Add Elasticsearch 7.x YUM repository
+  shell: |
+    cat > /etc/yum.repos.d/elasticsearch.repo << EOF
+    [elasticsearch-7.x]
+    name=Elasticsearch repository for 7.x packages
+    baseurl=https://artifacts.elastic.co/packages/7.x/yum
+    gpgcheck=1
+    gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    enabled=1
+    autorefresh=1
+    type=rpm-md
+    EOF
+  become: true
+
+- name: Install elasticsearch
+  shell: yum install --enablerepo=elasticsearch-7.x elasticsearch -y
+  become: true
+
+- name: Create systemd override folder
+  shell: sudo mkdir -p /etc/systemd/system/elasticsearch.service.d
+  become: true
+
+- name: Change startup timeout
+  shell: echo -e "[Service]\nTimeoutStartSec=180" | sudo tee /etc/systemd/system/elasticsearch.service.d/startup-timeout.conf
+  become: true
+
+- name: Daemon reload
+  shell: systemctl daemon-reload
+  become: true
+
+- name: Start elasticsearch
+  shell: systemctl start elasticsearch
+  become: true
