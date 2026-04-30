@@ -68,12 +68,16 @@ install:
     COLLECTOR_DISTRO: "nrdot-collector"
     CONFIG_DIR: "/etc/nrdot-collector"
 
+    COLLECTOR_WAS_RUNNING:
+      sh: systemctl is-active --quiet nrdot-collector.service 2>/dev/null && echo "1" || echo "0"
+
   tasks:
     default:
       cmds:
         - task: write_recipe_metadata
         - task: assert_pre_req
         - task: install_nrdot
+        - task: configure_env
         - task: create_collector_config
         - task: configure_service
         - task: restart_nrdot
@@ -118,24 +122,90 @@ install:
           fi
           rm -f "$NRDOT_RPM"
           mkdir -p {{.CONFIG_DIR}}
-          grep -q "^NEW_RELIC_LICENSE_KEY" {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf 2>/dev/null && \
-            sed -i 's|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}|' \
-              {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf || \
-            echo "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" | \
-              tee -a {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf > /dev/null
+          echo "{{.COLLECTOR_DISTRO}} installed successfully."
 
-          # 600: only root should read the license key.
-          chmod 600 {{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf
+    configure_env:
+      cmds:
+        - |
+          CONFIG_FILE="{{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf"
+
+          mkdir -p {{.CONFIG_DIR}}
+
+          # Use sed to update in-place if the key already exists, otherwise append.
+          # This makes configure_env idempotent across recipe re-runs and upgrades.
+          if grep -q "^NEW_RELIC_LICENSE_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}|" "$CONFIG_FILE"
+          else
+            echo "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "{{.NEW_RELIC_REGION}}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+
+          if grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTEL_EXPORTER_OTLP_ENDPOINT=.*|OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          # Add Elasticsearch-specific env vars
+          ES_ENDPOINT="${NR_CLI_ES_ENDPOINT:-http://localhost:9200}"
+          ES_CLUSTER_NAME="{{.NR_CLI_ES_CLUSTER_NAME}}"
+          ES_USERNAME="${NR_CLI_ES_USERNAME:-}"
+          ES_PASSWORD="${NR_CLI_ES_PASSWORD:-}"
+          ES_CERT_PATH="${NR_CLI_ES_CERT_PATH:-}"
+
+          if grep -q "^ES_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^ES_ENDPOINT=.*|ES_ENDPOINT=${ES_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "ES_ENDPOINT=${ES_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          if grep -q "^ES_CLUSTER_NAME=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^ES_CLUSTER_NAME=.*|ES_CLUSTER_NAME=${ES_CLUSTER_NAME}|" "$CONFIG_FILE"
+          else
+            echo "ES_CLUSTER_NAME=${ES_CLUSTER_NAME}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          if [ -n "$ES_USERNAME" ]; then
+            if grep -q "^ES_USERNAME=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^ES_USERNAME=.*|ES_USERNAME=${ES_USERNAME}|" "$CONFIG_FILE"
+            else
+              echo "ES_USERNAME=${ES_USERNAME}" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+          fi
+
+          if [ -n "$ES_PASSWORD" ]; then
+            if grep -q "^ES_PASSWORD=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^ES_PASSWORD=.*|ES_PASSWORD=${ES_PASSWORD}|" "$CONFIG_FILE"
+            else
+              echo "ES_PASSWORD=${ES_PASSWORD}" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+          fi
+
+          if [ -n "$ES_CERT_PATH" ]; then
+            if grep -q "^ES_CERT_PATH=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^ES_CERT_PATH=.*|ES_CERT_PATH=${ES_CERT_PATH}|" "$CONFIG_FILE"
+            else
+              echo "ES_CERT_PATH=${ES_CERT_PATH}" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+          fi
+
+          # 600: only root should read sensitive credentials (license key, ES password).
+          chmod 600 "$CONFIG_FILE"
+          echo "Configuration written to ${CONFIG_FILE}"
 
     create_collector_config:
       cmds:
         - |
           CONFIG_PRESET="${NR_CLI_CONFIG_PRESET:-comprehensive}"
           COLLECTOR_CONFIG="{{.CONFIG_DIR}}/elasticsearch-collector-config.yaml"
-          ES_ENV_FILE="{{.CONFIG_DIR}}/elasticsearch-env.conf"
 
-          ES_ENDPOINT="${NR_CLI_ES_ENDPOINT:-http://localhost:9200}"
-          ES_CLUSTER_NAME="{{.NR_CLI_ES_CLUSTER_NAME}}"
           ES_USERNAME="${NR_CLI_ES_USERNAME:-}"
           ES_PASSWORD="${NR_CLI_ES_PASSWORD:-}"
           ES_CERT_PATH="${NR_CLI_ES_CERT_PATH:-}"
@@ -145,26 +215,26 @@ install:
           cat > "$COLLECTOR_CONFIG" << 'EOF'
           receivers:
             elasticsearch:
-              endpoint: ${ES_ENDPOINT}
+              endpoint: ${env:ES_ENDPOINT}
               collection_interval: 15s
           EOF
 
           if [ -n "$ES_USERNAME" ]; then
-            cat >> "$COLLECTOR_CONFIG" << EOF
-              username: \${ES_USERNAME}
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              username: ${env:ES_USERNAME}
           EOF
           fi
 
           if [ -n "$ES_PASSWORD" ]; then
-            cat >> "$COLLECTOR_CONFIG" << EOF
-              password: \${ES_PASSWORD}
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              password: ${env:ES_PASSWORD}
           EOF
           fi
 
           if [ -n "$ES_CERT_PATH" ]; then
-            cat >> "$COLLECTOR_CONFIG" << EOF
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
               tls:
-                ca_file: \${ES_CERT_PATH}
+                ca_file: ${env:ES_CERT_PATH}
                 insecure_skip_verify: false
           EOF
           fi
@@ -511,7 +581,7 @@ install:
             resource/cluster_name:
               attributes:
                 - key: elasticsearch.cluster.name
-                  value: ${ES_CLUSTER_NAME}
+                  value: ${env:ES_CLUSTER_NAME}
                   action: upsert
             resourcedetection:
               detectors: [system]
@@ -592,9 +662,9 @@ install:
 
           exporters:
             otlphttp:
-              endpoint: ${NEW_RELIC_OTLP_ENDPOINT}
+              endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
               headers:
-                api-key: ${NEW_RELIC_LICENSE_KEY}
+                api-key: ${env:NEW_RELIC_LICENSE_KEY}
           EOF
 
           # Add enhanced exporter settings for optimized preset
@@ -687,46 +757,34 @@ install:
             fi
           fi
 
-          printf "ES_ENDPOINT=%s\n" "$ES_ENDPOINT" > "$ES_ENV_FILE"
-          printf "ES_CLUSTER_NAME=%s\n" "$ES_CLUSTER_NAME" >> "$ES_ENV_FILE"
-          if [ -n "$ES_USERNAME" ]; then
-            printf "ES_USERNAME=%s\n" "$ES_USERNAME" >> "$ES_ENV_FILE"
-          fi
-          if [ -n "$ES_PASSWORD" ]; then
-            printf "ES_PASSWORD=%s\n" "$ES_PASSWORD" >> "$ES_ENV_FILE"
-          fi
-          if [ -n "$ES_CERT_PATH" ]; then
-            printf "ES_CERT_PATH=%s\n" "$ES_CERT_PATH" >> "$ES_ENV_FILE"
-          fi
-
-          if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
-            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
-          elif [ "{{.NEW_RELIC_REGION}}" = "staging" ]; then
-            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
-          else
-            OTLP_ENDPOINT="https://otlp.nr-data.net"
-          fi
-          printf "NEW_RELIC_OTLP_ENDPOINT=%s\n" "$OTLP_ENDPOINT" >> "$ES_ENV_FILE"
-          printf "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}\n" >> "$ES_ENV_FILE"
-
-          # 600: only root should read sensitive credentials (license key, ES password).
-          chmod 600 "$ES_ENV_FILE"
-
-          echo "Collector config written to $COLLECTOR_CONFIG"
+          echo "Elasticsearch OTel config written to ${COLLECTOR_CONFIG}"
 
     configure_service:
       cmds:
         - |
-          DROPIN_DIR="/etc/systemd/system/{{.COLLECTOR_DISTRO}}.service.d"
-          mkdir -p "$DROPIN_DIR"
-          NRDOT_BIN=$(command -v nrdot-collector 2>/dev/null || echo "/usr/bin/nrdot-collector")
-          {
-            printf '[Service]\n'
-            printf 'EnvironmentFile={{.CONFIG_DIR}}/elasticsearch-env.conf\n'
-            printf 'ExecStart=\n'
-            printf 'ExecStart=%s --config {{.CONFIG_DIR}}/elasticsearch-collector-config.yaml\n' "$NRDOT_BIN"
-          } > "$DROPIN_DIR/elasticsearch-config.conf"
-          echo "Systemd drop-in configured."
+          ES_OTEL_CONFIG="/etc/nrdot-collector/elasticsearch-collector-config.yaml"
+          CONFIG_FILE="/etc/nrdot-collector/nrdot-collector.conf"
+
+          EXISTING_OPTIONS=$(grep "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
+          if [ "{{.COLLECTOR_WAS_RUNNING}}" = "1" ]; then
+            if echo "$EXISTING_OPTIONS" | grep -q "elasticsearch-collector-config.yaml"; then
+              OTELCOL_OPTIONS="$EXISTING_OPTIONS"
+            else
+              echo "Overriding default NRDOT config with Elasticsearch collector config."
+              OTELCOL_OPTIONS="--config=${ES_OTEL_CONFIG}"
+            fi
+          else
+            OTELCOL_OPTIONS="--config=${ES_OTEL_CONFIG}"
+          fi
+          OTELCOL_OPTIONS="${OTELCOL_OPTIONS# }"
+
+          if grep -q "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"|" "$CONFIG_FILE"
+          else
+            echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          echo "OTELCOL_OPTIONS updated in ${CONFIG_FILE}: ${OTELCOL_OPTIONS}"
 
     restart_nrdot:
       cmds:
@@ -754,17 +812,7 @@ install:
 
 postInstall:
   info: |2
-      ✅ NRDOT Collector is now monitoring Elasticsearch!
-
-      📁 Configuration files:
-        • OTel config: /etc/nrdot-collector/elasticsearch-collector-config.yaml
-        • Environment:  /etc/nrdot-collector/elasticsearch-env.conf
-        • Systemd:      /etc/systemd/system/nrdot-collector.service.d/elasticsearch-config.conf
-
-      🔍 Commands:
-        Service status: systemctl status nrdot-collector
-        View logs:      journalctl -u nrdot-collector -f
-        Health check:   curl http://localhost:13133
-
-      ✨ Data should appear in New Relic within 3-5 minutes.
-         Query: FROM Metric SELECT * WHERE metricName LIKE 'elasticsearch.%' SINCE 10 minutes ago
+      Elasticsearch OTel config: /etc/nrdot-collector/elasticsearch-collector-config.yaml
+      Env config:                /etc/nrdot-collector/nrdot-collector.conf
+      Service status:            systemctl status nrdot-collector
+      View logs:                 journalctl -u nrdot-collector -f
