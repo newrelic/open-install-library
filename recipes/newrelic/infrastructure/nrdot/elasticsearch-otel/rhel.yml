@@ -109,20 +109,49 @@ install:
     install_nrdot:
       cmds:
         - |
-          echo "Installing NRDOT Collector v{{.NRDOT_VERSION}}..."
-          NRDOT_RPM="/tmp/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm"
-          curl "https://github.com/newrelic/nrdot-collector-releases/releases/download/{{.NRDOT_VERSION}}/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm" \
-            --location --output "$NRDOT_RPM" 2>/dev/null
-          rpm -i "$NRDOT_RPM" > /dev/null 2>&1 || \
-            (which dnf >/dev/null 2>&1 && dnf install -y "$NRDOT_RPM" > /dev/null) || \
-            yum install -y "$NRDOT_RPM" > /dev/null
-          if [ $? -ne 0 ]; then
-            echo "Error: NRDOT installation failed." >&2
+          COLLECTOR_DISTRO="{{.COLLECTOR_DISTRO}}"
+          COLLECTOR_VERSION="{{.NRDOT_VERSION}}"
+
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
             exit 1
           fi
-          rm -f "$NRDOT_RPM"
-          mkdir -p {{.CONFIG_DIR}}
-          echo "{{.COLLECTOR_DISTRO}} installed successfully."
+
+          # Skip download if the current installed version already matches.
+          # This makes the recipe safe to re-run (idempotent) when only the config changes.
+          if rpm -q "$COLLECTOR_DISTRO" > /dev/null 2>&1; then
+            INSTALLED_VERSION=$(rpm -q --queryformat '%{VERSION}' "$COLLECTOR_DISTRO")
+            if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+              echo "${COLLECTOR_DISTRO} ${COLLECTOR_VERSION} is already installed. Skipping download."
+              exit 0
+            else
+              echo "Upgrading ${COLLECTOR_DISTRO} from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+            fi
+          else
+            echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          fi
+
+          ARCH="{{.NRDOT_ARCH}}"
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rpm -U /tmp/nrdot-collector.rpm > /dev/null 2>&1 || \
+            (which dnf >/dev/null 2>&1 && dnf install -y /tmp/nrdot-collector.rpm > /dev/null) || \
+            yum install -y /tmp/nrdot-collector.rpm > /dev/null
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.rpm
+          mkdir -p /etc/nrdot-collector
+          echo "${COLLECTOR_DISTRO} installed successfully."
 
     configure_env:
       cmds:
