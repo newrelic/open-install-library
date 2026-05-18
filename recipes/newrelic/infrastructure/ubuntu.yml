@@ -210,9 +210,23 @@ install:
     add_gpg_key:
       cmds:
         - |
-          # Remove the key from the legacy keyring if it exists
+          # Remove our per-repo key file before re-adding (safe - only removes our own key)
           sudo rm -f /etc/apt/trusted.gpg.d/newrelic-infra.gpg 2>/dev/null
-          sudo rm -f /etc/apt/trusted.gpg 2>/dev/null
+
+          # Remove ONLY the New Relic key from the legacy keyring if present
+          # This avoids the APT deprecation warning without deleting other third-party keys
+          if [ -f /etc/apt/trusted.gpg ]; then
+            NR_KEY_ID=$(gpg --no-default-keyring --keyring /etc/apt/trusted.gpg \
+              --list-keys --with-colons 2>/dev/null \
+              | grep -B1 "infrastructure-eng@newrelic.com" \
+              | grep "^pub" | cut -d: -f5)
+            if [ -n "$NR_KEY_ID" ]; then
+              sudo gpg --no-default-keyring --batch --yes \
+                --keyring gnupg-ring:/etc/apt/trusted.gpg \
+                --delete-keys "$NR_KEY_ID" 2>/dev/null || true
+            fi
+          fi
+
           # Add the key to the correct directory
           curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-infra.gpg
       silent: true
