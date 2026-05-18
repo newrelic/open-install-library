@@ -158,22 +158,12 @@ install:
               exit 131
             fi
           else
-            if [ -n "{{.DEBIAN_VERSION_CODENAME}}" ]; then
-              IS_INFRA_AVAILABLE=$(curl -Is {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt/dists/{{.DEBIAN_VERSION_CODENAME}}/InRelease | grep " 2[0-9][0-9] " | wc -l)
-              if [ $IS_INFRA_AVAILABLE -eq 0 ] ; then
-                echo "there is no New Relic Agent Control available for the distribution with version codename '{{.DEBIAN_VERSION_CODENAME}}'." >&2
-                exit 131
-              fi
-            else
-              echo "there is no New Relic Agent Control available for the distribution, no version codename was found." >&2
-              exit 131
-            fi
+            echo "Unable to determine distribution codename from /etc/os-release" >&2
+            exit 131
           fi
       vars:
         DEBIAN_CODENAME:
           sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
-        DEBIAN_VERSION_CODENAME:
-          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
 
     log_ssl_ciphers:
       cmds:
@@ -216,7 +206,8 @@ install:
     add_gpg_key:
       cmds:
         - |
-          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | gpg --dearmor --batch --yes -o /etc/apt/trusted.gpg.d/newrelic-infra.gpg
+          mkdir -p /etc/apt/keyrings
+          curl -s {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/keys/newrelic_apt_key_current.gpg | gpg --dearmor --batch --yes -o /etc/apt/keyrings/newrelic-infra.gpg
       silent: true
 
     add_nr_source:
@@ -229,17 +220,15 @@ install:
           fi
 
           if [ -n "{{.DEBIAN_CODENAME}}" ]; then
-            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
-            printf "\ndeb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+            printf "deb [arch="$ARCH" signed-by=/etc/apt/keyrings/newrelic-infra.gpg] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+            printf "\ndeb [arch="$ARCH" signed-by=/etc/apt/keyrings/newrelic-infra.gpg] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_CODENAME}} main" | tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
           else
-            printf "deb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | tee /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
-            printf "\ndeb [arch="$ARCH"] {{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/apt {{.DEBIAN_VERSION_CODENAME}} main" | tee -a /etc/apt/sources.list.d/newrelic-infra.list > /dev/null
+            echo "Unable to determine distribution codename from /etc/os-release" >&2
+            exit 131
           fi
       vars:
         DEBIAN_CODENAME:
           sh: awk -F= '/VERSION_CODENAME/ {print $2}' /etc/os-release
-        DEBIAN_VERSION_CODENAME:
-          sh: cat /etc/os-release | grep "VERSION=\"[0-9] " | awk -F " " '{print $2}' | sed 's/[()"]//g'
       silent: true
 
     update_apt_nr_source:
@@ -281,7 +270,7 @@ install:
           fi
       vars:
         # Allows to set a specific version from the cli
-        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.12.0" }}'
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.14.0" }}'
       silent: true
 
     config_agent_control:
