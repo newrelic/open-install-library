@@ -37,15 +37,20 @@
   shell: "wget https://dev.mysql.com/get/{{ mysql_rpm_file }}"
   become: true
 
+# GPG keys must be imported before the repo .rpm install — AL2023 + dnf module
+# strictly validate the package signature, which fails if no public key is trusted yet.
+- name: Import MySQL GPG keys
+  shell: "rpm --import {{ item }}"
+  loop:
+    - https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
+    - https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+  become: true
+
 - name: Add MySQL Repository
-  ansible.builtin.yum: 
+  ansible.builtin.yum:
     name: "{{ mysql_rpm_file }}"
     state: present
     lock_timeout: 180
-  become: true
-
-- name: Import most recent repo key
-  shell: "rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2023"
   become: true
 
 - name: Install MySQL
