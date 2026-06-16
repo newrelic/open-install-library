@@ -1,0 +1,299 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-haproxy
+displayName: NRDOT Collector - HAProxy
+description: New Relic install recipe for HAProxy monitoring via the NRDOT OpenTelemetry Collector (RHEL/CentOS/Amazon Linux)
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "(2023\\.*)"
+  - type: host
+    os: linux
+    platformFamily: rhel
+    platformVersion: "(8|9)\\..*"
+
+keywords:
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Collector
+  - HAProxy
+  - haproxy
+  - RHEL
+  - CentOS
+  - Amazon Linux
+
+processMatch:
+  - haproxy
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'haproxy.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |2
+      To capture data from the HAProxy integration, you'll first need to enable
+      the stats endpoint in your haproxy.cfg before running this install.
+      See https://www.haproxy.com/documentation/haproxy-configuration-manual/latest/#4-stats%20enable for instructions.
+
+  requireAtDiscovery: |
+    # Exit 1 (skip recipe) if haproxy is not installed.
+    if ! command -v haproxy > /dev/null 2>&1; then
+      exit 1
+    fi
+    exit 0
+
+inputVars:
+  - name: NR_CLI_HAPROXY_STATS_URL
+    prompt: "HAProxy stats endpoint URL (e.g. http://localhost:8404/stats)"
+    default: "http://localhost:8404/stats"
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+    COLLECTOR_WAS_RUNNING:
+      sh: systemctl is-active --quiet nrdot-collector.service 2>/dev/null && echo "1" || echo "0"
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: install_collector
+        - task: configure_env
+        - task: write_haproxy_config
+        - task: start_collector
+        - task: assert_collector_status_ok
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        - |
+          if ! command -v haproxy > /dev/null 2>&1; then
+            echo "HAProxy is not installed or not in PATH." >&2
+            exit 132
+          fi
+        - |
+          STATS_URL="{{.NR_CLI_HAPROXY_STATS_URL}}"
+          if [ -n "$STATS_URL" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$STATS_URL" 2>/dev/null || echo "000")
+            if [ "$code" != "200" ]; then
+              echo "Could not reach the HAProxy stats endpoint at ${STATS_URL} (HTTP ${code})." >&2
+              echo "Ensure HAProxy is running and the stats endpoint is enabled before re-running this recipe." >&2
+              exit 132
+            fi
+          fi
+
+    install_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          COLLECTOR_VERSION=$(curl -s https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest \
+            | grep '"tag_name"' \
+            | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
+
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          if rpm -q nrdot-collector &>/dev/null; then
+            INSTALLED_VERSION=$(rpm -q --queryformat "%{VERSION}" nrdot-collector)
+            if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+              echo "nrdot-collector ${COLLECTOR_VERSION} is already installed. Skipping download."
+              exit 0
+            else
+              echo "Upgrading nrdot-collector from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+            fi
+          else
+            echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          fi
+
+          ARCH="amd64"
+          IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+          if [ $IS_ARM -gt 0 ]; then
+            ARCH="arm64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rpm -U /tmp/nrdot-collector.rpm
+          if [ $? -ne 0 ]; then
+            echo "dpkg install failed, attempting to fix broken dependencies..." >&2
+            yum install -y /tmp/nrdot-collector.rpm
+            if [ $? -ne 0 ]; then
+              echo "Failed to install the nrdot-collector package." >&2
+              exit 1
+            fi
+          fi
+
+          rm -f /tmp/nrdot-collector.rpm
+          echo "${COLLECTOR_DISTRO} installed successfully."
+      silent: true
+
+    configure_env:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          CONFIG_DIR="/etc/${COLLECTOR_DISTRO}"
+          CONFIG_FILE="${CONFIG_DIR}/${COLLECTOR_DISTRO}.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          if grep -q "^NEW_RELIC_LICENSE_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}|" "$CONFIG_FILE"
+          else
+            echo "NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          if [ "${NEW_RELIC_REGION}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "${NEW_RELIC_REGION}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          elif [ "${NEW_RELIC_REGION}" = "JP" ]; then
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+
+          if grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTEL_EXPORTER_OTLP_ENDPOINT=.*|OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          chmod 600 "$CONFIG_FILE"
+          echo "Configuration written to ${CONFIG_FILE}"
+
+    write_haproxy_config:
+      cmds:
+        - |
+          HAPROXY_OTEL_CONFIG="/etc/nrdot-collector/haproxy-config.yaml"
+          CONFIG_FILE="/etc/nrdot-collector/nrdot-collector.conf"
+
+          STATS_URL="{{.NR_CLI_HAPROXY_STATS_URL}}"
+          if [ -z "$STATS_URL" ]; then
+            STATS_URL="http://localhost:8404/stats"
+          fi
+
+          echo "Using HAProxy stats URL: ${STATS_URL}"
+
+          mkdir -p "/etc/nrdot-collector"
+
+          # Write the HAProxy-specific OTel collector pipeline config.
+          printf '%s\n' \
+            'receivers:' \
+            '  haproxy:' \
+            "    endpoint: ${STATS_URL}" \
+            '    collection_interval: 30s' \
+            '' \
+            'processors:' \
+            '  resourcedetection:' \
+            '    detectors: [system]' \
+            '    system:' \
+            '      resource_attributes:' \
+            '        host.name:' \
+            '          enabled: true' \
+            '        host.id:' \
+            '          enabled: true' \
+            '        os.type:' \
+            '          enabled: true' \
+            '' \
+            '  batch:' \
+            '    timeout: 30s' \
+            '    send_batch_size: 1024' \
+            '' \
+            'exporters:' \
+            '  otlphttp:' \
+            '    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}' \
+            '    headers:' \
+            '      api-key: ${env:NEW_RELIC_LICENSE_KEY}' \
+            '' \
+            'service:' \
+            '  pipelines:' \
+            '    metrics/haproxy:' \
+            '      receivers: [haproxy]' \
+            '      processors: [resourcedetection, batch]' \
+            '      exporters: [otlphttp]' \
+            > "$HAPROXY_OTEL_CONFIG"
+
+          echo "HAProxy collector config written to ${HAPROXY_OTEL_CONFIG}"
+
+          # Update OTELCOL_OPTIONS to point at the haproxy config.
+          # If the collector was already running (additive mode), append.
+          if [ "{{.COLLECTOR_WAS_RUNNING}}" = "1" ]; then
+            EXISTING_OPTS=$(grep "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
+            if echo "$EXISTING_OPTS" | grep -q "haproxy-config.yaml"; then
+              echo "HAProxy config already referenced in OTELCOL_OPTIONS."
+            else
+              NEW_OPTS="${EXISTING_OPTS} --config=${HAPROXY_OTEL_CONFIG}"
+              sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${NEW_OPTS}\"|" "$CONFIG_FILE"
+              echo "Added haproxy-config.yaml to existing OTELCOL_OPTIONS (additive mode)."
+            fi
+          else
+            if grep -q "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"--config=${HAPROXY_OTEL_CONFIG}\"|" "$CONFIG_FILE"
+            else
+              echo "OTELCOL_OPTIONS=\"--config=${HAPROXY_OTEL_CONFIG}\"" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+            echo "Set OTELCOL_OPTIONS to use haproxy-config.yaml (standalone mode)."
+          fi
+
+    start_collector:
+      cmds:
+        - |
+          systemctl daemon-reload
+          systemctl enable nrdot-collector.service
+          systemctl restart nrdot-collector.service
+          echo "nrdot-collector service restarted."
+
+    assert_collector_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          RETRY_INTERVAL=2
+          for i in $(seq 1 $MAX_RETRIES); do
+            if systemctl is-active --quiet nrdot-collector.service; then
+              echo "nrdot-collector is running."
+              exit 0
+            fi
+            sleep $RETRY_INTERVAL
+          done
+          echo "nrdot-collector failed to start within ${MAX_RETRIES} attempts." >&2
+          journalctl -u nrdot-collector.service --no-pager -n 20
+          exit 1
+
