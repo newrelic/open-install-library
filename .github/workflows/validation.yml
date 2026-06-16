@@ -537,9 +537,50 @@ jobs:
             echo "Config file not found, skipping system identity cleanup"
           fi
 
+  cleanup-system-identity-eu:
+    name: Cleanup System Identity (EU)
+    runs-on: ubuntu-latest
+    needs: [test-deploy-recipe, get-test-definition-files, create-system-identity-eu]
+    if: always() && needs.get-test-definition-files.outputs.needs_system_identity_eu == 'true'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write Test Definition File JSON to file (EU)
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Clean up system identity (EU)
+        continue-on-error: true
+        run: |
+          if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
+            NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+            SYSTEM_IDENTITY_ID="${{ needs.create-system-identity-eu.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$NR_API_KEY"
+            echo "::add-mask::$SYSTEM_IDENTITY_ID"
+            if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
+              echo "Cleaning up EU system identity with ID: $SYSTEM_IDENTITY_ID"
+              curl -X POST https://api.eu.newrelic.com/graphql \
+                -H 'content-type: application/json; charset=utf-8' \
+                -H "API-Key: $NR_API_KEY" \
+                --data-raw "{
+                  \"query\": \"mutation { systemIdentityDelete(id: \\\"$SYSTEM_IDENTITY_ID\\\") { id } }\"
+                }" || echo "Failed to delete EU system identity, it may have already been deleted"
+            else
+              echo "No EU system identity to clean up"
+            fi
+          else
+            echo "EU config file not found, skipping system identity cleanup"
+          fi
+
   slack-notify:
     runs-on: ubuntu-latest
-    needs: [test-deploy-recipe, cleanup-system-identity]
+    needs: [test-deploy-recipe, cleanup-system-identity, cleanup-system-identity-eu]
     if: always()
     steps:
       - name: Build Result Slack Notification
