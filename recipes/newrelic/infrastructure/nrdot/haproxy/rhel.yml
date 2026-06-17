@@ -153,7 +153,7 @@ install:
 
           rpm -U /tmp/nrdot-collector.rpm
           if [ $? -ne 0 ]; then
-            echo "dpkg install failed, attempting to fix broken dependencies..." >&2
+            echo "rpm install failed, attempting yum install..." >&2
             yum install -y /tmp/nrdot-collector.rpm
             if [ $? -ne 0 ]; then
               echo "Failed to install the nrdot-collector package." >&2
@@ -234,8 +234,6 @@ install:
             '          enabled: true' \
             '' \
             '  batch:' \
-            '    timeout: 30s' \
-            '    send_batch_size: 1024' \
             '' \
             'exporters:' \
             '  otlphttp:' \
@@ -254,24 +252,42 @@ install:
           echo "HAProxy collector config written to ${HAPROXY_OTEL_CONFIG}"
 
           # Update OTELCOL_OPTIONS to point at the haproxy config.
-          # If the collector was already running (additive mode), append.
+          #
+          # The nrdot-collector package ships a default config.yaml (host monitoring).
+          # Its postinstall script starts the service with that file automatically, so by
+          # the time write_haproxy_config runs the service may already be active — even on a
+          # fresh haproxy install. COLLECTOR_WAS_RUNNING is captured before install_collector
+          # executes to avoid this race.
+          #
+          # Additive mode  (COLLECTOR_WAS_RUNNING=1): the collector was intentionally
+          #   started by a prior recipe. Read the existing OTELCOL_OPTIONS and append
+          #   haproxy-config.yaml only if it is not already present. This preserves the
+          #   exact set of active integrations without accidentally including config.yaml
+          #   (which is always on disk from the package install regardless of whether the
+          #   customer ever requested host monitoring).
+          #
+          # Standalone mode (COLLECTOR_WAS_RUNNING=0): this is the first recipe to run.
+          #   Load only haproxy-config.yaml to avoid silently enabling host monitoring
+          #   that the customer never requested.
+          EXISTING_OPTIONS=$(grep "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
           if [ "{{.COLLECTOR_WAS_RUNNING}}" = "1" ]; then
-            EXISTING_OPTS=$(grep "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
-            if echo "$EXISTING_OPTS" | grep -q "haproxy-config.yaml"; then
-              echo "HAProxy config already referenced in OTELCOL_OPTIONS."
+            if echo "$EXISTING_OPTIONS" | grep -q "haproxy-config.yaml"; then
+              OTELCOL_OPTIONS="$EXISTING_OPTIONS"
             else
-              NEW_OPTS="${EXISTING_OPTS} --config=${HAPROXY_OTEL_CONFIG}"
-              sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${NEW_OPTS}\"|" "$CONFIG_FILE"
-              echo "Added haproxy-config.yaml to existing OTELCOL_OPTIONS (additive mode)."
+              OTELCOL_OPTIONS="${EXISTING_OPTIONS} --config=${HAPROXY_OTEL_CONFIG}"
             fi
           else
-            if grep -q "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null; then
-              sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"--config=${HAPROXY_OTEL_CONFIG}\"|" "$CONFIG_FILE"
-            else
-              echo "OTELCOL_OPTIONS=\"--config=${HAPROXY_OTEL_CONFIG}\"" | tee -a "$CONFIG_FILE" > /dev/null
-            fi
-            echo "Set OTELCOL_OPTIONS to use haproxy-config.yaml (standalone mode)."
+            OTELCOL_OPTIONS="--config=${HAPROXY_OTEL_CONFIG}"
           fi
+          OTELCOL_OPTIONS="${OTELCOL_OPTIONS# }"
+
+          if grep -q "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"|" "$CONFIG_FILE"
+          else
+            echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          echo "OTELCOL_OPTIONS updated in ${CONFIG_FILE}: ${OTELCOL_OPTIONS}"
 
     start_collector:
       cmds:
