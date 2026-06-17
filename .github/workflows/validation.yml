@@ -543,8 +543,25 @@ jobs:
 
       - name: Pull Deployer image
         run: |
-          docker pull newrelic/deployer:latest
-          docker images newrelic/deployer:latest
+          # Docker Hub's registry-1.docker.io occasionally returns
+          # "context deadline exceeded" mid-run; this one-shot pull was the
+          # only failure of run 27639559831 (otherwise-healthy JP logs test).
+          # Retry with linear backoff so a registry blip can't fail an
+          # otherwise-healthy matrix entry.
+          attempt=1
+          max_attempts=5
+          while [ $attempt -le $max_attempts ]; do
+            if docker pull newrelic/deployer:latest; then
+              docker images newrelic/deployer:latest
+              exit 0
+            fi
+            backoff=$((attempt * 5))
+            echo "::warning::docker pull attempt $attempt/$max_attempts failed; retrying in ${backoff}s"
+            sleep $backoff
+            attempt=$((attempt + 1))
+          done
+          echo "::error::docker pull newrelic/deployer:latest failed after $max_attempts attempts"
+          exit 1
 
       - name: Run deployer
         id: deployerRun
