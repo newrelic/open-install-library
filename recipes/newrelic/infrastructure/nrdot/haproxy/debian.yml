@@ -210,39 +210,124 @@ install:
           mkdir -p "/etc/nrdot-collector"
 
           # Write the HAProxy-specific OTel collector pipeline config.
-          printf '%s\n' \
-            'receivers:' \
-            '  haproxy:' \
-            "    endpoint: ${STATS_URL}" \
-            '    collection_interval: 30s' \
-            '' \
-            'processors:' \
-            '  resourcedetection:' \
-            '    detectors: [system]' \
-            '    system:' \
-            '      resource_attributes:' \
-            '        host.name:' \
-            '          enabled: true' \
-            '        host.id:' \
-            '          enabled: true' \
-            '        os.type:' \
-            '          enabled: true' \
-            '' \
-            '  batch:' \
-            '' \
-            'exporters:' \
-            '  otlphttp:' \
-            '    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}' \
-            '    headers:' \
-            '      api-key: ${env:NEW_RELIC_LICENSE_KEY}' \
-            '' \
-            'service:' \
-            '  pipelines:' \
-            '    metrics/haproxy:' \
-            '      receivers: [haproxy]' \
-            '      processors: [resourcedetection, batch]' \
-            '      exporters: [otlphttp]' \
-            > "$HAPROXY_OTEL_CONFIG"
+          CONFIG_PRESET="${NR_CLI_CONFIG_PRESET:-comprehensive}"
+          echo "Using config preset: ${CONFIG_PRESET}"
+
+          if [ "$CONFIG_PRESET" = "optimized" ]; then
+            cat > "$HAPROXY_OTEL_CONFIG" << 'OTELEOF'
+          receivers:
+            haproxy:
+              endpoint: STATS_URL_PLACEHOLDER
+              collection_interval: 60s
+
+          processors:
+            resourcedetection:
+              detectors: [system]
+              system:
+                resource_attributes:
+                  host.name:
+                    enabled: true
+                  host.id:
+                    enabled: true
+                  os.type:
+                    enabled: true
+
+            transform/metadata_nullify:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(description, "") where description != ""
+                    - set(unit, "") where unit != ""
+
+            resource/remove_attributes:
+              attributes:
+                - key: os.description
+                  action: delete
+                - key: telemetry.sdk.version
+                  action: delete
+                - key: telemetry.sdk.language
+                  action: delete
+                - key: telemetry.sdk.name
+                  action: delete
+                - key: host.arch
+                  action: delete
+
+            batch:
+              send_batch_size: 2048
+              timeout: 30s
+
+          exporters:
+            otlphttp:
+              endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+              headers:
+                api-key: ${env:NEW_RELIC_LICENSE_KEY}
+
+          service:
+            pipelines:
+              metrics/haproxy:
+                receivers: [haproxy]
+                processors: [resourcedetection, transform/metadata_nullify, resource/remove_attributes, batch]
+                exporters: [otlphttp]
+          OTELEOF
+          else
+            cat > "$HAPROXY_OTEL_CONFIG" << 'OTELEOF'
+          receivers:
+            haproxy:
+              endpoint: STATS_URL_PLACEHOLDER
+              collection_interval: 15s
+              metrics:
+                haproxy.connections.average_time:
+                  enabled: true
+                haproxy.requests.average_time:
+                  enabled: true
+                haproxy.responses.average_time:
+                  enabled: true
+                haproxy.active:
+                  enabled: true
+                haproxy.backup:
+                  enabled: true
+                haproxy.downtime:
+                  enabled: true
+                haproxy.failed_checks:
+                  enabled: true
+                haproxy.weight:
+                  enabled: true
+                haproxy.sessions.total:
+                  enabled: true
+                haproxy.connections.total:
+                  enabled: true
+
+          processors:
+            resourcedetection:
+              detectors: [system]
+              system:
+                resource_attributes:
+                  host.name:
+                    enabled: true
+                  host.id:
+                    enabled: true
+                  os.type:
+                    enabled: true
+
+            batch:
+
+          exporters:
+            otlphttp:
+              endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+              headers:
+                api-key: ${env:NEW_RELIC_LICENSE_KEY}
+
+          service:
+            pipelines:
+              metrics/haproxy:
+                receivers: [haproxy]
+                processors: [resourcedetection, batch]
+                exporters: [otlphttp]
+          OTELEOF
+          fi
+
+          # Replace the stats URL placeholder with the actual value
+          sed -i "s|STATS_URL_PLACEHOLDER|${STATS_URL}|" "$HAPROXY_OTEL_CONFIG"
 
           echo "HAProxy collector config written to ${HAPROXY_OTEL_CONFIG}"
 
