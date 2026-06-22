@@ -1,0 +1,56 @@
+{
+  "global_tags": {
+    "owning_team": "virtuoso",
+    "Environment": "development",
+    "Department": "product",
+    "Product": "virtuoso"
+  },
+  "resources": [
+    {
+      "id": "kafkahost1",
+      "provider": "aws",
+      "type": "ec2",
+      "size": "t3.medium",
+      "ami_name": "amzn2-ami-hvm-2.0.????????.?-x86_64-gp2"
+    }
+  ],
+  "services": [
+    {
+      "id": "kafka",
+      "destinations": [
+        "kafkahost1"
+      ],
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/linux/kafka/install-kafka-with-apps.yml",
+      "params": {
+        "kafka_version": "3.7.2",
+        "kafka_scala_version": "2.13",
+        "kafka_cluster_name": "test-kafka-cluster",
+        "create_test_topics": true,
+        "topic_names": "purchases,product-interactions,user-activities",
+        "enable_jmx": true,
+        "kafka_jmx_port": "9999",
+        "zookeeper_jmx_port": "9998",
+        "producer_jmx_port": "9997",
+        "consumer_jmx_port": "9996",
+        "deploy_producer": true,
+        "deploy_consumer": true
+      }
+    },
+    {
+      "id": "otelcol-kafka",
+      "destinations": [
+        "kafkahost1"
+      ],
+      "source_repository": "https://github.com/newrelic/open-install-library.git",
+      "deploy_script_path": "test/deploy/linux/nrdot/install-otelcol-contrib-linux.yml",
+      "params": {
+        "collector_type": "nrdot-collector-experimental",
+        "otel_version": "1.8.0",
+        "otel_api_key": "YOUR_API_KEY_HERE",
+        "otel_endpoint": "https://staging-otlp.nr-data.net:4318",
+        "otel_config_template": "test/definitions/otel/configs/kafka.yaml.j2"
+      }
+    }
+  ]
+}
