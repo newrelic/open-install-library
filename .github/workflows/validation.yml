@@ -58,6 +58,8 @@ jobs:
     outputs:
       matrix: ${{ steps.get-test-definition-files.outputs.result }}
       needs_system_identity: ${{ steps.filter-agent-control.outputs.needs_system_identity }}
+      needs_system_identity_eu: ${{ steps.filter-agent-control.outputs.needs_system_identity_eu }}
+      needs_system_identity_jp: ${{ steps.filter-agent-control.outputs.needs_system_identity_jp }}
       files_list: ${{ steps.get-test-definition-files.outputs.files_list }}
     steps:
       - name: Checkout Repo
@@ -79,7 +81,7 @@ jobs:
       - name: Get Changed Files
         id: getfile
         run: |
-          RECIPES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "recipes" || true)
+          RECIPES=$(git diff --name-only --diff-filter=AMR ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "recipes" || true)
           if [ -z "$RECIPES" ]; then
             echo "No recipe files detected."
           else
@@ -88,7 +90,7 @@ jobs:
             echo "EOF" >> $GITHUB_ENV
           fi
 
-          TEST_DEFINITIONS=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "test/definitions" || true)
+          TEST_DEFINITIONS=$(git diff --name-only --diff-filter=AMR ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "test/definitions" || true)
           if [ -z "$TEST_DEFINITIONS" ]; then
             echo "No test definitions files detected."
           else
@@ -142,7 +144,8 @@ jobs:
                 // Get all deploy config files
                 const deployConfigsUS = await getFiles('test/definitions');
                 const deployConfigsEU = await getFiles('test/definitions-eu');
-                const deployConfigs = deployConfigsUS.concat(deployConfigsEU);
+                const deployConfigsJP = await getFiles('test/definitions-jp');
+                const deployConfigs = deployConfigsUS.concat(deployConfigsEU).concat(deployConfigsJP);
                 console.log("All deployConfigs:", deployConfigs);
 
                 // Build up list of Deploy Configs to run based on recipes that have changed
@@ -190,14 +193,24 @@ jobs:
         id: filter-agent-control
         run: |
           FILES=$(echo '${{ steps.get-test-definition-files.outputs.files_list }}' | jq -r '.[]')
+          # needs_system_identity      = US system identity — for definitions/agent-control/
+          # needs_system_identity_eu   = EU system identity — for definitions-eu/agent-control/
+          # needs_system_identity_jp   = JP system identity — for definitions-jp/agent-control/
           NEEDS_IDENTITY=false
+          NEEDS_IDENTITY_EU=false
+          NEEDS_IDENTITY_JP=false
           for FILE in $FILES; do
-            if [[ "$FILE" == test/definitions/agent-control/* || "$FILE" == test/definitions-eu/agent-control/* ]]; then
+            if [[ "$FILE" == test/definitions-eu/agent-control/* ]]; then
+              NEEDS_IDENTITY_EU=true
+            elif [[ "$FILE" == test/definitions-jp/agent-control/* ]]; then
+              NEEDS_IDENTITY_JP=true
+            elif [[ "$FILE" == test/definitions/agent-control/* ]]; then
               NEEDS_IDENTITY=true
-              break
             fi
           done
           echo "needs_system_identity=$NEEDS_IDENTITY" >> $GITHUB_OUTPUT
+          echo "needs_system_identity_eu=$NEEDS_IDENTITY_EU" >> $GITHUB_OUTPUT
+          echo "needs_system_identity_jp=$NEEDS_IDENTITY_JP" >> $GITHUB_OUTPUT
 
   create-system-identity:
     name: Create System Identity
@@ -271,10 +284,154 @@ jobs:
               \"variables\": { \"systemIdentityIds\": [\"${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}\"], \"systemIdentityGroupIds\": [\"${{ steps.get-nr-control-group.outputs.GROUP_ID }}\"] }
             }"
 
+  create-system-identity-eu:
+    name: Create System Identity (EU)
+    runs-on: ubuntu-latest
+    needs: [get-test-definition-files]
+    if: needs.get-test-definition-files.outputs.needs_system_identity_eu == 'true'
+    outputs:
+      CLIENT_ID: ${{ steps.create-identity.outputs.CLIENT_ID }}
+      CLIENT_SECRET: ${{ steps.create-identity.outputs.CLIENT_SECRET }}
+      SYSTEM_IDENTITY_ID: ${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write Test Definition File JSON to file (EU)
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Extract New Relic Credentials (EU)
+        id: extract-nr-creds
+        run: |
+          NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+          NR_ORG_ID=$(jq -r -e '.credentials.newrelic.nrOrganizationId' configs/gitusdkr${{ github.run_id }}.json)
+          echo "::add-mask::$NR_API_KEY"
+          echo "::add-mask::$NR_ORG_ID"
+          echo "NR_API_KEY=$NR_API_KEY" >> $GITHUB_OUTPUT
+          echo "NR_ORG_ID=$NR_ORG_ID" >> $GITHUB_OUTPUT
+
+      - name: Create System Identity (EU)
+        id: create-identity
+        run: |
+          RESPONSE=$(curl -X POST https://api.eu.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-nr-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"mutation { systemIdentityCreate( name: \\\"open-install-library-e2e-eu\\\" organizationId: \\\"${{ steps.extract-nr-creds.outputs.NR_ORG_ID }}\\\" ) { id clientId clientSecret } }\"
+            }")
+          CLIENT_ID=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientId')
+          CLIENT_SECRET=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientSecret')
+          SYSTEM_IDENTITY_ID=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.id')
+          echo "CLIENT_ID=$CLIENT_ID" >> $GITHUB_OUTPUT
+          echo "CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_OUTPUT
+          echo "SYSTEM_IDENTITY_ID=$SYSTEM_IDENTITY_ID" >> $GITHUB_OUTPUT
+
+      - name: Get NR Control Group ID (EU)
+        id: get-nr-control-group
+        run: |
+          RESPONSE=$(curl -X POST https://api.eu.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-nr-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"query getSystemIdentityGroupsQuery(\$organizationId: ID!, \$name: String!) { customerAdministration { systemIdentityGroups(filter: {name: {eq: \$name}, organizationId: {eq: \$organizationId}}) { items { id } totalCount } } }\",
+              \"variables\": { \"organizationId\": \"${{ steps.extract-nr-creds.outputs.NR_ORG_ID }}\", \"name\": \"NR Control Group\" }
+            }")
+          GROUP_ID=$(echo "$RESPONSE" | jq -e -r '.data.customerAdministration.systemIdentityGroups.items[0].id')
+          echo "GROUP_ID=$GROUP_ID" >> $GITHUB_OUTPUT
+
+      - name: Add System Identity to NR Control Group (EU)
+        if: steps.get-nr-control-group.outputs.GROUP_ID != ''
+        run: |
+          curl -X POST https://api.eu.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-nr-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"mutation createSystemIdentityAddToGroupsMutation(\$systemIdentityIds: [ID!]!, \$systemIdentityGroupIds: [ID!]!) { systemIdentityAddToGroups(systemIdentityIds: \$systemIdentityIds, systemIdentityGroupIds: \$systemIdentityGroupIds) { systemIdentityGroups { id } } }\",
+              \"variables\": { \"systemIdentityIds\": [\"${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}\"], \"systemIdentityGroupIds\": [\"${{ steps.get-nr-control-group.outputs.GROUP_ID }}\"] }
+            }"
+
+  create-system-identity-jp:
+    name: Create System Identity (JP)
+    runs-on: ubuntu-latest
+    needs: [get-test-definition-files]
+    if: needs.get-test-definition-files.outputs.needs_system_identity_jp == 'true'
+    outputs:
+      CLIENT_ID: ${{ steps.create-identity.outputs.CLIENT_ID }}
+      CLIENT_SECRET: ${{ steps.create-identity.outputs.CLIENT_SECRET }}
+      SYSTEM_IDENTITY_ID: ${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write Test Definition File JSON to file (JP)
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_JP }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Extract New Relic Credentials (JP)
+        id: extract-nr-creds
+        run: |
+          NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+          NR_ORG_ID=$(jq -r -e '.credentials.newrelic.nrOrganizationId' configs/gitusdkr${{ github.run_id }}.json)
+          echo "::add-mask::$NR_API_KEY"
+          echo "::add-mask::$NR_ORG_ID"
+          echo "NR_API_KEY=$NR_API_KEY" >> $GITHUB_OUTPUT
+          echo "NR_ORG_ID=$NR_ORG_ID" >> $GITHUB_OUTPUT
+
+      - name: Create System Identity (JP)
+        id: create-identity
+        run: |
+          RESPONSE=$(curl -X POST https://api.jp.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-nr-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"mutation { systemIdentityCreate( name: \\\"open-install-library-e2e-jp\\\" organizationId: \\\"${{ steps.extract-nr-creds.outputs.NR_ORG_ID }}\\\" ) { id clientId clientSecret } }\"
+            }")
+          CLIENT_ID=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientId')
+          CLIENT_SECRET=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.clientSecret')
+          SYSTEM_IDENTITY_ID=$(echo "$RESPONSE" | jq -e -r '.data.systemIdentityCreate.id')
+          echo "CLIENT_ID=$CLIENT_ID" >> $GITHUB_OUTPUT
+          echo "CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_OUTPUT
+          echo "SYSTEM_IDENTITY_ID=$SYSTEM_IDENTITY_ID" >> $GITHUB_OUTPUT
+
+      - name: Get NR Control Group ID (JP)
+        id: get-nr-control-group
+        run: |
+          RESPONSE=$(curl -X POST https://api.jp.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-nr-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"query getSystemIdentityGroupsQuery(\$organizationId: ID!, \$name: String!) { customerAdministration { systemIdentityGroups(filter: {name: {eq: \$name}, organizationId: {eq: \$organizationId}}) { items { id } totalCount } } }\",
+              \"variables\": { \"organizationId\": \"${{ steps.extract-nr-creds.outputs.NR_ORG_ID }}\", \"name\": \"NR Control Group\" }
+            }")
+          GROUP_ID=$(echo "$RESPONSE" | jq -e -r '.data.customerAdministration.systemIdentityGroups.items[0].id')
+          echo "GROUP_ID=$GROUP_ID" >> $GITHUB_OUTPUT
+
+      - name: Add System Identity to NR Control Group (JP)
+        if: steps.get-nr-control-group.outputs.GROUP_ID != ''
+        run: |
+          curl -X POST https://api.jp.newrelic.com/graphql \
+            -H 'content-type: application/json; charset=utf-8' \
+            -H "API-Key: ${{ steps.extract-nr-creds.outputs.NR_API_KEY }}" \
+            --data-raw "{
+              \"query\": \"mutation createSystemIdentityAddToGroupsMutation(\$systemIdentityIds: [ID!]!, \$systemIdentityGroupIds: [ID!]!) { systemIdentityAddToGroups(systemIdentityIds: \$systemIdentityIds, systemIdentityGroupIds: \$systemIdentityGroupIds) { systemIdentityGroups { id } } }\",
+              \"variables\": { \"systemIdentityIds\": [\"${{ steps.create-identity.outputs.SYSTEM_IDENTITY_ID }}\"], \"systemIdentityGroupIds\": [\"${{ steps.get-nr-control-group.outputs.GROUP_ID }}\"] }
+            }"
+
   test-deploy-recipe:
     name: Test Deploy Recipe
-    needs: [get-test-definition-files, create-system-identity]
-    if: ${{ always() && fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] && (needs.create-system-identity.result == 'success' || needs.create-system-identity.result == 'skipped') }}
+    needs: [get-test-definition-files, create-system-identity, create-system-identity-eu, create-system-identity-jp]
+    if: ${{ always() && fromJSON(needs.get-test-definition-files.outputs.matrix).include[0] && (needs.create-system-identity.result == 'success' || needs.create-system-identity.result == 'skipped') && (needs.create-system-identity-eu.result == 'success' || needs.create-system-identity-eu.result == 'skipped') && (needs.create-system-identity-jp.result == 'success' || needs.create-system-identity-jp.result == 'skipped') }}
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJSON(needs.get-test-definition-files.outputs.matrix) }}
@@ -288,13 +445,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Mask and set system identity credentials
-        if: needs.get-test-definition-files.outputs.needs_system_identity == 'true' && needs.create-system-identity.result == 'success'
+      - name: Mask and set system identity credentials (US — for definitions/)
+        if: ${{ needs.create-system-identity.result == 'success' && !startsWith(matrix.testDefinitionFile, 'test/definitions-eu/') && !startsWith(matrix.testDefinitionFile, 'test/definitions-jp/') }}
         run: |
           echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_ID }}"
           echo "::add-mask::${{ needs.create-system-identity.outputs.CLIENT_SECRET }}"
           echo "SYSTEM_IDENTITY_CLIENT_ID=${{ needs.create-system-identity.outputs.CLIENT_ID }}" >> $GITHUB_ENV
           echo "SYSTEM_IDENTITY_CLIENT_SECRET=${{ needs.create-system-identity.outputs.CLIENT_SECRET }}" >> $GITHUB_ENV
+
+      - name: Mask and set system identity credentials (EU — for definitions-eu/)
+        if: ${{ needs.create-system-identity-eu.result == 'success' && startsWith(matrix.testDefinitionFile, 'test/definitions-eu/') }}
+        run: |
+          echo "::add-mask::${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}"
+          echo "::add-mask::${{ needs.create-system-identity-eu.outputs.CLIENT_SECRET }}"
+          echo "SYSTEM_IDENTITY_CLIENT_ID=${{ needs.create-system-identity-eu.outputs.CLIENT_ID }}" >> $GITHUB_ENV
+          echo "SYSTEM_IDENTITY_CLIENT_SECRET=${{ needs.create-system-identity-eu.outputs.CLIENT_SECRET }}" >> $GITHUB_ENV
+
+      - name: Mask and set system identity credentials (JP — for definitions-jp/)
+        if: ${{ needs.create-system-identity-jp.result == 'success' && startsWith(matrix.testDefinitionFile, 'test/definitions-jp/') }}
+        run: |
+          echo "::add-mask::${{ needs.create-system-identity-jp.outputs.CLIENT_ID }}"
+          echo "::add-mask::${{ needs.create-system-identity-jp.outputs.CLIENT_SECRET }}"
+          echo "SYSTEM_IDENTITY_CLIENT_ID=${{ needs.create-system-identity-jp.outputs.CLIENT_ID }}" >> $GITHUB_ENV
+          echo "SYSTEM_IDENTITY_CLIENT_SECRET=${{ needs.create-system-identity-jp.outputs.CLIENT_SECRET }}" >> $GITHUB_ENV
 
       - name: Update Test Definition Files URLs
         id: get-test-definition-files
@@ -349,16 +522,46 @@ jobs:
           echo "$AWS_PEM" > configs/gitdeployerCanada.pem
           sudo chmod 400 configs/gitdeployerCanada.pem
 
-      - name: Write Test Definition File JSON to file
+      - name: Write Test Definition File JSON to file (region-aware)
         env:
-          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+          USER_JSON_US: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG }}
+          USER_JSON_EU: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+          USER_JSON_JP: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_JP }}
+          TEST_FILE: ${{ matrix.testDefinitionFile }}
         run: |
-          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+          # Route deployer config by test file path:
+          #   definitions-eu/  → EU config  (api.eu.newrelic.com, EU org, EU fleet IDs)
+          #   definitions-jp/  → JP config  (api.jp.newrelic.com, JP org, JP fleet IDs)
+          #   definitions/     → US config  (default)
+          if [[ "$TEST_FILE" == test/definitions-eu/* ]]; then
+            echo "$USER_JSON_EU" > configs/gitusdkr${{ github.run_id }}.json
+          elif [[ "$TEST_FILE" == test/definitions-jp/* ]]; then
+            echo "$USER_JSON_JP" > configs/gitusdkr${{ github.run_id }}.json
+          else
+            echo "$USER_JSON_US" > configs/gitusdkr${{ github.run_id }}.json
+          fi
 
       - name: Pull Deployer image
         run: |
-          docker pull newrelic/deployer:latest
-          docker images newrelic/deployer:latest
+          # Docker Hub's registry-1.docker.io occasionally returns
+          # "context deadline exceeded" mid-run; this one-shot pull was the
+          # only failure of run 27639559831 (otherwise-healthy JP logs test).
+          # Retry with linear backoff so a registry blip can't fail an
+          # otherwise-healthy matrix entry.
+          attempt=1
+          max_attempts=5
+          while [ $attempt -le $max_attempts ]; do
+            if docker pull newrelic/deployer:latest; then
+              docker images newrelic/deployer:latest
+              exit 0
+            fi
+            backoff=$((attempt * 5))
+            echo "::warning::docker pull attempt $attempt/$max_attempts failed; retrying in ${backoff}s"
+            sleep $backoff
+            attempt=$((attempt + 1))
+          done
+          echo "::error::docker pull newrelic/deployer:latest failed after $max_attempts attempts"
+          exit 1
 
       - name: Run deployer
         id: deployerRun
@@ -367,7 +570,7 @@ jobs:
           set +e
           testDefinitionFile=$(echo $MATRIX | jq -c -r '.testDefinitionFile')
           echo $testDefinitionFile
-          if [[ "$testDefinitionFile" == test/definitions/agent-control/* || "$testDefinitionFile" == test/definitions-eu/agent-control/* ]]; then
+          if [[ "$testDefinitionFile" == test/definitions/agent-control/* || "$testDefinitionFile" == test/definitions-eu/agent-control/* || "$testDefinitionFile" == test/definitions-jp/agent-control/* ]]; then
             docker run \
               -v ${{ github.workspace }}/configs/:/mnt/deployer/configs/\
               -v ${{ github.workspace }}/test/:/mnt/deployer/test/\
@@ -439,9 +642,91 @@ jobs:
             echo "Config file not found, skipping system identity cleanup"
           fi
 
+  cleanup-system-identity-eu:
+    name: Cleanup System Identity (EU)
+    runs-on: ubuntu-latest
+    needs: [test-deploy-recipe, get-test-definition-files, create-system-identity-eu]
+    if: always() && needs.get-test-definition-files.outputs.needs_system_identity_eu == 'true'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write Test Definition File JSON to file (EU)
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_EU }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Clean up system identity (EU)
+        continue-on-error: true
+        run: |
+          if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
+            NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+            SYSTEM_IDENTITY_ID="${{ needs.create-system-identity-eu.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$NR_API_KEY"
+            echo "::add-mask::$SYSTEM_IDENTITY_ID"
+            if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
+              echo "Cleaning up EU system identity with ID: $SYSTEM_IDENTITY_ID"
+              curl -X POST https://api.eu.newrelic.com/graphql \
+                -H 'content-type: application/json; charset=utf-8' \
+                -H "API-Key: $NR_API_KEY" \
+                --data-raw "{
+                  \"query\": \"mutation { systemIdentityDelete(id: \\\"$SYSTEM_IDENTITY_ID\\\") { id } }\"
+                }" || echo "Failed to delete EU system identity, it may have already been deleted"
+            else
+              echo "No EU system identity to clean up"
+            fi
+          else
+            echo "EU config file not found, skipping system identity cleanup"
+          fi
+
+  cleanup-system-identity-jp:
+    name: Cleanup System Identity (JP)
+    runs-on: ubuntu-latest
+    needs: [test-deploy-recipe, get-test-definition-files, create-system-identity-jp]
+    if: always() && needs.get-test-definition-files.outputs.needs_system_identity_jp == 'true'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Write Test Definition File JSON to file (JP)
+        env:
+          USER_JSON: ${{ secrets.GIT_DEPLOYER_DOCKER_USER_CONFIG_JP }}
+        run: |
+          mkdir -p configs
+          echo "$USER_JSON" > configs/gitusdkr${{ github.run_id }}.json
+
+      - name: Clean up system identity (JP)
+        continue-on-error: true
+        run: |
+          if [ -f configs/gitusdkr${{ github.run_id }}.json ]; then
+            NR_API_KEY=$(jq -r -e '.credentials.newrelic.nrPersonalApiKey' configs/gitusdkr${{ github.run_id }}.json)
+            SYSTEM_IDENTITY_ID="${{ needs.create-system-identity-jp.outputs.SYSTEM_IDENTITY_ID }}"
+            echo "::add-mask::$NR_API_KEY"
+            echo "::add-mask::$SYSTEM_IDENTITY_ID"
+            if [ ! -z "$SYSTEM_IDENTITY_ID" ] && [ "$SYSTEM_IDENTITY_ID" != "null" ]; then
+              echo "Cleaning up JP system identity with ID: $SYSTEM_IDENTITY_ID"
+              curl -X POST https://api.jp.newrelic.com/graphql \
+                -H 'content-type: application/json; charset=utf-8' \
+                -H "API-Key: $NR_API_KEY" \
+                --data-raw "{
+                  \"query\": \"mutation { systemIdentityDelete(id: \\\"$SYSTEM_IDENTITY_ID\\\") { id } }\"
+                }" || echo "Failed to delete JP system identity, it may have already been deleted"
+            else
+              echo "No JP system identity to clean up"
+            fi
+          else
+            echo "JP config file not found, skipping system identity cleanup"
+          fi
+
   slack-notify:
     runs-on: ubuntu-latest
-    needs: [test-deploy-recipe, cleanup-system-identity]
+    needs: [test-deploy-recipe, cleanup-system-identity, cleanup-system-identity-eu, cleanup-system-identity-jp]
     if: always()
     steps:
       - name: Build Result Slack Notification
