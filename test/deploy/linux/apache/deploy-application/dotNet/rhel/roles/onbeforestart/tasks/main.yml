@@ -17,14 +17,24 @@
     use_executable: "false"
   when: use_executable is undefined
 
+- name: Set default dotnet_app_name (published entrypoint name inside the app zip)
+  set_fact:
+    dotnet_app_name: "net5webapplication"
+  when: dotnet_app_name is undefined
+
+- name: Set default dotnet_exe path (framework-dependent startup uses this dotnet host)
+  set_fact:
+    dotnet_exe: "/opt/dotnet/dotnet"
+  when: dotnet_exe is undefined
+
 - name: Set startup_command to executable (not dotnet xx.dll)
   set_fact:
-    startup_command: "/var/www/{{ service_id }}/net5webapplication"
+    startup_command: "/var/www/{{ service_id }}/{{ dotnet_app_name }}"
   when: use_executable|bool
 
 - name: Set startup_command to dotnet command (use dotnet xx.dll)
   set_fact:
-    startup_command: "/opt/dotnet/dotnet /var/www/{{ service_id }}/net5webapplication.dll"
+    startup_command: "{{ dotnet_exe }} /var/www/{{ service_id }}/{{ dotnet_app_name }}.dll"
   when: use_executable|bool == False
 
 - name: Set default download url for self contained web app

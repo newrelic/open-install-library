@@ -1,0 +1,71 @@
+{
+    "global_tags": {
+        "owning_team": "virtuoso",
+        "Environment": "development",
+        "Department": "product",
+        "Product": "virtuoso"
+    },
+
+    "resources": [{
+        "id": "ubuntu24apachenetcore1",
+        "provider": "aws",
+        "type": "ec2",
+        "size": "t3.micro",
+        "ami_name": "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-????????",
+        "user_name": "ubuntu"
+    }],
+
+    "services": [{
+        "id": "aspnetcore",
+        "destinations": ["ubuntu24apachenetcore1"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/dotNet/install/ubuntu24/roles",
+        "port": 9999
+      },
+      {
+        "id": "apache1",
+        "destinations": ["ubuntu24apachenetcore1"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/apache/install/debian/roles",
+        "port": 80
+      },
+      {
+        "id": "dotnet1",
+        "destinations": ["ubuntu24apachenetcore1"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/apache/deploy-application/dotNet/debian/roles",
+        "port": 8080,
+        "params": {
+            "is_selfcontained": "true",
+            "dotnet_app_name": "net10webapp",
+            "web_app_url": "https://test-repo-production.s3.us-west-2.amazonaws.com/install/dotnet/testapps/selfcontained-net10webapplication.zip"
+        }
+      },
+      {
+        "id": "dotnet2",
+        "destinations": ["ubuntu24apachenetcore1"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/apache/deploy-application/dotNet/debian/roles",
+        "port": 8081,
+        "params": {
+            "dotnet_app_name": "net10webapp",
+            "web_app_url": "https://test-repo-production.s3.us-west-2.amazonaws.com/install/dotnet/testapps/frameworkdependent-net10webapplication.zip"
+        }
+      }],
+
+  "instrumentations": {
+    "resources": [
+      {
+        "id": "cli1",
+        "resource_ids": ["ubuntu24apachenetcore1"],
+        "provider": "newrelic",
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/newrelic-cli/install-recipe/roles",
+        "params": {
+          "recipe_content_url": "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infrastructure/ubuntu.yml,https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/apm/dotNet/linux-systemd.yml",
+          "validate_output": ".NET Agent\\s+\\(installed\\)"
+        }
+      }
+    ]
+  }
+}
