@@ -2,28 +2,26 @@
 - debug:
     msg: Install ASP.NET Core 10.0 Runtime on Amazon Linux 2023
 
-# NOTE (verification spike — see spec 2026-06-25 §2):
-# Amazon Linux 2023 is a RHEL-family distro that uses dnf. The exact source for a
-# version-pinned ASP.NET Core 10.0 runtime must be confirmed on a live AL2023 host.
-# Candidate sources, in preference order:
-#   1. AL2023 native repos:        dnf install aspnetcore-runtime-10.0
-#   2. Microsoft prod feed (rhel/9): registered below, then dnf install
-#   3. dotnet-install.sh script (channel 10.0, runtime aspnetcore)
-# This role implements (2) — the Microsoft package feed — because it gives an
-# explicit, version-pinned 10.0 runtime independent of AL2023 repo lag. If AL2023
-# native repos carry 10.0, prefer (1) and drop the repo registration.
+# Amazon Linux 2023 ships .NET in its own dnf repositories, so we install the
+# ASP.NET Core runtime directly from there. This keeps .NET as a real rpm package,
+# which the .NET agent recipe's discovery gate (requireAtDiscovery) requires — it
+# greps `yum list installed` for dotnet-runtime*/aspnetcore-runtime*/dotnet-sdk*.
+# The Microsoft packages.microsoft.com rhel/9 feed is intentionally NOT used: its
+# packages-microsoft-prod meta-rpm requires `system-release < 10`, which AL2023
+# does not satisfy (dnf depsolve error).
 
-- name: Register the Microsoft package repository (RHEL 9 compatible)
-  ansible.builtin.yum:
-    name: https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm
-    state: present
+- name: Update packages
+  ansible.builtin.dnf:
+    name: '*'
+    state: latest
     lock_timeout: 180
   become: true
 
-- name: Install ASP.NET Core 10.0 Runtime
-  ansible.builtin.yum:
+- name: Install ASP.NET Core 10.0 Runtime and dependencies
+  ansible.builtin.dnf:
     name:
       - aspnetcore-runtime-10.0
+      - libicu
     state: latest
     lock_timeout: 180
   become: true
