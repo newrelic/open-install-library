@@ -1,0 +1,54 @@
+---
+- name: Install HAProxy
+  apt:
+    name: haproxy
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Configure HAProxy with stats endpoint
+  copy:
+    dest: /etc/haproxy/haproxy.cfg
+    content: |
+      global
+          log stdout format raw local0
+          maxconn 1000
+
+      defaults
+          log     global
+          mode    http
+          option  httplog
+          timeout connect 5s
+          timeout client  30s
+          timeout server  30s
+
+      frontend stats
+          bind *:8404
+          stats enable
+          stats uri /stats
+          stats refresh 10s
+
+      frontend http_front
+          bind *:80
+          default_backend app_backends
+
+      backend app_backends
+          balance roundrobin
+          server local 127.0.0.1:8080 check
+  become: yes
+
+- name: Start HAProxy
+  systemd:
+    name: haproxy
+    state: restarted
+    enabled: yes
+  become: yes
+
+- name: Wait for HAProxy stats endpoint
+  uri:
+    url: http://127.0.0.1:8404/stats
+    status_code: 200
+  register: result
+  until: result.status == 200
+  retries: 10
+  delay: 3
