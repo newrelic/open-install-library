@@ -695,6 +695,7 @@ install:
           EOF
           fi
 
+          chmod 600 "$COLLECTOR_CONFIG"
           echo "Redis OTel config written to ${COLLECTOR_CONFIG}"
 
     configure_service:
@@ -728,7 +729,8 @@ install:
       cmds:
         - |
           systemctl daemon-reload
-          systemctl reload-or-restart {{.COLLECTOR_DISTRO}}.service
+          systemctl enable {{.COLLECTOR_DISTRO}}.service
+          systemctl restart {{.COLLECTOR_DISTRO}}.service
 
     assert_nrdot_status_ok:
       cmds:
@@ -738,8 +740,8 @@ install:
           echo "Waiting for NRDOT Collector to start..."
           while [ $TRIES -lt $MAX_RETRIES ]; do
             TRIES=$((TRIES + 1))
-            if systemctl is-active --quiet {{.COLLECTOR_DISTRO}}.service; then
-              echo "NRDOT Collector is running."
+            if systemctl is-active --quiet {{.COLLECTOR_DISTRO}}.service && curl -sf http://localhost:13133 > /dev/null 2>&1; then
+              echo "NRDOT Collector is running and healthy."
               exit 0
             fi
             sleep 2
