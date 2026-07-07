@@ -192,7 +192,25 @@ install:
             echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
           fi
 
-          # 600: only root should read sensitive credentials (license key).
+          # Add Redis credentials to env file if provided
+          REDIS_PASSWORD="${NR_CLI_REDIS_PASSWORD:-}"
+          REDIS_USERNAME="${NR_CLI_REDIS_USERNAME:-}"
+          if [ -n "$REDIS_USERNAME" ]; then
+            if grep -q "^REDIS_USERNAME=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^REDIS_USERNAME=.*|REDIS_USERNAME=${REDIS_USERNAME}|" "$CONFIG_FILE"
+            else
+              echo "REDIS_USERNAME=${REDIS_USERNAME}" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+          fi
+          if [ -n "$REDIS_PASSWORD" ]; then
+            if grep -q "^REDIS_PASSWORD=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=${REDIS_PASSWORD}|" "$CONFIG_FILE"
+            else
+              echo "REDIS_PASSWORD=${REDIS_PASSWORD}" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+          fi
+
+          # 600: only root should read sensitive credentials (license key, redis password).
           chmod 600 "$CONFIG_FILE"
           echo "Configuration written to ${CONFIG_FILE}"
 
@@ -236,15 +254,15 @@ install:
               collection_interval: 10s
           EOF
 
-          # Add authentication if provided
+          # Add authentication if provided (credentials stored in env file, referenced via ${env:...})
           if [ -n "$REDIS_USERNAME" ] && [ -n "$REDIS_PASSWORD" ]; then
-            cat >> "$COLLECTOR_CONFIG" << EOF
-              username: "${REDIS_USERNAME}"
-              password: "${REDIS_PASSWORD}"
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              username: ${env:REDIS_USERNAME}
+              password: ${env:REDIS_PASSWORD}
           EOF
           elif [ -n "$REDIS_PASSWORD" ]; then
-            cat >> "$COLLECTOR_CONFIG" << EOF
-              password: "${REDIS_PASSWORD}"
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              password: ${env:REDIS_PASSWORD}
           EOF
           fi
 
