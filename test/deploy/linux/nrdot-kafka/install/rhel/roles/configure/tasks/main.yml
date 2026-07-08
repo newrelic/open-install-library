@@ -14,6 +14,20 @@
     args:
       creates: /etc/yum.repos.d/docker-ce.repo
 
+  # Newer RHEL 9 AMIs ship containerd.io pre-installed from the AppStream
+  # repo. When we later add docker-ce.repo and try to install docker-ce,
+  # dnf's transitive resolver pulls RHEL's `containerd` package (from
+  # AppStream), which has an RPM-level Conflicts: against the pre-installed
+  # `containerd.io`. The transaction check then fails even with
+  # allowerasing=true, because it's an RPM conflict, not a dep-resolution
+  # ambiguity. Preemptively remove any pre-installed containerd* so
+  # docker-ce.repo's containerd.io can install cleanly.
+  - name: remove any pre-installed containerd packages (avoid docker-ce install conflict)
+    shell: |
+      dnf remove -y containerd containerd.io 2>/dev/null || true
+      rpm -e --nodeps containerd containerd.io 2>/dev/null || true
+      true
+
   - name: install Docker CE with compose and buildx plugins
     dnf:
       name:
@@ -23,11 +37,6 @@
         - docker-compose-plugin
         - docker-buildx-plugin
       state: present
-      # Newer RHEL 9 AMIs ship containerd.io pre-installed; without
-      # allowerasing, yum's transitive dep resolution tries to install
-      # RHEL's own 'containerd' package which conflicts with the pre-
-      # installed 'containerd.io' and the transaction fails.
-      allowerasing: yes
 
   - name: start and enable Docker
     systemd:
