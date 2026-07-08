@@ -14,6 +14,18 @@
     args:
       creates: /etc/yum.repos.d/docker-ce.repo
 
+  # Newer RHEL 9 AMIs ship containerd.io pre-installed from AppStream. When
+  # we install docker-ce, dnf pulls RHEL's own `containerd` as a transitive
+  # dep, which has an RPM-level Conflicts: with the pre-installed
+  # containerd.io — the transaction check fails even with allowerasing.
+  # Preemptively remove containerd/containerd.io so docker-ce.repo's version
+  # can install cleanly.
+  - name: remove any pre-installed containerd packages (avoid docker-ce conflict)
+    shell: |
+      dnf remove -y containerd containerd.io 2>/dev/null || true
+      rpm -e --nodeps containerd containerd.io 2>/dev/null || true
+      true
+
   - name: install Docker CE with compose and buildx plugins
     dnf:
       name:
