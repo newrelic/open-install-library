@@ -1,0 +1,72 @@
+---
+# Stands up IBM MQ + the ibm-messaging/mq-metric-samples Prometheus exporter via
+# Docker so the nrdot-ibm-mq recipe has a live exporter at localhost:9157 to
+# scrape (the recipe is configuration-only — it does not install MQ/exporter).
+- name: install Docker prerequisites
+  package:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    update_cache: yes
+    state: present
+  become: yes
+
+- name: add Docker GPG key
+  apt_key:
+    url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
+    state: present
+  become: yes
+
+- name: add Docker apt repository
+  apt_repository:
+    repo: "deb [arch={{ ansible_architecture | replace('x86_64','amd64') | replace('aarch64','arm64') }}] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: install Docker CE
+  package:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+    state: present
+  become: yes
+
+- name: start and enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+  become: yes
+
+- name: run IBM MQ queue manager (QM1) with its built-in Prometheus metrics on :9157
+  # The IBM MQ container bundles the mq-metric-samples exporter; MQ_ENABLE_METRICS=true
+  # serves ibmmq_* on :9157 — no separate exporter container needed for the smoke test.
+  # Publish 9157 on loopback only (collector + healthcheck scrape localhost), so it is
+  # unreachable off-box. The MQ listener (1414) and web console (9443) are not published.
+  shell: >
+    docker run -d --name ibmmq
+    -p 127.0.0.1:9157:9157
+    -e LICENSE=accept -e MQ_QMGR_NAME=QM1 -e MQ_ENABLE_METRICS=true
+    -e MQ_ADMIN_PASSWORD=passw0rd -e MQ_APP_PASSWORD=passw0rd
+    icr.io/ibm-messaging/mq:latest
+  become: yes
+
+- name: wait for QM1 to be running
+  shell: docker exec ibmmq dspmq | grep -q 'Running'
+  register: mq_status
+  retries: 40
+  delay: 10
+  until: mq_status.rc == 0
+  become: yes
+
+- name: wait for the built-in exporter to serve ibmmq_* metrics on :9157
+  shell: curl -sf http://localhost:9157/metrics | grep -q '^ibmmq_qmgr'
+  register: exporter_status
+  retries: 30
+  delay: 10
+  until: exporter_status.rc == 0
+  become: yes
