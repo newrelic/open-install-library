@@ -106,14 +106,21 @@ preInstall:
 
         $NEW_RELIC_MSSQL_DB_HOSTNAME = if ($env:NEW_RELIC_MSSQL_DB_HOSTNAME) { $env:NEW_RELIC_MSSQL_DB_HOSTNAME } else { $env:NR_CLI_DB_HOSTNAME };
         if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_HOSTNAME)) {$NEW_RELIC_MSSQL_DB_HOSTNAME = hostname}
-        
+
         $NEW_RELIC_MSSQL_DB_PORT = if ($env:NEW_RELIC_MSSQL_DB_PORT) { $env:NEW_RELIC_MSSQL_DB_PORT } else { $env:NR_CLI_DB_PORT };
         if ([string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_DB_PORT)) {$NEW_RELIC_MSSQL_DB_PORT = "1433"}
+
+        $sqlUsername = if ($env:NEW_RELIC_MSSQL_SQL_USERNAME) { $env:NEW_RELIC_MSSQL_SQL_USERNAME } else { $env:NR_CLI_SQL_USERNAME }
+        $sqlPassword = if ($env:NEW_RELIC_MSSQL_SQL_PASSWORD) { $env:NEW_RELIC_MSSQL_SQL_PASSWORD } else { $env:NR_CLI_SQL_PASSWORD }
+        $sqlCredArgs = @()
+        if (-not [string]::IsNullOrWhiteSpace($sqlUsername)) {
+            $sqlCredArgs = @("-U", $sqlUsername, "-P", $sqlPassword)
+        }
 
         # Loop on each instance names to see if we can connect
         foreach ($instance in $instances) {
           $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance},${NEW_RELIC_MSSQL_DB_PORT}"
-          $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+          $name=(sqlcmd -S $connection @sqlCredArgs -Q "SELECT @@SERVICENAME" -l 30 2>&1)
           If ($name.Length -ge 3) {
             $actualName = $name[2].ToString().Trim();
             If ($actualName -eq $instance) {
@@ -126,7 +133,7 @@ preInstall:
           }
 
           $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance}"
-          $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+          $name=(sqlcmd -S $connection @sqlCredArgs -Q "SELECT @@SERVICENAME" -l 30 2>&1)
           If ($name.Length -ge 3) {
             $actualName = $name[2].ToString().Trim();
             If ($actualName -eq $instance) {
@@ -139,7 +146,7 @@ preInstall:
           }
 
           $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
-          $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+          $name=(sqlcmd -S $connection @sqlCredArgs -Q "SELECT @@SERVICENAME" -l 30 2>&1)
           If ($name.Length -ge 3) {
             $actualName = $name[2].ToString().Trim();
             If ($actualName -eq $instance) {
@@ -152,7 +159,7 @@ preInstall:
           }
 
         }
-        exit 3 
+        exit 3
       }
       '
   info: |
@@ -655,10 +662,15 @@ install:
             $instances = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server").InstalledInstances
             $loginModes = (Get-ItemProperty -path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\*\*" -name "LoginMode" -ErrorAction SilentlyContinue | Where-Object -Property loginMode -eq -Value "2")
 
+            $installSqlCredArgs = @()
+            if (-not [string]::IsNullOrWhiteSpace($NEW_RELIC_MSSQL_SQL_USERNAME)) {
+                $installSqlCredArgs = @("-U", $NEW_RELIC_MSSQL_SQL_USERNAME, "-P", $NEW_RELIC_MSSQL_SQL_PASSWORD)
+            }
+
             foreach ($instance in $instances) {
 
               $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance},${NEW_RELIC_MSSQL_DB_PORT}"
-              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+              $name=(sqlcmd -S $connection @installSqlCredArgs -Q "SELECT @@SERVICENAME" -l 30 2>&1)
               If ($name.Length -ge 3) {
                 $actualName = $name[2].ToString().Trim();
                 If ($actualName -eq $instance) {
@@ -671,7 +683,7 @@ install:
                       $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance -Port $NEW_RELIC_MSSQL_DB_PORT
                       if($isQueryStoreEnabled -ne $true) {
                         Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
-                        Exit 139 
+                        Exit 139
                       }
                     }
 
@@ -685,7 +697,7 @@ install:
               }
 
               $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME}\${instance}"
-              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+              $name=(sqlcmd -S $connection @installSqlCredArgs -Q "SELECT @@SERVICENAME" -l 30 2>&1)
               If ($name.Length -ge 3) {
                 $actualName = $name[2].ToString().Trim();
                 If ($actualName -eq $instance) {
@@ -698,7 +710,7 @@ install:
                       $isQueryStoreEnabled = Enable-QueryStore -connection $connection -InstanceName $instance
                       if($isQueryStoreEnabled -ne $true) {
                         Write-Error "Failed to enable QueryStore for Azure SQL Managed Instance: ${NEW_RELIC_MSSQL_DB_HOSTNAME}. Check SQL connectivity and admin credentials."
-                        Exit 135 
+                        Exit 135
                       }
                     }
 
@@ -712,7 +724,7 @@ install:
               }
 
               $connection = "${NEW_RELIC_MSSQL_DB_HOSTNAME},${NEW_RELIC_MSSQL_DB_PORT}"
-              $name=(sqlcmd -S $connection -Q "SELECT @@SERVICENAME" -l 1 2>&1)
+              $name=(sqlcmd -S $connection @installSqlCredArgs -Q "SELECT @@SERVICENAME" -l 30 2>&1)
               If ($name.Length -ge 3) {
                 $actualName = $name[2].ToString().Trim();
                 If ($actualName -eq $instance) {
