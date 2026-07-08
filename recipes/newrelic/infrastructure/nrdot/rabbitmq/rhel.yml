@@ -63,8 +63,6 @@ install:
       sh: command -v systemctl | wc -l
     NRDOT_ARCH:
       sh: if [ "$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "x86_64"; fi
-    NRDOT_VERSION:
-      sh: curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep tag_name | cut -d '"' -f 4 | sed 's/^v//' || echo "1.13.0"
     COLLECTOR_DISTRO: "nrdot-collector"
     CONFIG_DIR: "/etc/nrdot-collector"
 
@@ -105,16 +103,28 @@ install:
     install_nrdot:
       cmds:
         - |
-          echo "Installing NRDOT Collector v{{.NRDOT_VERSION}}..."
-          NRDOT_RPM="/tmp/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm"
-          curl "https://github.com/newrelic/nrdot-collector-releases/releases/download/{{.NRDOT_VERSION}}/{{.COLLECTOR_DISTRO}}_{{.NRDOT_VERSION}}_linux_{{.NRDOT_ARCH}}.rpm" \
-            --location --output "$NRDOT_RPM" 2>/dev/null
-          rpm -i "$NRDOT_RPM" > /dev/null 2>&1 || \
-            (which dnf >/dev/null 2>&1 && dnf install -y "$NRDOT_RPM" > /dev/null) || \
-            yum install -y "$NRDOT_RPM" > /dev/null
-          if [ $? -ne 0 ]; then
-            echo "Failed to install NRDOT Collector package." >&2
+          # Resolve the latest release version and fail fast if empty (a blank version yields a broken download URL).
+          NRDOT_VERSION=$(curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep '"tag_name"' | head -1 | cut -d '"' -f 4 | sed 's/^v//')
+          if [ -z "$NRDOT_VERSION" ]; then
+            echo "Could not determine the latest nrdot-collector release from GitHub (network issue or API rate limit). Please re-run the installation." >&2
             exit 1
+          fi
+          echo "Installing NRDOT Collector v$NRDOT_VERSION..."
+          NRDOT_RPM="/tmp/{{.COLLECTOR_DISTRO}}_${NRDOT_VERSION}_linux_{{.NRDOT_ARCH}}.rpm"
+          curl -fL --output "$NRDOT_RPM" \
+            "https://github.com/newrelic/nrdot-collector-releases/releases/download/${NRDOT_VERSION}/{{.COLLECTOR_DISTRO}}_${NRDOT_VERSION}_linux_{{.NRDOT_ARCH}}.rpm"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the NRDOT Collector package (version ${NRDOT_VERSION}, arch {{.NRDOT_ARCH}})." >&2
+            exit 1
+          fi
+          # rpm -U handles both fresh install and upgrade in a single command.
+          rpm -U "$NRDOT_RPM" > /dev/null
+          if [ $? -ne 0 ]; then
+            yum install -y "$NRDOT_RPM" > /dev/null
+            if [ $? -ne 0 ]; then
+              echo "Failed to install NRDOT Collector package." >&2
+              exit 1
+            fi
           fi
           rm -f "$NRDOT_RPM"
           mkdir -p {{.CONFIG_DIR}}
@@ -266,7 +276,8 @@ install:
       cmds:
         - |
           systemctl daemon-reload
-          systemctl reload-or-restart {{.COLLECTOR_DISTRO}}.service
+          systemctl enable {{.COLLECTOR_DISTRO}}.service
+          systemctl restart {{.COLLECTOR_DISTRO}}.service
 
     assert_nrdot_status_ok:
       cmds:
