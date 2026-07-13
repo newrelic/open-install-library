@@ -10,6 +10,8 @@ jobs:
   build:
     name: Create Release
     runs-on: ubuntu-22.04
+    outputs:
+      release_url: ${{ steps.create_release.outputs.html_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -106,3 +108,56 @@ jobs:
         run: |
           rm -rf /home/runner/.aws/credentials
           rm -rf /home/runner/.aws/config
+
+  commit-release-notes:
+    name: Record release on main
+    runs-on: ubuntu-22.04
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit release marker to main
+        env:
+          RELEASE_URL: ${{ needs.build.outputs.release_url }}
+        run: |
+          set -euo pipefail
+
+          # Strip refs/tags/ → e.g. v0.82.0
+          TAG="${GITHUB_REF#refs/tags/}"
+          RELEASE_DATE=$(date -u +'%-d %B %Y')
+
+          # Previous release tag = second-newest v* tag by semver sort.
+          # `git tag --sort=-v:refname` puts the newest first; filter out the just-released tag.
+          PREV=$(git tag --list 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -1 || true)
+
+          {
+            printf 'chore(release): Open Install Library Release %s, %s\n\n' "$TAG" "$RELEASE_DATE"
+            if [ -n "$PREV" ]; then
+              printf 'Changes since %s:\n\n' "$PREV"
+              git log --no-merges --pretty=format:'- %s (%h)' "${PREV}..${TAG}"
+              printf '\n\n'
+            fi
+            printf 'Release: %s\n' "${RELEASE_URL}"
+          } > /tmp/commit-msg.txt
+
+          echo "----- Commit message preview -----"
+          cat /tmp/commit-msg.txt
+          echo "----------------------------------"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit --allow-empty -F /tmp/commit-msg.txt
+
+          # Retry once on race (someone else pushed to main between checkout and push).
+          if ! git push origin main; then
+            echo "push rejected; refetching and rebasing before retry"
+            git pull --rebase origin main
+            git push origin main
+          fi
