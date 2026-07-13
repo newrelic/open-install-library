@@ -6,10 +6,19 @@ on:
 
 name: Create Release
 
+# Least-privilege default for the whole workflow — jobs that need more
+# override at the job level. Matches the convention used by
+# cleanup-jp.yml / nonregression-jp.yml.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Create Release
     runs-on: ubuntu-22.04
+    # actions/create-release@v1 needs contents: write to publish a Release.
+    permissions:
+      contents: write
     outputs:
       release_url: ${{ steps.create_release.outputs.html_url }}
     steps:
@@ -35,6 +44,9 @@ jobs:
   zip-recipes:
     runs-on: ubuntu-22.04
     needs: build
+    # actions/upload-release-asset needs contents: write to attach recipes.zip.
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -113,8 +125,9 @@ jobs:
     name: Record release on main
     runs-on: ubuntu-22.04
     needs: build
-    permissions:
-      contents: write
+    # No override needed — the push uses secrets.RELEASE_TOKEN (a PAT), not
+    # the default GITHUB_TOKEN, so this job only needs the workflow-level
+    # `contents: read` (for actions/checkout).
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
