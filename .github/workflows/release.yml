@@ -154,14 +154,32 @@ jobs:
           # `git tag --sort=-v:refname` puts the newest first; filter out the just-released tag.
           PREV=$(git tag --list 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -1 || true)
 
+          # Compact subject: `chore(release): OIL <tag>, <date>`.
+          #
+          # Change list excludes prior release-marker commits so a release
+          # doesn't list its predecessors. --extended-regexp matches both the
+          # current shorter format ("OIL v...") and the legacy longer one
+          # ("Open Install Library Release v...") so older markers on main
+          # stay filtered too.
+          #
+          # `[skip ci]` at the end tells GitHub Actions not to run
+          # push-triggered workflows on the marker commit itself — the
+          # release just built the artifacts, there's nothing to re-verify.
           {
-            printf 'chore(release): Open Install Library Release %s, %s\n\n' "$TAG" "$RELEASE_DATE"
+            printf 'chore(release): OIL %s, %s\n\n' "$TAG" "$RELEASE_DATE"
             if [ -n "$PREV" ]; then
               printf 'Changes since %s:\n\n' "$PREV"
-              git log --no-merges --pretty=format:'- %s (%h)' "${PREV}..${TAG}"
+              git log \
+                --no-merges \
+                --invert-grep \
+                --extended-regexp \
+                --grep='^chore\(release\): (OIL|Open Install Library Release) v[0-9]' \
+                --pretty=format:'- %s (%h)' \
+                "${PREV}..${TAG}"
               printf '\n\n'
             fi
-            printf 'Release: %s\n' "${RELEASE_URL}"
+            printf 'Release: %s\n\n' "${RELEASE_URL}"
+            printf '[skip ci]\n'
           } > /tmp/commit-msg.txt
 
           echo "----- Commit message preview -----"
