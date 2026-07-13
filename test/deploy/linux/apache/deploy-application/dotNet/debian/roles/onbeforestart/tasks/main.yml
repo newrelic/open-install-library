@@ -17,14 +17,19 @@
     use_executable: "false"
   when: use_executable is undefined
 
+- name: Set default dotnet_app_name (published entrypoint name inside the app zip)
+  set_fact:
+    dotnet_app_name: "net5webapplication"
+  when: dotnet_app_name is undefined
+
 - name: Set startup_command to executable (not dotnet xx.dll)
   set_fact:
-    startup_command: "/var/www/{{ service_id }}/net5webapplication"
+    startup_command: "/var/www/{{ service_id }}/{{ dotnet_app_name }}"
   when: use_executable|bool
 
 - name: Set startup_command to dotnet command (use dotnet xx.dll)
   set_fact:
-    startup_command: "/usr/bin/dotnet /var/www/{{ service_id }}/net5webapplication.dll"
+    startup_command: "/usr/bin/dotnet /var/www/{{ service_id }}/{{ dotnet_app_name }}.dll"
   when: use_executable|bool == False
 
 - name: Set default download url for self contained web app
@@ -32,27 +37,27 @@
     web_app_url: "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/.net/selfcontained-net5webapplication.zip"
   when: web_app_url is undefined and (is_selfcontained|bool)
 
-- name: Set default download url for framwork dependent web app
+- name: Set default download url for framework dependent web app
   set_fact:
     web_app_url: "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/.net/frameworkdependent-net5webapplication.zip"
   when: web_app_url is undefined and (is_selfcontained|bool == False)
 
 - name: Init template variable for self contained application
   set_fact:
-    apache_service_description: Self Contained .NET 5 APP.NET Core 5 Web app
+    apache_service_description: Self Contained ASP.NET Core Web app
     apache_proxy_port: 5006
   when: is_selfcontained|bool
 
 - name: Init template variable for framework dependent application
   set_fact:
-    apache_service_description: Framework Dependent .NET 5 APP.NET Core 5 Web app
+    apache_service_description: Framework Dependent ASP.NET Core Web app
     apache_proxy_port: 5001
   when: is_selfcontained|bool == False
 
 
-- name: Copy web app net5webapplication file
+- name: Copy dotnet webapp service file
   template:
-    src: net5webapplication.service
+    src: dotnetwebapplication.service
     dest: /etc/systemd/system/{{ service_id }}.service
   become: true
 
@@ -74,6 +79,6 @@
 
 - name: Copy apache server {{ service_id }} status file
   template:
-    src: net5webapplication.conf
+    src: dotnetwebapplication.conf
     dest: /etc/apache2/conf-enabled/{{ service_id }}.conf
   become: true
