@@ -1,4 +1,22 @@
 ---
+# Ubuntu cloud AMIs run cloud-init + unattended-upgrades on first boot,
+# holding dpkg/apt locks for several minutes. Wait explicitly for those
+# to release before touching apt (avoids 'Could not get lock
+# /var/lib/dpkg/lock-frontend' + SSH-drop mid-transaction).
+- name: wait for cloud-init / unattended-upgrades to release dpkg locks
+  shell: |
+    for i in $(seq 1 60); do
+      if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+         && ! fuser /var/lib/dpkg/lock         >/dev/null 2>&1 \
+         && ! fuser /var/lib/apt/lists/lock    >/dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "dpkg lock still held after 5 min; continuing anyway"
+  become: yes
+  changed_when: false
+
 # Stands up IBM MQ + the ibm-messaging/mq-metric-samples Prometheus exporter via
 # Docker so the nrdot-ibm-mq recipe has a live exporter at localhost:9157 to
 # scrape (the recipe is configuration-only — it does not install MQ/exporter).
@@ -11,6 +29,7 @@
       - lsb-release
     update_cache: yes
     state: present
+    lock_timeout: 300
   become: yes
 
 - name: add Docker GPG key
@@ -33,6 +52,7 @@
       - docker-ce-cli
       - containerd.io
     state: present
+    lock_timeout: 300
   become: yes
 
 - name: start and enable Docker
