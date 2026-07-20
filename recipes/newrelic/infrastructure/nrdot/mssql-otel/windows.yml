@@ -1,0 +1,67 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-mssql
+displayName: NRDOT MSSQL (Windows)
+description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Windows self-hosted environments
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: windows
+
+keywords:
+  - MSSQL
+  - SQL Server
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Windows
+
+processMatch:
+  - sqlservr
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    To capture data from SQL Server, we need to create/authorize a monitoring identity
+    (a SQL login, a Windows account, or a gMSA account depending on the authentication
+    method you choose). This requires administrative access to your SQL Server instance
+    (sysadmin role or equivalent) on the account running this installation.
+
+inputVars:
+  - name: NR_CLI_MSSQL_CONFIG_PRESET
+    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    default: "1"
+  - name: NR_CLI_MSSQL_AUTH_MODE
+    prompt: "SQL Server authentication - 1) SQL Server Auth  2) Windows Auth  3) gMSA: "
+    default: "1"
+  - name: NR_CLI_MSSQL_SERVER
+    prompt: "SQL Server host (e.g. localhost): "
+    default: "localhost"
+  - name: NR_CLI_MSSQL_PORT
+    prompt: "SQL Server port: "
+    default: "1433"
+  - name: NR_CLI_MSSQL_SA_PASSWORD
+    prompt: "SQL Server 'sa' password (mode 1 only, used once to create the newrelic login; leave blank otherwise): "
+    secret: true
+  - name: NR_CLI_MSSQL_WIN_ACCOUNT
+    prompt: "Windows account to grant permissions to, DOMAIN\\username (mode 2 only; leave blank otherwise): "
+  - name: NR_CLI_MSSQL_WIN_PASSWORD
+    prompt: "Password for that Windows account (mode 2 only; leave blank otherwise): "
+    secret: true
+  - name: NR_CLI_MSSQL_GMSA_ACCOUNT
+    prompt: "gMSA account, DOMAIN\\gMSAName$ (mode 3 only; leave blank otherwise): "
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'sqlserver.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  tasks: {}
