@@ -379,3 +379,37 @@ install:
           Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
           Write-Host "SQL Server monitoring identity configured successfully."
           PSEOF
+
+    configure_service_identity:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+          $service = "nrdot-collector"
+
+          if ($mode -eq "1") {
+            Write-Host "SQL Server Auth selected - service logon account left unchanged (LocalSystem)."
+            exit 0
+          }
+
+          if ($mode -eq "2") {
+            $account = "{{.NR_CLI_MSSQL_WIN_ACCOUNT}}"
+            $password = "{{.NR_CLI_MSSQL_WIN_PASSWORD}}"
+          } else {
+            $account = "{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}"
+            $password = ""
+          }
+
+          Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+
+          cmd /c "sc config `"$service`" obj= `"$account`" password= `"$password`""
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host -ForegroundColor Red "Failed to configure the nrdot-collector service to run as $account."
+            exit 1
+          }
+
+          $svcInfo = Get-WmiObject Win32_Service -Filter "Name='$service'"
+          Write-Host "nrdot-collector service logon account set to: $($svcInfo.StartName)"
+
+          Start-Service -Name $service
+          PSEOF
