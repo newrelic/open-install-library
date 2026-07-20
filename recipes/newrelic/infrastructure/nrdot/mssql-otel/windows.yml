@@ -222,3 +222,160 @@ install:
 
           Write-Host "nrdot-collector installed successfully."
           PSEOF
+
+    configure_database_user:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+          $server = "{{.NR_CLI_MSSQL_SERVER}}"
+          $port = "{{.NR_CLI_MSSQL_PORT}}"
+          $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
+          $pwFile = "$env:TEMP\nr-mssql-newrelic-pw.tmp"
+
+          function Invoke-GrantScript($connArgs, $file) {
+            $result = & sqlcmd @connArgs -i $file 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host -ForegroundColor Red "SQL script failed:"
+              Write-Host $result
+              exit 1
+            }
+            Write-Host $result
+          }
+
+          if ($mode -eq "1") {
+            $chars = (48..57) + (65..90) + (97..122)
+            $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+            $NrPassword | Set-Content -Path $pwFile -NoNewline
+
+            $sql = @"
+          USE [master];
+          GO
+          IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'newrelic')
+            CREATE LOGIN [newrelic] WITH PASSWORD = '$NrPassword';
+          ELSE
+            ALTER LOGIN [newrelic] WITH PASSWORD = '$NrPassword';
+          GO
+          GRANT VIEW SERVER STATE TO [newrelic];
+          GRANT VIEW ANY DEFINITION TO [newrelic];
+          GRANT VIEW ANY DATABASE TO [newrelic];
+          GO
+          DECLARE @name SYSNAME;
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+          SELECT [name]
+          FROM [master].[sys].[databases]
+          WHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')
+          AND [state] = 0;
+          OPEN db_cursor;
+          FETCH NEXT FROM db_cursor INTO @name;
+          WHILE @@FETCH_STATUS = 0
+          BEGIN
+            BEGIN TRY
+              EXEC('USE [' + @name + '];
+              IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''newrelic'')
+              BEGIN
+                CREATE USER [newrelic] FOR LOGIN [newrelic];
+              END;
+              GRANT VIEW DATABASE STATE TO [newrelic];');
+            END TRY
+            BEGIN CATCH
+              PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
+            END CATCH
+            FETCH NEXT FROM db_cursor INTO @name;
+          END
+          CLOSE db_cursor;
+          DEALLOCATE db_cursor;
+          GO
+          "@
+            $sql | Set-Content -Path $sqlFile
+            Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-P", "{{.NR_CLI_MSSQL_SA_PASSWORD}}") $sqlFile
+          }
+          elseif ($mode -eq "2") {
+            $account = "{{.NR_CLI_MSSQL_WIN_ACCOUNT}}"
+            $sql = @"
+          USE [master];
+          GO
+          GRANT VIEW SERVER STATE TO [$account];
+          GRANT VIEW ANY DEFINITION TO [$account];
+          GRANT VIEW ANY DATABASE TO [$account];
+          GO
+          DECLARE @name SYSNAME;
+          DECLARE @sql NVARCHAR(MAX);
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+          SELECT [name]
+          FROM [master].[sys].[databases]
+          WHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')
+            AND [state] = 0;
+          OPEN db_cursor;
+          FETCH NEXT FROM db_cursor INTO @name;
+          WHILE @@FETCH_STATUS = 0
+          BEGIN
+            BEGIN TRY
+              SET @sql = '
+                USE [' + @name + '];
+                IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$account'')
+                BEGIN
+                  CREATE USER [$account] FOR LOGIN [$account];
+                END;
+                GRANT VIEW DATABASE STATE TO [$account];
+                GRANT VIEW DEFINITION TO [$account];
+                ALTER ROLE db_datareader ADD MEMBER [$account];';
+              EXEC sp_executesql @sql;
+            END TRY
+            BEGIN CATCH
+              PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
+            END CATCH
+            FETCH NEXT FROM db_cursor INTO @name;
+          END
+          CLOSE db_cursor;
+          DEALLOCATE db_cursor;
+          GO
+          "@
+            $sql | Set-Content -Path $sqlFile
+            Invoke-GrantScript @("-S", "$server,$port", "-E") $sqlFile
+          }
+          else {
+            $gmsa = "{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}"
+            $sql = @"
+          USE master;
+          GO
+          IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$gmsa')
+            CREATE LOGIN [$gmsa] FROM WINDOWS;
+          GO
+          GRANT VIEW SERVER STATE TO [$gmsa];
+          GRANT VIEW ANY DEFINITION TO [$gmsa];
+          GRANT VIEW ANY DATABASE TO [$gmsa];
+          GO
+          DECLARE @name SYSNAME;
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+          SELECT [name] FROM [master].[sys].[databases]
+          WHERE [name] NOT IN ('master','msdb','model','rdsadmin','distribution')
+          AND [state] = 0;
+          OPEN db_cursor;
+          FETCH NEXT FROM db_cursor INTO @name;
+          WHILE @@FETCH_STATUS = 0
+          BEGIN
+            BEGIN TRY
+              EXEC('USE [' + @name + '];
+              IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$gmsa'')
+              BEGIN
+                CREATE USER [$gmsa] FOR LOGIN [$gmsa];
+              END;
+              GRANT VIEW DATABASE STATE TO [$gmsa];');
+            END TRY
+            BEGIN CATCH
+              PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
+            END CATCH
+            FETCH NEXT FROM db_cursor INTO @name;
+          END
+          CLOSE db_cursor;
+          DEALLOCATE db_cursor;
+          GO
+          "@
+            $sql | Set-Content -Path $sqlFile
+            Invoke-GrantScript @("-S", "$server,$port", "-E") $sqlFile
+          }
+
+          Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+          Write-Host "SQL Server monitoring identity configured successfully."
+          PSEOF
