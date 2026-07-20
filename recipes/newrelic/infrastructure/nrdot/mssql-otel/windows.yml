@@ -939,3 +939,80 @@ install:
 
           Write-Host "MSSQL OTel config written to $configPath"
           PSEOF
+
+    configure_service:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $service = "nrdot-collector"
+          $exePath = "C:\Program Files\nrdot-collector\nrdot-collector.exe"
+          $configPath = "C:\Program Files\nrdot-collector\mssql-config.yaml"
+          $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\nrdot-collector"
+
+          $existingImagePath = (Get-ItemProperty -Path $regPath -Name "ImagePath" -ErrorAction SilentlyContinue).ImagePath
+
+          if ($existingImagePath -and $existingImagePath -match [regex]::Escape("mssql-config.yaml")) {
+            Write-Host "nrdot-collector service is already configured to use mssql-config.yaml."
+          } else {
+            $newImagePath = "`"$exePath`" --config `"$configPath`""
+            Set-ItemProperty -Path $regPath -Name "ImagePath" -Value $newImagePath
+            Write-Host "nrdot-collector service ImagePath updated to use mssql-config.yaml."
+          }
+
+          $validateOutput = & $exePath validate --config="$configPath" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host -ForegroundColor Red "mssql-config.yaml failed validation:"
+            Write-Host $validateOutput
+            exit 1
+          }
+          Write-Host "mssql-config.yaml validated successfully."
+          PSEOF
+
+    restart_nrdot:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          net stop nrdot-collector
+          net start nrdot-collector
+          PSEOF
+
+    assert_nrdot_status_ok:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $maxRetries = 30
+          $tries = 0
+          Write-Host "Waiting for NRDOT Collector to start..."
+          while ($tries -lt $maxRetries) {
+            $tries++
+            $service = Get-Service -Name "nrdot-collector" -ErrorAction SilentlyContinue
+            if ($service -and $service.Status -eq "Running") {
+              Write-Host "NRDOT Collector is running."
+              exit 0
+            }
+            Start-Sleep -Seconds 2
+          }
+          Write-Host -ForegroundColor Red "NRDOT Collector did not start in time. Install log:"
+          Get-Content "$env:TEMP\nrdot_install.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
+          exit 31
+          PSEOF
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: assert_auth_inputs
+        - task: assert_sql_server_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: configure_service_identity
+        - task: create_collector_config
+        - task: configure_service
+        - task: restart_nrdot
+        - task: assert_nrdot_status_ok
+
+postInstall:
+  info: |2
+      MSSQL OTel config: C:\Program Files\nrdot-collector\mssql-config.yaml
+      Service status:    Get-Service nrdot-collector
+      Restart service:   net stop nrdot-collector; net start nrdot-collector
