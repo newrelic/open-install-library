@@ -155,3 +155,70 @@ install:
 
           Write-Host "SQL Server major version $majorVersion detected - supported."
           PSEOF
+
+    install_nrdot:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
+
+          $CollectorService = "nrdot-collector"
+
+          $LatestVersion = (Invoke-RestMethod -Uri "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest").tag_name
+          if (-not $LatestVersion) {
+            Write-Host -ForegroundColor Red "Failed to fetch the latest release version from GitHub. Please check your internet connection."
+            exit 1
+          }
+
+          $InstalledVersion = $null
+          $UninstallKeys = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue
+          foreach ($Key in $UninstallKeys) {
+            $KeyData = Get-ItemProperty -Path $Key.PSPath -ErrorAction SilentlyContinue
+            if ($KeyData.DisplayName -match "nrdot-collector") {
+              $InstalledVersion = $KeyData.DisplayVersion
+              break
+            }
+          }
+
+          if ($InstalledVersion -and ("v$InstalledVersion" -eq $LatestVersion -or $InstalledVersion -eq $LatestVersion)) {
+            Write-Host "nrdot-collector $LatestVersion is already installed. Skipping download."
+            exit 0
+          } elseif ($InstalledVersion) {
+            Write-Host "Upgrading nrdot-collector from $InstalledVersion to $LatestVersion"
+          } else {
+            Write-Host "Installing nrdot-collector version: $LatestVersion"
+          }
+
+          $MsiPath = "$env:TEMP\nrdot-collector.msi"
+          $LogPath = "$env:TEMP\nrdot_install.log"
+          $DownloadUrl = "https://github.com/newrelic/nrdot-collector-releases/releases/download/$LatestVersion/nrdot-collector_${LatestVersion}_windows_x64.msi"
+          Write-Host "Downloading from: $DownloadUrl"
+
+          $WebClient = New-Object System.Net.WebClient
+          $WebClient.Headers.Add("User-Agent", "Mozilla/5.0")
+          if ($env:HTTPS_PROXY) {
+            $WebClient.Proxy = New-Object System.Net.WebProxy($env:HTTPS_PROXY, $true)
+          }
+          try {
+            $WebClient.DownloadFile($DownloadUrl, $MsiPath)
+          } catch {
+            Write-Host -ForegroundColor Red "Failed to download the nrdot-collector package: $_"
+            exit 1
+          }
+
+          $Process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$MsiPath`" /qn /norestart /L*V `"$LogPath`"" -Wait -NoNewWindow -PassThru
+          if ($Process.ExitCode -ne 0) {
+            Write-Host -ForegroundColor Red "msiexec failed with exit code $($Process.ExitCode). See $LogPath for details."
+            exit $Process.ExitCode
+          }
+
+          Remove-Item -Path $MsiPath -ErrorAction SilentlyContinue
+
+          $Service = Get-Service -Name $CollectorService -ErrorAction SilentlyContinue
+          if (-not $Service) {
+            Write-Host -ForegroundColor Red "nrdot-collector service was not found after installation."
+            exit 1
+          }
+
+          Write-Host "nrdot-collector installed successfully."
+          PSEOF
