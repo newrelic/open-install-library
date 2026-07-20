@@ -64,4 +64,94 @@ install:
   version: "3"
   silent: true
 
-  tasks: {}
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $metadata = '{"Metadata":{"CapturedCliOutput":"true"}}'
+          try { $metadata | Set-Content {{.NR_CLI_OUTPUT}} } catch {}
+          PSEOF
+
+    assert_pre_req:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+          $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          if (-not $isAdmin) {
+            Write-Host -ForegroundColor Red "This newrelic install must be run in an Administrator PowerShell session."
+            exit 131
+          }
+
+          $sqlcmdPath = Get-Command sqlcmd.exe -ErrorAction SilentlyContinue
+          if (-not $sqlcmdPath) {
+            Write-Host -ForegroundColor Red "sqlcmd is required to configure SQL Server monitoring. Install the sqlcmd utility (https://learn.microsoft.com/sql/tools/sqlcmd/sqlcmd-utility) and re-run this recipe."
+            exit 16
+          }
+          PSEOF
+
+    assert_auth_inputs:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+
+          switch ($mode) {
+            "1" {
+              if ([string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_SA_PASSWORD}}")) {
+                Write-Host -ForegroundColor Red "NR_CLI_MSSQL_SA_PASSWORD is required for SQL Server Auth (mode 1)."
+                exit 1
+              }
+            }
+            "2" {
+              if ([string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_WIN_ACCOUNT}}") -or [string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_WIN_PASSWORD}}")) {
+                Write-Host -ForegroundColor Red "NR_CLI_MSSQL_WIN_ACCOUNT and NR_CLI_MSSQL_WIN_PASSWORD are both required for Windows Auth (mode 2)."
+                exit 1
+              }
+            }
+            "3" {
+              if ([string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}")) {
+                Write-Host -ForegroundColor Red "NR_CLI_MSSQL_GMSA_ACCOUNT is required for gMSA (mode 3)."
+                exit 1
+              }
+            }
+            default {
+              Write-Host -ForegroundColor Red "NR_CLI_MSSQL_AUTH_MODE must be 1, 2, or 3."
+              exit 1
+            }
+          }
+          PSEOF
+
+    assert_sql_server_version:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+          $server = "{{.NR_CLI_MSSQL_SERVER}}"
+          $port = "{{.NR_CLI_MSSQL_PORT}}"
+
+          if ($mode -eq "1") {
+            $connArgs = @("-S", "$server,$port", "-U", "sa", "-P", "{{.NR_CLI_MSSQL_SA_PASSWORD}}")
+          } else {
+            $connArgs = @("-S", "$server,$port", "-E")
+          }
+
+          $query = "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');"
+          $result = & sqlcmd @connArgs -h -1 -Q $query 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host -ForegroundColor Red "Failed to connect to SQL Server to check its version:"
+            Write-Host $result
+            exit 1
+          }
+
+          $majorVersionLine = ($result | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
+          $majorVersion = if ($majorVersionLine) { [int]$majorVersionLine.Trim() } else { $null }
+
+          if (-not $majorVersion -or $majorVersion -lt 14) {
+            Write-Host -ForegroundColor Red "SQL Server version $majorVersion is not supported. SQL Server 2017 or later (major version 14+) is required."
+            exit 1
+          }
+
+          Write-Host "SQL Server major version $majorVersion detected - supported."
+          PSEOF
