@@ -7,35 +7,19 @@ description: New Relic install recipe for the eBPF agent
 repository: https://github.com/newrelic/newrelic-ebpf-agent
 
 installTargets:
+  # - type: host
+  #   os: linux
+  #   platform: suse
   - type: host
     os: linux
-    platform: "redhat"
-    platformFamily: rhel
-    platformVersion: "((8|9|10)\\.?.*)"
-  - type: host
-    os: linux
-    platform: "centos"
-    platformFamily: rhel
-    platformVersion: "((9|10)\\.?.*)"
-  - type: host
-    os: linux
-    platform: "almalinux"
-    platformFamily: rhel
-    platformVersion: "((9|10)\\.?.*)"
-  - type: host
-    os: linux
-    platform: "oracle"
-    platformVersion: "(8|9|10)\\.*"
-
+    platformFamily: suse
 
 keywords:
   - eBPF
   - Agent
   - Linux
-  - CentOS 10
-  - CentOS 9
-  - RHEL 8
-  - RHEL 9
+  - Suse
+  - SLES
 
 processMatch: []
 
@@ -115,11 +99,11 @@ install:
           KERNEL_VERSION=$(uname -r | cut -d'-' -f1)
           KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d'.' -f1)
           KERNEL_MINOR=$(echo $KERNEL_VERSION | cut -d'.' -f2)
-          
+
           # Convert to comparable format (e.g., 5.8 becomes 508, 4.19 becomes 419)
           KERNEL_NUM=$((KERNEL_MAJOR * 100 + KERNEL_MINOR))
           REQUIRED_KERNEL_NUM=508  # 5.8
-          
+
           if [ $KERNEL_NUM -lt $REQUIRED_KERNEL_NUM ]; then
             echo ""
             echo -e "\e[31mERROR:\e[0m eBPF agent requires Linux kernel version 5.8 or higher." >&2
@@ -175,7 +159,7 @@ install:
                   echo "Please remove the existing setup and do a fresh installation."
                   echo ""
                   echo "To remove the existing installation, run:"
-                  echo "  sudo yum remove newrelic-ebpf-agent"
+                  echo "  sudo zypper remove newrelic-ebpf-agent"
                   echo ""
                   exit 25
                 fi
@@ -275,7 +259,7 @@ install:
           # -- Unique name for the deployment to identify data posting via eBPF Agent
           deploymentName: "${DEPLOYMENT_NAME:-}"
           # -- If using a customSecretLicenseKey, you must supply your
-          # region "US"/"EU"/"JP". Otherwise, leave this value as an empty string.
+          # region "US"/"EU". Otherwise, leave this value as an empty string.
           region: "${NEW_RELIC_REGION}"
           # -- Custom OTLP endpoint URL. When set, this takes precedence over the region-based static endpoints.
           customOtlpEndpoint: ""
@@ -529,23 +513,34 @@ install:
           EOS
 
           echo "YAML configuration file created successfully at $CONFIG_FILE"
-    
+
     install_linux_headers:
       cmds:
         - |
           KERNEL_VERSION=$(uname -r)
           echo "Installing kernel headers for kernel version: $KERNEL_VERSION"
-          if echo "$KERNEL_VERSION" | grep -q "uek"; then
-            # Oracle Linux UEK: kernel-uek-devel contains all headers needed; no separate kernel-uek-headers package exists
-            if yum install -y "kernel-uek-devel-$KERNEL_VERSION"; then
+          # Detect kernel flavor from uname (e.g., default, azure, rt)
+          KERNEL_FLAVOR=$(echo "$KERNEL_VERSION" | grep -oP '[^-]+$')
+          # Get exact package version from the RPM that owns the running kernel
+          # Try vmlinuz (x86_64) first, then Image (aarch64)
+          KERNEL_PKG_VERSION=""
+          if [[ -f "/boot/vmlinuz-${KERNEL_VERSION}" ]]; then
+            KERNEL_PKG_VERSION=$(rpm -qf "/boot/vmlinuz-${KERNEL_VERSION}" --queryformat '%{VERSION}-%{RELEASE}\n' 2>/dev/null | head -1)
+          elif [[ -f "/boot/Image-${KERNEL_VERSION}" ]]; then
+            KERNEL_PKG_VERSION=$(rpm -qf "/boot/Image-${KERNEL_VERSION}" --queryformat '%{VERSION}-%{RELEASE}\n' 2>/dev/null | head -1)
+          fi
+          if [[ -n "$KERNEL_PKG_VERSION" ]]; then
+            echo "Found matching kernel package version: $KERNEL_PKG_VERSION"
+            if zypper --non-interactive install "kernel-${KERNEL_FLAVOR}-devel=${KERNEL_PKG_VERSION}"; then
               echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."
             else
               echo ""
-              echo -e "\e[31mERROR:\e[0m Failed to install UEK kernel headers for kernel $KERNEL_VERSION. Ensure the Oracle Linux UEK repo is enabled (e.g. ol8_UEKR7) and try again."
+              echo -e "\e[31mERROR:\e[0m Failed to install kernel headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
               echo ""
             fi
           else
-            if yum install -y "kernel-devel-$KERNEL_VERSION" "kernel-headers-$KERNEL_VERSION"; then
+            echo "Could not determine exact kernel package version, installing latest kernel-${KERNEL_FLAVOR}-devel"
+            if zypper --non-interactive install "kernel-${KERNEL_FLAVOR}-devel"; then
               echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."
             else
               echo ""
@@ -559,21 +554,25 @@ install:
       cmds:
         - |
           ARCH=$(uname -m)
-          REPO_URL=$(echo -n "https://download.newrelic.com/preview/linux/yum/el/{{.DISTRO_VERSION}}/$ARCH/newrelic-infra.repo")
+          REPO_URL=$(echo -n "https://download.newrelic.com/preview/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
           IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
           if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
             echo "newrelic infrastructure agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
 
-          curl -s $REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
-          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra'
-          yum -y -q install newrelic-ebpf-agent || {
+          curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
+          curl -s -L https://download.newrelic.com/infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
+          rpm --import newrelic_rpm_key_current.gpg
+          zypper -n --quiet ref -r newrelic-infra
+
+          zypper -n --quiet install newrelic-ebpf-agent || {
             echo ""
             echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
             echo ""
             exit 1
           }
+          rm -f newrelic_rpm_key_current.gpg
 
           # Verify package was actually installed
           if ! rpm -q newrelic-ebpf-agent &>/dev/null; then
@@ -585,11 +584,10 @@ install:
 
           echo "eBPF agent package installed successfully."
       vars:
-        DISTRO_VERSION:
-          sh: |
-            rpm -E %{rhel}
+        SLES_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
       silent: true
-    
+
     # When the eBPF agent is installed alongside Agent Control, the default services are disabled
     # and the binary execution is orchestrated by Agent Control
     disable_service_for_agent_control:

@@ -10,11 +10,11 @@ installTargets:
   - type: host
     os: linux
     platform: "ubuntu"
-    platformVersion: "((20|22|24)\\.04)"
+    platformVersion: "((20|22|24|26)\\.04)"
   - type: host
     os: linux
     platform: "debian"
-    platformVersion: "((11|12)\\.?.*)"
+    platformVersion: "((11|12|13)\\.?.*)"
 
 keywords:
   - eBPF
@@ -195,13 +195,13 @@ install:
           echo "License key validated."
 
           # Validate DEPLOYMENT_NAME (required unless Agent Control mode)
-          if [[ -z "${DEPLOYMENT_NAME:-}" && "${NEW_RELIC_AGENT_CONTROL:-}" != "true" ]]; then
-            echo ""
-            echo -e "\e[31mERROR:\e[0m DEPLOYMENT_NAME is required but not set. Aborting installation."
-            echo ""
-            exit 1
-          fi
-          echo "Deployment name validated."
+          # if [[ -z "${DEPLOYMENT_NAME:-}" && "${NEW_RELIC_AGENT_CONTROL:-}" != "true" ]]; then
+          #   echo ""
+          #   echo -e "\e[31mERROR:\e[0m DEPLOYMENT_NAME is required but not set. Aborting installation."
+          #   echo ""
+          #   exit 1
+          # fi
+          # echo "Deployment name validated."
 
           # Set default log file path if not provided
           if [[ -z "${NEW_RELIC_LOG_FILE_PATH:-}" ]]; then
@@ -327,12 +327,39 @@ install:
           # Accepted values: 'true' (always send), 'false' (never send)
           # and 'auto' (send only when APM is not attached)
           reportLogs: "${REPORT_LOGS:-false}"
-          # -- Enable AI monitoring. When enabled, the agent collects and reports AI monitoring data.
-          # Accepted values: 'true' (always send), 'false' (never send) and 'auto'
-          reportAiMetrics: "false"
-          # -- Enable GenAI capture message content. When enabled, the agent captures
-          # message content for GenAI interactions. Use with caution.
-          genAICaptureMessageContent: false
+          ai_monitoring:
+            # -- Enable AI monitoring. When enabled, the agent collects and reports AI monitoring data.
+            # Accepted values: 'true' (always send), 'false' (never send) and
+            # 'auto' (send only when neither APM nor OTel agent is attached)
+            enabled: ${AI_MONITORING_ENABLED:-false}
+            # samplingLatency represents the sampling latency threshold for the spans to export.
+            # Options: p1, p10, p50, p90, p99.
+            samplingLatency: "${AI_MONITORING_SAMPLING_LATENCY:-p50}"
+            # -- samplingErrorRate represents the error rate threshold
+            # for an HTTP route where surpassing it would mean the
+            # corresponding spans of the route are exported.
+            # Options: 1-100
+            samplingErrorRate: "${AI_MONITORING_SAMPLING_ERROR_RATE:-}"
+            # -- Enable GenAI capture message content. When enabled, the agent captures
+            # message content for GenAI interactions. Use with caution.
+            genAICaptureMessageContent: ${AI_MONITORING_GENAI_CAPTURE_MESSAGE_CONTENT:-false}
+
+          # -- HTTP path normalization patterns. Each pattern must contain at least one * wildcard.
+          # Use '!' prefix for exclusion patterns to preserve paths as-is (skip auto-clustering).
+          # Patterns are applied before auto-clustering and take precedence over it.
+          # Example:
+          # httpPathNormalizationPatterns:
+          #   - "/api/users/*"
+          #   - "/api/orders/*"
+          #   - "!/health/*"
+          httpPathNormalizationPatterns: []
+
+          # -- Maximum number of bytes captured from an HTTP request/response body.
+          # Default: 1048576 (1MB) when ai_monitoring.enabled is 'true' or 'auto', otherwise 1024 (1KB).
+          # Increase this value if AI monitoring payloads are being truncated.
+          # Example: 2097152 for 2MB
+          httpBodyLimitBytes: ""
+
           # Capability to include/exclude port from entity name, default: true. ex: python:frosty_merkle:[80]
           # Set it to false, to exclude ports from entity name, ex: python:frosty_merkle
           includePortInServerEntityIdentification: true
@@ -569,28 +596,21 @@ install:
 
           # Install the eBPF agent package
           apt-get $OPTIONS install -yq --no-install-recommends newrelic-ebpf-agent || {
-            echo "Error: newrelic-ebpf-agent installation failed"
-            echo "Attempting to configure the packages again"
-            dpkg --configure -a
-            # Check if there was an error
-            if [ $? -ne 0 ]; then
-              echo "Error found while reconfiguring dpkg database"
-              # Force-Install the Software
-              echo "Attempting to install any missing dependencies or fixes broken packages."
-              apt-get $OPTIONS install -f
-              if [ $? -ne 0 ]; then
+            # apt returned non-zero - check if eBPF agent was actually installed despite the error.
+            # dpkg exits non-zero when any package fails to configure, even ones unrelated to the
+            # eBPF agent (e.g. a broken nginx whose post-install script fails to bind its port).
+            if ! dpkg -l | grep -q "^ii.*newrelic-ebpf-agent"; then
+              echo "Attempting to configure the packages again"
+              dpkg --configure -a 2>/dev/null || true
+              apt-get $OPTIONS install -f -yq 2>/dev/null || true
+              if ! dpkg -l | grep -q "^ii.*newrelic-ebpf-agent"; then
+                echo ""
+                echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
+                echo ""
                 exit 1
               fi
             fi
           }
-
-          # Verify package was actually installed
-          if ! dpkg -l | grep -q "^ii.*newrelic-ebpf-agent"; then
-            echo ""
-            echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
-            echo ""
-            exit 1
-          fi
 
           echo "eBPF agent package installed successfully."
 
