@@ -1,0 +1,391 @@
+---
+- name: Install and Configure Kafka with OpenTelemetry JMX Monitoring
+  hosts: all
+  become: true
+  vars:
+    kafka_version: "{{ kafka_version | default('3.7.2') }}"
+    kafka_scala_version: "{{ kafka_scala_version | default('2.13') }}"
+    kafka_cluster_name: "{{ kafka_cluster_name | default('test-kafka-cluster') }}"
+    kafka_dir: "/opt/kafka"
+    kafka_data_dir: "/var/lib/kafka"
+    logs_dir: "/var/log/kafka"
+    kafka_jmx_port: "{{ kafka_jmx_port | default('9999') }}"
+    zookeeper_jmx_port: "{{ zookeeper_jmx_port | default('9998') }}"
+    producer_jmx_port: "{{ producer_jmx_port | default('9997') }}"
+    consumer_jmx_port: "{{ consumer_jmx_port | default('9996') }}"
+    create_test_topics: "{{ create_test_topics | default(true) }}"
+    topic_names: "{{ topic_names | default('purchases,product-interactions,user-activities') }}"
+    deploy_producer: "{{ deploy_producer | default(true) }}"
+    deploy_consumer: "{{ deploy_consumer | default(true) }}"
+    java_apps_dir: "/opt/kafka-java-clients"
+
+  tasks:
+    - name: Update system packages
+      ansible.builtin.package:
+        name: "*"
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Install required packages
+      ansible.builtin.package:
+        name:
+          - java-17-openjdk-devel
+          - wget
+          - tar
+          - gzip
+          - net-tools
+          - unzip
+        state: present
+
+    - name: Create required directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ kafka_dir }}"
+        - "{{ kafka_data_dir }}"
+        - "{{ logs_dir }}"
+        - "{{ java_apps_dir }}"
+
+    - name: Download Kafka
+      ansible.builtin.get_url:
+        url: "https://downloads.apache.org/kafka/{{ kafka_scala_version }}-{{ kafka_version }}/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+        dest: "/tmp/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+        mode: '0644'
+
+    - name: Extract Kafka
+      ansible.builtin.unarchive:
+        src: "/tmp/kafka_{{ kafka_scala_version }}-{{ kafka_version }}.tgz"
+        dest: "{{ kafka_dir }}"
+        remote_src: yes
+        creates: "{{ kafka_dir }}/kafka_{{ kafka_scala_version }}-{{ kafka_version }}"
+
+    - name: Create Kafka symlink
+      ansible.builtin.file:
+        src: "{{ kafka_dir }}/kafka_{{ kafka_scala_version }}-{{ kafka_version }}"
+        dest: "{{ kafka_dir }}/current"
+        state: link
+
+    - name: Configure Zookeeper properties
+      ansible.builtin.blockinfile:
+        path: "{{ kafka_dir }}/current/config/zookeeper.properties"
+        block: |
+          admin.enableServer=false
+          standaloneEnabled=true
+          4lw.commands.whitelist=mntr,ruok
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Zookeeper Config"
+
+    - name: Configure Kafka server properties
+      ansible.builtin.blockinfile:
+        path: "{{ kafka_dir }}/current/config/server.properties"
+        block: |
+          zookeeper.connect=localhost:2181
+          zookeeper.connection.timeout.ms=18000
+          group.initial.rebalance.delay.ms=0
+          advertised.listeners=PLAINTEXT://localhost:9092
+          listeners=PLAINTEXT://0.0.0.0:9092
+          delete.topic.enable=true
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Kafka Config"
+
+    - name: Download OpenTelemetry JMX Metrics Gatherer
+      ansible.builtin.get_url:
+        url: "https://github.com/open-telemetry/opentelemetry-java-contrib/releases/download/v2.9.0-alpha/opentelemetry-jmx-metrics.jar"
+        dest: "/opt/opentelemetry-java-contrib-jmx-metrics.jar"
+        mode: '0644'
+
+    - name: Create Zookeeper startup script with JMX
+      ansible.builtin.copy:
+        dest: "{{ kafka_dir }}/start-zookeeper.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          export KAFKA_JMX_OPTS="-Dcom.sun.management.jmxremote \
+            -Dcom.sun.management.jmxremote.port={{ zookeeper_jmx_port }} \
+            -Dcom.sun.management.jmxremote.authenticate=false \
+            -Dcom.sun.management.jmxremote.ssl=false \
+            -Djava.rmi.server.hostname=localhost"
+          cd {{ kafka_dir }}/current && \
+          nohup bin/zookeeper-server-start.sh config/zookeeper.properties > {{ logs_dir }}/zookeeper.log 2>&1 &
+          echo $! > {{ kafka_dir }}/zookeeper.pid
+
+    - name: Create Kafka broker startup script with JMX
+      ansible.builtin.copy:
+        dest: "{{ kafka_dir }}/start-kafka.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          export KAFKA_JMX_OPTS="-Dcom.sun.management.jmxremote \
+            -Dcom.sun.management.jmxremote.port={{ kafka_jmx_port }} \
+            -Dcom.sun.management.jmxremote.authenticate=false \
+            -Dcom.sun.management.jmxremote.ssl=false \
+            -Djava.rmi.server.hostname=localhost"
+          cd {{ kafka_dir }}/current && \
+          nohup bin/kafka-server-start.sh config/server.properties > {{ logs_dir }}/kafka.log 2>&1 &
+          echo $! > {{ kafka_dir }}/kafka.pid
+
+    - name: Start Zookeeper
+      ansible.builtin.shell: "{{ kafka_dir }}/start-zookeeper.sh"
+      async: 10
+      poll: 0
+
+    - name: Wait for Zookeeper to start
+      ansible.builtin.wait_for:
+        port: 2181
+        delay: 5
+        timeout: 30
+
+    - name: Start Kafka broker
+      ansible.builtin.shell: "{{ kafka_dir }}/start-kafka.sh"
+      async: 10
+      poll: 0
+
+    - name: Wait for Kafka to start
+      ansible.builtin.wait_for:
+        port: 9092
+        delay: 10
+        timeout: 60
+
+    - name: Create test topics
+      ansible.builtin.shell: |
+        {{ kafka_dir }}/current/bin/kafka-topics.sh --create \
+          --topic {{ item }} \
+          --bootstrap-server localhost:9092 \
+          --partitions 3 \
+          --replication-factor 1 \
+          --if-not-exists
+      loop: "{{ topic_names.split(',') }}"
+      when: create_test_topics | bool
+
+    - name: Install Gradle
+      block:
+        - name: Download Gradle
+          ansible.builtin.get_url:
+            url: "https://services.gradle.org/distributions/gradle-8.14.3-bin.zip"
+            dest: "/tmp/gradle-8.14.3-bin.zip"
+            mode: '0644'
+
+        - name: Create Gradle directory
+          ansible.builtin.file:
+            path: "/opt/gradle"
+            state: directory
+            mode: '0755'
+
+        - name: Extract Gradle
+          ansible.builtin.unarchive:
+            src: "/tmp/gradle-8.14.3-bin.zip"
+            dest: "/opt/gradle"
+            remote_src: yes
+            creates: "/opt/gradle/gradle-8.14.3"
+
+        - name: Add Gradle to PATH
+          ansible.builtin.copy:
+            dest: "/etc/profile.d/gradle.sh"
+            mode: '0755'
+            content: |
+              export GRADLE_HOME=/opt/gradle/gradle-8.14.3
+              export PATH=${PATH}:${GRADLE_HOME}/bin
+
+    - name: Create Java application directory structure
+      ansible.builtin.file:
+        path: "{{ java_apps_dir }}/src/main/java/com/example"
+        state: directory
+        mode: '0755'
+
+    - name: Create Gradle build file
+      ansible.builtin.copy:
+        dest: "{{ java_apps_dir }}/build.gradle"
+        content: |
+          plugins {
+              id 'java'
+              id 'application'
+          }
+
+          group = 'com.example'
+          version = '1.0-SNAPSHOT'
+
+          repositories {
+              mavenCentral()
+          }
+
+          dependencies {
+              implementation 'org.apache.kafka:kafka-clients:{{ kafka_version }}'
+              implementation 'org.slf4j:slf4j-simple:2.0.7'
+          }
+
+          java {
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+          }
+
+          task producerJar(type: Jar) {
+              archiveBaseName = 'kafka-producer'
+              archiveClassifier = 'all'
+              duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+              from {
+                  configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+              }
+              from sourceSets.main.output
+              manifest {
+                  attributes 'Main-Class': 'com.example.KafkaProducerExample'
+              }
+          }
+
+          task consumerJar(type: Jar) {
+              archiveBaseName = 'kafka-consumer'
+              archiveClassifier = 'all'
+              duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+              from {
+                  configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+              }
+              from sourceSets.main.output
+              manifest {
+                  attributes 'Main-Class': 'com.example.KafkaConsumerExample'
+              }
+          }
+
+          build.dependsOn producerJar, consumerJar
+
+    - name: Create Kafka Producer application
+      ansible.builtin.copy:
+        dest: "{{ java_apps_dir }}/src/main/java/com/example/KafkaProducerExample.java"
+        content: |
+          package com.example;
+
+          import org.apache.kafka.clients.producer.*;
+          import java.util.*;
+
+          public class KafkaProducerExample {
+              public static void main(String[] args) throws InterruptedException {
+                  Properties props = new Properties();
+                  props.put("bootstrap.servers", "localhost:9092");
+                  props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+                  props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+                  props.put("acks", "all");
+
+                  KafkaProducer<String, String> producer = new KafkaProducer<>(props);
+                  String[] topics = {"purchases", "product-interactions", "user-activities"};
+                  Random random = new Random();
+                  int count = 0;
+
+                  System.out.println("Starting Kafka Producer...");
+
+                  while (true) {
+                      String topic = topics[random.nextInt(topics.length)];
+                      String key = "user-" + random.nextInt(1000);
+                      String value = String.format("{\"userId\":\"%s\",\"action\":\"event-%d\",\"timestamp\":%d}",
+                          key, count, System.currentTimeMillis());
+
+                      ProducerRecord<String, String> record = new ProducerRecord<>(topic, key, value);
+                      producer.send(record, (metadata, exception) -> {
+                          if (exception == null) {
+                              System.out.printf("Sent to %s [partition=%d, offset=%d]%n",
+                                  metadata.topic(), metadata.partition(), metadata.offset());
+                          } else {
+                              exception.printStackTrace();
+                          }
+                      });
+
+                      count++;
+                      if (count % 100 == 0) {
+                          System.out.println("Sent " + count + " messages");
+                      }
+                      Thread.sleep(100);
+                  }
+              }
+          }
+
+    - name: Create Kafka Consumer application
+      ansible.builtin.copy:
+        dest: "{{ java_apps_dir }}/src/main/java/com/example/KafkaConsumerExample.java"
+        content: |
+          package com.example;
+
+          import org.apache.kafka.clients.consumer.*;
+          import java.time.Duration;
+          import java.util.*;
+
+          public class KafkaConsumerExample {
+              public static void main(String[] args) {
+                  Properties props = new Properties();
+                  props.put("bootstrap.servers", "localhost:9092");
+                  props.put("group.id", "test-consumer-group");
+                  props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+                  props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+                  props.put("auto.offset.reset", "earliest");
+                  props.put("enable.auto.commit", "true");
+
+                  KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+                  consumer.subscribe(Arrays.asList("purchases", "product-interactions", "user-activities"));
+
+                  System.out.println("Starting Kafka Consumer...");
+
+                  while (true) {
+                      ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
+                      for (ConsumerRecord<String, String> record : records) {
+                          System.out.printf("Consumed from %s [partition=%d, offset=%d] key=%s value=%s%n",
+                              record.topic(), record.partition(), record.offset(), record.key(), record.value());
+                      }
+                  }
+              }
+          }
+
+    - name: Build Java applications
+      ansible.builtin.shell: |
+        source /etc/profile.d/gradle.sh
+        cd {{ java_apps_dir }}
+        gradle clean build
+      args:
+        executable: /bin/bash
+      when: deploy_producer | bool or deploy_consumer | bool
+
+    - name: Start Kafka Producer with JMX
+      ansible.builtin.shell: |
+        nohup java -Dcom.sun.management.jmxremote \
+          -Dcom.sun.management.jmxremote.port={{ producer_jmx_port }} \
+          -Dcom.sun.management.jmxremote.authenticate=false \
+          -Dcom.sun.management.jmxremote.ssl=false \
+          -Djava.rmi.server.hostname=localhost \
+          -jar {{ java_apps_dir }}/build/libs/kafka-producer-1.0-SNAPSHOT-all.jar > {{ logs_dir }}/producer.log 2>&1 &
+        echo $! > {{ kafka_dir }}/producer.pid
+      when: deploy_producer | bool
+      async: 10
+      poll: 0
+
+    - name: Start Kafka Consumer with JMX
+      ansible.builtin.shell: |
+        nohup java -Dcom.sun.management.jmxremote \
+          -Dcom.sun.management.jmxremote.port={{ consumer_jmx_port }} \
+          -Dcom.sun.management.jmxremote.authenticate=false \
+          -Dcom.sun.management.jmxremote.ssl=false \
+          -Djava.rmi.server.hostname=localhost \
+          -jar {{ java_apps_dir }}/build/libs/kafka-consumer-1.0-SNAPSHOT-all.jar > {{ logs_dir }}/consumer.log 2>&1 &
+        echo $! > {{ kafka_dir }}/consumer.pid
+      when: deploy_consumer | bool
+      async: 10
+      poll: 0
+
+    - name: Wait for JMX ports to be available
+      ansible.builtin.wait_for:
+        port: "{{ item }}"
+        delay: 5
+        timeout: 30
+      loop:
+        - "{{ zookeeper_jmx_port }}"
+        - "{{ kafka_jmx_port }}"
+        - "{{ producer_jmx_port }}"
+        - "{{ consumer_jmx_port }}"
+      when: deploy_producer | bool and deploy_consumer | bool
+
+    - name: Display service status
+      ansible.builtin.debug:
+        msg: |
+          Kafka cluster setup complete!
+          - Zookeeper: localhost:2181 (JMX: {{ zookeeper_jmx_port }})
+          - Kafka Broker: localhost:9092 (JMX: {{ kafka_jmx_port }})
+          - Producer: JMX port {{ producer_jmx_port }}
+          - Consumer: JMX port {{ consumer_jmx_port }}
+          - Cluster Name: {{ kafka_cluster_name }}
+          - Topics: {{ topic_names }}
+
+          Logs available at: {{ logs_dir }}/
