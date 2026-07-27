@@ -50,6 +50,9 @@ inputVars:
   - name: NR_CLI_MSSQL_LOGIN_NAME
     prompt: "Monitoring username: "
     default: "newrelic"
+  - name: NR_CLI_MSSQL_LOGIN_PASSWORD
+    prompt: "Password for the monitoring login (mode 1 only; leave blank to auto-generate a random password): "
+    secret: true
   - name: NR_CLI_MSSQL_WIN_ACCOUNT
     prompt: "Windows account to grant permissions to, DOMAIN\\username (mode 2 only; leave blank otherwise): "
   - name: NR_CLI_MSSQL_WIN_PASSWORD
@@ -177,7 +180,7 @@ install:
           $UninstallKeys = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue
           foreach ($Key in $UninstallKeys) {
             $KeyData = Get-ItemProperty -Path $Key.PSPath -ErrorAction SilentlyContinue
-            if ($KeyData.DisplayName -match "nrdot-collector") {
+            if ($KeyData.DisplayName -match "NRDOT Collector") {
               $InstalledVersion = $KeyData.DisplayVersion
               break
             }
@@ -247,8 +250,12 @@ install:
 
           if ($mode -eq "1") {
             $loginName = "{{.NR_CLI_MSSQL_LOGIN_NAME}}"
-            $chars = (48..57) + (65..90) + (97..122)
-            $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+            if ([string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_LOGIN_PASSWORD}}")) {
+              $chars = (48..57) + (65..90) + (97..122)
+              $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+            } else {
+              $NrPassword = "{{.NR_CLI_MSSQL_LOGIN_PASSWORD}}"
+            }
             $NrPassword | Set-Content -Path $pwFile -NoNewline
 
             $sql = @"
