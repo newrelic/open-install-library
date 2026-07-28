@@ -1,0 +1,618 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-mssql
+displayName: NRDOT MSSQL (Debian/Ubuntu)
+description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Debian/Ubuntu self-hosted environments
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+  - type: host
+    os: linux
+    platform: ubuntu
+
+keywords:
+  - MSSQL
+  - SQL Server
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - Debian
+  - Ubuntu
+
+processMatch:
+  - sqlservr
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    To capture data from SQL Server, we need to create/authorize a monitoring identity
+    (a SQL login). This requires administrative access to your SQL Server instance
+    (sysadmin role or equivalent) on the account running this installation.
+
+inputVars:
+  - name: NR_CLI_MSSQL_CONFIG_PRESET
+    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    default: "1"
+  - name: NR_CLI_MSSQL_SERVER
+    prompt: "SQL Server host (e.g. localhost): "
+    default: "localhost"
+  - name: NR_CLI_MSSQL_PORT
+    prompt: "SQL Server port: "
+    default: "1433"
+  - name: NR_CLI_MSSQL_SA_PASSWORD
+    prompt: "SQL Server 'sa' password (used once to create the monitoring login): "
+    secret: true
+  - name: NR_CLI_MSSQL_LOGIN_NAME
+    prompt: "Monitoring username: "
+    default: "newrelic"
+  - name: NR_CLI_MSSQL_LOGIN_PASSWORD
+    prompt: "Password for the monitoring login (leave blank to auto-generate a random password): "
+    secret: true
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'sqlserver.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 131
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    assert_sql_server_version:
+      cmds:
+        - |
+          SERVER="{{.NR_CLI_MSSQL_SERVER}}"
+          PORT="{{.NR_CLI_MSSQL_PORT}}"
+          SA_PASSWORD="{{.NR_CLI_MSSQL_SA_PASSWORD}}"
+
+          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U sa -P "${SA_PASSWORD}" -C -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "Failed to connect to SQL Server to check its version:" >&2
+            echo "$RESULT" >&2
+            exit 1
+          fi
+
+          MAJOR_VERSION=$(echo "$RESULT" | grep -E '^[[:space:]]*[0-9]+[[:space:]]*$' | head -1 | tr -d '[:space:]')
+
+          if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 14 ]; then
+            echo "SQL Server version ${MAJOR_VERSION:-unknown} is not supported. SQL Server 2017 or later (major version 14+) is required." >&2
+            exit 1
+          fi
+
+          echo "SQL Server major version ${MAJOR_VERSION} detected - supported."
+
+    install_nrdot:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          if dpkg -l | grep -q "^ii.*${COLLECTOR_DISTRO} "; then
+            echo "NRDOT Collector is already installed."
+            echo ""
+            echo "Please follow the steps below to complete the setup:"
+            echo ""
+            echo "  1. Create mssql-config.yaml"
+            echo "     if not present. Refer to:"
+            echo "     https://docs.newrelic.com/docs/opentelemetry/database/mssql/linux-hosted/"
+            echo ""
+            echo "  2. Make sure the monitoring user is created"
+            echo "     and has the required permissions granted."
+            echo ""
+            echo "  3. After making the above changes, restart the NRDOT Collector:"
+            echo "     sudo systemctl restart nrdot-collector"
+            echo ""
+            exit 131
+          fi
+
+          COLLECTOR_VERSION=$(curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep '"tag_name":' | awk -F'"' '{print $4}')
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="amd64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.deb"
+          echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.deb "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          dpkg -i /tmp/nrdot-collector.deb
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.deb
+          echo "${COLLECTOR_DISTRO} installed successfully."
+
+    configure_database_user:
+      cmds:
+        - |
+          LOGIN_NAME="{{.NR_CLI_MSSQL_LOGIN_NAME}}"
+          SERVER="{{.NR_CLI_MSSQL_SERVER}}"
+          PORT="{{.NR_CLI_MSSQL_PORT}}"
+          SA_PASSWORD="{{.NR_CLI_MSSQL_SA_PASSWORD}}"
+          SQL_FILE="/tmp/nr-mssql-grant.sql"
+          PW_FILE="/tmp/nr-mssql-newrelic-pw.tmp"
+
+          if [ -z "{{.NR_CLI_MSSQL_LOGIN_PASSWORD}}" ]; then
+            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+          else
+            NR_PASSWORD="{{.NR_CLI_MSSQL_LOGIN_PASSWORD}}"
+          fi
+          printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+          chmod 600 "$PW_FILE"
+
+          cat > "$SQL_FILE" << EOF
+          USE [master];
+          GO
+          IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '${LOGIN_NAME}')
+            CREATE LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';
+          ELSE
+            ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';
+          GO
+          GRANT VIEW SERVER STATE TO [${LOGIN_NAME}];
+          GRANT VIEW ANY DEFINITION TO [${LOGIN_NAME}];
+          GRANT VIEW ANY DATABASE TO [${LOGIN_NAME}];
+          GO
+          DECLARE @name SYSNAME;
+          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
+          SELECT [name]
+          FROM [master].[sys].[databases]
+          WHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')
+          AND [state] = 0;
+          OPEN db_cursor;
+          FETCH NEXT FROM db_cursor INTO @name;
+          WHILE @@FETCH_STATUS = 0
+          BEGIN
+            BEGIN TRY
+              EXEC('USE [' + @name + '];
+              IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''${LOGIN_NAME}'')
+              BEGIN
+                CREATE USER [${LOGIN_NAME}] FOR LOGIN [${LOGIN_NAME}];
+              END;
+              GRANT VIEW DATABASE STATE TO [${LOGIN_NAME}];');
+            END TRY
+            BEGIN CATCH
+              PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
+            END CATCH
+            FETCH NEXT FROM db_cursor INTO @name;
+          END
+          CLOSE db_cursor;
+          DEALLOCATE db_cursor;
+          GO
+          EOF
+
+          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U sa -P "${SA_PASSWORD}" -C -i "$SQL_FILE" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "SQL script failed:" >&2
+            echo "$RESULT" >&2
+            exit 1
+          fi
+          echo "$RESULT"
+
+          rm -f "$SQL_FILE"
+          echo "SQL Server monitoring identity configured successfully."
+
+    create_collector_config:
+      cmds:
+        - |
+          PRESET="{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
+          LOGIN_NAME="{{.NR_CLI_MSSQL_LOGIN_NAME}}"
+          SERVER="{{.NR_CLI_MSSQL_SERVER}}"
+          PORT="{{.NR_CLI_MSSQL_PORT}}"
+          REGION="{{.NEW_RELIC_REGION}}"
+          LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          CONFIG_DIR="/etc/nrdot-collector"
+          CONFIG_PATH="${CONFIG_DIR}/mssql-config.yaml"
+          ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+          PW_FILE="/tmp/nr-mssql-newrelic-pw.tmp"
+
+          mkdir -p "$CONFIG_DIR"
+
+          NR_PASSWORD=$(cat "$PW_FILE")
+
+          if [ "$PRESET" = "2" ]; then
+            LIMIT_MIB=500
+          else
+            LIMIT_MIB=200
+          fi
+
+          case "$REGION" in
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+          esac
+
+          cat > "$CONFIG_PATH" << EOF
+          receivers:
+            nrsqlserver:
+              collection_interval: 15s
+              username: ${LOGIN_NAME}
+              password: ${NR_PASSWORD}
+              server: ${SERVER}
+              port: ${PORT}
+
+              metrics:
+          EOF
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
+                sqlserver.database.count:
+                  enabled: true
+                sqlserver.database.file.size:
+                  enabled: true
+                sqlserver.database.io:
+                  enabled: true
+                sqlserver.database.latency:
+                  enabled: true
+                sqlserver.database.operations:
+                  enabled: true
+                sqlserver.database.page_file.size:
+                  enabled: true
+                sqlserver.database.transactions.active:
+                  enabled: true
+                sqlserver.database.backup_or_restore.rate:
+                  enabled: true
+                sqlserver.database.execution.errors:
+                  enabled: true
+                sqlserver.database.full_scan.rate:
+                  enabled: true
+                sqlserver.database.tempdb.space:
+                  enabled: true
+                sqlserver.database.tempdb.version_store.size:
+                  enabled: true
+                sqlserver.database.principals.count:
+                  enabled: true
+                sqlserver.database.principals.old:
+                  enabled: true
+                sqlserver.database.principals.orphaned_users:
+                  enabled: true
+                sqlserver.database.principals.recently_created:
+                  enabled: true
+                sqlserver.database.role.members.count:
+                  enabled: true
+                sqlserver.database.role.memberships.count:
+                  enabled: true
+                sqlserver.database.role.permission.risk_level:
+                  enabled: true
+                sqlserver.database.role.roles.count:
+                  enabled: true
+                sqlserver.database.security.role_membership.count:
+                  enabled: true
+                sqlserver.server.security.principal.count:
+                  enabled: true
+                sqlserver.server.security.role_membership.count:
+                  enabled: true
+                sqlserver.lock.by_mode.count:
+                  enabled: true
+                sqlserver.lock.by_resource.count:
+                  enabled: true
+                sqlserver.lock.timeout.rate:
+                  enabled: true
+                sqlserver.lock.wait.count:
+                  enabled: true
+                sqlserver.lock.wait.rate:
+                  enabled: true
+                sqlserver.deadlock.rate:
+                  enabled: true
+                sqlserver.transaction.delay:
+                  enabled: true
+                sqlserver.transaction.mirror_write.rate:
+                  enabled: true
+                sqlserver.transaction.longest_running_time:
+                  enabled: true
+                sqlserver.transaction.version_cleanup.rate:
+                  enabled: true
+                sqlserver.transaction.version_generation.rate:
+                  enabled: true
+                sqlserver.memory.area:
+                  enabled: true
+                sqlserver.memory.cache.object.count:
+                  enabled: true
+                sqlserver.memory.grants.pending.count:
+                  enabled: true
+                sqlserver.memory.page.count:
+                  enabled: true
+                sqlserver.memory.target:
+                  enabled: true
+                sqlserver.memory.usage:
+                  enabled: true
+                sqlserver.os.disk.size:
+                  enabled: true
+                sqlserver.os.memory.usage:
+                  enabled: true
+                sqlserver.os.memory.utilization:
+                  enabled: true
+                sqlserver.os.scheduler.runnable_tasks.count:
+                  enabled: true
+                sqlserver.os.wait.duration:
+                  enabled: true
+                sqlserver.os.wait.tasks.count:
+                  enabled: true
+                sqlserver.page.buffer_cache.hit_ratio:
+                  enabled: true
+                sqlserver.page.buffer_cache.free_list.stalls.rate:
+                  enabled: true
+                sqlserver.page.life_expectancy:
+                  enabled: true
+                sqlserver.page.lookup.rate:
+                  enabled: true
+                sqlserver.batch.request.rate:
+                  enabled: true
+                sqlserver.batch.sql_compilation.rate:
+                  enabled: true
+                sqlserver.batch.sql_recompilation.rate:
+                  enabled: true
+                sqlserver.batch.compilation.utilization:
+                  enabled: true
+                sqlserver.batch.page_split.utilization:
+                  enabled: true
+                sqlserver.recompilation.ratio:
+                  enabled: true
+                sqlserver.parameterization.rate:
+                  enabled: true
+                sqlserver.plan.execution.rate:
+                  enabled: true
+                sqlserver.attention.rate:
+                  enabled: true
+                sqlserver.process.count:
+                  enabled: true
+                sqlserver.processes.blocked:
+                  enabled: true
+                sqlserver.user.connection.count:
+                  enabled: true
+                sqlserver.login.rate:
+                  enabled: true
+                sqlserver.logout.rate:
+                  enabled: true
+                sqlserver.thread_pool.tasks.count:
+                  enabled: true
+                sqlserver.thread_pool.workers.count:
+                  enabled: true
+                sqlserver.thread_pool.workers.max:
+                  enabled: true
+                sqlserver.thread_pool.workers.utilization:
+                  enabled: true
+                sqlserver.tempdb.allocation.wait_time.total:
+                  enabled: true
+                sqlserver.tempdb.contention.waiters.count:
+                  enabled: true
+                sqlserver.tempdb.data_files.count:
+                  enabled: true
+                sqlserver.tempdb.file.size:
+                  enabled: true
+                sqlserver.tempdb.space.usage:
+                  enabled: true
+                sqlserver.latch.superlatch.count:
+                  enabled: true
+                sqlserver.latch.superlatch.transition.rate:
+                  enabled: true
+                sqlserver.latch.wait.rate:
+                  enabled: true
+                sqlserver.latch.wait_time.avg:
+                  enabled: true
+                sqlserver.latch.wait_time.total:
+                  enabled: true
+                sqlserver.index.search.rate:
+                  enabled: true
+                sqlserver.resource_pool.disk.operations:
+                  enabled: true
+                sqlserver.resource_pool.disk.throttled.read.rate:
+                  enabled: true
+                sqlserver.resource_pool.disk.throttled.write.rate:
+                  enabled: true
+                sqlserver.replica.data.rate:
+                  enabled: true
+                sqlserver.failover_cluster.ag.cluster_type:
+                  enabled: true
+                sqlserver.failover_cluster.ag.failure_condition_level:
+                  enabled: true
+                sqlserver.failover_cluster.ag.health_check_timeout:
+                  enabled: true
+                sqlserver.failover_cluster.ag.required_sync_secondaries:
+                  enabled: true
+                sqlserver.failover_cluster.replica.database.queue_size:
+                  enabled: true
+                sqlserver.failover_cluster.replica.database.redo.rate:
+                  enabled: true
+                sqlserver.failover_cluster.replica.flow_control_time:
+                  enabled: true
+                sqlserver.failover_cluster.replica.role:
+                  enabled: true
+                sqlserver.failover_cluster.replica.synchronization_health:
+                  enabled: true
+                sqlserver.computer.uptime:
+                  enabled: true
+                sqlserver.cpu.count:
+                  enabled: true
+                sqlserver.table.count:
+                  enabled: true
+                sqlserver.kill_connection.error.rate:
+                  enabled: true
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
+                sqlserver.database.count:
+                  enabled: true
+                sqlserver.database.io:
+                  enabled: true
+                sqlserver.database.latency:
+                  enabled: true
+                sqlserver.database.operations:
+                  enabled: true
+                sqlserver.database.tempdb.space:
+                  enabled: true
+                sqlserver.database.tempdb.version_store.size:
+                  enabled: true
+                sqlserver.deadlock.rate:
+                  enabled: true
+                sqlserver.os.wait.duration:
+                  enabled: true
+                sqlserver.processes.blocked:
+                  enabled: true
+                sqlserver.memory.grants.pending.count:
+                  enabled: true
+                sqlserver.database.file.size:
+                  enabled: true
+                sqlserver.memory.area:
+                  enabled: true
+          EOF
+          fi
+
+          cat >> "$CONFIG_PATH" << 'EOF'
+
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+
+              top_query_collection:
+                lookback_time: 60s
+                max_query_sample_count: 1000
+                top_query_count: 250
+                collection_interval: 60s
+
+              collect_full_query_text: true
+              allowed_comment_keys:
+                - nr_service_guid
+
+              query_sample_collection:
+                max_rows_per_query: 100
+
+          processors:
+          EOF
+
+          cat >> "$CONFIG_PATH" << EOF
+            memory_limiter:
+              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
+              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
+              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
+
+            batch:
+
+          EOF
+
+          cat >> "$CONFIG_PATH" << EOF
+          exporters:
+            otlphttp:
+              endpoint: ${OTLP_ENDPOINT}
+              headers:
+                api-key: ${LICENSE_KEY}
+              tls:
+                insecure: false
+              compression: gzip
+
+          service:
+            telemetry:
+              metrics:
+                level: none
+
+            pipelines:
+              metrics:
+                receivers: [nrsqlserver]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp]
+
+              logs:
+                receivers: [nrsqlserver]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp]
+          EOF
+
+          cat > "$ENV_FILE" << EOF
+          OTELCOL_CONFIG="${CONFIG_PATH}"
+          EOF
+
+          rm -f "$PW_FILE"
+          echo "MSSQL OTel config written to ${CONFIG_PATH}"
+          echo "Env file written to ${ENV_FILE}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl restart nrdot-collector
+
+    assert_nrdot_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for NRDOT Collector to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet nrdot-collector; then
+              echo "NRDOT Collector is running."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "NRDOT Collector did not start in time. Check logs:" >&2
+          journalctl -u nrdot-collector --no-pager -n 50 >&2
+          exit 31
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: assert_sql_server_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: create_collector_config
+        - task: restart_nrdot
+        - task: assert_nrdot_status_ok
+
+postInstall:
+  info: |2
+      MSSQL OTel config: /etc/nrdot-collector/mssql-config.yaml
+      Env file:           /etc/nrdot-collector/nrdot-collector.conf
+      Service status:     systemctl status nrdot-collector
+      View logs:           journalctl -u nrdot-collector -f
+      Restart service:     sudo systemctl restart nrdot-collector
