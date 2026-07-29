@@ -1,0 +1,38 @@
+---
+- debug:
+    msg: Install SQL Server for NRDOT MSSQL Testing on RHEL/CentOS/Amazon Linux
+
+- name: Download Microsoft SQL Server repository configuration
+  shell: |
+    curl -o /etc/yum.repos.d/mssql-server.repo https://packages.microsoft.com/config/rhel/9/mssql-server-2022.repo
+  become: true
+
+- name: Install SQL Server
+  shell: "yum install -y mssql-server"
+  become: true
+
+- name: Configure SQL Server with SA password
+  shell: |
+    MSSQL_SA_PASSWORD='YourStrong@Passw0rd' \
+    MSSQL_PID='evaluation' \
+    /opt/mssql/bin/mssql-conf -n setup accept-eula
+  become: true
+  environment:
+    MSSQL_SA_PASSWORD: 'YourStrong@Passw0rd'
+    MSSQL_PID: 'evaluation'
+
+- name: Enable SQL Server Agent
+  shell: "/opt/mssql/bin/mssql-conf set sqlagent.enabled true"
+  become: true
+
+- name: Restart SQL Server service
+  shell: "systemctl restart mssql-server"
+  become: true
+
+- name: Wait for SQL Server to be ready
+  shell: "sleep 10"
+  become: true
+
+- name: Verify SQL Server is running
+  shell: "systemctl status mssql-server --no-pager"
+  become: true
