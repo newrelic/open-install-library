@@ -7,21 +7,9 @@
     curl https://packages.microsoft.com/keys/microsoft.asc | tee /etc/apt/trusted.gpg.d/microsoft.asc
   become: yes
 
-- name: Detect Ubuntu version and add appropriate repository
+- name: Add Microsoft SQL Server 2022 repository
   shell: |
-    # Get Ubuntu version
-    UBUNTU_VERSION=$(lsb_release -rs)
-    
-    if [ "$UBUNTU_VERSION" = "22.04" ]; then
-      # Ubuntu 22.04
-      curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | tee /etc/apt/sources.list.d/mssql-server.list
-    elif [ "$UBUNTU_VERSION" = "24.04" ]; then
-      # Ubuntu 24.04
-      curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2022.list | tee /etc/apt/sources.list.d/mssql-server.list
-    else
-      # Default to Ubuntu 22.04 repository for other versions
-      curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | tee /etc/apt/sources.list.d/mssql-server.list
-    fi
+    curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | tee /etc/apt/sources.list.d/mssql-server.list
   become: yes
 
 - name: Update package list
@@ -32,6 +20,13 @@
   shell: "DEBIAN_FRONTEND=noninteractive apt-get install -y mssql-server"
   become: yes
   environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Install SQL Server command-line tools (sqlcmd)
+  shell: "ACCEPT_EULA=Y DEBIAN_FRONTEND=noninteractive apt-get install -y mssql-tools18 unixodbc-dev"
+  become: yes
+  environment:
+    ACCEPT_EULA: 'Y'
     DEBIAN_FRONTEND: noninteractive
 
 - name: Configure SQL Server with SA password
