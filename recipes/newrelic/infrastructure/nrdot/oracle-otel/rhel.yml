@@ -1,0 +1,79 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-oracle
+displayName: NRDOT Oracle Database (RHEL/CentOS/OEL)
+description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector on RHEL/CentOS/OEL self-hosted environments
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: centos
+  - type: host
+    os: linux
+    platform: redhat
+  - type: host
+    os: linux
+    platform: oracle
+
+keywords:
+  - Oracle
+  - Oracle Database
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - CentOS
+  - RHEL
+  - OEL
+
+processMatch:
+  - tnslsnr
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    To capture data from Oracle Database, we need to create/authorize a monitoring
+    identity (a database user). This requires SYS/SYSDBA access on the account
+    running this installation.
+
+inputVars:
+  - name: NR_CLI_ORACLE_CONFIG_PRESET
+    prompt: "NRDOT configuration - 1) Database only  2) Host + Database: "
+    default: "1"
+  - name: NR_CLI_ORACLE_CONTAINER_TYPE
+    prompt: "Oracle container type - 1) CDB (monitor all PDBs)  2) PDB (single PDB): "
+    default: "1"
+  - name: NR_CLI_ORACLE_PDB_NAME
+    prompt: "PDB name (mode 2 only; leave blank for CDB mode): "
+  - name: NR_CLI_ORACLE_HOST
+    prompt: "Oracle Database host (e.g. localhost): "
+    default: "localhost"
+  - name: NR_CLI_ORACLE_PORT
+    prompt: "Oracle listener port: "
+    default: "1521"
+  - name: NR_CLI_ORACLE_SYS_PASSWORD
+    prompt: "SYS password (used once to create the monitoring user and grant privileges): "
+    secret: true
+  - name: NR_CLI_ORACLE_LOGIN_NAME
+    prompt: "Monitoring username (CDB mode creates it as c##<name>): "
+    default: "newrelic"
+  - name: NR_CLI_ORACLE_LOGIN_PASSWORD
+    prompt: "Password for the monitoring login (leave blank to auto-generate a random password): "
+    secret: true
+  - name: NR_CLI_ORACLE_SERVICE_NAME
+    prompt: "CDB or PDB service name for the collector connection: "
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'oracledb.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  tasks: {}
