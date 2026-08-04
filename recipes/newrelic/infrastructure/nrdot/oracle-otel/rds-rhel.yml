@@ -68,4 +68,61 @@ install:
   version: "3"
   silent: true
 
-  tasks: {}
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 131
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    assert_oracle_version:
+      cmds:
+        - |
+          HOST="{{.NR_CLI_ORACLE_HOST}}"
+          PORT="{{.NR_CLI_ORACLE_PORT}}"
+          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
+          ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
+          ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
+
+          VERSION_OUTPUT=$(sqlplus -S "${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}" << 'SQL'
+          WHENEVER SQLERROR EXIT SQL.SQLCODE
+          SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON
+          SELECT version FROM v$instance;
+          EXIT;
+          SQL
+          )
+          if [ $? -ne 0 ]; then
+            echo "Failed to connect to the RDS Oracle Database to check its version:" >&2
+            echo "$VERSION_OUTPUT" >&2
+            exit 1
+          fi
+
+          MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '^[0-9]+' | head -1)
+
+          if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
+            echo "Oracle Database version ${MAJOR_VERSION:-unknown} is not supported. Oracle Database 19c or later is required." >&2
+            exit 1
+          fi
+
+          echo "Oracle Database major version ${MAJOR_VERSION} detected - supported."
