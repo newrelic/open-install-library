@@ -6,10 +6,21 @@ on:
 
 name: Create Release
 
+# Least-privilege default for the whole workflow — jobs that need more
+# override at the job level. Matches the convention used by
+# cleanup-jp.yml / nonregression-jp.yml.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Create Release
     runs-on: ubuntu-22.04
+    # actions/create-release@v1 needs contents: write to publish a Release.
+    permissions:
+      contents: write
+    outputs:
+      release_url: ${{ steps.create_release.outputs.html_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -33,6 +44,9 @@ jobs:
   zip-recipes:
     runs-on: ubuntu-22.04
     needs: build
+    # actions/upload-release-asset needs contents: write to attach recipes.zip.
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -106,3 +120,79 @@ jobs:
         run: |
           rm -rf /home/runner/.aws/credentials
           rm -rf /home/runner/.aws/config
+
+  commit-release-notes:
+    name: Record release on main
+    runs-on: ubuntu-22.04
+    needs: build
+    # No override needed — the push uses secrets.RELEASE_TOKEN (a PAT), not
+    # the default GITHUB_TOKEN, so this job only needs the workflow-level
+    # `contents: read` (for actions/checkout).
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # RELEASE_TOKEN (PAT) is required because main is protected — rules
+          # forbid direct pushes and require FOSSA to pass. The default
+          # GITHUB_TOKEN cannot bypass those rules. RELEASE_TOKEN is the same
+          # PAT the CLI's OIL→CLI workflow already uses to push tags into OIL.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Commit release marker to main
+        env:
+          RELEASE_URL: ${{ needs.build.outputs.release_url }}
+        run: |
+          set -euo pipefail
+
+          # Strip refs/tags/ → e.g. v0.82.0
+          TAG="${GITHUB_REF#refs/tags/}"
+          RELEASE_DATE=$(date -u +'%-d %B %Y')
+
+          # Previous release tag = second-newest v* tag by semver sort.
+          # `git tag --sort=-v:refname` puts the newest first; filter out the just-released tag.
+          PREV=$(git tag --list 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -1 || true)
+
+          # Compact subject: `chore(release): OIL <tag>, <date>`.
+          #
+          # Change list excludes prior release-marker commits so a release
+          # doesn't list its predecessors. --extended-regexp matches both the
+          # current shorter format ("OIL v...") and the legacy longer one
+          # ("Open Install Library Release v...") so older markers on main
+          # stay filtered too.
+          #
+          # `[skip ci]` at the end tells GitHub Actions not to run
+          # push-triggered workflows on the marker commit itself — the
+          # release just built the artifacts, there's nothing to re-verify.
+          {
+            printf 'chore(release): OIL %s, %s\n\n' "$TAG" "$RELEASE_DATE"
+            if [ -n "$PREV" ]; then
+              printf 'Changes since %s:\n\n' "$PREV"
+              git log \
+                --no-merges \
+                --invert-grep \
+                --extended-regexp \
+                --grep='^chore\(release\): (OIL|Open Install Library Release) v[0-9]' \
+                --pretty=format:'- %s (%h)' \
+                "${PREV}..${TAG}"
+              printf '\n\n'
+            fi
+            printf 'Release: %s\n\n' "${RELEASE_URL}"
+            printf '[skip ci]\n'
+          } > /tmp/commit-msg.txt
+
+          echo "----- Commit message preview -----"
+          cat /tmp/commit-msg.txt
+          echo "----------------------------------"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit --allow-empty -F /tmp/commit-msg.txt
+
+          # Retry once on race (someone else pushed to main between checkout and push).
+          if ! git push origin main; then
+            echo "push rejected; refetching and rebasing before retry"
+            git pull --rebase origin main
+            git push origin main
+          fi

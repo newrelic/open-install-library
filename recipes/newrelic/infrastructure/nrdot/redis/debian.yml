@@ -1,0 +1,778 @@
+# Visit our schema definition for additional information on this file format
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-redis
+displayName: NRDOT Redis
+description: New Relic install recipe for Redis monitoring via NRDOT Collector on Debian/Ubuntu
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+  - type: host
+    os: linux
+    platform: ubuntu
+
+keywords:
+  - Redis
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - Debian
+  - Ubuntu
+
+processMatch:
+  - redis
+
+preInstall:
+  discoveryMode:
+    - targeted
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'redis.%' AND instrumentation.provider = 'opentelemetry' {{.VALIDATION_ENTITY_FILTER}} SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    NRDOT_ARCH:
+      sh: if [ "$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "amd64"; fi
+    NRDOT_VERSION:
+      sh: curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep tag_name | cut -d '"' -f 4 | sed 's/^v//' || echo "1.11.1"
+    COLLECTOR_DISTRO: "nrdot-collector"
+    CONFIG_DIR: "/etc/nrdot-collector"
+
+    COLLECTOR_WAS_RUNNING:
+      sh: systemctl is-active --quiet nrdot-collector.service 2>/dev/null && echo "1" || echo "0"
+    VALIDATION_ENTITY_FILTER:
+      sh: |
+        PATTERN="${NR_CLI_IDENTIFIER_PATTERN:-composite}"
+        if [ "$PATTERN" = "composite" ]; then
+          ENDPOINT="${NR_CLI_REDIS_ENDPOINT:-localhost:6379}"
+          if ! echo "$ENDPOINT" | grep -q ':'; then
+            ENDPOINT="${ENDPOINT}:6379"
+          fi
+          HOST=$(echo "$ENDPOINT" | cut -d: -f1)
+          PORT=$(echo "$ENDPOINT" | cut -d: -f2)
+          echo "AND server.address = '${HOST}' AND server.port = '${PORT}'"
+        else
+          INSTANCE_ID="${NR_CLI_REDIS_INSTANCE_ID:-redis-instance-01:6379}"
+          echo "AND redis.instance.id = '${INSTANCE_ID}'"
+        fi
+
+  tasks:
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: install_nrdot
+        - task: configure_env
+        - task: create_collector_config
+        - task: configure_service
+        - task: restart_nrdot
+        - task: assert_nrdot_status_ok
+
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    install_nrdot:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="{{.COLLECTOR_DISTRO}}"
+          COLLECTOR_VERSION="{{.NRDOT_VERSION}}"
+
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          # Skip download if the current installed version already matches.
+          # This makes the recipe safe to re-run (idempotent) when only the config changes.
+          if dpkg -l | grep -q "^ii.*${COLLECTOR_DISTRO} "; then
+            INSTALLED_VERSION=$(dpkg -l "$COLLECTOR_DISTRO" | awk '/^ii/{print $3}' | sed 's/^[0-9]*://')
+            if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+              echo "${COLLECTOR_DISTRO} ${COLLECTOR_VERSION} is already installed. Skipping download."
+              exit 0
+            else
+              echo "Upgrading ${COLLECTOR_DISTRO} from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+            fi
+          else
+            echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          fi
+
+          ARCH="{{.NRDOT_ARCH}}"
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.deb"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.deb "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          # DEBIAN_FRONTEND=noninteractive prevents dpkg from prompting about conffile
+          # replacements when the package is re-installed after a purge.
+          DEBIAN_FRONTEND=noninteractive dpkg -i /tmp/nrdot-collector.deb
+          if [ $? -ne 0 ]; then
+            echo "dpkg install failed, attempting to fix broken dependencies..." >&2
+            apt-get -o DPkg::Lock::Timeout=60 install -f -y
+            if [ $? -ne 0 ]; then
+              echo "Failed to install the nrdot-collector package." >&2
+              exit 1
+            fi
+          fi
+
+          rm -f /tmp/nrdot-collector.deb
+          mkdir -p /etc/nrdot-collector
+          echo "${COLLECTOR_DISTRO} installed successfully."
+
+    configure_env:
+      cmds:
+        - |
+          CONFIG_FILE="{{.CONFIG_DIR}}/{{.COLLECTOR_DISTRO}}.conf"
+
+          mkdir -p {{.CONFIG_DIR}}
+
+          # Use sed to update in-place if the key already exists, otherwise append.
+          # This makes configure_env idempotent across recipe re-runs and upgrades.
+          if grep -q "^NEW_RELIC_LICENSE_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}|" "$CONFIG_FILE"
+          else
+            echo "NEW_RELIC_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          if [ "{{.NEW_RELIC_REGION}}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "{{.NEW_RELIC_REGION}}" = "staging" ] || [ "{{.NEW_RELIC_REGION}}" = "STAGING" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          elif [ "{{.NEW_RELIC_REGION}}" = "JP" ]; then
+            OTLP_ENDPOINT="https://otlp.jp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+
+          if grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTEL_EXPORTER_OTLP_ENDPOINT=.*|OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          # Add Redis credentials to env file if provided
+          REDIS_PASSWORD="${NR_CLI_REDIS_PASSWORD:-}"
+          REDIS_USERNAME="${NR_CLI_REDIS_USERNAME:-}"
+          if [ -n "$REDIS_USERNAME" ]; then
+            if grep -q "^REDIS_USERNAME=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^REDIS_USERNAME=.*|REDIS_USERNAME=${REDIS_USERNAME}|" "$CONFIG_FILE"
+            else
+              echo "REDIS_USERNAME=${REDIS_USERNAME}" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+          fi
+          if [ -n "$REDIS_PASSWORD" ]; then
+            if grep -q "^REDIS_PASSWORD=" "$CONFIG_FILE" 2>/dev/null; then
+              sed -i "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=${REDIS_PASSWORD}|" "$CONFIG_FILE"
+            else
+              echo "REDIS_PASSWORD=${REDIS_PASSWORD}" | tee -a "$CONFIG_FILE" > /dev/null
+            fi
+          fi
+
+          # 600: only root should read sensitive credentials (license key, redis password).
+          chmod 600 "$CONFIG_FILE"
+          echo "Configuration written to ${CONFIG_FILE}"
+
+    create_collector_config:
+      cmds:
+        - |
+          CONFIG_PRESET="${NR_CLI_CONFIG_PRESET:-comprehensive}"
+          COLLECTOR_CONFIG="{{.CONFIG_DIR}}/redis-collector-config.yaml"
+          REDIS_ENDPOINT="${NR_CLI_REDIS_ENDPOINT:-localhost:6379}"
+          if ! echo "$REDIS_ENDPOINT" | grep -q ':'; then
+            REDIS_ENDPOINT="${REDIS_ENDPOINT}:6379"
+          fi
+          IDENTIFIER_PATTERN="${NR_CLI_IDENTIFIER_PATTERN:-composite}"
+          REDIS_INSTANCE_ID="${NR_CLI_REDIS_INSTANCE_ID:-}"
+          REDIS_LOG_PATH="${NR_CLI_REDIS_LOG_PATH:-}"
+          COLLECT_HOST_METRICS="${NR_CLI_COLLECT_HOST_METRICS:-false}"
+          CUSTOM_ATTRIBUTES="${NR_CLI_CUSTOM_ATTRIBUTES:-}"
+
+          REDIS_PASSWORD="${NR_CLI_REDIS_PASSWORD:-}"
+          REDIS_USERNAME="${NR_CLI_REDIS_USERNAME:-}"
+          REDIS_TLS="${NR_CLI_REDIS_TLS:-false}"
+          REDIS_TLS_CERT="${NR_CLI_REDIS_TLS_CERT_PATH:-}"
+          REDIS_CLUSTER_MODE="${NR_CLI_REDIS_CLUSTER_MODE:-false}"
+          REDIS_CLUSTER_NAME="${NR_CLI_REDIS_CLUSTER_NAME:-}"
+
+          echo "Creating Redis collector config (preset: ${CONFIG_PRESET}, pattern: ${IDENTIFIER_PATTERN})..."
+
+          # Extensions
+          cat > "$COLLECTOR_CONFIG" << 'EOF'
+          extensions:
+            health_check:
+              endpoint: "0.0.0.0:13133"
+
+          EOF
+
+          # Start with receivers section
+          # NOTE: comprehensive metrics (redis.cmd.calls, redis.cmd.usec) MUST be inside
+          # the metrics: block to avoid "invalid keys" error from the redis receiver.
+          cat >> "$COLLECTOR_CONFIG" << EOF
+          receivers:
+            redis:
+              endpoint: "${REDIS_ENDPOINT}"
+              collection_interval: 10s
+          EOF
+
+          # Add authentication if provided (credentials stored in env file, referenced via ${env:...})
+          if [ -n "$REDIS_USERNAME" ] && [ -n "$REDIS_PASSWORD" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              username: ${env:REDIS_USERNAME}
+              password: ${env:REDIS_PASSWORD}
+          EOF
+          elif [ -n "$REDIS_PASSWORD" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              password: ${env:REDIS_PASSWORD}
+          EOF
+          fi
+
+          # Add TLS if enabled
+          if [ "$REDIS_TLS" = "true" ]; then
+            if [ -n "$REDIS_TLS_CERT" ]; then
+              cat >> "$COLLECTOR_CONFIG" << EOF
+              tls:
+                insecure: false
+                ca_file: ${REDIS_TLS_CERT}
+          EOF
+            else
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              tls:
+                insecure: false
+          EOF
+            fi
+          fi
+
+          # Metrics configuration
+          if [ "$CONFIG_PRESET" = "comprehensive" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              metrics:
+                redis.maxmemory:
+                  enabled: true
+                redis.role:
+                  enabled: true
+                redis.cmd.calls:
+                  enabled: true
+                redis.cmd.usec:
+                  enabled: true
+          EOF
+          else
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              metrics:
+                redis.maxmemory:
+                  enabled: true
+                redis.role:
+                  enabled: false
+                redis.cmd.calls:
+                  enabled: true
+                redis.cmd.usec:
+                  enabled: true
+                redis.clients.max_input_buffer:
+                  enabled: false
+                redis.clients.max_output_buffer:
+                  enabled: false
+                redis.replication.backlog_first_byte_offset:
+                  enabled: false
+          EOF
+          fi
+
+          # Configure resource_attributes based on identifier pattern
+          if [ "$IDENTIFIER_PATTERN" = "composite" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              resource_attributes:
+                server.address:
+                  enabled: true
+                server.port:
+                  enabled: true
+          EOF
+          else
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              resource_attributes:
+                server.address:
+                  enabled: false
+                server.port:
+                  enabled: false
+          EOF
+          fi
+
+          # Add filelog receiver if log path provided
+          if [ -n "$REDIS_LOG_PATH" ]; then
+            cat >> "$COLLECTOR_CONFIG" << EOF
+
+            file_log/redis:
+              include:
+                - ${REDIS_LOG_PATH}
+              start_at: end
+              operators:
+                - type: regex_parser
+                  regex: '^\d+:[XCSM] \d+ \w+ \d+ \d+:\d+:\d+\.\d+ (?P<level>.) '
+                  on_error: send
+              resource:
+                db.system: redis
+          EOF
+          fi
+
+          # Add host metrics receiver if enabled
+          if [ "$COLLECT_HOST_METRICS" = "true" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+            host_metrics:
+              collection_interval: 10s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.utilization: {enabled: true}
+                    system.cpu.time: {enabled: true}
+                load:
+                  metrics:
+                    system.cpu.load_average.1m: {enabled: true}
+                    system.cpu.load_average.5m: {enabled: true}
+                    system.cpu.load_average.15m: {enabled: true}
+                memory:
+                  metrics:
+                    system.memory.usage: {enabled: true}
+                    system.memory.utilization: {enabled: true}
+                disk:
+                  metrics:
+                    system.disk.io: {enabled: true}
+                    system.disk.operations: {enabled: true}
+                filesystem:
+                  metrics:
+                    system.filesystem.usage: {enabled: true}
+                    system.filesystem.utilization: {enabled: true}
+                network:
+                  metrics:
+                    system.network.io: {enabled: true}
+                    system.network.packets: {enabled: true}
+                process:
+                  metrics:
+                    process.cpu.utilization:
+                      enabled: true
+          EOF
+          fi
+
+          # Add cluster receiver if cluster mode enabled
+          if [ "$REDIS_CLUSTER_MODE" = "true" ] && [ -n "$REDIS_CLUSTER_NAME" ]; then
+            cat >> "$COLLECTOR_CONFIG" << EOF
+
+            redis/cluster:
+              endpoint: "${REDIS_ENDPOINT}"
+              collection_interval: 10s
+              metrics:
+                redis.clients.connected: {enabled: false}
+                redis.clients.blocked: {enabled: false}
+                redis.memory.used: {enabled: false}
+                redis.memory.rss: {enabled: false}
+                redis.memory.peak: {enabled: false}
+                redis.memory.lua: {enabled: false}
+                redis.memory.fragmentation_ratio: {enabled: false}
+                redis.commands.processed: {enabled: false}
+                redis.commands: {enabled: false}
+                redis.connections.received: {enabled: false}
+                redis.connections.rejected: {enabled: false}
+                redis.keyspace.hits: {enabled: false}
+                redis.keyspace.misses: {enabled: false}
+                redis.keys.evicted: {enabled: false}
+                redis.keys.expired: {enabled: false}
+                redis.net.input: {enabled: false}
+                redis.net.output: {enabled: false}
+                redis.cpu.time: {enabled: false}
+                redis.uptime: {enabled: false}
+                redis.slaves.connected: {enabled: false}
+                redis.db.keys: {enabled: false}
+                redis.db.expires: {enabled: false}
+                redis.db.avg_ttl: {enabled: false}
+                redis.rdb.changes_since_last_save: {enabled: false}
+                redis.latest_fork: {enabled: false}
+                redis.replication.offset: {enabled: false}
+                redis.maxmemory: {enabled: false}
+                redis.cmd.calls: {enabled: false}
+                redis.cmd.usec: {enabled: false}
+                redis.cluster.state: {enabled: true}
+                redis.cluster.slots_assigned: {enabled: true}
+                redis.cluster.slots_ok: {enabled: true}
+                redis.cluster.slots_pfail: {enabled: true}
+                redis.cluster.slots_fail: {enabled: true}
+                redis.cluster.known_nodes: {enabled: true}
+                redis.cluster.node.count: {enabled: true}
+                redis.cluster.stats_messages_sent: {enabled: true}
+                redis.cluster.stats_messages_received: {enabled: true}
+              resource_attributes:
+                server.address: {enabled: false}
+                server.port: {enabled: false}
+          EOF
+          fi
+
+          # Processors section
+          cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+          processors:
+            memory_limiter:
+              check_interval: 5s
+              limit_mib: 512
+              spike_limit_mib: 128
+
+            resource_detection:
+              detectors: [env, system]
+              timeout: 5s
+              override: false
+              system:
+                resource_attributes:
+                  host.name:
+                    enabled: true
+                  host.id:
+                    enabled: true
+
+            attributes/entity_tags:
+              actions:
+                - key: instrumentation.provider
+                  value: opentelemetry
+                  action: upsert
+          EOF
+
+          # Add resource processor based on pattern
+          if [ "$IDENTIFIER_PATTERN" != "composite" ]; then
+            INSTANCE_ID="${REDIS_INSTANCE_ID:-redis-instance-01:6379}"
+            cat >> "$COLLECTOR_CONFIG" << EOF
+
+            resource/redis:
+              attributes:
+                - key: redis.instance.id
+                  value: "${INSTANCE_ID}"
+                  action: upsert
+          EOF
+          fi
+
+          # Add custom attributes processor if provided
+          if [ -n "$CUSTOM_ATTRIBUTES" ]; then
+            if [ "$IDENTIFIER_PATTERN" != "composite" ]; then
+              # Append to existing resource/redis processor
+              OLD_IFS="$IFS"
+              IFS=','
+              for ATTR_PAIR in $CUSTOM_ATTRIBUTES; do
+                ATTR_PAIR=$(echo "$ATTR_PAIR" | xargs)
+                if [ -n "$ATTR_PAIR" ]; then
+                  ATTR_KEY=$(echo "$ATTR_PAIR" | cut -d'=' -f1 | xargs)
+                  ATTR_VALUE=$(echo "$ATTR_PAIR" | cut -d'=' -f2- | xargs)
+                  if [ -n "$ATTR_KEY" ] && [ -n "$ATTR_VALUE" ]; then
+                    cat >> "$COLLECTOR_CONFIG" << EOF
+                - key: ${ATTR_KEY}
+                  value: "${ATTR_VALUE}"
+                  action: upsert
+          EOF
+                  fi
+                fi
+              done
+              IFS="$OLD_IFS"
+            else
+              # Create separate resource/custom processor
+              cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+            resource/custom:
+              attributes:
+          EOF
+              OLD_IFS="$IFS"
+              IFS=','
+              for ATTR_PAIR in $CUSTOM_ATTRIBUTES; do
+                ATTR_PAIR=$(echo "$ATTR_PAIR" | xargs)
+                if [ -n "$ATTR_PAIR" ]; then
+                  ATTR_KEY=$(echo "$ATTR_PAIR" | cut -d'=' -f1 | xargs)
+                  ATTR_VALUE=$(echo "$ATTR_PAIR" | cut -d'=' -f2- | xargs)
+                  if [ -n "$ATTR_KEY" ] && [ -n "$ATTR_VALUE" ]; then
+                    cat >> "$COLLECTOR_CONFIG" << EOF
+                - key: ${ATTR_KEY}
+                  value: "${ATTR_VALUE}"
+                  action: upsert
+          EOF
+                  fi
+                fi
+              done
+              IFS="$OLD_IFS"
+            fi
+          fi
+
+          # Add logs resource processor for entity attachment
+          if [ -n "$REDIS_LOG_PATH" ]; then
+            if [ "$IDENTIFIER_PATTERN" = "composite" ]; then
+              REDIS_HOST=$(echo "$REDIS_ENDPOINT" | cut -d: -f1)
+              REDIS_PORT=$(echo "$REDIS_ENDPOINT" | cut -d: -f2)
+              cat >> "$COLLECTOR_CONFIG" << EOF
+
+            resource/redis_logs:
+              attributes:
+                - key: server.address
+                  value: "${REDIS_HOST}"
+                  action: upsert
+                - key: server.port
+                  value: "${REDIS_PORT}"
+                  action: upsert
+                - key: instrumentation.provider
+                  value: "opentelemetry"
+                  action: upsert
+          EOF
+            else
+              cat >> "$COLLECTOR_CONFIG" << EOF
+
+            resource/redis_logs:
+              attributes:
+                - key: redis.instance.id
+                  value: "${INSTANCE_ID}"
+                  action: upsert
+                - key: instrumentation.provider
+                  value: "opentelemetry"
+                  action: upsert
+          EOF
+            fi
+          fi
+
+          # Add cluster resource processor if cluster mode enabled
+          if [ "$REDIS_CLUSTER_MODE" = "true" ] && [ -n "$REDIS_CLUSTER_NAME" ]; then
+            cat >> "$COLLECTOR_CONFIG" << EOF
+
+            resource/cluster:
+              attributes:
+                - key: redis.cluster.name
+                  value: "${REDIS_CLUSTER_NAME}"
+                  action: upsert
+          EOF
+          fi
+
+          # Optimisation processors (only for optimised preset)
+          if [ "$CONFIG_PRESET" != "comprehensive" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+            cumulativetodelta:
+              include:
+                match_type: regexp
+                metrics:
+                  - redis\.commands\.processed
+                  - redis\.connections\.received
+                  - redis\.connections\.rejected
+                  - redis\.keys\.evicted
+                  - redis\.keys\.expired
+                  - redis\.keyspace\.hits
+                  - redis\.keyspace\.misses
+                  - redis\.net\.input
+                  - redis\.net\.output
+                  - redis\.cpu\.time
+                  - redis\.cmd\.calls
+                  - redis\.cmd\.usec
+                  - redis\.uptime
+
+            filter/cardinality:
+              metrics:
+                datapoint:
+                  - 'metric.name == "redis.cpu.time" and attributes["state"] != "sys" and attributes["state"] != "user"'
+                  - 'metric.name == "redis.cmd.calls" and attributes["cmd"] != "get" and attributes["cmd"] != "set" and attributes["cmd"] != "del" and attributes["cmd"] != "hget" and attributes["cmd"] != "hset" and attributes["cmd"] != "hgetall" and attributes["cmd"] != "lpush" and attributes["cmd"] != "rpop" and attributes["cmd"] != "zadd" and attributes["cmd"] != "expire"'
+                  - 'metric.name == "redis.cmd.usec" and attributes["cmd"] != "get" and attributes["cmd"] != "set" and attributes["cmd"] != "del" and attributes["cmd"] != "hget" and attributes["cmd"] != "hset" and attributes["cmd"] != "hgetall" and attributes["cmd"] != "lpush" and attributes["cmd"] != "rpop" and attributes["cmd"] != "zadd" and attributes["cmd"] != "expire"'
+
+            transform/metadata_nullify:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(description, "")
+                    - set(unit, "")
+          EOF
+          fi
+
+          # Add batch processor with settings based on preset
+          if [ "$CONFIG_PRESET" = "comprehensive" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+            batch:
+              send_batch_size: 1024
+              send_batch_max_size: 2048
+              timeout: 1s
+          EOF
+          else
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+            batch:
+              send_batch_size: 2048
+              send_batch_max_size: 4096
+              timeout: 10s
+          EOF
+          fi
+
+          # Exporters section
+          cat >> "$COLLECTOR_CONFIG" << 'EOF'
+
+          exporters:
+            otlp_http:
+              endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+              headers:
+                api-key: ${env:NEW_RELIC_LICENSE_KEY}
+              compression: gzip
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
+              sending_queue:
+                enabled: true
+                num_consumers: 10
+                queue_size: 1000
+          EOF
+
+          # Service pipelines
+          # Build processor list for Redis metrics
+          if [ "$CONFIG_PRESET" != "comprehensive" ]; then
+            OPT_PROCS="cumulativetodelta, filter/cardinality, transform/metadata_nullify, "
+          else
+            OPT_PROCS=""
+          fi
+
+          if [ "$IDENTIFIER_PATTERN" != "composite" ]; then
+            REDIS_PROC_LIST="memory_limiter, resource_detection, resource/redis, attributes/entity_tags, ${OPT_PROCS}batch"
+          elif [ -n "$CUSTOM_ATTRIBUTES" ]; then
+            REDIS_PROC_LIST="memory_limiter, resource_detection, resource/custom, attributes/entity_tags, ${OPT_PROCS}batch"
+          else
+            REDIS_PROC_LIST="memory_limiter, resource_detection, attributes/entity_tags, ${OPT_PROCS}batch"
+          fi
+
+          cat >> "$COLLECTOR_CONFIG" << EOF
+
+          service:
+            extensions: [health_check]
+            pipelines:
+              metrics/redis:
+                receivers: [redis]
+                processors: [${REDIS_PROC_LIST}]
+                exporters: [otlp_http]
+          EOF
+
+          # Add logs pipeline if log path provided
+          if [ -n "$REDIS_LOG_PATH" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              logs/redis:
+                receivers: [file_log/redis]
+                processors: [memory_limiter, resource/redis_logs, batch]
+                exporters: [otlp_http]
+          EOF
+          fi
+
+          # Add host metrics pipeline if enabled (separate pipeline)
+          if [ "$COLLECT_HOST_METRICS" = "true" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              metrics/host:
+                receivers: [host_metrics]
+                processors: [memory_limiter, resource_detection, attributes/entity_tags, batch]
+                exporters: [otlp_http]
+          EOF
+          fi
+
+          # Add cluster metrics pipeline if cluster mode enabled
+          if [ "$REDIS_CLUSTER_MODE" = "true" ] && [ -n "$REDIS_CLUSTER_NAME" ]; then
+            if [ "$CONFIG_PRESET" != "comprehensive" ]; then
+              CLUSTER_PROC_LIST="memory_limiter, resource_detection, resource/cluster, attributes/entity_tags, cumulativetodelta, transform/metadata_nullify, batch"
+            else
+              CLUSTER_PROC_LIST="memory_limiter, resource_detection, resource/cluster, attributes/entity_tags, batch"
+            fi
+            cat >> "$COLLECTOR_CONFIG" << EOF
+              metrics/cluster:
+                receivers: [redis/cluster]
+                processors: [${CLUSTER_PROC_LIST}]
+                exporters: [otlp_http]
+          EOF
+          fi
+
+          echo "Redis OTel config written to ${COLLECTOR_CONFIG}"
+
+    configure_service:
+      cmds:
+        - |
+          REDIS_OTEL_CONFIG="/etc/nrdot-collector/redis-collector-config.yaml"
+          CONFIG_FILE="/etc/nrdot-collector/nrdot-collector.conf"
+
+          EXISTING_OPTIONS=$(grep "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
+          if [ "{{.COLLECTOR_WAS_RUNNING}}" = "1" ]; then
+            if echo "$EXISTING_OPTIONS" | grep -q "redis-collector-config.yaml"; then
+              OTELCOL_OPTIONS="$EXISTING_OPTIONS"
+            else
+              echo "Overriding default NRDOT config with Redis collector config."
+              OTELCOL_OPTIONS="--config=${REDIS_OTEL_CONFIG}"
+            fi
+          else
+            OTELCOL_OPTIONS="--config=${REDIS_OTEL_CONFIG}"
+          fi
+          OTELCOL_OPTIONS="${OTELCOL_OPTIONS# }"
+
+          if grep -q "^OTELCOL_OPTIONS=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"|" "$CONFIG_FILE"
+          else
+            echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          echo "OTELCOL_OPTIONS updated in ${CONFIG_FILE}: ${OTELCOL_OPTIONS}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl daemon-reload
+          systemctl enable {{.COLLECTOR_DISTRO}}.service
+          systemctl restart {{.COLLECTOR_DISTRO}}.service
+
+    assert_nrdot_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for NRDOT Collector to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet {{.COLLECTOR_DISTRO}}.service && curl -sf http://localhost:13133 > /dev/null 2>&1; then
+              echo "NRDOT Collector is running and healthy."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "NRDOT Collector did not start in time. Check logs:" >&2
+          journalctl -u {{.COLLECTOR_DISTRO}}.service --no-pager -n 50 >&2
+          exit 31
+
+postInstall:
+  info: |2
+      Redis OTel config:  /etc/nrdot-collector/redis-collector-config.yaml
+      Env config:         /etc/nrdot-collector/nrdot-collector.conf
+      Service status:     systemctl status nrdot-collector
+      View logs:          journalctl -u nrdot-collector -f
+
+      NOTE: This installation replaces the default NRDot configuration.
+      The collector now uses only the Redis config file.
+      To restore default NRDot behavior alongside Redis monitoring,
+      update OTELCOL_OPTIONS in /etc/nrdot-collector/nrdot-collector.conf:
+      OTELCOL_OPTIONS="--config=/etc/nrdot-collector/config.yaml --config=/etc/nrdot-collector/redis-collector-config.yaml"

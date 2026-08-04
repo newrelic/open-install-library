@@ -1,0 +1,55 @@
+---
+# Ubuntu cloud AMIs run cloud-init + unattended-upgrades on first boot,
+# holding dpkg/apt locks for several minutes. Wait explicitly for those
+# to release before touching apt (avoids 'Could not get lock
+# /var/lib/dpkg/lock-frontend' + SSH-drop mid-transaction).
+- name: wait for cloud-init / unattended-upgrades to release dpkg locks
+  shell: |
+    for i in $(seq 1 60); do
+      if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+         && ! fuser /var/lib/dpkg/lock         >/dev/null 2>&1 \
+         && ! fuser /var/lib/apt/lists/lock    >/dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "dpkg lock still held after 5 min; continuing anyway"
+  become: yes
+  changed_when: false
+
+- name: install docker
+  apt:
+    name: docker.io
+    state: present
+    update_cache: yes
+    lock_timeout: 300
+  become: yes
+
+- name: start and enable docker
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+  become: yes
+
+- name: run rabbitmq container with management plugin
+  shell: |
+    docker run -d \
+      --name rabbitmq \
+      -p 5672:5672 \
+      -p 15672:15672 \
+      -e RABBITMQ_DEFAULT_USER=admin \
+      -e RABBITMQ_DEFAULT_PASS=admin \
+      rabbitmq:3-management
+  become: yes
+
+- name: wait for management API to be ready
+  shell: |
+    for i in $(seq 1 30); do
+      if curl -sf -u admin:admin http://localhost:15672/api/overview > /dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 2
+    done
+    exit 1
+  become: yes

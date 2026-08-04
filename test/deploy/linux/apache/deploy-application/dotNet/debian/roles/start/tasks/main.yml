@@ -15,13 +15,24 @@
   become: true
 
 - name: Enable Apache modules
+  # The original one-shot shell occasionally returns non-zero on the first
+  # a2enmod (apache module-state is r/w via /etc; back-to-back deploys on
+  # the same host can hit a transient lock — caught run 27668594552 even
+  # though the same test passed in 27599168384). set -e fails fast inside
+  # the script (matches old behaviour); the whole block retries to absorb
+  # a flaky first attempt.
   shell: |
+    set -e
     /usr/sbin/a2enmod proxy
     /usr/sbin/a2enmod proxy_http
     /usr/sbin/a2enmod proxy_balancer
     /usr/sbin/a2enmod lbmethod_byrequests
     /usr/sbin/a2enmod headers
   become: true
+  register: a2enmod_result
+  until: a2enmod_result.rc == 0
+  retries: 3
+  delay: 5
 
 - name: Restart Apache
   shell: |

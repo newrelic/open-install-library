@@ -1,0 +1,35 @@
+---
+- debug:
+    msg: Install ASP.NET Core 10.0 Runtime on Amazon Linux 2023
+
+# Amazon Linux 2023 ships .NET in its own dnf repositories, so we install the
+# ASP.NET Core runtime directly from there. This keeps .NET as a real rpm package,
+# which the .NET agent recipe's discovery gate (requireAtDiscovery) requires — it
+# greps `yum list installed` for dotnet-runtime*/aspnetcore-runtime*/dotnet-sdk*.
+# The Microsoft packages.microsoft.com rhel/9 feed is intentionally NOT used: its
+# packages-microsoft-prod meta-rpm requires `system-release < 10`, which AL2023
+# does not satisfy (dnf depsolve error).
+
+- name: Update packages
+  ansible.builtin.dnf:
+    name: '*'
+    state: latest
+    lock_timeout: 180
+  become: true
+
+- name: Install ASP.NET Core 10.0 Runtime and dependencies
+  ansible.builtin.dnf:
+    name:
+      - aspnetcore-runtime-10.0
+      - libicu
+    state: latest
+    lock_timeout: 180
+  become: true
+
+- name: Confirm dotnet is on PATH
+  shell: /usr/bin/dotnet --info
+  register: dotnet_info
+  changed_when: false
+
+- debug:
+    msg: "{{ dotnet_info.stdout_lines }}"

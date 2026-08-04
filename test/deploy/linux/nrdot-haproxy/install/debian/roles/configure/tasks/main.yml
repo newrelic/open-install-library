@@ -1,0 +1,73 @@
+---
+# Ubuntu cloud AMIs run cloud-init + unattended-upgrades on first boot,
+# holding dpkg/apt locks for several minutes. Wait explicitly for those
+# to release before touching apt (avoids 'Could not get lock
+# /var/lib/dpkg/lock-frontend' + SSH-drop mid-transaction).
+- name: wait for cloud-init / unattended-upgrades to release dpkg locks
+  shell: |
+    for i in $(seq 1 60); do
+      if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+         && ! fuser /var/lib/dpkg/lock         >/dev/null 2>&1 \
+         && ! fuser /var/lib/apt/lists/lock    >/dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "dpkg lock still held after 5 min; continuing anyway"
+  become: yes
+  changed_when: false
+
+- name: Install HAProxy
+  apt:
+    name: haproxy
+    state: present
+    update_cache: yes
+    lock_timeout: 300
+  become: yes
+
+- name: Configure HAProxy with stats endpoint
+  copy:
+    dest: /etc/haproxy/haproxy.cfg
+    content: |
+      global
+          log stdout format raw local0
+          maxconn 1000
+
+      defaults
+          log     global
+          mode    http
+          option  httplog
+          timeout connect 5s
+          timeout client  30s
+          timeout server  30s
+
+      frontend stats
+          bind *:8404
+          stats enable
+          stats uri /stats
+          stats refresh 10s
+
+      frontend http_front
+          bind *:80
+          default_backend app_backends
+
+      backend app_backends
+          balance roundrobin
+          server local 127.0.0.1:8080 check
+  become: yes
+
+- name: Start HAProxy
+  systemd:
+    name: haproxy
+    state: restarted
+    enabled: yes
+  become: yes
+
+- name: Wait for HAProxy stats endpoint
+  uri:
+    url: http://127.0.0.1:8404/stats
+    status_code: 200
+  register: result
+  until: result.status == 200
+  retries: 10
+  delay: 3

@@ -22,7 +22,7 @@ fi
 # If on RedHat based distro, assume we are using mariadb, and
 # that it needs to be started post package installation.
 if [ $(which yum) ]; then
-	service mariadb start
+	systemctl start mariadb
 fi
 
 mysql -u root -e \
@@ -50,6 +50,8 @@ wp core install --allow-root \
             --admin_password=admin \
             --admin_email=admin@example.com
 
+# Try to detect nginx, if it exists we can start it an exit since if nginx is started
+# there's no need to also start apache.
 if [ $(which nginx) ]; then
 	if [ -d /etc/nginx/sites-available ]; then
 		if [ ! -f /etc/nginx/sites-available/wordpress-site ]; then
@@ -69,8 +71,13 @@ if [ $(which nginx) ]; then
 	fi
 	echo Restarting nginx.
 	systemctl restart nginx
+	# Excellent, if we get here the restart happened successfully.  Let's exit since we don't
+	# need to try to start apache which doesn't coexist with nginx anyway.
+	exit 0
 fi
 
+# We should only get here if we didn't detect nginx because we don't attempt to start apache if nginx
+# is already running.
 if [ $(which apache2) ]; then
 	SITE="wordpress"
 	if [[ $(dpkg -l php-fpm) ]]; then
@@ -97,7 +104,7 @@ if [ $(which apache2) ]; then
 	fi
 
 	echo Restarting apache2.
-	service apache2 reload
+	systemctl reload apache2
 fi
 
 # The presence of httpd indicates we are running on a Linux 2 host.
@@ -105,5 +112,5 @@ fi
 if [ $(which httpd) ]; then
 	cp ~/templates/wordpress-httpd.conf /etc/httpd/conf.d/
 	sed -i -e "s/DocumentRoot \"\/var\/www\/html/DocumentRoot \"\/wordpress/" /etc/httpd/conf/httpd.conf
-	service httpd restart
+	systemctl restart httpd
 fi

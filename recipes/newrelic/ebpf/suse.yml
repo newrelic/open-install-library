@@ -1,0 +1,605 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: ebpf-agent-installer
+displayName: eBPF Agent
+description: New Relic install recipe for the eBPF agent
+repository: https://github.com/newrelic/newrelic-ebpf-agent
+
+installTargets:
+  # - type: host
+  #   os: linux
+  #   platform: suse
+  - type: host
+    os: linux
+    platformFamily: suse
+
+keywords:
+  - eBPF
+  - Agent
+  - Linux
+  - Suse
+  - SLES
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+
+install:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: check_legacy_version
+        - task: validate_inputs
+        - task: create_config
+        - task: install_linux_headers
+        - task: install_ebpf_agent
+        - task: disable_service_for_agent_control
+
+    assert_pre_req:
+      status:
+        - |
+          if [ "${FORCE_INSTALL:-}" = "true" ]; then
+            echo "Force install enabled - skipping pre-requisite checks"
+            exit 0
+          fi
+          # If FORCE_INSTALL is not true, we want the task to run normally
+          exit 1
+      cmds:
+        - |
+          IS_ROOT_OR_SUDO=$([ ! -z "$SUDO_USER" ] || [ $(whoami) = "root" ] && echo "true" || echo "false") # Assert root or sudo user
+          if [ "$IS_ROOT_OR_SUDO" = "false" ]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m This newrelic install must be run under sudo or root" >&2
+            echo ""
+            exit 3
+          fi
+        - |
+          IS_GREP_INSTALLED=$(which grep | wc -l)
+          if [ $IS_GREP_INSTALLED -eq 0 ] ; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m grep is required to run the newrelic install. Please install grep and re-run the installation." >&2
+            echo ""
+            exit 10
+          fi
+        - |
+          IS_UNAME_INSTALLED=$(which uname | wc -l)
+          if [ $IS_UNAME_INSTALLED -eq 0 ] ; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m uname is required to run the newrelic install. Please install uname and re-run the installation." >&2
+            echo ""
+            exit 15
+          fi
+        - |
+          IS_GPG_AGENT_INSTALLED=$(which gpg-agent | wc -l)
+          IS_GPG_CONNECT_AGENT_INSTALLED=$(which gpg-connect-agent | wc -l)
+          IS_GPG_INSTALLED=$(which gpg | wc -l)
+          if [ $IS_GPG_AGENT_INSTALLED -eq 0 ] || [ $IS_GPG_CONNECT_AGENT_INSTALLED -eq 0 ] || [ $IS_GPG_INSTALLED -eq 0 ]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m GnuPG suite is required to run the newrelic install. Please install gnupg suite and re-run the installation." >&2
+            echo ""
+            exit 15
+          fi
+        - |
+          IS_CURL_INSTALLED=$(which curl | wc -l)
+          if [ $IS_CURL_INSTALLED -eq 0 ] ; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            echo ""
+            exit 15
+          fi
+        - |
+          # Check kernel version - eBPF agent requires kernel 5.8 or higher
+          KERNEL_VERSION=$(uname -r | cut -d'-' -f1)
+          KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d'.' -f1)
+          KERNEL_MINOR=$(echo $KERNEL_VERSION | cut -d'.' -f2)
+
+          # Convert to comparable format (e.g., 5.8 becomes 508, 4.19 becomes 419)
+          KERNEL_NUM=$((KERNEL_MAJOR * 100 + KERNEL_MINOR))
+          REQUIRED_KERNEL_NUM=508  # 5.8
+
+          if [ $KERNEL_NUM -lt $REQUIRED_KERNEL_NUM ]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m eBPF agent requires Linux kernel version 5.8 or higher." >&2
+            echo -e "Current kernel version: $KERNEL_VERSION" >&2
+            echo -e "Please upgrade your kernel to version 5.8 or higher and re-run the installation." >&2
+            echo ""
+            exit 17
+          fi
+        - |
+          if [[ ! -d "/px" ]]; then
+            if ! mkdir -p "/px"; then
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Failed to create /px directory. Aborting installation."
+              echo ""
+              exit 16
+            fi
+          else
+            echo "Directory /px already exists. Continuing with installation."
+          fi
+
+    check_legacy_version:
+      cmds:
+        - |
+          # Check if newrelic-ebpf-agent is already installed with version 1.3.0 or below
+          if rpm -q newrelic-ebpf-agent &>/dev/null; then
+            INSTALLED_VERSION=$(rpm -q --queryformat '%{VERSION}' newrelic-ebpf-agent 2>/dev/null)
+
+            if [[ -n "$INSTALLED_VERSION" ]]; then
+              # Extract major.minor.patch version (remove any suffix like -1, ~beta, etc.)
+              VERSION_CLEAN=$(echo "$INSTALLED_VERSION" | sed 's/[-~].*//' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+
+              if [[ -n "$VERSION_CLEAN" ]]; then
+                # Compare version - check if it's 1.3.0 or below
+                MAJOR=$(echo "$VERSION_CLEAN" | cut -d. -f1)
+                MINOR=$(echo "$VERSION_CLEAN" | cut -d. -f2)
+                PATCH=$(echo "$VERSION_CLEAN" | cut -d. -f3)
+
+                # Version is legacy if: major < 1, OR (major == 1 AND minor < 3), OR (major == 1 AND minor == 3 AND patch == 0)
+                IS_LEGACY=false
+                if [[ "$MAJOR" -lt 1 ]]; then
+                  IS_LEGACY=true
+                elif [[ "$MAJOR" -eq 1 ]]; then
+                  if [[ "$MINOR" -lt 3 ]]; then
+                    IS_LEGACY=true
+                  elif [[ "$MINOR" -eq 3 && "$PATCH" -eq 0 ]]; then
+                    IS_LEGACY=true
+                  fi
+                fi
+
+                if [[ "$IS_LEGACY" == "true" ]]; then
+                  echo ""
+                  echo -e "\e[31mERROR:\e[0m Detected newrelic-ebpf-agent version $INSTALLED_VERSION which uses legacy .conf configuration format."
+                  echo "Please remove the existing setup and do a fresh installation."
+                  echo ""
+                  echo "To remove the existing installation, run:"
+                  echo "  sudo zypper remove newrelic-ebpf-agent"
+                  echo ""
+                  exit 25
+                fi
+              fi
+            fi
+          fi
+          echo "No legacy version detected. Proceeding with installation."
+
+    validate_inputs:
+      cmds:
+        - |
+          # Validate required inputs BEFORE creating config file
+
+          # Validate NEW_RELIC_LICENSE_KEY
+          if [[ -z "${NEW_RELIC_LICENSE_KEY:-}" ]]; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m NEW_RELIC_LICENSE_KEY is required but not set. Aborting installation."
+            echo ""
+            exit 1
+          fi
+          echo "License key validated."
+
+          # Validate DEPLOYMENT_NAME (required unless Agent Control mode)
+          # if [[ -z "${DEPLOYMENT_NAME:-}" && "${NEW_RELIC_AGENT_CONTROL:-}" != "true" ]]; then
+          #   echo ""
+          #   echo -e "\e[31mERROR:\e[0m DEPLOYMENT_NAME is required but not set. Aborting installation."
+          #   echo ""
+          #   exit 1
+          # fi
+          # echo "Deployment name validated."
+
+          # Set default log file path if not provided
+          if [[ -z "${NEW_RELIC_LOG_FILE_PATH:-}" ]]; then
+            export NEW_RELIC_LOG_FILE_PATH="/var/log/newrelic-ebpf-agent"
+          fi
+
+          # Validate log directory can be created
+          if [[ ! -d "$NEW_RELIC_LOG_FILE_PATH" ]]; then
+            echo "Creating log directory $NEW_RELIC_LOG_FILE_PATH..."
+            if ! mkdir -p "$NEW_RELIC_LOG_FILE_PATH"; then
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Failed to create log directory $NEW_RELIC_LOG_FILE_PATH. Aborting installation."
+              echo ""
+              exit 20
+            fi
+          fi
+          echo "Log directory validated: $NEW_RELIC_LOG_FILE_PATH"
+          echo "All input validations passed."
+
+    create_config:
+      cmds:
+        - |
+          CONFIG_FILE="/etc/newrelic-ebpf-agent/newrelic-ebpf-agent.yaml"
+          CONFIG_DIR="/etc/newrelic-ebpf-agent"
+
+          # Function to log errors and exit
+          log_error_and_exit() {
+              echo ""
+              echo -e "\033[0;31mERROR:\033[0m $1"
+              echo ""
+              exit 1
+          }
+
+          # Handle custom config file path
+          if [[ -n "${CONFIG_FILE_PATH:-}" ]]; then
+            if [[ -f "$CONFIG_FILE_PATH" ]]; then
+              echo "Using custom configuration file: $CONFIG_FILE_PATH"
+              # Ensure the directory exists
+              mkdir -p "$CONFIG_DIR" || log_error_and_exit "Failed to create directory $CONFIG_DIR."
+              # Create symbolic link to custom config
+              if [[ "$(realpath "$CONFIG_FILE_PATH")" != "$(realpath "$CONFIG_FILE")" ]]; then
+                ln -sf "$(realpath "$CONFIG_FILE_PATH")" "$CONFIG_FILE" || log_error_and_exit "Failed to create symbolic link."
+                echo "Symbolic link created successfully."
+              fi
+              echo "Configuration file ready at $CONFIG_FILE"
+            else
+              log_error_and_exit "Custom configuration file $CONFIG_FILE_PATH does not exist."
+            fi
+          fi
+
+          # Create default YAML configuration file
+          echo "Creating YAML configuration file at $CONFIG_FILE..."
+
+          # Ensure the directory exists
+          mkdir -p "$CONFIG_DIR" || log_error_and_exit "Failed to create directory $CONFIG_DIR."
+
+          # Set default log file path
+          LOG_FILE_PATH="${NEW_RELIC_LOG_FILE_PATH:-/var/log/newrelic-ebpf-agent}"
+
+          # Create the YAML configuration file
+          tee "$CONFIG_FILE" > /dev/null << EOS
+          # eBPF Agent Configuration File (YAML format)
+          # Documentation: https://github.com/newrelic/newrelic-ebpf-agent
+
+          # -- The license key to use.
+          licenseKey: "${NEW_RELIC_LICENSE_KEY}"
+          # -- Unique name for the deployment to identify data posting via eBPF Agent
+          deploymentName: "${DEPLOYMENT_NAME:-}"
+          # -- If using a customSecretLicenseKey, you must supply your
+          # region "US"/"EU". Otherwise, leave this value as an empty string.
+          region: "${NEW_RELIC_REGION}"
+          # -- Custom OTLP endpoint URL. When set, this takes precedence over the region-based static endpoints.
+          customOtlpEndpoint: ""
+          # Only overridden when both customOtlpEndpoint and this field are explicitly set.
+          customOtlpEndpointTlsEnabled: true
+          # -- Path to custom certificates for OTLP endpoint TLS.
+          customOtlpEndpointTlsCertPath: ""
+          # -- HTTP/HTTPS proxy configuration for OTLP endpoint
+          # Allows routing telemetry data through corporate proxies
+          otlpProxy:
+            # -- Proxy hostname (e.g., proxy.example.com). If empty, no proxy is used.
+            host: "${NEW_RELIC_PROXY_HOST:-}"
+            # -- Proxy port (e.g., 8080). Required when host is set.
+            port: ${NEW_RELIC_PROXY_PORT:-}
+            # -- Proxy URL scheme: http or https (default: http)
+            scheme: "${NEW_RELIC_PROXY_SCHEME:-http}"
+            # -- Username for proxy Basic Authentication (optional). If empty, no authentication is used.
+            user: "${NEW_RELIC_PROXY_USER:-}"
+            # -- Password for proxy Basic Authentication (optional). Only used with user.
+            password: "${NEW_RELIC_PROXY_PASS:-}"
+            # -- Alternative: Complete proxy URL (overrides individual settings above)
+            # Format: http://[user:pass@]host:port
+            url: "${NEW_RELIC_PROXY_URL:-}"
+          # -- To configure the log level in increasing order of verboseness.
+          # -- OFF, FATAL, ERROR, WARNING, INFO, DEBUG
+          logLevel: "INFO"
+          # -- To configure log file path of eBPF Agent. If logging to this path fails, logs will be directed to stdout.
+          logFilePath: "${LOG_FILE_PATH}"
+          # -- Sets the path of the directory where the required linux headers
+          # are downloaded and placed for the eBPF agent to use.
+          # -- This is useful under restricted environments where agent is not
+          # able to download required linux headers. The required headers are
+          # identified by the agent based on the kernel version.
+          downloadedPackagedHeadersPath: ""
+          # -- Sets the path of the installed distribution linux headers.
+          # This is useful when auto discovery of distribution linux headers
+          # path fails.
+          distroKernelHeadersPath: ""
+          # -- Enable APM data reporting. When enabled, the agent collects
+          # and reports application performance monitoring data.
+          # Controls APM data reporting. Accepted values: 'true' (always send),
+          # 'false' (never send), 'auto' (send only when neither APM nor
+          # OTel agent is attached)
+          reportApmData: "${REPORT_APM_DATA:-auto}"
+          # -- Enable network metrics reporting. When enabled, the agent
+          # collects and reports network metrics including TCP statistics.
+          # Controls network metrics reporting.
+          # Accepted values: 'true' (always send), 'false' (never send)
+          # and 'auto'
+          reportNetworkMetrics: "${REPORT_NETWORK_METRICS:-auto}"
+          # -- Enable log reporting. When enabled, the agent
+          # collects and reports logs. Controls log reporting.
+          # Accepted values: 'true' (always send), 'false' (never send)
+          # and 'auto' (send only when APM is not attached)
+          reportLogs: "${REPORT_LOGS:-false}"
+          ai_monitoring:
+            # -- Enable AI monitoring. When enabled, the agent collects and reports AI monitoring data.
+            # Accepted values: 'true' (always send), 'false' (never send) and
+            # 'auto' (send only when neither APM nor OTel agent is attached)
+            enabled: ${AI_MONITORING_ENABLED:-false}
+            # samplingLatency represents the sampling latency threshold for the spans to export.
+            # Options: any percentile from p0 to p99 (e.g., p0, p1, p5, p10, p50, p90, p99).
+            samplingLatency: "${AI_MONITORING_SAMPLING_LATENCY:-p50}"
+            # -- samplingErrorRate represents the error rate threshold
+            # for an HTTP route where surpassing it would mean the
+            # corresponding spans of the route are exported.
+            # Options: 1-100
+            samplingErrorRate: "${AI_MONITORING_SAMPLING_ERROR_RATE:-}"
+            # -- Enable GenAI capture message content. When enabled, the agent captures
+            # message content for GenAI interactions. Use with caution.
+            genAICaptureMessageContent: ${AI_MONITORING_GENAI_CAPTURE_MESSAGE_CONTENT:-false}
+
+          # -- HTTP path normalization patterns. Each pattern must contain at least one * wildcard.
+          # Use '!' prefix for exclusion patterns to preserve paths as-is (skip auto-clustering).
+          # Patterns are applied before auto-clustering and take precedence over it.
+          # Example:
+          # httpPathNormalizationPatterns:
+          #   - "/api/users/*"
+          #   - "/api/orders/*"
+          #   - "!/health/*"
+          httpPathNormalizationPatterns: []
+
+          # -- Maximum number of bytes captured from an HTTP request/response body.
+          # Default: 1048576 (1MB) when ai_monitoring.enabled is 'true' or 'auto', otherwise 1024 (1KB).
+          # Increase this value if AI monitoring payloads are being truncated.
+          # Example: 2097152 for 2MB
+          httpBodyLimitBytes: ""
+
+          # Capability to include/exclude port from entity name, default: true. ex: python:frosty_merkle:[80]
+          # Set it to false, to exclude ports from entity name, ex: python:frosty_merkle
+          includePortInServerEntityIdentification: true
+
+          # -- Custom labels to be added to all entities reported by the eBPF agent.
+          # These labels are sent as the NEW_RELIC_LABELS environment variable in the format "key1:value1;key2:value2".
+          # Example:
+          # entityLabels:
+          #   datacenter: "us-east-1"
+          #   cluster: "prod-cluster"
+          #   environment: "production"
+          entityLabels: {}
+
+          # -- All data drop filters configuration
+          # Configure filters to drop all types of data (Network Metrics and APM data) based on config provided
+          allDataFilters:
+            # -- Define a regex to match k8s service names to drop. Example "kube-dns|otel-collector|\\bblah\\b"
+            # Use either dropServiceNameRegex or keepServiceNameRegex to filter service names, not both.
+            # If both are provided, keepServiceNameRegex takes precedence.
+            dropServiceNameRegex: ""
+            # -- This config acts as a bypass for the dropServiceNameRegex config.
+            # Service names that match this regex will not have their data dropped by the dropServiceNameRegex.
+            # Use either dropServiceNameRegex or keepServiceNameRegex to filter service names, not both.
+            # If both are provided, keepServiceNameRegex takes precedence.
+            keepServiceNameRegex: ""
+            # -- Drop all data for applications/entities that have NewRelic/OTEL APM agents running
+            dropApmAgentEnabledEntity: false
+
+          # -- APM data filters configuration
+          # Configure filters to drop ebpf APM data based on config provided
+          apmDataFilters:
+            # -- List of entity names to drop ebpf APM data for
+            dropEntityName: []
+            # -- List of entity names to always keep APM data. By default all entities are kept/enabled
+            # -- This config bypasses dropEntityName filter.
+            keepEntityName: []
+            # -- Enable JVM metrics reporting. When enabled, the agent collects and reports JVM metrics for Java applications
+            jvmMetricsReporting: true
+
+          # -- Network metrics Data filter / TCP stats filters
+          # Configure filters to drop/keep Network metrics data based on config provided
+          networkMetricsDataFilter:
+            # -- List of entity names to drop Network metrics data for
+            dropEntityName: []
+            # -- List of entity names to always keep Network metrics data. By default all entities are kept/enabled
+            # -- This config bypasses dropEntityName filter.
+            keepEntityName: []
+
+          # -- Log data filters configuration
+          # Configure filters to drop/keep log data based on the config provided
+          logDataFilters:
+            # -- Application/entity log reporting filters
+            applicationLogReporting:
+              # -- Enable log collection from entities matching the filters below
+              enabled: ${APPLICATION_LOG_REPORTING_ENABLED:-true}
+              # -- Regex to match log file names to include
+              fileRegex: ".*.log$"
+              # -- Minimum log level to report (e.g., TRACE, DEBUG, INFO, WARN, ERROR). Default: INFO
+              logLevelThreshold: "${APPLICATION_LOG_LEVEL_THRESHOLD:-INFO}"
+              # -- Maximum number of log samples to collect per minute from an entity.
+              # The internal maxSamplesStored is calculated proportionally based on the harvest cycle (5 seconds):
+              # maxSamplesStored = maxSamplesPerMinute / (60 / 5) = maxSamplesPerMinute / 12
+              # For the default value of 10000, this results in ~833 samples stored per harvest cycle.
+              # Once this limit is reached, events are sampled to maintain an even distribution across the harvest cycle.
+              maxSamplesPerMinute: 10000
+              # -- Regex to match entity names to keep logs from stdout and stderr
+              keepStdStreamEntityRegex: ".*"
+              # -- Regex to match entity names to keep logs from log files
+              keepFileEntityRegex: ".*"
+
+          # -- The source connectors (and data export scripts) to enable.
+          # Note that socket_tracer tracks http, mysql, redis, mongodb, amqp, cassandra, dns, and postgresql
+          # while tcp_stats tracks TCP metrics.
+          # stirlingSources: "socket_tracer,tcp_stats"
+
+          # The protocols to enable for tracing in the socket_tracer.
+          # There is an ability to configure span export if it is enabled.
+          # Each protocol has the flexibility to selectively enable the type
+          # of OTLP data to export.
+          # Metrics are sent by default when a protocol is enabled and it
+          # supports metrics. Note: AMQP, Kafka, DNS do not report metrics.
+          # samplingLatency represents the sampling latency threshold for the spans to export.
+          # Options: p1, p10, p50, p90, p99.
+          protocols:
+            global:
+              # Controls maximum unlinked spans reported per protocol. Set to 0 to disable limit.
+              # Unlinked spans are spans that the eBPF agent captures but cannot associate with its parent.
+              max_unlinked_spans: 100
+              # Reserves a configurable percentage of the unlinked span quota for error spans,
+              # ensuring error visibility even when normal spans arrive first.
+              unlinked_spans_error_quota_percentage: 30
+            http:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+                # -- samplingErrorRate represents the error rate threshold
+                # for an HTTP route where surpassing it would mean the
+                # corresponding spans of the route are exported.
+                # Options: 1-100
+                samplingErrorRate: ""
+            thrift:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+                samplingErrorRate: ""
+            mysql:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            pgsql:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            cass:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            redis:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            mongodb:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            kafka:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            amqp:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            dns:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            dynamodb:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+            mssql:
+              enabled: true
+              spans:
+                enabled: true
+                samplingLatency: "p50"
+
+          EOS
+
+          echo "YAML configuration file created successfully at $CONFIG_FILE"
+
+    install_linux_headers:
+      cmds:
+        - |
+          KERNEL_VERSION=$(uname -r)
+          echo "Installing kernel headers for kernel version: $KERNEL_VERSION"
+          # Detect kernel flavor from uname (e.g., default, azure, rt)
+          KERNEL_FLAVOR=$(echo "$KERNEL_VERSION" | grep -oP '[^-]+$')
+          # Get exact package version from the RPM that owns the running kernel
+          # Try vmlinuz (x86_64) first, then Image (aarch64)
+          KERNEL_PKG_VERSION=""
+          if [[ -f "/boot/vmlinuz-${KERNEL_VERSION}" ]]; then
+            KERNEL_PKG_VERSION=$(rpm -qf "/boot/vmlinuz-${KERNEL_VERSION}" --queryformat '%{VERSION}-%{RELEASE}\n' 2>/dev/null | head -1)
+          elif [[ -f "/boot/Image-${KERNEL_VERSION}" ]]; then
+            KERNEL_PKG_VERSION=$(rpm -qf "/boot/Image-${KERNEL_VERSION}" --queryformat '%{VERSION}-%{RELEASE}\n' 2>/dev/null | head -1)
+          fi
+          if [[ -n "$KERNEL_PKG_VERSION" ]]; then
+            echo "Found matching kernel package version: $KERNEL_PKG_VERSION"
+            if zypper --non-interactive install "kernel-${KERNEL_FLAVOR}-devel=${KERNEL_PKG_VERSION}"; then
+              echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."
+            else
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Failed to install kernel headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
+              echo ""
+            fi
+          else
+            echo "Could not determine exact kernel package version, installing latest kernel-${KERNEL_FLAVOR}-devel"
+            if zypper --non-interactive install "kernel-${KERNEL_FLAVOR}-devel"; then
+              echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."
+            else
+              echo ""
+              echo -e "\e[31mERROR:\e[0m Failed to install kernel headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
+              echo ""
+            fi
+          fi
+      ignore_error: true
+
+    install_ebpf_agent:
+      cmds:
+        - |
+          ARCH=$(uname -m)
+          REPO_URL=$(echo -n "https://download.newrelic.com/preview/linux/zypp/sles/{{.SLES_VERSION}}/$ARCH/newrelic-infra.repo")
+          IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
+          if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
+            echo "newrelic infrastructure agent is not available for this architecture "$ARCH". See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
+            exit 131
+          fi
+
+          curl -s $REPO_URL -o /etc/zypp/repos.d/newrelic-infra.repo
+          curl -s -L https://download.newrelic.com/infrastructure_agent/keys/newrelic_rpm_key_current.gpg > newrelic_rpm_key_current.gpg
+          rpm --import newrelic_rpm_key_current.gpg
+          zypper -n --quiet ref -r newrelic-infra
+
+          zypper -n --quiet install newrelic-ebpf-agent || {
+            echo ""
+            echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
+            echo ""
+            exit 1
+          }
+          rm -f newrelic_rpm_key_current.gpg
+
+          # Verify package was actually installed
+          if ! rpm -q newrelic-ebpf-agent &>/dev/null; then
+            echo ""
+            echo -e "\e[31mERROR:\e[0m newrelic-ebpf-agent installation failed. Aborting installation."
+            echo ""
+            exit 1
+          fi
+
+          echo "eBPF agent package installed successfully."
+      vars:
+        SLES_VERSION:
+          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
+      silent: true
+
+    # When the eBPF agent is installed alongside Agent Control, the default services are disabled
+    # and the binary execution is orchestrated by Agent Control
+    disable_service_for_agent_control:
+      status:
+        - |
+          if [ "${NEW_RELIC_AGENT_CONTROL:-}" = "true" ]; then
+            echo "eBPF agent services will be controlled by Agent Control - disabling default startup"
+            exit 1
+          fi
+      cmds:
+        - |
+          sudo systemctl stop newrelic-ebpf-agent
+          sudo systemctl disable newrelic-ebpf-agent
+      ignore_error: true
+
+postInstall:
+  info: |2
+      ⚙️  The eBPF Agent configuration file can be found in /etc/newrelic-ebpf-agent/newrelic-ebpf-agent.yaml
+      Edit this file to make changes or configure advanced features for the agent.

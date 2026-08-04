@@ -3,6 +3,11 @@
     msg: Install PHP
 
 - name: install PHP and pre-reqs
+  # Ubuntu 18.04 (used by php-apache-wordpress-ubuntu18.json) is EOL since
+  # 2023-06; its apt mirrors are flaky (hash-sum mismatches, transient 503s).
+  # Same step passed yesterday in 27599168384 and failed today at
+  # configure.yml in 27668594552. Retry to absorb mirror flakes; matches
+  # the mvn-retry pattern used in demo-javatron #48 for the same flake.
   apt:
     pkg:
       - libapache2-mod-php
@@ -11,6 +16,10 @@
       - php-mysql
     update_cache: yes
   become: yes
+  register: apt_install_php
+  until: apt_install_php is succeeded
+  retries: 3
+  delay: 10
 
 - template:
     src: "{{ item }}"
