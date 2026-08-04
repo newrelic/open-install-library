@@ -600,3 +600,45 @@ install:
           rm -f "$PW_FILE"
           echo "Oracle OTel config written to ${CONFIG_PATH}"
           echo "Env file written to ${ENV_FILE}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl restart nrdot-collector
+
+    assert_nrdot_status_ok:
+      cmds:
+        - |
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for NRDOT Collector to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet nrdot-collector; then
+              echo "NRDOT Collector is running."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "NRDOT Collector did not start in time. Check logs:" >&2
+          journalctl -u nrdot-collector --no-pager -n 50 >&2
+          exit 31
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: assert_oracle_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: create_collector_config
+        - task: restart_nrdot
+        - task: assert_nrdot_status_ok
+
+postInstall:
+  info: |2
+      Oracle OTel config: /etc/nrdot-collector/oracle-config.yaml
+      Env file:            /etc/nrdot-collector/nrdot-collector.conf
+      Service status:      systemctl status nrdot-collector
+      View logs:            journalctl -u nrdot-collector -f
+      Restart service:      sudo systemctl restart nrdot-collector
