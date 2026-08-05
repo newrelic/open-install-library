@@ -108,13 +108,13 @@ install:
               }
             }
             "2" {
-              if ([string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_WIN_ACCOUNT}}") -or [string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_WIN_PASSWORD}}")) {
+              if ([string]::IsNullOrWhiteSpace($env:NR_CLI_MSSQL_WIN_ACCOUNT) -or [string]::IsNullOrWhiteSpace($env:NR_CLI_MSSQL_WIN_PASSWORD)) {
                 Write-Host -ForegroundColor Red "NR_CLI_MSSQL_WIN_ACCOUNT and NR_CLI_MSSQL_WIN_PASSWORD are both required for Windows Auth (mode 2)."
                 exit 1
               }
             }
             "3" {
-              if ([string]::IsNullOrWhiteSpace("{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}")) {
+              if ([string]::IsNullOrWhiteSpace($env:NR_CLI_MSSQL_GMSA_ACCOUNT)) {
                 Write-Host -ForegroundColor Red "NR_CLI_MSSQL_GMSA_ACCOUNT is required for gMSA (mode 3)."
                 exit 1
               }
@@ -306,7 +306,7 @@ install:
             Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-P", $env:NR_CLI_MSSQL_SA_PASSWORD, "-C") $sqlFile
           }
           elseif ($mode -eq "2") {
-            $account = "{{.NR_CLI_MSSQL_WIN_ACCOUNT}}"
+            $account = $env:NR_CLI_MSSQL_WIN_ACCOUNT
             $sql = @"
           USE [master];
           GO
@@ -350,7 +350,7 @@ install:
             Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
           }
           else {
-            $gmsa = "{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}"
+            $gmsa = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
             $sql = @"
           USE master;
           GO
@@ -408,16 +408,16 @@ install:
           }
 
           if ($mode -eq "2") {
-            $account = "{{.NR_CLI_MSSQL_WIN_ACCOUNT}}"
-            $password = "{{.NR_CLI_MSSQL_WIN_PASSWORD}}"
+            $account = $env:NR_CLI_MSSQL_WIN_ACCOUNT
+            $password = $env:NR_CLI_MSSQL_WIN_PASSWORD
           } else {
-            $account = "{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}"
+            $account = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
             $password = ""
           }
 
           Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
 
-          cmd /c "sc config `"$service`" obj= `"$account`" password= `"$password`""
+          & sc.exe config "$service" obj= "$account" password= "$password"
           if ($LASTEXITCODE -ne 0) {
             Write-Host -ForegroundColor Red "Failed to configure the nrdot-collector service to run as $account."
             exit 1
