@@ -949,6 +949,19 @@ install:
           $configText = $template.Replace('__RECEIVER_FIELDS__', $receiverFields).Replace('__OTLP_ENDPOINT__', $otlpEndpoint).Replace('__LICENSE_KEY__', $licenseKey)
           $configText | Set-Content -Path $configPath -Encoding utf8
 
+          $serviceAccount = if ($mode -eq "1") { $null }
+                             elseif ($mode -eq "2") { $env:NR_CLI_MSSQL_WIN_ACCOUNT }
+                             else { $env:NR_CLI_MSSQL_GMSA_ACCOUNT }
+
+          $grants = @("SYSTEM:(F)", "BUILTIN\Administrators:(F)")
+          if ($serviceAccount) { $grants += "${serviceAccount}:(R)" }
+
+          icacls $configPath /inheritance:r /grant:r $grants | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host -ForegroundColor Red "Failed to restrict permissions on $configPath."
+            exit 1
+          }
+
           if ($mode -eq "1") {
             Remove-Item -Path $pwFile -ErrorAction SilentlyContinue
           }
