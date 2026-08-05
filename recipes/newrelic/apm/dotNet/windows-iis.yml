@@ -119,13 +119,20 @@ install:
             }
             catch { return $false }
           }
-          
+
+          $stopped = $false
           for ($tries = 0; $tries -lt 30; $tries++) {
             if ((Stop-IIS)) {
+              $stopped = $true
               break
             }
             # Try to stop IIS again after a delay
             Start-Sleep -s 2
+          }
+
+          if (-not $stopped) {
+            Write-Host -ForegroundColor Red "Failed to stop IIS after multiple attempts. Please ensure the World Wide Web Publishing Service (W3SVC) is running and that you have permission to stop it, then re-run the installer."
+            exit 134 # failed to stop IIS
           }
           '
 
@@ -170,7 +177,12 @@ install:
 
           $uninstallIds = Find-UninstallGuids -Match "New Relic .NET Agent"
           foreach ($uninstallId in $uninstallIds) {
-            Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/x $uninstallId" -Wait -NoNewWindow
+            try {
+              Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/x $uninstallId" -Wait -NoNewWindow
+            }
+            catch {
+              Write-Host -ForegroundColor Yellow "Warning: failed to launch msiexec.exe to remove previous New Relic .NET Agent install ($uninstallId): $($_.Exception.Message)"
+            }
           }
           '
 
@@ -227,8 +239,15 @@ install:
       cmds:
         - |
           powershell -command '
-          $installCode = (Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/i","$env:TEMP\NewRelicDotNetAgent_x64.msi","NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" -PassThru -Wait -NoNewWindow -RedirectStandardOutput ".\NUL").ExitCode
-          
+          try {
+            $installCode = (Start-Process -FilePath msiexec.exe -ArgumentList "/qn","/i","$env:TEMP\NewRelicDotNetAgent_x64.msi","NR_LICENSE_KEY={{.NEW_RELIC_LICENSE_KEY}}" -PassThru -Wait -NoNewWindow -RedirectStandardOutput ".\NUL").ExitCode
+          }
+          catch {
+            Write-Host -ForegroundColor Red "Failed to launch msiexec.exe to install the New Relic .NET Agent: $($_.Exception.Message)"
+            Write-Host -ForegroundColor Red "This can happen if antivirus/endpoint protection software is blocking msiexec.exe, or if the current user lacks permission to execute it."
+            exit 139 # failed to start installer process
+          }
+
           # https://docs.microsoft.com/en-us/windows/win32/msi/error-codes
           if (@(0,1641,3010) -NotContains $installCode) {
             Write-Host -ForegroundColor Red "Failed to install New Relic .NET Agent ($installCode)"
@@ -241,6 +260,7 @@ install:
       cmds:
         - |
           powershell -command '
+          try {
           $configPath = "$env:ProgramData\New Relic\.NET Agent\newrelic.config"
           $file = Resolve-Path("$configPath")
           $xdoc = New-Object System.Xml.XmlDocument
@@ -312,6 +332,12 @@ install:
           }
 
           $xdoc.Save($configPath)
+          }
+          catch {
+            Write-Host -ForegroundColor Red "Failed to configure the New Relic .NET Agent: $($_.Exception.Message)"
+            Write-Host -ForegroundColor Red "This can happen if newrelic.config was not found at the expected location (install may not have completed successfully), or if it could not be read/written due to permissions."
+            exit 136 # failed to configure agent
+          }
           '
         - echo "New Relic .NET Agent configured"
 
@@ -326,13 +352,20 @@ install:
             }
             catch { return $false }
           }
-          
+
+          $started = $false
           for ($tries = 0; $tries -lt 30; $tries++) {
             if ((Start-IIS)) {
+              $started = $true
               break
             }
             # Try to start IIS again after a delay
             Start-Sleep -s 2
+          }
+
+          if (-not $started) {
+            Write-Host -ForegroundColor Red "Failed to start IIS after multiple attempts. The New Relic .NET Agent was installed, but IIS may not be running. Please start IIS manually (iisreset /start) and verify your sites are running."
+            exit 135 # failed to start IIS
           }
           '
 
@@ -344,7 +377,18 @@ install:
           $env:NEW_RELIC_API_KEY="{{.NEW_RELIC_API_KEY}}"
           $env:NEW_RELIC_ACCOUNT_ID="{{.NEW_RELIC_ACCOUNT_ID}}"
           $env:NEW_RELIC_LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
-          Start-Process -FilePath "C:\Program Files\New Relic\New Relic CLI\newrelic.exe" -ArgumentList "diagnose","validate" -Wait -NoNewWindow -RedirectStandardOutput ".\NUL"
+          try {
+            $validateCode = (Start-Process -FilePath "C:\Program Files\New Relic\New Relic CLI\newrelic.exe" -ArgumentList "diagnose","validate" -PassThru -Wait -NoNewWindow -RedirectStandardOutput ".\NUL").ExitCode
+          }
+          catch {
+            Write-Host -ForegroundColor Red "Failed to launch newrelic.exe to validate the installation: $($_.Exception.Message)"
+            Write-Host -ForegroundColor Red "This can happen if antivirus/endpoint protection software is blocking newrelic.exe, or if the current user lacks permission to execute it."
+            exit 133 # failed to start CLI validation process
+          }
+
+          if ($validateCode -ne 0) {
+            Write-Host -ForegroundColor Yellow "Warning: New Relic CLI validation exited with a non-zero code ($validateCode). The .NET Agent was installed, but reporting data to New Relic could not be confirmed."
+          }
           '
 
     ensure_sites_started:
