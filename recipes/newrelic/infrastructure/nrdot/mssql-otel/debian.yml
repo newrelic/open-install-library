@@ -178,8 +178,17 @@ install:
           SERVER="${NR_CLI_MSSQL_SERVER:-localhost}"
           PORT="${NR_CLI_MSSQL_PORT:-1433}"
           SA_PASSWORD="${NR_CLI_MSSQL_SA_PASSWORD:-}"
-          SQL_FILE="/tmp/nr-mssql-grant.sql"
+          SQL_FILE=$(mktemp /tmp/nr-mssql-grant.sql.XXXXXX)
           PW_FILE="/tmp/nr-mssql-newrelic-pw.tmp"
+          NR_SUCCESS=""
+
+          cleanup() {
+            rm -f "$SQL_FILE"
+            if [ "$NR_SUCCESS" != "1" ]; then
+              rm -f "$PW_FILE"
+            fi
+          }
+          trap cleanup EXIT
 
           NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
           printf '%s' "$NR_PASSWORD" > "$PW_FILE"
@@ -233,7 +242,7 @@ install:
           fi
           echo "$RESULT"
 
-          rm -f "$SQL_FILE"
+          NR_SUCCESS=1
           echo "SQL Server monitoring identity configured successfully."
 
     create_collector_config:
