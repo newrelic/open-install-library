@@ -270,10 +270,28 @@ install:
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           if [[ -z "$IS_YUM_INSTALLED" ]]
           then
+            # apt-get can transiently fail with exit 100 ("Unable to lock directory
+            # /var/lib/apt/lists/") if another process (e.g. unattended-upgrades,
+            # cloud-init) is holding the apt/dpkg lock. Retry with backoff instead
+            # of failing the whole install on that transient contention.
+            run_apt_with_retry() {
+              local max_attempts=10
+              local delay=3
+              local attempt=1
+              while [ $attempt -le $max_attempts ]; do
+                "$@" && return 0
+                echo "apt-get is locked by another process, retrying in ${delay}s (attempt ${attempt}/${max_attempts})..." >&2
+                sleep $delay
+                attempt=$((attempt + 1))
+              done
+              echo "Giving up: apt-get is still locked by another process after ${max_attempts} attempts." >&2
+              exit 27
+            }
+
             echo 'deb [signed-by=/usr/share/keyrings/newrelic-apt.gpg] http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
             wget -q -O- {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public | sudo gpg --dearmor -o /usr/share/keyrings/newrelic-apt.gpg
-            sudo apt-get -o Acquire::Check-Valid-Until=false update >/dev/null
-            sudo apt-get install newrelic-dotnet-agent -y -qq > /dev/null
+            run_apt_with_retry sudo apt-get -o Acquire::Check-Valid-Until=false update >/dev/null
+            run_apt_with_retry sudo apt-get install newrelic-dotnet-agent -y -qq > /dev/null
           else
             curl -s https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o /etc/yum.repos.d/newrelic-dotnet-agent.repo >/dev/null
             sudo yum install newrelic-dotnet-agent -q -y
