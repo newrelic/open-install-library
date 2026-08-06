@@ -257,11 +257,23 @@ install:
             Write-Host $result
           }
 
+          function Protect-TempFile($path) {
+            icacls $path /inheritance:r /grant:r "SYSTEM:(F)" "BUILTIN\Administrators:(F)" | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host -ForegroundColor Red "Failed to restrict permissions on $path."
+              exit 1
+            }
+          }
+
+          $grantSucceeded = $false
+
+          try {
           if ($mode -eq "1") {
             $loginName = if ($env:NR_CLI_MSSQL_LOGIN_NAME) { $env:NR_CLI_MSSQL_LOGIN_NAME } else { "newrelic" }
             $chars = (48..57) + (65..90) + (97..122)
             $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
             $NrPassword | Set-Content -Path $pwFile -NoNewline
+            Protect-TempFile $pwFile
 
             $sql = @"
           USE [master];
@@ -303,6 +315,7 @@ install:
           GO
           "@
             $sql | Set-Content -Path $sqlFile
+            Protect-TempFile $sqlFile
             Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-P", $env:NR_CLI_MSSQL_SA_PASSWORD, "-C") $sqlFile
           }
           elseif ($mode -eq "2") {
@@ -347,6 +360,7 @@ install:
           GO
           "@
             $sql | Set-Content -Path $sqlFile
+            Protect-TempFile $sqlFile
             Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
           }
           else {
@@ -388,11 +402,19 @@ install:
           GO
           "@
             $sql | Set-Content -Path $sqlFile
+            Protect-TempFile $sqlFile
             Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
           }
 
-          Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+          $grantSucceeded = $true
           Write-Host "SQL Server monitoring identity configured successfully."
+          }
+          finally {
+            Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+            if (-not $grantSucceeded) {
+              Remove-Item -Path $pwFile -ErrorAction SilentlyContinue
+            }
+          }
           PSEOF
 
     configure_service_identity:
