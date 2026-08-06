@@ -61,9 +61,26 @@
 - name: Restart SQL Server service
   shell: "systemctl restart mssql-server"
   become: yes
+  async: 120
+  poll: 0
 
-- name: Wait for SQL Server to be ready
-  shell: "sleep 10"
+- name: Wait for the host to become reachable again
+  wait_for_connection:
+    delay: 5
+    timeout: 120
+
+- name: Wait for SQL Server to accept connections
+  shell: |
+    export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
+    for i in $(seq 1 30); do
+      if sqlcmd -S localhost -U sa -P 'YourStrong@Passw0rd' -C -Q "SELECT 1" > /dev/null 2>&1; then
+        echo "SQL Server is accepting connections."
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "SQL Server did not start accepting connections in time." >&2
+    exit 1
   become: yes
 
 - name: Verify SQL Server is running
