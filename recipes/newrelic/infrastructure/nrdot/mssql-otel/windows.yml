@@ -47,20 +47,20 @@ inputVars:
   - name: NR_CLI_MSSQL_SA_PASSWORD
     prompt: "SQL Server 'sa' password (mode 1 only, used once to create the newrelic login; leave blank otherwise): "
     secret: true
-    default: " "
+    default: ""
   - name: NR_CLI_MSSQL_LOGIN_NAME
     prompt: "Monitoring username: "
     default: "newrelic"
   - name: NR_CLI_MSSQL_WIN_ACCOUNT
     prompt: "Windows account to grant permissions to, DOMAIN\\username (mode 2 only; leave blank otherwise): "
-    default: " "
+    default: ""
   - name: NR_CLI_MSSQL_WIN_PASSWORD
     prompt: "Password for that Windows account (mode 2 only; leave blank otherwise): "
     secret: true
-    default: " "
+    default: ""
   - name: NR_CLI_MSSQL_GMSA_ACCOUNT
     prompt: "gMSA account, DOMAIN\\gMSAName$ (mode 3 only; leave blank otherwise): "
-    default: " "
+    default: ""
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'sqlserver.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -106,25 +106,32 @@ install:
 
           switch ($mode) {
             "1" {
-              if ([string]::IsNullOrWhiteSpace($env:NR_CLI_MSSQL_SA_PASSWORD)) {
-                Write-Host -ForegroundColor Red "NR_CLI_MSSQL_SA_PASSWORD is required for SQL Server Auth (mode 1)."
+              $saPassword = $env:NR_CLI_MSSQL_SA_PASSWORD
+              if ([string]::IsNullOrWhiteSpace($saPassword) -or $saPassword.Trim() -eq "") {
+                Write-Host -ForegroundColor Red "Error: SQL Server 'sa' password is required for SQL Server Auth (mode 1)."
+                Write-Host -ForegroundColor Red "Please re-run the installation and provide a valid SA password."
                 exit 1
               }
             }
             "2" {
-              if ([string]::IsNullOrWhiteSpace($env:NR_CLI_MSSQL_WIN_ACCOUNT) -or [string]::IsNullOrWhiteSpace($env:NR_CLI_MSSQL_WIN_PASSWORD)) {
-                Write-Host -ForegroundColor Red "NR_CLI_MSSQL_WIN_ACCOUNT and NR_CLI_MSSQL_WIN_PASSWORD are both required for Windows Auth (mode 2)."
+              $winAccount = $env:NR_CLI_MSSQL_WIN_ACCOUNT
+              $winPassword = $env:NR_CLI_MSSQL_WIN_PASSWORD
+              if ([string]::IsNullOrWhiteSpace($winAccount) -or $winAccount.Trim() -eq "" -or [string]::IsNullOrWhiteSpace($winPassword) -or $winPassword.Trim() -eq "") {
+                Write-Host -ForegroundColor Red "Error: Windows account and password are both required for Windows Auth (mode 2)."
+                Write-Host -ForegroundColor Red "Please re-run the installation and provide valid credentials."
                 exit 1
               }
             }
             "3" {
-              if ([string]::IsNullOrWhiteSpace($env:NR_CLI_MSSQL_GMSA_ACCOUNT)) {
-                Write-Host -ForegroundColor Red "NR_CLI_MSSQL_GMSA_ACCOUNT is required for gMSA (mode 3)."
+              $gmsaAccount = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
+              if ([string]::IsNullOrWhiteSpace($gmsaAccount) -or $gmsaAccount.Trim() -eq "") {
+                Write-Host -ForegroundColor Red "Error: gMSA account is required for gMSA Auth (mode 3)."
+                Write-Host -ForegroundColor Red "Please re-run the installation and provide a valid gMSA account."
                 exit 1
               }
             }
             default {
-              Write-Host -ForegroundColor Red "NR_CLI_MSSQL_AUTH_MODE must be 1, 2, or 3."
+              Write-Host -ForegroundColor Red "Error: NR_CLI_MSSQL_AUTH_MODE must be 1, 2, or 3."
               exit 1
             }
           }
