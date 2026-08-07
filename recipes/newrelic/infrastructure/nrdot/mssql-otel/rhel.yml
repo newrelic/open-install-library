@@ -97,7 +97,10 @@ install:
 
           SERVER="${NR_CLI_MSSQL_SERVER:-localhost}"
           PORT="${NR_CLI_MSSQL_PORT:-1433}"
-          SA_PASSWORD="${NR_CLI_MSSQL_SA_PASSWORD:-}"
+          SA_PASSWORD=$(cat << 'NR_SA_PW_EOF'
+          {{.NR_CLI_MSSQL_SA_PASSWORD}}
+          NR_SA_PW_EOF
+          )
 
           RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U sa -P "${SA_PASSWORD}" -C -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1)
           if [ $? -ne 0 ]; then
@@ -177,22 +180,14 @@ install:
           LOGIN_NAME="${NR_CLI_MSSQL_LOGIN_NAME:-newrelic}"
           SERVER="${NR_CLI_MSSQL_SERVER:-localhost}"
           PORT="${NR_CLI_MSSQL_PORT:-1433}"
-          SA_PASSWORD="${NR_CLI_MSSQL_SA_PASSWORD:-}"
+          SA_PASSWORD=$(cat << 'NR_SA_PW_EOF'
+          {{.NR_CLI_MSSQL_SA_PASSWORD}}
+          NR_SA_PW_EOF
+          )
           SQL_FILE=$(mktemp /tmp/nr-mssql-grant.sql.XXXXXX)
-          PW_FILE="/tmp/nr-mssql-newrelic-pw.tmp"
-          NR_SUCCESS=""
-
-          cleanup() {
-            rm -f "$SQL_FILE"
-            if [ "$NR_SUCCESS" != "1" ]; then
-              rm -f "$PW_FILE"
-            fi
-          }
-          trap cleanup EXIT
+          trap 'rm -f "$SQL_FILE"' EXIT
 
           NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-          printf '%s' "$NR_PASSWORD" > "$PW_FILE"
-          chmod 600 "$PW_FILE"
 
           cat > "$SQL_FILE" << EOF
           USE [master];
@@ -242,7 +237,6 @@ install:
           fi
           echo "$RESULT"
 
-          NR_SUCCESS=1
           echo "SQL Server monitoring identity configured successfully."
 
     create_collector_config:
@@ -252,16 +246,28 @@ install:
           LOGIN_NAME="${NR_CLI_MSSQL_LOGIN_NAME:-newrelic}"
           SERVER="${NR_CLI_MSSQL_SERVER:-localhost}"
           PORT="${NR_CLI_MSSQL_PORT:-1433}"
+          SA_PASSWORD=$(cat << 'NR_SA_PW_EOF'
+          {{.NR_CLI_MSSQL_SA_PASSWORD}}
+          NR_SA_PW_EOF
+          )
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/mssql-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
-          PW_FILE="/tmp/nr-mssql-newrelic-pw.tmp"
 
           mkdir -p "$CONFIG_DIR"
 
-          NR_PASSWORD=$(cat "$PW_FILE")
+          export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
+
+          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+          ALTER_RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U sa -P "${SA_PASSWORD}" -C -Q "ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "Failed to set the monitoring login's password:" >&2
+            echo "$ALTER_RESULT" >&2
+            exit 1
+          fi
 
           if [ "$PRESET" = "2" ]; then
             LIMIT_MIB=500
@@ -577,9 +583,9 @@ install:
           OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
           EOF
 
+          chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
 
-          rm -f "$PW_FILE"
           echo "MSSQL OTel config written to ${CONFIG_PATH}"
           echo "Env file written to ${ENV_FILE}"
 
@@ -588,20 +594,15 @@ install:
         - |
           systemctl restart nrdot-collector
 
-    assert_nrdot_status_ok:
-      cmds:
-        - |
-          MAX_RETRIES=30
-          TRIES=0
           echo "Waiting for NRDOT Collector to start..."
-          while [ $TRIES -lt $MAX_RETRIES ]; do
-            TRIES=$((TRIES + 1))
+          for i in $(seq 1 30); do
             if systemctl is-active --quiet nrdot-collector; then
               echo "NRDOT Collector is running."
               exit 0
             fi
             sleep 2
           done
+
           echo "NRDOT Collector did not start in time. Check logs:" >&2
           journalctl -u nrdot-collector --no-pager -n 50 >&2
           exit 31
@@ -615,7 +616,6 @@ install:
         - task: configure_database_user
         - task: create_collector_config
         - task: restart_nrdot
-        - task: assert_nrdot_status_ok
 
 postInstall:
   info: |2
