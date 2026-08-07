@@ -147,7 +147,12 @@ install:
 
           if ($mode -eq "1") {
             $saPassword = $env:NR_CLI_MSSQL_SA_PASSWORD
-            $connArgs = @("-S", "$server,$port", "-U", "sa", "-P", $saPassword, "-C")
+            if ([string]::IsNullOrEmpty($saPassword)) {
+              Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
+              exit 1
+            }
+            $env:SQLCMDPASSWORD = $saPassword
+            $connArgs = @("-S", "$server,$port", "-U", "sa", "-C")
           } else {
             $connArgs = @("-S", "$server,$port", "-E", "-C")
           }
@@ -329,7 +334,12 @@ install:
             $sql | Set-Content -Path $sqlFile
             Protect-TempFile $sqlFile
             $saPassword = $env:NR_CLI_MSSQL_SA_PASSWORD
-            Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-P", $saPassword, "-C") $sqlFile
+            if ([string]::IsNullOrEmpty($saPassword)) {
+              Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
+              exit 1
+            }
+            $env:SQLCMDPASSWORD = $saPassword
+            Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-C") $sqlFile
           }
           elseif ($mode -eq "2") {
             $account = $env:NR_CLI_MSSQL_WIN_ACCOUNT
