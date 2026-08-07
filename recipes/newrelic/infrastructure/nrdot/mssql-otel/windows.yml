@@ -47,20 +47,20 @@ inputVars:
   - name: NR_CLI_MSSQL_SA_PASSWORD
     prompt: "SQL Server 'sa' password (mode 1 only, used once to create the newrelic login; leave blank otherwise): "
     secret: true
-    default: ""
+    default: " "
   - name: NR_CLI_MSSQL_LOGIN_NAME
     prompt: "Monitoring username: "
     default: "newrelic"
   - name: NR_CLI_MSSQL_WIN_ACCOUNT
     prompt: "Windows account to grant permissions to, DOMAIN\\username (mode 2 only; leave blank otherwise): "
-    default: ""
+    default: " "
   - name: NR_CLI_MSSQL_WIN_PASSWORD
     prompt: "Password for that Windows account (mode 2 only; leave blank otherwise): "
     secret: true
-    default: ""
+    default: " "
   - name: NR_CLI_MSSQL_GMSA_ACCOUNT
     prompt: "gMSA account, DOMAIN\\gMSAName$ (mode 3 only; leave blank otherwise): "
-    default: ""
+    default: " "
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'sqlserver.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -190,17 +190,9 @@ install:
             exit 1
           }
 
-          $InstalledVersion = $null
-          $UninstallKeys = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue
-          foreach ($Key in $UninstallKeys) {
-            $KeyData = Get-ItemProperty -Path $Key.PSPath -ErrorAction SilentlyContinue
-            if ($KeyData.DisplayName -match "NRDOT Collector") {
-              $InstalledVersion = $KeyData.DisplayVersion
-              break
-            }
-          }
+          $ExistingService = Get-Service -Name $CollectorService -ErrorAction SilentlyContinue
 
-          if ($InstalledVersion) {
+          if ($ExistingService) {
             Write-Host -ForegroundColor Yellow "NRDOT Collector is already installed."
             Write-Host ""
             Write-Host "Please follow the steps below to complete the setup:"
@@ -262,7 +254,6 @@ install:
           $server = if ($env:NR_CLI_MSSQL_SERVER) { $env:NR_CLI_MSSQL_SERVER } else { "localhost" }
           $port = if ($env:NR_CLI_MSSQL_PORT) { $env:NR_CLI_MSSQL_PORT } else { "1433" }
           $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
-          $pwFile = "$env:TEMP\nr-mssql-newrelic-pw.tmp"
 
           function Invoke-GrantScript($connArgs, $file) {
             $result = & sqlcmd @connArgs -i $file 2>&1
@@ -282,15 +273,11 @@ install:
             }
           }
 
-          $grantSucceeded = $false
-
           try {
           if ($mode -eq "1") {
             $loginName = if ($env:NR_CLI_MSSQL_LOGIN_NAME) { $env:NR_CLI_MSSQL_LOGIN_NAME } else { "newrelic" }
             $chars = (48..57) + (65..90) + (97..122)
             $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
-            $NrPassword | Set-Content -Path $pwFile -NoNewline
-            Protect-TempFile $pwFile
 
             $sql = @"
           USE [master];
@@ -429,14 +416,10 @@ install:
             Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
           }
 
-          $grantSucceeded = $true
           Write-Host "SQL Server monitoring identity configured successfully."
           }
           finally {
             Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
-            if (-not $grantSucceeded) {
-              Remove-Item -Path $pwFile -ErrorAction SilentlyContinue
-            }
           }
           PSEOF
 
@@ -486,7 +469,6 @@ install:
           $licenseKey = "{{.NEW_RELIC_LICENSE_KEY}}"
           $configDir = "C:\Program Files\nrdot-collector"
           $configPath = "$configDir\mssql-config.yaml"
-          $pwFile = "$env:TEMP\nr-mssql-newrelic-pw.tmp"
 
           New-Item -Path $configDir -ItemType Directory -Force | Out-Null
 
@@ -494,7 +476,15 @@ install:
 
           if ($mode -eq "1") {
             $loginName = if ($env:NR_CLI_MSSQL_LOGIN_NAME) { $env:NR_CLI_MSSQL_LOGIN_NAME } else { "newrelic" }
-            $NrPassword = (Get-Content -Path $pwFile -Raw)
+            $chars = (48..57) + (65..90) + (97..122)
+            $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+            $env:SQLCMDPASSWORD = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
+            $alterResult = & sqlcmd -S "$server,$port" -U sa -C -Q "ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host -ForegroundColor Red "Failed to set the monitoring login's password:"
+              Write-Host $alterResult
+              exit 1
+            }
             $receiverFields = "    collection_interval: $interval`n    username: $loginName`n    password: $NrPassword`n    server: $server`n    port: $port"
           } else {
             $receiverFields = "    collection_interval: $interval`n    datasource: `"server=$server;port=$port;integrated security=true;encrypt=true;TrustServerCertificate=true;`""
@@ -994,9 +984,12 @@ install:
           $configText = $template.Replace('__RECEIVER_FIELDS__', $receiverFields).Replace('__OTLP_ENDPOINT__', $otlpEndpoint).Replace('__LICENSE_KEY__', $licenseKey)
           $configText | Set-Content -Path $configPath -Encoding utf8
 
-          $serviceAccount = if ($mode -eq "1") { $null }
-                             elseif ($mode -eq "2") { $env:NR_CLI_MSSQL_WIN_ACCOUNT }
-                             else { $env:NR_CLI_MSSQL_GMSA_ACCOUNT }
+          $serviceAccount = $null
+          if ($mode -eq "2") {
+            $serviceAccount = $env:NR_CLI_MSSQL_WIN_ACCOUNT
+          } elseif ($mode -eq "3") {
+            $serviceAccount = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
+          }
 
           $grants = @("SYSTEM:(F)", "BUILTIN\Administrators:(F)")
           if ($serviceAccount) { $grants += "${serviceAccount}:(R)" }
@@ -1005,10 +998,6 @@ install:
           if ($LASTEXITCODE -ne 0) {
             Write-Host -ForegroundColor Red "Failed to restrict permissions on $configPath."
             exit 1
-          }
-
-          if ($mode -eq "1") {
-            Remove-Item -Path $pwFile -ErrorAction SilentlyContinue
           }
 
           Write-Host "MSSQL OTel config written to $configPath"
