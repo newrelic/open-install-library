@@ -300,3 +300,50 @@ install:
       cmds:
         - |
           echo "⚙️  New Relic Agent Control configuration file can be found in /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml"
+
+uninstall:
+  version: "3"
+  silent: true
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    IS_INITCTL:
+      sh: command -v initctl | wc -l
+
+  tasks:
+    default:
+      cmds:
+        - task: stop_agent_control
+        - task: remove_agent_control_package
+        - task: remove_agent_control_data
+        - task: post_uninstall
+
+    stop_agent_control:
+      cmds:
+        - |
+          if [ {{.IS_SYSTEMCTL}} -gt 0 ]; then
+            systemctl stop newrelic-agent-control || true
+            systemctl disable newrelic-agent-control || true
+          elif [ {{.IS_INITCTL}} -gt 0 ]; then
+            initctl stop newrelic-agent-control || true
+          else
+            /etc/init.d/newrelic-agent-control stop || true
+          fi
+
+    remove_agent_control_package:
+      cmds:
+        - yum -y -q remove newrelic-agent-control
+      ignore_error: true # package may already be absent; don't abort the rest of the uninstall
+      silent: true
+
+    remove_agent_control_data:
+      cmds:
+        - |
+          # environment_variables.yaml, fleet-data/, and the rendered filesystem/ tree are created
+          # at runtime, not shipped in the package, so yum remove above never touches them.
+          rm -rf /etc/newrelic-agent-control /var/lib/newrelic-agent-control /var/log/newrelic-agent-control
+
+    post_uninstall:
+      cmds:
+        - |
+          echo "New Relic Agent Control has been removed from this host."

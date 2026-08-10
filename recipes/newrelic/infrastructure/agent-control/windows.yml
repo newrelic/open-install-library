@@ -158,3 +158,60 @@ install:
           powershell -command '
               Write-Host "You can find New Relic Agent Control configuration file in C:\Program Files\New Relic\newrelic-agent-control\local-data\agent-control\local_config.yaml"
           '
+
+uninstall:
+  version: "3"
+  silent: true
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_required_permissions
+        - task: run_uninstall_ps1
+        - task: remove_agent_control_data
+        - task: post_uninstall
+
+    assert_required_permissions:
+      cmds:
+        - |
+          powershell -command '
+              $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+              $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+              if(-not ($isAdmin))
+              {
+                Write-Host -ForegroundColor Red "Powershell needs to be started in Administrator permissions. Please restart Powershell in Administrator, and re-run the newrelic-cli command."
+                exit 131;
+              }
+          '
+
+    # install.ps1 copies uninstall.ps1 into the install directory (see build/package/windows/install.ps1
+    # in newrelic-agent-control), so it's already on disk and there's nothing to download here.
+    # It stops/removes the Windows service, the .exe, the keys/ dir, and the install marker.
+    run_uninstall_ps1:
+      cmds:
+        - |
+          powershell -command '
+              $uninstallScript = Join-Path $env:ProgramFiles "New Relic\newrelic-agent-control\uninstall.ps1"
+              if (Test-Path $uninstallScript) {
+                powershell.exe -ExecutionPolicy Bypass -File $uninstallScript
+              } else {
+                Write-Host "uninstall.ps1 not found at $uninstallScript, skipping (service/binary may already be removed)."
+              }
+          '
+
+    # uninstall.ps1 only removes what install.ps1 placed directly (service, exe, keys/, marker).
+    # local-data/ (incl. license key), environment_variables.yaml, and the whole ProgramData tree
+    # (logs, rendered sub-agent configs) are created at runtime and aren't covered by that script.
+    # A full recursive delete here also acts as a fallback if uninstall.ps1 was missing above.
+    remove_agent_control_data:
+      cmds:
+        - |
+          powershell -command '
+              Remove-Item -Path (Join-Path $env:ProgramFiles "New Relic\newrelic-agent-control") -Recurse -Force -ErrorAction SilentlyContinue
+              Remove-Item -Path (Join-Path $env:ProgramData "New Relic\newrelic-agent-control") -Recurse -Force -ErrorAction SilentlyContinue
+          '
+
+    post_uninstall:
+      cmds:
+        - |
+          powershell -command 'Write-Host "New Relic Agent Control has been removed from this host."'
