@@ -2,20 +2,17 @@
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
 name: nrdot-collector-oracle-rds
-displayName: NRDOT Oracle Database (AWS RDS, RHEL/CentOS/OEL collector host)
-description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector against an AWS RDS Oracle instance, collector installed on RHEL/CentOS/OEL
+displayName: NRDOT Oracle Database (AWS RDS, Debian/Ubuntu collector host)
+description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector against an AWS RDS Oracle instance, collector installed on Debian/Ubuntu
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
   - type: host
     os: linux
-    platform: centos
+    platformFamily: debian
   - type: host
     os: linux
-    platform: redhat
-  - type: host
-    os: linux
-    platform: oracle
+    platform: ubuntu
 
 keywords:
   - Oracle
@@ -26,9 +23,8 @@ keywords:
   - OTel
   - Database
   - Linux
-  - CentOS
-  - RHEL
-  - OEL
+  - Debian
+  - Ubuntu
 
 processMatch: []
 
@@ -132,7 +128,7 @@ install:
         - |
           COLLECTOR_DISTRO="nrdot-collector"
 
-          if rpm -q "$COLLECTOR_DISTRO" > /dev/null 2>&1; then
+          if dpkg -l | grep -q "^ii.*${COLLECTOR_DISTRO} "; then
             echo "NRDOT Collector is already installed."
             echo ""
             echo "Please follow the steps below to complete the setup:"
@@ -159,26 +155,30 @@ install:
           if [ "$(uname -m)" = "aarch64" ]; then
             ARCH="arm64"
           else
-            ARCH="x86_64"
+            ARCH="amd64"
           fi
 
-          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.deb"
           echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
           echo "Downloading from: ${DOWNLOAD_URL}"
 
-          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          curl -L --output /tmp/nrdot-collector.deb "$DOWNLOAD_URL"
           if [ $? -ne 0 ]; then
             echo "Failed to download the nrdot-collector package." >&2
             exit 1
           fi
 
-          rpm -ivh /tmp/nrdot-collector.rpm
+          DEBIAN_FRONTEND=noninteractive dpkg -i /tmp/nrdot-collector.deb
           if [ $? -ne 0 ]; then
-            echo "Failed to install the nrdot-collector package." >&2
-            exit 1
+            echo "dpkg install failed, attempting to fix broken dependencies..." >&2
+            apt-get -o DPkg::Lock::Timeout=60 install -f -y
+            if [ $? -ne 0 ]; then
+              echo "Failed to install the nrdot-collector package." >&2
+              exit 1
+            fi
           fi
 
-          rm -f /tmp/nrdot-collector.rpm
+          rm -f /tmp/nrdot-collector.deb
           echo "${COLLECTOR_DISTRO} installed successfully."
 
     configure_database_user:
