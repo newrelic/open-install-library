@@ -185,13 +185,62 @@ install:
       cmds:
         - |
           LOGIN_NAME="{{.NR_CLI_ORACLE_LOGIN_NAME}}"
-          LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
           HOST="{{.NR_CLI_ORACLE_HOST}}"
           PORT="{{.NR_CLI_ORACLE_PORT}}"
           SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
           ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
           ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
           PW_FILE="/tmp/nr-oracle-rds-newrelic-pw.tmp"
+          USER_FILE="/tmp/nr-oracle-rds-db-user.tmp"
+
+          LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+
+          EXISTS_RESULT=$(sqlplus -S "${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}" << SQL 2>&1
+          SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
+          SELECT username FROM dba_users WHERE username='${LOGIN_UPPER}';
+          EXIT;
+          SQL
+          ) || true
+
+          if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${LOGIN_UPPER}[[:space:]]*$"; then
+            echo ""
+            echo "Monitoring user $LOGIN_NAME already exists."
+            echo ""
+            echo "What would you like to do?"
+            echo "  1. Use the existing user $LOGIN_NAME (you will be asked for the password)"
+            echo "  2. Create a new username"
+            echo ""
+            read -rp "Enter your choice (1 or 2): " USER_CHOICE
+
+            case "$USER_CHOICE" in
+              1)
+                echo ""
+                stty -echo
+                read -rp "Enter the existing password for $LOGIN_NAME: " NR_PASSWORD
+                stty echo
+                echo ""
+                printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+                chmod 600 "$PW_FILE"
+                echo "$LOGIN_NAME" > "$USER_FILE"
+                chmod 600 "$USER_FILE"
+                echo "Using existing user: $LOGIN_NAME"
+                exit 0
+                ;;
+              2)
+                echo ""
+                read -rp "Enter new monitoring username: " NEW_USERNAME
+                LOGIN_NAME="$NEW_USERNAME"
+                LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+                ;;
+              *)
+                echo "Invalid choice. Please re-run and enter 1 or 2." >&2
+                exit 131
+                ;;
+            esac
+          fi
+
+          echo "$LOGIN_NAME" > "$USER_FILE"
+          chmod 600 "$USER_FILE"
 
           if [ -z "{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}" ]; then
             NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
@@ -243,11 +292,12 @@ install:
           if [ $? -ne 0 ]; then
             echo "SQL script failed:" >&2
             echo "$RESULT" >&2
+            rm -f "$PW_FILE" "$USER_FILE"
             exit 1
           fi
           echo "$RESULT"
 
-          echo "RDS Oracle Database monitoring identity configured successfully."
+          echo "RDS Oracle Database monitoring identity configured successfully: $LOGIN_NAME"
 
     create_collector_config:
       cmds:
@@ -255,17 +305,18 @@ install:
           HOST="{{.NR_CLI_ORACLE_HOST}}"
           PORT="{{.NR_CLI_ORACLE_PORT}}"
           SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
-          LOGIN_NAME="{{.NR_CLI_ORACLE_LOGIN_NAME}}"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/oracle-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
           PW_FILE="/tmp/nr-oracle-rds-newrelic-pw.tmp"
+          USER_FILE="/tmp/nr-oracle-rds-db-user.tmp"
 
           mkdir -p "$CONFIG_DIR"
 
           NR_PASSWORD=$(cat "$PW_FILE")
+          LOGIN_NAME=$(cat "$USER_FILE")
 
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
@@ -613,7 +664,7 @@ install:
           OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
           EOF
 
-          rm -f "$PW_FILE"
+          rm -f "$PW_FILE" "$USER_FILE"
           echo "Oracle OTel config written to ${CONFIG_PATH}"
           echo "Env file written to ${ENV_FILE}"
 
