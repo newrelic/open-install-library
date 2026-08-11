@@ -319,8 +319,6 @@ install:
                   enabled: false
                   attributes:
                     - oracle.db.pdb
-                oracledb.system.cpu.load:
-                  enabled: true
                 oracledb.executions:
                   enabled: true
                   attributes:
@@ -567,8 +565,6 @@ install:
                   enabled: true
                 oracle.db.open_mode:
                   enabled: true
-                oracle.db.pdb:
-                  enabled: true
                 oracle.db.role:
                   enabled: true
                 oracle.db.version:
@@ -624,25 +620,23 @@ install:
     restart_nrdot:
       cmds:
         - |
-          systemctl restart nrdot-collector
+          echo ""
+          echo "==> Restarting NRDOT Collector..."
+          sudo systemctl restart nrdot-collector
 
-    assert_nrdot_status_ok:
-      cmds:
-        - |
-          MAX_RETRIES=30
-          TRIES=0
-          echo "Waiting for NRDOT Collector to start..."
-          while [ $TRIES -lt $MAX_RETRIES ]; do
-            TRIES=$((TRIES + 1))
-            if systemctl is-active --quiet nrdot-collector; then
-              echo "NRDOT Collector is running."
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "NRDOT Collector did not start in time. Check logs:" >&2
-          journalctl -u nrdot-collector --no-pager -n 50 >&2
-          exit 31
+          echo ""
+          echo "==> NRDOT Collector service status:"
+          echo ""
+          sudo systemctl status nrdot-collector --no-pager
+
+          if sudo systemctl is-active --quiet nrdot-collector; then
+            echo ""
+            echo -e "\e[32mNRDOT Collector is running successfully.\e[0m"
+          else
+            echo ""
+            echo -e "\e[31mERROR:\e[0m NRDOT Collector failed to start. Check the status output above." >&2
+            exit 131
+          fi
 
     default:
       cmds:
@@ -653,7 +647,6 @@ install:
         - task: configure_database_user
         - task: create_collector_config
         - task: restart_nrdot
-        - task: assert_nrdot_status_ok
 
 postInstall:
   info: |2
