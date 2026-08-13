@@ -246,11 +246,14 @@ install:
           Write-Host "nrdot-collector installed successfully."
           PSEOF
 
-    configure_database_user:
+    configure_database_user_sqlauth:
       cmds:
         - |
           powershell -NoProfile -Command - <<'PSEOF'
           $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+          if ($mode -ne "1") {
+            exit 0
+          }
           $server = '{{.NR_CLI_MSSQL_SERVER}}'
           $port = '{{.NR_CLI_MSSQL_PORT}}'
           $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
@@ -273,154 +276,100 @@ install:
             }
           }
 
-          try {
-          if ($mode -eq "1") {
-            $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
-            $chars = (48..57) + (65..90) + (97..122)
-            $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+          $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
+          $chars = (48..57) + (65..90) + (97..122)
+          $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
 
-            $sql = @"
-          USE [master];
-          GO
-          IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$loginName')
-            CREATE LOGIN [$loginName] WITH PASSWORD = '$NrPassword';
-          ELSE
-            ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';
-          GO
-          GRANT VIEW SERVER STATE TO [$loginName];
-          GRANT VIEW ANY DEFINITION TO [$loginName];
-          GRANT VIEW ANY DATABASE TO [$loginName];
-          GO
-          DECLARE @name SYSNAME;
-          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
-          SELECT [name]
-          FROM [master].[sys].[databases]
-          WHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')
-          AND [state] = 0;
-          OPEN db_cursor;
-          FETCH NEXT FROM db_cursor INTO @name;
-          WHILE @@FETCH_STATUS = 0
-          BEGIN
-            BEGIN TRY
-              EXEC('USE [' + @name + '];
-              IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$loginName'')
-              BEGIN
-                CREATE USER [$loginName] FOR LOGIN [$loginName];
-              END;
-              GRANT VIEW DATABASE STATE TO [$loginName];');
-            END TRY
-            BEGIN CATCH
-              PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
-            END CATCH
-            FETCH NEXT FROM db_cursor INTO @name;
-          END
-          CLOSE db_cursor;
-          DEALLOCATE db_cursor;
-          GO
-          "@
-            $sql | Set-Content -Path $sqlFile
-            Protect-TempFile $sqlFile
-            $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-            if ([string]::IsNullOrEmpty($saPassword)) {
-              Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
+          $sql = "USE [master];`nGO`nIF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$loginName')`n  CREATE LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nELSE`n  ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nGO`nGRANT VIEW SERVER STATE TO [$loginName];`nGRANT VIEW ANY DEFINITION TO [$loginName];`nGRANT VIEW ANY DATABASE TO [$loginName];`nGO`nDECLARE @name SYSNAME;`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name]`nFROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')`nAND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    EXEC('USE [' + @name + '];`n    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$loginName'')`n    BEGIN`n      CREATE USER [$loginName] FOR LOGIN [$loginName];`n    END;`n    GRANT VIEW DATABASE STATE TO [$loginName];');`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
+          $sql | Set-Content -Path $sqlFile
+          Protect-TempFile $sqlFile
+          $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
+          if ([string]::IsNullOrEmpty($saPassword)) {
+            Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
+            exit 1
+          }
+          $env:SQLCMDPASSWORD = $saPassword
+          Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-C") $sqlFile
+          Write-Host "SQL Server monitoring identity configured successfully."
+          Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+          PSEOF
+
+    configure_database_user_winauth:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+          if ($mode -ne "2") {
+            exit 0
+          }
+          $server = '{{.NR_CLI_MSSQL_SERVER}}'
+          $port = '{{.NR_CLI_MSSQL_PORT}}'
+          $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
+
+          function Invoke-GrantScript($connArgs, $file) {
+            $result = & sqlcmd @connArgs -b -i $file 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host -ForegroundColor Red "SQL script failed:"
+              Write-Host $result
               exit 1
             }
-            $env:SQLCMDPASSWORD = $saPassword
-            Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-C") $sqlFile
-          }
-          elseif ($mode -eq "2") {
-            $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
-            $sql = @"
-          USE [master];
-          GO
-          GRANT VIEW SERVER STATE TO [$account];
-          GRANT VIEW ANY DEFINITION TO [$account];
-          GRANT VIEW ANY DATABASE TO [$account];
-          GO
-          DECLARE @name SYSNAME;
-          DECLARE @sql NVARCHAR(MAX);
-          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
-          SELECT [name]
-          FROM [master].[sys].[databases]
-          WHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')
-            AND [state] = 0;
-          OPEN db_cursor;
-          FETCH NEXT FROM db_cursor INTO @name;
-          WHILE @@FETCH_STATUS = 0
-          BEGIN
-            BEGIN TRY
-              SET @sql = '
-                USE [' + @name + '];
-                IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$account'')
-                BEGIN
-                  CREATE USER [$account] FOR LOGIN [$account];
-                END;
-                GRANT VIEW DATABASE STATE TO [$account];
-                GRANT VIEW DEFINITION TO [$account];
-                ALTER ROLE db_datareader ADD MEMBER [$account];';
-              EXEC sp_executesql @sql;
-            END TRY
-            BEGIN CATCH
-              PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
-            END CATCH
-            FETCH NEXT FROM db_cursor INTO @name;
-          END
-          CLOSE db_cursor;
-          DEALLOCATE db_cursor;
-          GO
-          "@
-            $sql | Set-Content -Path $sqlFile
-            Protect-TempFile $sqlFile
-            Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
-          }
-          else {
-            $gmsa = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
-            $sql = @"
-          USE master;
-          GO
-          IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$gmsa')
-            CREATE LOGIN [$gmsa] FROM WINDOWS;
-          GO
-          GRANT VIEW SERVER STATE TO [$gmsa];
-          GRANT VIEW ANY DEFINITION TO [$gmsa];
-          GRANT VIEW ANY DATABASE TO [$gmsa];
-          GO
-          DECLARE @name SYSNAME;
-          DECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR
-          SELECT [name] FROM [master].[sys].[databases]
-          WHERE [name] NOT IN ('master','msdb','model','rdsadmin','distribution')
-          AND [state] = 0;
-          OPEN db_cursor;
-          FETCH NEXT FROM db_cursor INTO @name;
-          WHILE @@FETCH_STATUS = 0
-          BEGIN
-            BEGIN TRY
-              EXEC('USE [' + @name + '];
-              IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$gmsa'')
-              BEGIN
-                CREATE USER [$gmsa] FOR LOGIN [$gmsa];
-              END;
-              GRANT VIEW DATABASE STATE TO [$gmsa];');
-            END TRY
-            BEGIN CATCH
-              PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();
-            END CATCH
-            FETCH NEXT FROM db_cursor INTO @name;
-          END
-          CLOSE db_cursor;
-          DEALLOCATE db_cursor;
-          GO
-          "@
-            $sql | Set-Content -Path $sqlFile
-            Protect-TempFile $sqlFile
-            Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
+            Write-Host $result
           }
 
+          function Protect-TempFile($path) {
+            icacls $path /inheritance:r /grant:r "SYSTEM:(F)" "BUILTIN\Administrators:(F)" | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host -ForegroundColor Red "Failed to restrict permissions on $path."
+              exit 1
+            }
+          }
+
+          $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
+          $sql = "USE [master];`nGO`nGRANT VIEW SERVER STATE TO [$account];`nGRANT VIEW ANY DEFINITION TO [$account];`nGRANT VIEW ANY DATABASE TO [$account];`nGO`nDECLARE @name SYSNAME;`nDECLARE @sql NVARCHAR(MAX);`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name]`nFROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')`n  AND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    PRINT 'Granting permissions on database: ' + @name;`n    SET @sql = '`n      USE [' + @name + '];`n      IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$account'')`n      BEGIN`n        CREATE USER [$account] FOR LOGIN [$account];`n      END;`n      GRANT VIEW DATABASE STATE TO [$account];`n      GRANT VIEW DEFINITION TO [$account];`n      ALTER ROLE db_datareader ADD MEMBER [$account];';`n    EXEC sp_executesql @sql;`n    PRINT 'Success: ' + @name;`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
+          $sql | Set-Content -Path $sqlFile
+          Protect-TempFile $sqlFile
+          Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
           Write-Host "SQL Server monitoring identity configured successfully."
+          Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+          PSEOF
+
+    configure_database_user_gmsa:
+      cmds:
+        - |
+          powershell -NoProfile -Command - <<'PSEOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+          if ($mode -ne "3") {
+            exit 0
           }
-          finally {
-            Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+          $server = '{{.NR_CLI_MSSQL_SERVER}}'
+          $port = '{{.NR_CLI_MSSQL_PORT}}'
+          $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
+
+          function Invoke-GrantScript($connArgs, $file) {
+            $result = & sqlcmd @connArgs -b -i $file 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host -ForegroundColor Red "SQL script failed:"
+              Write-Host $result
+              exit 1
+            }
+            Write-Host $result
           }
+
+          function Protect-TempFile($path) {
+            icacls $path /inheritance:r /grant:r "SYSTEM:(F)" "BUILTIN\Administrators:(F)" | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host -ForegroundColor Red "Failed to restrict permissions on $path."
+              exit 1
+            }
+          }
+
+          $gmsa = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
+          $sql = "USE master;`nGO`nIF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$gmsa')`n  CREATE LOGIN [$gmsa] FROM WINDOWS;`nGO`nGRANT VIEW SERVER STATE TO [$gmsa];`nGRANT VIEW ANY DEFINITION TO [$gmsa];`nGRANT VIEW ANY DATABASE TO [$gmsa];`nGO`nDECLARE @name SYSNAME;`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name] FROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master','msdb','model','rdsadmin','distribution')`nAND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    EXEC('USE [' + @name + '];`n    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$gmsa'')`n    BEGIN`n      CREATE USER [$gmsa] FOR LOGIN [$gmsa];`n    END;`n    GRANT VIEW DATABASE STATE TO [$gmsa];');`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
+          $sql | Set-Content -Path $sqlFile
+          Protect-TempFile $sqlFile
+          Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
+          Write-Host "SQL Server monitoring identity configured successfully."
+          Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
           PSEOF
 
     configure_service_identity:
@@ -1063,7 +1012,9 @@ install:
         - task: assert_auth_inputs
         - task: assert_sql_server_version
         - task: install_nrdot
-        - task: configure_database_user
+        - task: configure_database_user_sqlauth
+        - task: configure_database_user_winauth
+        - task: configure_database_user_gmsa
         - task: configure_service_identity
         - task: create_collector_config
         - task: configure_service
