@@ -114,7 +114,7 @@ install:
               }
             }
             "2" {
-              $winAccount = $env:NR_CLI_MSSQL_WIN_ACCOUNT
+              $winAccount = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
               $winPassword = '{{.NR_CLI_MSSQL_WIN_PASSWORD}}'
               if ([string]::IsNullOrWhiteSpace($winAccount) -or $winAccount.Trim() -eq "" -or [string]::IsNullOrWhiteSpace($winPassword) -or $winPassword.Trim() -eq "") {
                 Write-Host -ForegroundColor Red "Error: Windows account and password are both required for Windows Auth (mode 2)."
@@ -123,7 +123,7 @@ install:
               }
             }
             "3" {
-              $gmsaAccount = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
+              $gmsaAccount = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
               if ([string]::IsNullOrWhiteSpace($gmsaAccount) -or $gmsaAccount.Trim() -eq "") {
                 Write-Host -ForegroundColor Red "Error: gMSA account is required for gMSA Auth (mode 3)."
                 Write-Host -ForegroundColor Red "Please re-run the installation and provide a valid gMSA account."
@@ -142,8 +142,8 @@ install:
         - |
           powershell -NoProfile -Command - <<'PSEOF'
           $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
-          $server = if ($env:NR_CLI_MSSQL_SERVER) { $env:NR_CLI_MSSQL_SERVER } else { "localhost" }
-          $port = if ($env:NR_CLI_MSSQL_PORT) { $env:NR_CLI_MSSQL_PORT } else { "1433" }
+          $server = '{{.NR_CLI_MSSQL_SERVER}}'
+          $port = '{{.NR_CLI_MSSQL_PORT}}'
 
           if ($mode -eq "1") {
             $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
@@ -251,8 +251,8 @@ install:
         - |
           powershell -NoProfile -Command - <<'PSEOF'
           $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
-          $server = if ($env:NR_CLI_MSSQL_SERVER) { $env:NR_CLI_MSSQL_SERVER } else { "localhost" }
-          $port = if ($env:NR_CLI_MSSQL_PORT) { $env:NR_CLI_MSSQL_PORT } else { "1433" }
+          $server = '{{.NR_CLI_MSSQL_SERVER}}'
+          $port = '{{.NR_CLI_MSSQL_PORT}}'
           $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
 
           function Invoke-GrantScript($connArgs, $file) {
@@ -275,7 +275,7 @@ install:
 
           try {
           if ($mode -eq "1") {
-            $loginName = if ($env:NR_CLI_MSSQL_LOGIN_NAME) { $env:NR_CLI_MSSQL_LOGIN_NAME } else { "newrelic" }
+            $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
             $chars = (48..57) + (65..90) + (97..122)
             $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
 
@@ -329,7 +329,7 @@ install:
             Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-C") $sqlFile
           }
           elseif ($mode -eq "2") {
-            $account = $env:NR_CLI_MSSQL_WIN_ACCOUNT
+            $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
             $sql = @"
           USE [master];
           GO
@@ -374,7 +374,7 @@ install:
             Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
           }
           else {
-            $gmsa = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
+            $gmsa = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
             $sql = @"
           USE master;
           GO
@@ -436,10 +436,10 @@ install:
           }
 
           if ($mode -eq "2") {
-            $account = $env:NR_CLI_MSSQL_WIN_ACCOUNT
+            $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
             $password = '{{.NR_CLI_MSSQL_WIN_PASSWORD}}'
           } else {
-            $account = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
+            $account = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
             $password = ""
           }
 
@@ -463,8 +463,8 @@ install:
           powershell -NoProfile -Command - <<'PSEOF'
           $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
           $preset = "{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
-          $server = if ($env:NR_CLI_MSSQL_SERVER) { $env:NR_CLI_MSSQL_SERVER } else { "localhost" }
-          $port = if ($env:NR_CLI_MSSQL_PORT) { $env:NR_CLI_MSSQL_PORT } else { "1433" }
+          $server = '{{.NR_CLI_MSSQL_SERVER}}'
+          $port = '{{.NR_CLI_MSSQL_PORT}}'
           $region = "{{.NEW_RELIC_REGION}}"
           $licenseKey = "{{.NEW_RELIC_LICENSE_KEY}}"
           $configDir = "C:\Program Files\nrdot-collector"
@@ -475,7 +475,7 @@ install:
           $interval = if ($preset -eq "2") { "30s" } else { "15s" }
 
           if ($mode -eq "1") {
-            $loginName = if ($env:NR_CLI_MSSQL_LOGIN_NAME) { $env:NR_CLI_MSSQL_LOGIN_NAME } else { "newrelic" }
+            $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
             $chars = (48..57) + (65..90) + (97..122)
             $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
             $env:SQLCMDPASSWORD = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
@@ -986,9 +986,9 @@ install:
 
           $serviceAccount = $null
           if ($mode -eq "2") {
-            $serviceAccount = $env:NR_CLI_MSSQL_WIN_ACCOUNT
+            $serviceAccount = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
           } elseif ($mode -eq "3") {
-            $serviceAccount = $env:NR_CLI_MSSQL_GMSA_ACCOUNT
+            $serviceAccount = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
           }
 
           $grants = @("SYSTEM:(F)", "BUILTIN\Administrators:(F)")
