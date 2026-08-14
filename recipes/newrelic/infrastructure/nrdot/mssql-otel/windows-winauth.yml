@@ -281,17 +281,16 @@ install:
           $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
           $service = "nrdot-collector"
 
+          Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+
           if ($mode -eq "1") {
             $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
             $password = '{{.NR_CLI_MSSQL_WIN_PASSWORD}}'
+            & sc.exe config "$service" obj= "$account" password= "$password"
           } else {
             $account = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
-            $password = ""
+            & sc.exe config "$service" obj= "$account"
           }
-
-          Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
-
-          & sc.exe config "$service" obj= "$account" password= "$password"
           if ($LASTEXITCODE -ne 0) {
             Write-Host -ForegroundColor Red "Failed to configure the nrdot-collector service to run as $account."
             exit 1
