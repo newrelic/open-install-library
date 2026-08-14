@@ -1,9 +1,9 @@
 # Visit our schema definition for additional information on this file format.
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
 
-name: nrdot-collector-mssql
-displayName: NRDOT MSSQL (Windows)
-description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Windows self-hosted environments (SQL Server Authentication)
+name: nrdot-collector-mssql-winauth
+displayName: NRDOT MSSQL Windows Auth (Windows)
+description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Windows self-hosted environments (Windows Authentication or gMSA)
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -26,13 +26,17 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from SQL Server, we need to create a SQL Server login for monitoring.
-    This requires administrative access to your SQL Server instance (sysadmin role or
-    equivalent) via the 'sa' account.
+    To capture data from SQL Server, we need to authorize a monitoring identity
+    (a Windows account or a gMSA account). This requires administrative access to
+    your SQL Server instance (sysadmin role or equivalent) on the account running
+    this installation.
 
 inputVars:
   - name: NR_CLI_MSSQL_CONFIG_PRESET
     prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    default: "1"
+  - name: NR_CLI_MSSQL_AUTH_MODE
+    prompt: "SQL Server authentication - 1) Windows Auth  2) gMSA: "
     default: "1"
   - name: NR_CLI_MSSQL_SERVER
     prompt: "SQL Server host (e.g. localhost): "
@@ -40,13 +44,16 @@ inputVars:
   - name: NR_CLI_MSSQL_PORT
     prompt: "SQL Server port: "
     default: "1433"
-  - name: NR_CLI_MSSQL_SA_PASSWORD
-    prompt: "SQL Server 'sa' password (used once to create the monitoring login): "
+  - name: NR_CLI_MSSQL_WIN_ACCOUNT
+    prompt: "Windows account to grant permissions to, DOMAIN\\username (Windows Auth only; leave blank otherwise): "
+    default: " "
+  - name: NR_CLI_MSSQL_WIN_PASSWORD
+    prompt: "Password for that Windows account (Windows Auth only; leave blank otherwise): "
     secret: true
     default: " "
-  - name: NR_CLI_MSSQL_LOGIN_NAME
-    prompt: "Monitoring username: "
-    default: "newrelic"
+  - name: NR_CLI_MSSQL_GMSA_ACCOUNT
+    prompt: "gMSA account, DOMAIN\\gMSAName$ (gMSA only; leave blank otherwise): "
+    default: " "
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'sqlserver.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -93,11 +100,30 @@ install:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-assert_auth_inputs.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
-          $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          if ([string]::IsNullOrWhiteSpace($saPassword) -or $saPassword.Length -eq 0) {
-            Write-Host -ForegroundColor Red "Error: SQL Server 'sa' password is required."
-            Write-Host -ForegroundColor Red "Please re-run the installation and provide a valid SA password."
-            exit 1
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+
+          switch ($mode) {
+            "1" {
+              $winAccount = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
+              $winPassword = '{{.NR_CLI_MSSQL_WIN_PASSWORD}}'
+              if ([string]::IsNullOrWhiteSpace($winAccount) -or $winAccount.Trim() -eq "" -or [string]::IsNullOrWhiteSpace($winPassword) -or $winPassword.Trim() -eq "") {
+                Write-Host -ForegroundColor Red "Error: Windows account and password are both required for Windows Auth."
+                Write-Host -ForegroundColor Red "Please re-run the installation and provide valid credentials."
+                exit 1
+              }
+            }
+            "2" {
+              $gmsaAccount = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
+              if ([string]::IsNullOrWhiteSpace($gmsaAccount) -or $gmsaAccount.Trim() -eq "") {
+                Write-Host -ForegroundColor Red "Error: gMSA account is required for gMSA Auth."
+                Write-Host -ForegroundColor Red "Please re-run the installation and provide a valid gMSA account."
+                exit 1
+              }
+            }
+            default {
+              Write-Host -ForegroundColor Red "Error: NR_CLI_MSSQL_AUTH_MODE must be 1 or 2."
+              exit 1
+            }
           }
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
@@ -109,13 +135,7 @@ install:
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
           $server = '{{.NR_CLI_MSSQL_SERVER}}'
           $port = '{{.NR_CLI_MSSQL_PORT}}'
-          $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          if ([string]::IsNullOrEmpty($saPassword)) {
-            Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
-            exit 1
-          }
-          $env:SQLCMDPASSWORD = $saPassword
-          $connArgs = @("-S", "$server,$port", "-U", "sa", "-C")
+          $connArgs = @("-S", "$server,$port", "-E", "-C")
 
           $query = "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');"
           $result = & sqlcmd @connArgs -b -h -1 -Q $query 2>&1
@@ -163,7 +183,7 @@ install:
             Write-Host "     if not present. Refer to:"
             Write-Host "     https://docs.newrelic.com/docs/opentelemetry/database/mssql/windows-hosted/"
             Write-Host ""
-            Write-Host "  2. Make sure the monitoring user is created"
+            Write-Host "  2. Make sure the monitoring identity is created"
             Write-Host "     and has the required permissions granted."
             Write-Host ""
             Write-Host "  3. After making the above changes, restart the NRDOT Collector:"
@@ -214,6 +234,7 @@ install:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-configure_database_user.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
           $server = '{{.NR_CLI_MSSQL_SERVER}}'
           $port = '{{.NR_CLI_MSSQL_PORT}}'
           $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
@@ -236,22 +257,50 @@ install:
             }
           }
 
-          $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
-          $chars = (48..57) + (65..90) + (97..122)
-          $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+          if ($mode -eq "1") {
+            $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
+            $sql = "USE [master];`nGO`nGRANT VIEW SERVER STATE TO [$account];`nGRANT VIEW ANY DEFINITION TO [$account];`nGRANT VIEW ANY DATABASE TO [$account];`nGO`nDECLARE @name SYSNAME;`nDECLARE @sql NVARCHAR(MAX);`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name]`nFROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')`n  AND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    PRINT 'Granting permissions on database: ' + @name;`n    SET @sql = '`n      USE [' + @name + '];`n      IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$account'')`n      BEGIN`n        CREATE USER [$account] FOR LOGIN [$account];`n      END;`n      GRANT VIEW DATABASE STATE TO [$account];`n      GRANT VIEW DEFINITION TO [$account];`n      ALTER ROLE db_datareader ADD MEMBER [$account];';`n    EXEC sp_executesql @sql;`n    PRINT 'Success: ' + @name;`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
+          } else {
+            $gmsa = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
+            $sql = "USE master;`nGO`nIF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$gmsa')`n  CREATE LOGIN [$gmsa] FROM WINDOWS;`nGO`nGRANT VIEW SERVER STATE TO [$gmsa];`nGRANT VIEW ANY DEFINITION TO [$gmsa];`nGRANT VIEW ANY DATABASE TO [$gmsa];`nGO`nDECLARE @name SYSNAME;`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name] FROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master','msdb','model','rdsadmin','distribution')`nAND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    EXEC('USE [' + @name + '];`n    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$gmsa'')`n    BEGIN`n      CREATE USER [$gmsa] FOR LOGIN [$gmsa];`n    END;`n    GRANT VIEW DATABASE STATE TO [$gmsa];');`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
+          }
 
-          $sql = "USE [master];`nGO`nIF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$loginName')`n  CREATE LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nELSE`n  ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nGO`nGRANT VIEW SERVER STATE TO [$loginName];`nGRANT VIEW ANY DEFINITION TO [$loginName];`nGRANT VIEW ANY DATABASE TO [$loginName];`nGO`nDECLARE @name SYSNAME;`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name]`nFROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')`nAND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    EXEC('USE [' + @name + '];`n    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$loginName'')`n    BEGIN`n      CREATE USER [$loginName] FOR LOGIN [$loginName];`n    END;`n    GRANT VIEW DATABASE STATE TO [$loginName];');`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
           $sql | Set-Content -Path $sqlFile
           Protect-TempFile $sqlFile
-          $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          if ([string]::IsNullOrEmpty($saPassword)) {
-            Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
-            exit 1
-          }
-          $env:SQLCMDPASSWORD = $saPassword
-          Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-C") $sqlFile
+          Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
           Write-Host "SQL Server monitoring identity configured successfully."
           Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+          PS1EOF
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
+
+    configure_service_identity:
+      cmds:
+        - |
+          NR_SCRIPT="$TEMP/nr-mssql-configure_service_identity.ps1"
+          powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
+          $service = "nrdot-collector"
+
+          if ($mode -eq "1") {
+            $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
+            $password = '{{.NR_CLI_MSSQL_WIN_PASSWORD}}'
+          } else {
+            $account = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
+            $password = ""
+          }
+
+          Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+
+          & sc.exe config "$service" obj= "$account" password= "$password"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host -ForegroundColor Red "Failed to configure the nrdot-collector service to run as $account."
+            exit 1
+          }
+
+          $svcInfo = Get-WmiObject Win32_Service -Filter "Name='$service'"
+          Write-Host "nrdot-collector service logon account set to: $($svcInfo.StartName)"
+
+          Start-Service -Name $service
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -260,6 +309,7 @@ install:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-create_collector_config.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
+          $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
           $preset = "{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
           $server = '{{.NR_CLI_MSSQL_SERVER}}'
           $port = '{{.NR_CLI_MSSQL_PORT}}'
@@ -272,17 +322,7 @@ install:
 
           $interval = if ($preset -eq "2") { "30s" } else { "15s" }
 
-          $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
-          $chars = (48..57) + (65..90) + (97..122)
-          $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
-          $env:SQLCMDPASSWORD = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          $alterResult = & sqlcmd -S "$server,$port" -U sa -C -b -Q "ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';" 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host -ForegroundColor Red "Failed to set the monitoring login's password:"
-            Write-Host $alterResult
-            exit 1
-          }
-          $receiverFields = "    collection_interval: $interval`n    username: $loginName`n    password: $NrPassword`n    server: $server`n    port: $port"
+          $receiverFields = "    collection_interval: $interval`n    datasource: `"server=$server;port=$port;integrated security=true;encrypt=true;TrustServerCertificate=true;`""
 
           switch ($region) {
             "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net" }
@@ -774,7 +814,15 @@ install:
           $configText = $template.Replace('__RECEIVER_FIELDS__', $receiverFields).Replace('__OTLP_ENDPOINT__', $otlpEndpoint).Replace('__LICENSE_KEY__', $licenseKey)
           $configText | Set-Content -Path $configPath -Encoding utf8
 
+          $serviceAccount = $null
+          if ($mode -eq "1") {
+            $serviceAccount = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
+          } else {
+            $serviceAccount = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
+          }
+
           $grants = @("SYSTEM:(F)", "BUILTIN\Administrators:(F)")
+          if ($serviceAccount) { $grants += "${serviceAccount}:(R)" }
 
           icacls $configPath /inheritance:r /grant:r $grants | Out-Null
           if ($LASTEXITCODE -ne 0) {
@@ -857,6 +905,7 @@ install:
         - task: assert_sql_server_version
         - task: install_nrdot
         - task: configure_database_user
+        - task: configure_service_identity
         - task: create_collector_config
         - task: configure_service
         - task: restart_nrdot
