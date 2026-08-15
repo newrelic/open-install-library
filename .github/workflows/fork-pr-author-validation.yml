@@ -1,0 +1,126 @@
+name: Validate PR Source w/ Author Permissions
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  validate-pr-source-based-on-author-permissions:
+    runs-on: ubuntu-latest
+    # Only run this check on PRs from forks
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    steps:
+      - name: Check if PR author has write access
+        id: check-access
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const author = context.payload.pull_request.user.login;
+            
+            console.log(`Checking if ${author} has write access to ${owner}/${repo}`);
+            
+            try {
+              // Check if user has collaborator access
+              const { data: collaboratorPermission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner,
+                repo,
+                username: author
+              });
+              
+              console.log(`User ${author} has permission level: ${collaboratorPermission.permission}`);
+              
+              // Check if permission is write or admin
+              if (['write', 'admin'].includes(collaboratorPermission.permission)) {
+                core.setOutput('has-write-access', 'true');
+                return;
+              }
+            } catch (error) {
+              console.log(`Error checking collaborator status: ${error.message}`);
+              // If we can't get the permission level, they might not be a direct collaborator
+              // Continue checking team membership
+            }
+            
+            try {
+              // Get all teams in the organization
+              const { data: teams } = await github.rest.teams.list({
+                org: owner
+              });
+              
+              // Check each team for the user and their permissions
+              for (const team of teams) {
+                try {
+                  // Check if user is in the team
+                  const { data: membership } = await github.rest.teams.getMembershipForUserInOrg({
+                    org: owner,
+                    team_slug: team.slug,
+                    username: author
+                  });
+                  
+                  if (membership.state === 'active') {
+                    console.log(`User ${author} is a member of team ${team.name}`);
+                    
+                    // Check team's repository permission
+                    const { data: teamPerm } = await github.rest.teams.getRepoPermissionsInOrg({
+                      org: owner,
+                      team_slug: team.slug,
+                      owner,
+                      repo
+                    });
+                    
+                    console.log(`Team ${team.name} has permission level: ${teamPerm.permission}`);
+                    
+                    if (['write', 'admin', 'maintain'].includes(teamPerm.permission)) {
+                      core.setOutput('has-write-access', 'true');
+                      return;
+                    }
+                  }
+                } catch (error) {
+                  console.log(`Error checking team membership for ${team.name}: ${error.message}`);
+                  // Continue checking other teams
+                }
+              }
+            } catch (error) {
+              console.log(`Error listing teams: ${error.message}`);
+            }
+            
+            // If we reach here, user does not have write access
+            core.setOutput('has-write-access', 'false');
+
+      - name: Comment on PR if author has write access
+        if: steps.check-access.outputs.has-write-access == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.issue.number;
+            const author = context.payload.pull_request.user.login;
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `👋 Hi @${author}, thank you for your contribution! Here's a friendly, yet important **note** from the maintainers of this repository. 
+              
+              It appears **you have write access** to this repository, [${owner}/${repo}](https://github.com/${owner}/${repo}).
+              
+              Please close this PR and create a new one directly from a branch in the original repository rather than from a fork. 
+              
+              As a repository collaborator with write access, you can push branches directly to the repository, which is the preferred workflow to allow all test workflows to run on the branch. The intended workflow to contribute to this repository via a fork is that of a contributor outside the organization, or a not-so-frequent contributor inside the organization who hasn't been granted write access to the repository.
+              
+              ❌ Creating a PR from a fork of [${owner}/${repo}](https://github.com/${owner}/${repo}) does not allow integration tests to run on the branch, as we've disabled runs on forked PRs owing to costs associated with virtual resources created/managed to run integration tests; without the integration tests run, we would not be able to merge your PR.
+              
+              ✅ Hence, please create a new branch in the original repository and push your changes there. Then, create a PR from that branch to the main branch of the original repository. This would allow integration tests to run and allow the maintainers of this repository to review and merge the PR.
+
+              Thank you for understanding!`
+            });
+            
+            core.setFailed('PR author has write access to the repository. PR should be created from the original repository instead of a fork.');
