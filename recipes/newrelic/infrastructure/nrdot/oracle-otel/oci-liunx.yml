@@ -10,9 +10,13 @@ repository: https://github.com/newrelic/nrdot-collector-releases
 installTargets:
   - type: host
     os: linux
-    platform: "oracle"
-    platformFamily: rhel
-    platformVersion: "((7|8|9)\\.?.*)"
+    platform: centos
+  - type: host
+    os: linux
+    platform: redhat
+  - type: host
+    os: linux
+    platform: oracle
 
 keywords:
   - Oracle
@@ -224,6 +228,8 @@ install:
           SSH_USER="{{.NR_CLI_ORACLE_SSH_USER}}"
           PW_FILE="/tmp/nr-oracle-newrelic-pw.tmp"
           USER_FILE="/tmp/nr-oracle-db-user.tmp"
+          NR_SUCCESS=""
+          trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
 
           if [ -z "${SSH_AUTH_SOCK:-}" ]; then
             SSH_AUTH_SOCK=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1)
@@ -232,6 +238,12 @@ install:
           if [ -z "${SSH_AUTH_SOCK:-}" ]; then
             echo "SSH agent socket not found." >&2
             echo "Please connect to this host using SSH agent forwarding: ssh -A <user>@<this-host-ip>" >&2
+            exit 131
+          fi
+
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
             exit 131
           fi
 
@@ -244,8 +256,16 @@ install:
           fi
 
           DB_USER_UPPER=$(echo "$DB_USER" | tr '[:lower:]' '[:upper:]')
+
+          EXISTS_SQL=$(cat << SQLEOF
+          SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
+          ${SET_CONTAINER}
+          SELECT username FROM dba_users WHERE username='${DB_USER_UPPER}';
+          EXIT;
+          SQLEOF
+          )
           EXISTS_RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes "${SSH_USER}@${HOST}" \
-            "printf 'SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF\n${SET_CONTAINER}\nSELECT username FROM dba_users WHERE username='\"'\"'${DB_USER_UPPER}'\"'\"';\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'") || true
+            "sudo su - oracle -c 'sqlplus -S / as sysdba'" <<< "$EXISTS_SQL") || true
 
           if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${DB_USER_UPPER}[[:space:]]*$"; then
             echo ""
@@ -269,6 +289,7 @@ install:
                 echo "$DB_USER" > "$USER_FILE"
                 chmod 600 "$USER_FILE"
                 echo "Using existing user: $DB_USER"
+                NR_SUCCESS=1
                 exit 0
                 ;;
               2)
@@ -276,6 +297,11 @@ install:
                 echo "  Note: Just type the name without the c## prefix in CDB mode; it will be added automatically."
                 read -rp "Enter new monitoring username: " NEW_USERNAME
                 LOGIN_NAME="$NEW_USERNAME"
+                if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+                  echo "Invalid monitoring username: $LOGIN_NAME" >&2
+                  echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+                  exit 131
+                fi
                 if [ "$CONTAINER_TYPE" = "1" ]; then
                   DB_USER="c##${LOGIN_NAME}"
                 else
@@ -307,21 +333,96 @@ install:
           chmod 600 "$PW_FILE"
 
           if [ "$CONTAINER_TYPE" = "1" ]; then
-            RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes "${SSH_USER}@${HOST}" \
-              "printf 'WHENEVER SQLERROR EXIT SQL.SQLCODE\nALTER SESSION SET CONTAINER = CDB\$ROOT;\nCREATE USER ${DB_USER} IDENTIFIED BY \"${NR_PASSWORD}\" CONTAINER=ALL;\nGRANT CREATE SESSION TO ${DB_USER} CONTAINER=ALL;\nALTER USER ${DB_USER} SET CONTAINER_DATA=ALL CONTAINER=CURRENT;\nGRANT SELECT ON V_\$INSTANCE TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$DATABASE TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$CONTAINERS TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$DATAFILE TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$SYSSTAT TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$CON_SYSSTAT TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$SYSMETRIC TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$CON_SYSMETRIC TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$SESSION TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$RESOURCE_LIMIT TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$OSSTAT TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$SGAINFO TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$ROWCACHE TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$PARAMETER TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON CDB_TABLESPACE_USAGE_METRICS TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON CDB_TABLESPACES TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON DBA_DATA_FILES TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON DBA_FREE_SPACE TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON DBA_RECYCLEBIN TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$SQL TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$SQL_PLAN TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$LOCK TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON V_\$SESSION_EVENT TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON DBA_PROCEDURES TO ${DB_USER} CONTAINER=ALL;\nGRANT SELECT ON DBA_OBJECTS TO ${DB_USER} CONTAINER=ALL;\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'" 2>&1)
+            GRANT_SQL=$(cat << SQLEOF
+          WHENEVER SQLERROR EXIT SQL.SQLCODE
+          ALTER SESSION SET CONTAINER = CDB\$ROOT;
+          CREATE USER ${DB_USER} IDENTIFIED BY "${NR_PASSWORD}" CONTAINER=ALL;
+          GRANT CREATE SESSION TO ${DB_USER} CONTAINER=ALL;
+          ALTER USER ${DB_USER} SET CONTAINER_DATA=ALL CONTAINER=CURRENT;
+          GRANT SELECT ON V_\$INSTANCE TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$DATABASE TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$CONTAINERS TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$DATAFILE TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SYSSTAT TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$CON_SYSSTAT TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SYSMETRIC TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$CON_SYSMETRIC TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SESSION TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$RESOURCE_LIMIT TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$OSSTAT TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SGAINFO TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$ROWCACHE TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$PARAMETER TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON CDB_TABLESPACE_USAGE_METRICS TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON CDB_TABLESPACES TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON DBA_DATA_FILES TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON DBA_FREE_SPACE TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON DBA_RECYCLEBIN TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SQL TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SQL_PLAN TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$LOCK TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SESSION_EVENT TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON DBA_PROCEDURES TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON DBA_OBJECTS TO ${DB_USER} CONTAINER=ALL;
+          EXIT;
+          SQLEOF
+            )
           else
-            RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes "${SSH_USER}@${HOST}" \
-              "printf 'WHENEVER SQLERROR EXIT SQL.SQLCODE\nALTER SESSION SET CONTAINER = \"${PDB_NAME}\";\nCREATE USER ${DB_USER} IDENTIFIED BY \"${NR_PASSWORD}\";\nGRANT CREATE SESSION TO ${DB_USER};\nGRANT SELECT ON V_\$INSTANCE TO ${DB_USER};\nGRANT SELECT ON V_\$DATABASE TO ${DB_USER};\nGRANT SELECT ON V_\$CONTAINERS TO ${DB_USER};\nGRANT SELECT ON V_\$DATAFILE TO ${DB_USER};\nGRANT SELECT ON V_\$SYSSTAT TO ${DB_USER};\nGRANT SELECT ON V_\$SYSMETRIC TO ${DB_USER};\nGRANT SELECT ON V_\$SESSION TO ${DB_USER};\nGRANT SELECT ON V_\$RESOURCE_LIMIT TO ${DB_USER};\nGRANT SELECT ON V_\$OSSTAT TO ${DB_USER};\nGRANT SELECT ON V_\$SGAINFO TO ${DB_USER};\nGRANT SELECT ON V_\$ROWCACHE TO ${DB_USER};\nGRANT SELECT ON V_\$PARAMETER TO ${DB_USER};\nGRANT SELECT ON DBA_TABLESPACE_USAGE_METRICS TO ${DB_USER};\nGRANT SELECT ON DBA_TABLESPACES TO ${DB_USER};\nGRANT SELECT ON DBA_DATA_FILES TO ${DB_USER};\nGRANT SELECT ON DBA_FREE_SPACE TO ${DB_USER};\nGRANT SELECT ON DBA_RECYCLEBIN TO ${DB_USER};\nGRANT SELECT ON V_\$SQL TO ${DB_USER};\nGRANT SELECT ON V_\$SQL_PLAN TO ${DB_USER};\nGRANT SELECT ON V_\$LOCK TO ${DB_USER};\nGRANT SELECT ON V_\$SESSION_EVENT TO ${DB_USER};\nGRANT SELECT ON DBA_PROCEDURES TO ${DB_USER};\nGRANT SELECT ON DBA_OBJECTS TO ${DB_USER};\nGRANT SELECT ON V_\$PDBS TO ${DB_USER};\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'" 2>&1)
+            GRANT_SQL=$(cat << SQLEOF
+          WHENEVER SQLERROR EXIT SQL.SQLCODE
+          ALTER SESSION SET CONTAINER = "${PDB_NAME}";
+          CREATE USER ${DB_USER} IDENTIFIED BY "${NR_PASSWORD}";
+          GRANT CREATE SESSION TO ${DB_USER};
+          GRANT SELECT ON V_\$INSTANCE TO ${DB_USER};
+          GRANT SELECT ON V_\$DATABASE TO ${DB_USER};
+          GRANT SELECT ON V_\$CONTAINERS TO ${DB_USER};
+          GRANT SELECT ON V_\$DATAFILE TO ${DB_USER};
+          GRANT SELECT ON V_\$SYSSTAT TO ${DB_USER};
+          GRANT SELECT ON V_\$SYSMETRIC TO ${DB_USER};
+          GRANT SELECT ON V_\$SESSION TO ${DB_USER};
+          GRANT SELECT ON V_\$RESOURCE_LIMIT TO ${DB_USER};
+          GRANT SELECT ON V_\$OSSTAT TO ${DB_USER};
+          GRANT SELECT ON V_\$SGAINFO TO ${DB_USER};
+          GRANT SELECT ON V_\$ROWCACHE TO ${DB_USER};
+          GRANT SELECT ON V_\$PARAMETER TO ${DB_USER};
+          GRANT SELECT ON DBA_TABLESPACE_USAGE_METRICS TO ${DB_USER};
+          GRANT SELECT ON DBA_TABLESPACES TO ${DB_USER};
+          GRANT SELECT ON DBA_DATA_FILES TO ${DB_USER};
+          GRANT SELECT ON DBA_FREE_SPACE TO ${DB_USER};
+          GRANT SELECT ON DBA_RECYCLEBIN TO ${DB_USER};
+          GRANT SELECT ON V_\$SQL TO ${DB_USER};
+          GRANT SELECT ON V_\$SQL_PLAN TO ${DB_USER};
+          GRANT SELECT ON V_\$LOCK TO ${DB_USER};
+          GRANT SELECT ON V_\$SESSION_EVENT TO ${DB_USER};
+          GRANT SELECT ON DBA_PROCEDURES TO ${DB_USER};
+          GRANT SELECT ON DBA_OBJECTS TO ${DB_USER};
+          GRANT SELECT ON V_\$PDBS TO ${DB_USER};
+          EXIT;
+          SQLEOF
+            )
           fi
 
-          if [ $? -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
+          RESULT=$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes "${SSH_USER}@${HOST}" \
+            "sudo su - oracle -c 'sqlplus -S / as sysdba'" <<< "$GRANT_SQL" 2>&1)
+
+          SSH_STATUS=$?
+          REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+          redact() {
+            if [ -n "$REDACT_PATTERN" ]; then
+              sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+            else
+              cat
+            fi
+          }
+
+          if [ $SSH_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
             echo "SQL script failed:" >&2
-            echo "$RESULT" >&2
-            rm -f "$PW_FILE" "$USER_FILE"
+            echo "$RESULT" | redact >&2
             exit 1
           fi
-          echo "$RESULT"
+          echo "$RESULT" | redact
 
+          NR_SUCCESS=1
           echo "Oracle Database monitoring identity configured successfully: $DB_USER"
 
     create_collector_config:

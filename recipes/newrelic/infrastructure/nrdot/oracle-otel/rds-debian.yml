@@ -105,14 +105,15 @@ install:
           ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
           ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
 
-          VERSION_OUTPUT=$(sqlplus -S "${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}" << 'SQL'
+          VERSION_OUTPUT=$(sqlplus -S /nolog << EOF
           WHENEVER SQLERROR EXIT SQL.SQLCODE
+          CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
           SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON
-          SELECT version FROM v$instance;
+          SELECT version FROM v\$instance;
           EXIT;
-          SQL
+          EOF
           )
-          if [ $? -ne 0 ]; then
+          if [ $? -ne 0 ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|SP2-"; then
             echo "Failed to connect to the RDS Oracle Database to check its version:" >&2
             echo "$VERSION_OUTPUT" >&2
             exit 1
@@ -122,6 +123,8 @@ install:
 
           if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
             echo "Oracle Database version ${MAJOR_VERSION:-unknown} is not supported. Oracle Database 19c or later is required." >&2
+            echo "Raw output from version check:" >&2
+            echo "$VERSION_OUTPUT" >&2
             exit 1
           fi
 
@@ -196,10 +199,13 @@ install:
           ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
           PW_FILE="/tmp/nr-oracle-rds-newrelic-pw.tmp"
           USER_FILE="/tmp/nr-oracle-rds-db-user.tmp"
+          NR_SUCCESS=""
+          trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
 
           LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
 
-          EXISTS_RESULT=$(sqlplus -S "${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}" << SQL 2>&1
+          EXISTS_RESULT=$(sqlplus -S /nolog << SQL 2>&1
+          CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
           SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
           SELECT username FROM dba_users WHERE username='${LOGIN_UPPER}';
           EXIT;
@@ -228,6 +234,7 @@ install:
                 echo "$LOGIN_NAME" > "$USER_FILE"
                 chmod 600 "$USER_FILE"
                 echo "Using existing user: $LOGIN_NAME"
+                NR_SUCCESS=1
                 exit 0
                 ;;
               2)
@@ -243,6 +250,12 @@ install:
             esac
           fi
 
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+
           echo "$LOGIN_NAME" > "$USER_FILE"
           chmod 600 "$USER_FILE"
 
@@ -254,8 +267,9 @@ install:
           printf '%s' "$NR_PASSWORD" > "$PW_FILE"
           chmod 600 "$PW_FILE"
 
-          RESULT=$(sqlplus -S "${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}" << SQL 2>&1
+          RESULT=$(sqlplus -S /nolog << SQL 2>&1
           WHENEVER SQLERROR EXIT SQL.SQLCODE
+          CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
           CREATE USER ${LOGIN_NAME} IDENTIFIED BY "${NR_PASSWORD}";
           GRANT CONNECT TO ${LOGIN_NAME};
           EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SYSMETRIC', '${LOGIN_UPPER}', 'SELECT', false);
@@ -293,14 +307,24 @@ install:
           SQL
           )
 
-          if [ $? -ne 0 ]; then
+          SQLPLUS_STATUS=$?
+          REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+          redact() {
+            if [ -n "$REDACT_PATTERN" ]; then
+              sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+            else
+              cat
+            fi
+          }
+
+          if [ $SQLPLUS_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
             echo "SQL script failed:" >&2
-            echo "$RESULT" >&2
-            rm -f "$PW_FILE" "$USER_FILE"
+            echo "$RESULT" | redact >&2
             exit 1
           fi
-          echo "$RESULT"
+          echo "$RESULT" | redact
 
+          NR_SUCCESS=1
           echo "RDS Oracle Database monitoring identity configured successfully: $LOGIN_NAME"
 
     create_collector_config:
