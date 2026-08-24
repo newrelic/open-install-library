@@ -100,14 +100,15 @@ install:
           export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
 
           SERVER="{{.NR_CLI_MSSQL_SERVER}}"
-          PORT="${NR_CLI_MSSQL_PORT:-1433}"
+          PORT="{{.NR_CLI_MSSQL_PORT}}"
           MASTER_USER="{{.NR_CLI_MSSQL_MASTER_USER}}"
           MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
           {{.NR_CLI_MSSQL_MASTER_PASSWORD}}
           NR_MASTER_PW_EOF
           )
+          export SQLCMDPASSWORD="$MASTER_PASSWORD"
 
-          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -P "${MASTER_PASSWORD}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1)
+          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1)
           if [ $? -ne 0 ] || echo "$RESULT" | grep -qi "Sqlcmd: Error:"; then
             echo "Failed to connect to SQL Server to check its version:" >&2
             echo "$RESULT" >&2
@@ -182,14 +183,20 @@ install:
         - |
           export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
 
-          LOGIN_NAME="${NR_CLI_MSSQL_LOGIN_NAME:-newrelic}"
+          LOGIN_NAME="{{.NR_CLI_MSSQL_LOGIN_NAME}}"
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
           SERVER="{{.NR_CLI_MSSQL_SERVER}}"
-          PORT="${NR_CLI_MSSQL_PORT:-1433}"
+          PORT="{{.NR_CLI_MSSQL_PORT}}"
           MASTER_USER="{{.NR_CLI_MSSQL_MASTER_USER}}"
           MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
           {{.NR_CLI_MSSQL_MASTER_PASSWORD}}
           NR_MASTER_PW_EOF
           )
+          export SQLCMDPASSWORD="$MASTER_PASSWORD"
           SQL_FILE=$(mktemp /tmp/nr-mssql-grant.sql.XXXXXX)
           trap 'rm -f "$SQL_FILE"' EXIT
 
@@ -235,7 +242,7 @@ install:
           GO
           EOF
 
-          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -P "${MASTER_PASSWORD}" -C -b -i "$SQL_FILE" 2>&1)
+          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -C -b -i "$SQL_FILE" 2>&1)
           if [ $? -ne 0 ] || echo "$RESULT" | grep -qi "Sqlcmd: Error:"; then
             echo "SQL script failed:" >&2
             echo "$RESULT" >&2
@@ -249,14 +256,20 @@ install:
       cmds:
         - |
           PRESET="{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
-          LOGIN_NAME="${NR_CLI_MSSQL_LOGIN_NAME:-newrelic}"
+          LOGIN_NAME="{{.NR_CLI_MSSQL_LOGIN_NAME}}"
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
           SERVER="{{.NR_CLI_MSSQL_SERVER}}"
-          PORT="${NR_CLI_MSSQL_PORT:-1433}"
+          PORT="{{.NR_CLI_MSSQL_PORT}}"
           MASTER_USER="{{.NR_CLI_MSSQL_MASTER_USER}}"
           MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
           {{.NR_CLI_MSSQL_MASTER_PASSWORD}}
           NR_MASTER_PW_EOF
           )
+          export SQLCMDPASSWORD="$MASTER_PASSWORD"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
@@ -269,7 +282,7 @@ install:
 
           NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
 
-          ALTER_RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -P "${MASTER_PASSWORD}" -C -b -Q "ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';" 2>&1)
+          ALTER_RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -C -b -Q "ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';" 2>&1)
           if [ $? -ne 0 ] || echo "$ALTER_RESULT" | grep -qi "Sqlcmd: Error:"; then
             echo "Failed to set the monitoring login's password:" >&2
             echo "$ALTER_RESULT" >&2
