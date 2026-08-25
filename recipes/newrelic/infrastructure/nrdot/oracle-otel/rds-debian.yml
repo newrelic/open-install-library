@@ -202,6 +202,12 @@ install:
           NR_SUCCESS=""
           trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
 
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+
           LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
 
           EXISTS_RESULT=$(sqlplus -S /nolog << SQL 2>&1
@@ -979,6 +985,9 @@ install:
                 exporters: [otlp/newrelic]
           EOF
           fi
+
+          chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
+          chmod 600 "$CONFIG_PATH"
 
           cat > "$ENV_FILE" << EOF
           OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
