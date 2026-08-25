@@ -93,6 +93,8 @@ install:
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
     assert_auth_inputs:
+      env:
+        NR_MSSQL_LOGIN_NAME: '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
       cmds:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-assert_auth_inputs.ps1"
@@ -102,6 +104,12 @@ install:
           if ([string]::IsNullOrWhiteSpace($masterUser) -or $masterUser.Trim() -eq "" -or [string]::IsNullOrWhiteSpace($masterPassword) -or $masterPassword.Trim() -eq "") {
             Write-Host -ForegroundColor Red "Error: RDS master username and password are both required."
             Write-Host -ForegroundColor Red "Please re-run the installation and provide valid RDS master credentials."
+            exit 1
+          }
+
+          $loginName = $env:NR_MSSQL_LOGIN_NAME
+          if ($loginName -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
+            Write-Host -ForegroundColor Red "Error: Monitoring username must start with a letter and contain only letters, numbers, and underscores."
             exit 1
           }
           PS1EOF
@@ -216,6 +224,8 @@ install:
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
     configure_database_user:
+      env:
+        NR_MSSQL_LOGIN_NAME: '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
       cmds:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-configure_database_user.ps1"
@@ -242,7 +252,7 @@ install:
             }
           }
 
-          $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
+          $loginName = $env:NR_MSSQL_LOGIN_NAME
           $masterUser = '{{.NR_CLI_MSSQL_MASTER_USER}}'
           $chars = (48..57) + (65..90) + (97..122)
           $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
@@ -301,6 +311,8 @@ install:
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
     create_collector_config:
+      env:
+        NR_MSSQL_LOGIN_NAME: '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
       cmds:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-create_collector_config.ps1"
@@ -317,7 +329,7 @@ install:
 
           $interval = if ($preset -eq "2") { "30s" } else { "15s" }
 
-          $loginName = '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
+          $loginName = $env:NR_MSSQL_LOGIN_NAME
           $masterUser = '{{.NR_CLI_MSSQL_MASTER_USER}}'
           $chars = (48..57) + (65..90) + (97..122)
           $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
