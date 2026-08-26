@@ -1,0 +1,88 @@
+---
+- debug:
+    msg: Install SQL Server for NRDOT MSSQL Testing on Debian/Ubuntu
+
+- name: Import Microsoft GPG key
+  shell: |
+    curl https://packages.microsoft.com/keys/microsoft.asc | tee /etc/apt/trusted.gpg.d/microsoft.asc
+  become: yes
+
+- name: Add Microsoft SQL Server 2022 repository
+  shell: |
+    curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | tee /etc/apt/sources.list.d/mssql-server.list
+  become: yes
+
+- name: Update package list
+  shell: "apt-get update -y"
+  become: yes
+
+- name: Install SQL Server
+  shell: "DEBIAN_FRONTEND=noninteractive apt-get install -y mssql-server"
+  become: yes
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Add Microsoft Production repository for mssql-tools
+  shell: |
+    curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | tee /etc/apt/sources.list.d/msprod.list
+  become: yes
+
+- name: Update package list for prod repository
+  shell: "apt-get update -y"
+  become: yes
+
+- name: Install SQL Server command-line tools (sqlcmd)
+  shell: "ACCEPT_EULA=Y DEBIAN_FRONTEND=noninteractive apt-get install -y mssql-tools18 unixodbc-dev"
+  become: yes
+  environment:
+    ACCEPT_EULA: 'Y'
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Add mssql-tools18 to system PATH
+  shell: |
+    echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' | tee /etc/profile.d/mssql-tools.sh
+    chmod +x /etc/profile.d/mssql-tools.sh
+  become: yes
+
+- name: Configure SQL Server with SA password
+  shell: |
+    MSSQL_SA_PASSWORD='YourStrong@Passw0rd' \
+    MSSQL_PID='evaluation' \
+    /opt/mssql/bin/mssql-conf -n setup accept-eula
+  become: yes
+  environment:
+    MSSQL_SA_PASSWORD: 'YourStrong@Passw0rd'
+    MSSQL_PID: 'evaluation'
+
+- name: Enable SQL Server Agent
+  shell: "/opt/mssql/bin/mssql-conf set sqlagent.enabled true"
+  become: yes
+
+- name: Restart SQL Server service
+  shell: "systemctl restart mssql-server"
+  become: yes
+  async: 120
+  poll: 0
+
+- name: Wait for the host to become reachable again
+  wait_for_connection:
+    delay: 5
+    timeout: 120
+
+- name: Wait for SQL Server to accept connections
+  shell: |
+    export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
+    for i in $(seq 1 30); do
+      if sqlcmd -S localhost -U sa -P 'YourStrong@Passw0rd' -C -Q "SELECT 1" > /dev/null 2>&1; then
+        echo "SQL Server is accepting connections."
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "SQL Server did not start accepting connections in time." >&2
+    exit 1
+  become: yes
+
+- name: Verify SQL Server is running
+  shell: "systemctl status mssql-server --no-pager"
+  become: yes

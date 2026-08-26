@@ -1,0 +1,1037 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+# WORK IN PROGRESS - not for use.
+
+name: nrdot-collector-oracle-rds
+displayName: NRDOT Oracle Database (AWS RDS, RHEL/CentOS/OEL collector host)
+description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector against an AWS RDS Oracle instance, collector installed on RHEL/CentOS/OEL
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: centos
+  - type: host
+    os: linux
+    platform: redhat
+  - type: host
+    os: linux
+    platform: oracle
+
+keywords:
+  - Oracle
+  - Oracle Database
+  - RDS
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - CentOS
+  - RHEL
+  - OEL
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    To capture data from your RDS Oracle Database, we need to create/authorize a
+    monitoring identity (a database user) using the RDS master user's credentials.
+
+inputVars:
+  - name: NR_CLI_ORACLE_CONFIG_PRESET
+    prompt: "NRDOT configuration - 1) Database only  2) Host + Database: "
+    default: "1"
+  - name: NR_CLI_ORACLE_HOST
+    prompt: "RDS Oracle endpoint: "
+  - name: NR_CLI_ORACLE_PORT
+    prompt: "Oracle listener port: "
+    default: "1521"
+  - name: NR_CLI_ORACLE_ADMIN_USER
+    prompt: "RDS master username (used once to create the monitoring user and grant privileges): "
+  - name: NR_CLI_ORACLE_ADMIN_PASSWORD
+    prompt: "RDS master password: "
+    secret: true
+  - name: NR_CLI_ORACLE_LOGIN_NAME
+    prompt: "Monitoring username: "
+    default: "newrelic"
+  - name: NR_CLI_ORACLE_LOGIN_PASSWORD
+    prompt: "Password for the monitoring login (leave blank to auto-generate a random password): "
+    secret: true
+  - name: NR_CLI_ORACLE_SERVICE_NAME
+    prompt: "RDS DB service name for the collector connection: "
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'oracledb.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 131
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    assert_oracle_version:
+      cmds:
+        - |
+          HOST="{{.NR_CLI_ORACLE_HOST}}"
+          PORT="{{.NR_CLI_ORACLE_PORT}}"
+          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
+          ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
+          ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
+
+          VERSION_OUTPUT=$(sqlplus -S /nolog << EOF
+          WHENEVER SQLERROR EXIT SQL.SQLCODE
+          CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
+          SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON
+          SELECT version FROM v\$instance;
+          EXIT;
+          EOF
+          )
+          if [ $? -ne 0 ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|SP2-"; then
+            echo "Failed to connect to the RDS Oracle Database to check its version:" >&2
+            echo "$VERSION_OUTPUT" >&2
+            exit 1
+          fi
+
+          MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '^[0-9]+' | head -1)
+
+          if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
+            echo "Oracle Database version ${MAJOR_VERSION:-unknown} is not supported. Oracle Database 19c or later is required." >&2
+            echo "Raw output from version check:" >&2
+            echo "$VERSION_OUTPUT" >&2
+            exit 1
+          fi
+
+          echo "Oracle Database major version ${MAJOR_VERSION} detected - supported."
+
+    install_nrdot:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          if rpm -q "$COLLECTOR_DISTRO" > /dev/null 2>&1; then
+            echo "NRDOT Collector is already installed."
+            echo ""
+            echo "Please follow the steps below to complete the setup:"
+            echo ""
+            echo "  1. Create oracle-config.yaml"
+            echo "     if not present. Refer to:"
+            echo "     https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/"
+            echo ""
+            echo "  2. Make sure the monitoring user is created"
+            echo "     and has the required permissions granted."
+            echo ""
+            echo "  3. After making the above changes, restart the NRDOT Collector:"
+            echo "     sudo systemctl restart nrdot-collector"
+            echo ""
+            exit 131
+          fi
+
+          COLLECTOR_VERSION=$(curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep '"tag_name":' | awk -F'"' '{print $4}')
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="x86_64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rpm -ivh /tmp/nrdot-collector.rpm
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.rpm
+          echo "${COLLECTOR_DISTRO} installed successfully."
+
+    configure_database_user:
+      cmds:
+        - |
+          LOGIN_NAME="{{.NR_CLI_ORACLE_LOGIN_NAME}}"
+          HOST="{{.NR_CLI_ORACLE_HOST}}"
+          PORT="{{.NR_CLI_ORACLE_PORT}}"
+          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
+          ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
+          ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
+          PW_FILE="/tmp/nr-oracle-rds-newrelic-pw.tmp"
+          USER_FILE="/tmp/nr-oracle-rds-db-user.tmp"
+          NR_SUCCESS=""
+          trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
+
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+
+          LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+
+          EXISTS_RESULT=$(sqlplus -S /nolog << SQL 2>&1
+          CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
+          SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
+          SELECT username FROM dba_users WHERE username='${LOGIN_UPPER}';
+          EXIT;
+          SQL
+          ) || true
+
+          if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${LOGIN_UPPER}[[:space:]]*$"; then
+            echo ""
+            echo "Monitoring user $LOGIN_NAME already exists."
+            echo ""
+            echo "What would you like to do?"
+            echo "  1. Use the existing user $LOGIN_NAME (you will be asked for the password)"
+            echo "  2. Create a new username"
+            echo ""
+            read -rp "Enter your choice (1 or 2): " USER_CHOICE
+
+            case "$USER_CHOICE" in
+              1)
+                echo ""
+                stty -echo
+                read -rp "Enter the existing password for $LOGIN_NAME: " NR_PASSWORD
+                stty echo
+                echo ""
+                printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+                chmod 600 "$PW_FILE"
+                echo "$LOGIN_NAME" > "$USER_FILE"
+                chmod 600 "$USER_FILE"
+                echo "Using existing user: $LOGIN_NAME"
+                NR_SUCCESS=1
+                exit 0
+                ;;
+              2)
+                echo ""
+                read -rp "Enter new monitoring username: " NEW_USERNAME
+                LOGIN_NAME="$NEW_USERNAME"
+                LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+                ;;
+              *)
+                echo "Invalid choice. Please re-run and enter 1 or 2." >&2
+                exit 131
+                ;;
+            esac
+          fi
+
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+
+          echo "$LOGIN_NAME" > "$USER_FILE"
+          chmod 600 "$USER_FILE"
+
+          if [ -z "{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}" ]; then
+            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+          else
+            NR_PASSWORD="{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}"
+          fi
+          printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+          chmod 600 "$PW_FILE"
+
+          RESULT=$(sqlplus -S /nolog << SQL 2>&1
+          WHENEVER SQLERROR EXIT SQL.SQLCODE
+          CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
+          CREATE USER ${LOGIN_NAME} IDENTIFIED BY "${NR_PASSWORD}";
+          GRANT CONNECT TO ${LOGIN_NAME};
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SYSMETRIC', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$CON_SYSMETRIC', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$CONTAINERS', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SESSION', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SESSION_EVENT', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SYSSTAT', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$CON_SYSSTAT', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$OSSTAT', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SGAINFO', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SQL', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SQLSTATS', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$SQL_PLAN', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$PARAMETER', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$ROWCACHE', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$RESOURCE_LIMIT', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$LOCK', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$DATABASE', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$INSTANCE', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$DATAFILE', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('V_\$PDBS', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('DBA_DATA_FILES', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('DBA_FREE_SPACE', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('DBA_RECYCLEBIN', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('DBA_TABLESPACES', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('DBA_TABLESPACE_USAGE_METRICS', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('DBA_PROCEDURES', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('DBA_OBJECTS', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('CDB_TABLESPACE_USAGE_METRICS', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('CDB_TABLESPACES', '${LOGIN_UPPER}', 'SELECT', false);
+          EXEC rdsadmin.rdsadmin_util.grant_sys_object('CDB_SERVICES', '${LOGIN_UPPER}', 'SELECT', false);
+          GRANT CREATE SESSION TO ${LOGIN_UPPER};
+          EXIT;
+          SQL
+          )
+
+          SQLPLUS_STATUS=$?
+          REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+          redact() {
+            if [ -n "$REDACT_PATTERN" ]; then
+              sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+            else
+              cat
+            fi
+          }
+
+          if [ $SQLPLUS_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
+            echo "SQL script failed:" >&2
+            echo "$RESULT" | redact >&2
+            exit 1
+          fi
+          echo "$RESULT" | redact
+
+          NR_SUCCESS=1
+          echo "RDS Oracle Database monitoring identity configured successfully: $LOGIN_NAME"
+
+    create_collector_config:
+      cmds:
+        - |
+          PRESET="{{.NR_CLI_ORACLE_CONFIG_PRESET}}"
+          HOST="{{.NR_CLI_ORACLE_HOST}}"
+          PORT="{{.NR_CLI_ORACLE_PORT}}"
+          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
+          REGION="{{.NEW_RELIC_REGION}}"
+          LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          CONFIG_DIR="/etc/nrdot-collector"
+          CONFIG_PATH="${CONFIG_DIR}/oracle-config.yaml"
+          ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+          PW_FILE="/tmp/nr-oracle-rds-newrelic-pw.tmp"
+          USER_FILE="/tmp/nr-oracle-rds-db-user.tmp"
+
+          mkdir -p "$CONFIG_DIR"
+
+          NR_PASSWORD=$(cat "$PW_FILE")
+          LOGIN_NAME=$(cat "$USER_FILE")
+
+          case "$REGION" in
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4317" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net:4317" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
+          esac
+
+          if [ "$PRESET" = "2" ]; then
+            cat > "$CONFIG_PATH" << EOF
+          extensions:
+            health_check:
+
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                http:
+
+            hostmetrics:
+              collection_interval: 60s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.time:
+                      enabled: false
+                    system.cpu.utilization:
+                      enabled: true
+                load:
+                memory:
+                  metrics:
+                    system.memory.utilization:
+                      enabled: true
+                paging:
+                  metrics:
+                    system.paging.utilization:
+                      enabled: false
+                    system.paging.faults:
+                      enabled: false
+                filesystem:
+                  metrics:
+                    system.filesystem.utilization:
+                      enabled: true
+                disk:
+                  metrics:
+                    system.disk.merged:
+                      enabled: false
+                    system.disk.pending_operations:
+                      enabled: false
+                    system.disk.weighted_io_time:
+                      enabled: false
+                network:
+                  metrics:
+                    system.network.connections:
+                      enabled: false
+
+            filelog:
+              include:
+                - /var/log/messages
+                - /var/log/secure
+                - /var/log/yum.log
+
+            nroracledb:
+              endpoint: "${HOST}:${PORT}"
+              username: "${LOGIN_NAME}"
+              password: "${NR_PASSWORD}"
+              service: "${SERVICE_NAME}"
+              collection_interval: 10s
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+                db.server.session.wait_sample:
+                  enabled: true
+              top_query_collection:
+                max_query_sample_count: 1000
+                top_query_count: 200
+                collection_interval: 60s
+                allowed_comment_keys:
+                  - nr_service_guid
+              query_sample_collection:
+                max_rows_per_query: 100
+                allowed_comment_keys:
+                  - nr_service_guid
+              session_wait_event_collection:
+                max_rows_per_query: 100
+              metrics:
+          EOF
+          else
+            cat > "$CONFIG_PATH" << EOF
+          receivers:
+            nroracledb:
+              endpoint: "${HOST}:${PORT}"
+              username: "${LOGIN_NAME}"
+              password: "${NR_PASSWORD}"
+              service: "${SERVICE_NAME}"
+              collection_interval: 10s
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+                db.server.session.wait_sample:
+                  enabled: true
+              top_query_collection:
+                max_query_sample_count: 1000
+                top_query_count: 200
+                collection_interval: 60s
+                allowed_comment_keys:
+                  - nr_service_guid
+              query_sample_collection:
+                max_rows_per_query: 100
+                allowed_comment_keys:
+                  - nr_service_guid
+              session_wait_event_collection:
+                max_rows_per_query: 100
+              metrics:
+          EOF
+          fi
+
+          cat >> "$CONFIG_PATH" << 'EOF'
+                oracledb.cpu_time:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.database.cpu.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.host.cpu.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.executions:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.execution.utilization:
+                  enabled: false
+                  attributes:
+                    - oracledb.parse.type
+                    - oracle.db.pdb
+                oracledb.parse_calls:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.parse.rate:
+                  enabled: false
+                  attributes:
+                    - oracledb.parse.result
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.parse.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.hard_parses:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.logical_reads:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_reads:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_reads_direct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_writes:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_writes_direct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_read_io_requests:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_write_io_requests:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_io.cache_writes:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_io.requests:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - disk.io.block_size
+                    - oracle.db.pdb
+                oracledb.physical_io.transferred:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - disk.io.type
+                    - oracle.db.pdb
+                oracledb.sqlnet.io.transferred:
+                  enabled: true
+                  attributes:
+                    - network.io.direction
+                    - destination.type
+                    - oracle.db.pdb
+                oracledb.consistent_gets:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.db_block_gets:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.buffer_cache.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.library_cache.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.data_dictionary.hit_ratio:
+                  enabled: true
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.shared_pool.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.pga_memory:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.sga.limit:
+                  enabled: true
+                oracledb.sga.usage:
+                  enabled: true
+                  attributes:
+                    - oracledb.sga.component.name
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.database.wait.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$resource_limit empty in PDB.
+                oracledb.dml_locks.limit:
+                  enabled: false
+                oracledb.dml_locks.usage:
+                  enabled: false
+                oracledb.enqueue_locks.limit:
+                  enabled: false
+                oracledb.enqueue_locks.usage:
+                  enabled: false
+                oracledb.enqueue_resources.limit:
+                  enabled: false
+                oracledb.enqueue_resources.usage:
+                  enabled: false
+                oracledb.enqueue_deadlocks:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.exchange_deadlocks:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$resource_limit empty in PDB.
+                oracledb.processes.limit:
+                  enabled: false
+                oracledb.processes.usage:
+                  enabled: false
+                oracledb.sessions.limit:
+                  enabled: false
+                # KEEP enabled: sessions.usage is sourced from v$session, not v$resource_limit.
+                oracledb.sessions.usage:
+                  enabled: true
+                  attributes:
+                    - session_type
+                    - session_status
+                    - oracle.db.pdb
+                oracledb.logons:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$resource_limit empty in PDB.
+                oracledb.transactions.limit:
+                  enabled: false
+                oracledb.transactions.usage:
+                  enabled: false
+                oracledb.user_commits:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.user_rollbacks:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.tablespace_size.limit:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracle.db.pdb
+                oracledb.tablespace_size.usage:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracle.db.pdb
+                oracledb.storage.usage:
+                  enabled: true
+                oracledb.storage.utilization:
+                  enabled: true
+                oracledb.recycle_bin.limit:
+                  enabled: true
+                oracledb.queries_parallelized:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.ddl_statements_parallelized:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.dml_statements_parallelized:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parallel_operations_not_downgraded:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parallel_operations_downgraded_1_to_25_pct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parallel_operations_downgraded_25_to_50_pct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parallel_operations_downgraded_50_to_75_pct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parallel_operations_downgraded_75_to_99_pct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parallel_operations_downgraded_to_serial:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.redo_allocation.utilization:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.sort.ratio:
+                  enabled: false
+                  attributes:
+                    - oracledb.sort.type
+                    - oracle.db.pdb
+                # DISABLED on RDS: v$sysmetric empty in PDB.
+                oracledb.sql_service.response.duration:
+                  enabled: false
+                  attributes:
+                    - oracle.db.pdb
+              resource_attributes:
+                host.name:
+                  enabled: true
+                oracle.db.hosting_type:
+                  enabled: true
+                oracle.db.open_mode:
+                  enabled: true
+                oracle.db.role:
+                  enabled: true
+                oracle.db.version:
+                  enabled: true
+                oracledb.instance.name:
+                  enabled: true
+                service.instance.id:
+                  enabled: true
+          EOF
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
+
+          processors:
+            metricstransform:
+              transforms:
+                - include: system.cpu.utilization
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [state]
+                      aggregation_type: mean
+                - include: system.paging.operations
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [direction]
+                      aggregation_type: sum
+
+            filter/exclude_cpu_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
+
+            filter/exclude_memory_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
+
+            filter/exclude_memory_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
+
+            filter/exclude_filesystem_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
+
+            filter/exclude_filesystem_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
+
+            filter/exclude_filesystem_inodes_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
+
+            filter/exclude_system_disk:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
+
+            filter/exclude_system_paging:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
+                  - 'metric.name == "system.paging.operations" and attributes["type"] == "cached"'
+
+            filter/exclude_network:
+              metrics:
+                datapoint:
+                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
+
+            attributes/exclude_system_paging:
+              include:
+                match_type: strict
+                metric_names:
+                  - system.paging.operations
+              actions:
+                - key: type
+                  action: delete
+
+            transform/clear_metadata:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(metric.description, "")
+                    - set(metric.unit, "")
+
+            transform/host:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(metric.description, "")
+                    - set(metric.unit, "")
+
+            transform:
+              trace_statements:
+                - context: span
+                  statements:
+                    - truncate_all(span.attributes, 4095)
+                    - truncate_all(resource.attributes, 4095)
+              log_statements:
+                - context: log
+                  statements:
+                    - truncate_all(log.attributes, 4095)
+                    - truncate_all(resource.attributes, 4095)
+          EOF
+
+            cat >> "$CONFIG_PATH" << EOF
+
+            memory_limiter:
+              check_interval: 1s
+              limit_mib: \${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
+
+            batch:
+
+            resource/add_event_name:
+              attributes:
+                - key: host.address
+                  value: "${HOST}"
+                  action: upsert
+
+            resourcedetection:
+              detectors: ["system"]
+              system:
+                hostname_sources: ["os"]
+                resource_attributes:
+                  host.id:
+                    enabled: true
+
+            resourcedetection/db_safe:
+              detectors: ["system"]
+              override: false
+              system:
+                hostname_sources: ["os"]
+                resource_attributes:
+                  host.id:
+                    enabled: true
+
+            resourcedetection/cloud:
+              detectors: ["gcp", "ec2", "azure"]
+              timeout: 2s
+              override: true
+
+            resourcedetection/env:
+              detectors: ["env"]
+              timeout: 2s
+              override: true
+
+          exporters:
+            otlp:
+              endpoint: ${OTLP_ENDPOINT}
+              headers:
+                api-key: ${LICENSE_KEY}
+              compression: gzip
+
+          service:
+            pipelines:
+              metrics/host:
+                receivers: [hostmetrics]
+                processors:
+                  - memory_limiter
+                  - metricstransform
+                  - filter/exclude_cpu_utilization
+                  - filter/exclude_memory_utilization
+                  - filter/exclude_memory_usage
+                  - filter/exclude_filesystem_utilization
+                  - filter/exclude_filesystem_usage
+                  - filter/exclude_filesystem_inodes_usage
+                  - filter/exclude_system_disk
+                  - filter/exclude_network
+                  - attributes/exclude_system_paging
+                  - transform/host
+                  - resourcedetection
+                  - resourcedetection/cloud
+                  - resourcedetection/env
+                  - batch
+                exporters: [otlp]
+              traces:
+                receivers: [otlp]
+                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                exporters: [otlp]
+              metrics:
+                receivers: [otlp]
+                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                exporters: [otlp]
+              logs:
+                receivers: [otlp]
+                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
+                exporters: [otlp]
+              metrics/oracledb:
+                receivers: [nroracledb]
+                processors: [resource/add_event_name, batch]
+                exporters: [otlp]
+              logs/oracledb:
+                receivers: [nroracledb]
+                processors: [resource/add_event_name, batch]
+                exporters: [otlp]
+            extensions: [health_check]
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << EOF
+
+          processors:
+            batch:
+            resource/add_event_name:
+              attributes:
+                - key: host.address
+                  value: "${HOST}"
+                  action: upsert
+
+          exporters:
+            otlp/newrelic:
+              endpoint: ${OTLP_ENDPOINT}
+              headers:
+                api-key: ${LICENSE_KEY}
+              compression: gzip
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
+
+          service:
+            pipelines:
+              metrics/oracledb:
+                receivers: [nroracledb]
+                processors: [resource/add_event_name, batch]
+                exporters: [otlp/newrelic]
+              logs/oracledb:
+                receivers: [nroracledb]
+                processors: [resource/add_event_name, batch]
+                exporters: [otlp/newrelic]
+          EOF
+          fi
+
+          chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
+          chmod 600 "$CONFIG_PATH"
+
+          cat > "$ENV_FILE" << EOF
+          OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
+          EOF
+
+          rm -f "$PW_FILE" "$USER_FILE"
+          echo "Oracle OTel config written to ${CONFIG_PATH}"
+          echo "Env file written to ${ENV_FILE}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          echo ""
+          echo "==> Restarting NRDOT Collector..."
+          sudo systemctl restart nrdot-collector
+
+          echo ""
+          echo "==> NRDOT Collector service status:"
+          echo ""
+          sudo systemctl status nrdot-collector --no-pager
+
+          if sudo systemctl is-active --quiet nrdot-collector; then
+            echo ""
+            echo -e "\e[32mNRDOT Collector is running successfully.\e[0m"
+          else
+            echo ""
+            echo -e "\e[31mERROR:\e[0m NRDOT Collector failed to start. Check the status output above." >&2
+            exit 131
+          fi
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: assert_oracle_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: create_collector_config
+        - task: restart_nrdot
+
+postInstall:
+  info: |2
+      Oracle OTel config: /etc/nrdot-collector/oracle-config.yaml
+      Env file:            /etc/nrdot-collector/nrdot-collector.conf
+      Service status:      systemctl status nrdot-collector
+      View logs:            journalctl -u nrdot-collector -f
+      Restart service:      sudo systemctl restart nrdot-collector
