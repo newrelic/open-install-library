@@ -1,0 +1,846 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+# WORK IN PROGRESS - not for use.
+
+name: nrdot-collector-postgresql
+displayName: NRDOT PostgreSQL (Debian/Ubuntu)
+description: New Relic install recipe for PostgreSQL monitoring via NRDOT Collector on Debian/Ubuntu self-hosted environments
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+  - type: host
+    os: linux
+    platform: ubuntu
+
+keywords:
+  - PostgreSQL
+  - Postgres
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - Debian
+  - Ubuntu
+
+processMatch:
+  - postgres
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    To capture data from PostgreSQL, we need to create/authorize a monitoring role.
+    This requires administrative access to your PostgreSQL server (the 'postgres'
+    superuser or equivalent) on the account running this installation.
+
+    Note: this installer connects to PostgreSQL over TCP using a password, so
+    'postgres' must have a password set and pg_hba.conf must permit password-based
+    host authentication (md5/scram-sha-256) for TCP connections. A fresh install has
+    no password set on 'postgres' by default - set one first via:
+      sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD '<password>';"
+    On RHEL/CentOS, the default pg_hba.conf often does not permit password-based
+    host auth at all - verify/update it and reload PostgreSQL before running this.
+
+inputVars:
+  - name: NR_CLI_POSTGRES_CONFIG_PRESET
+    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    default: "1"
+  - name: NR_CLI_POSTGRES_SERVER
+    prompt: "PostgreSQL host (e.g. localhost): "
+    default: "localhost"
+  - name: NR_CLI_POSTGRES_PORT
+    prompt: "PostgreSQL port: "
+    default: "5432"
+  - name: NR_CLI_POSTGRES_SUPERUSER_PASSWORD
+    prompt: "PostgreSQL 'postgres' superuser password (used once to create the monitoring role): "
+    secret: true
+  - name: NR_CLI_POSTGRES_LOGIN_NAME
+    prompt: "Monitoring username: "
+    default: "newrelic"
+  - name: NR_CLI_POSTGRES_DATABASES
+    prompt: "Databases to monitor (comma-separated, at least one required): "
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'postgresql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 131
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if ! command -v psql > /dev/null 2>&1; then
+            echo "The psql client is required to configure PostgreSQL monitoring. Please install the postgresql-client package and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        - |
+          if [ -z "{{.NR_CLI_POSTGRES_DATABASES}}" ]; then
+            echo "At least one database name is required (NR_CLI_POSTGRES_DATABASES)." >&2
+            exit 131
+          fi
+
+    assert_postgres_version:
+      cmds:
+        - |
+          SERVER="${NR_CLI_POSTGRES_SERVER:-localhost}"
+          PORT="{{.NR_CLI_POSTGRES_PORT}}"
+          SUPERUSER_PASSWORD=$(cat << 'NR_PG_PW_EOF'
+          {{.NR_CLI_POSTGRES_SUPERUSER_PASSWORD}}
+          NR_PG_PW_EOF
+          )
+          export PGPASSWORD="$SUPERUSER_PASSWORD"
+
+          RESULT=$(psql -h "$SERVER" -p "$PORT" -U postgres -d postgres -tA -c "SELECT current_setting('server_version_num');" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "Failed to connect to PostgreSQL to check its version:" >&2
+            echo "$RESULT" >&2
+            if echo "$RESULT" | grep -qi "password authentication failed\|no pg_hba.conf entry"; then
+              echo "" >&2
+              echo "Verify 'postgres' has a password set and pg_hba.conf permits password-based" >&2
+              echo "host authentication (md5/scram-sha-256) for TCP connections - see the note" >&2
+              echo "in this recipe's pre-install info." >&2
+            fi
+            exit 1
+          fi
+
+          VERSION_NUM=$(echo "$RESULT" | tr -d '[:space:]')
+          if [ -z "$VERSION_NUM" ] || [ "$VERSION_NUM" -lt 140000 ]; then
+            echo "PostgreSQL version ${VERSION_NUM:-unknown} is not supported. PostgreSQL 14 or later is required." >&2
+            exit 1
+          fi
+
+          echo "PostgreSQL version ${VERSION_NUM} detected - supported."
+
+          PRELOAD=$(psql -h "$SERVER" -p "$PORT" -U postgres -d postgres -tA -c "SHOW shared_preload_libraries;" 2>&1)
+          if ! echo "$PRELOAD" | grep -qi "pg_stat_statements"; then
+            echo "pg_stat_statements is not loaded on this PostgreSQL server (shared_preload_libraries=${PRELOAD})." >&2
+            echo "Add pg_stat_statements to shared_preload_libraries in postgresql.conf and restart" >&2
+            echo "PostgreSQL, then re-run this installation." >&2
+            exit 1
+          fi
+
+          echo "pg_stat_statements is loaded."
+
+    install_nrdot:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          if dpkg -l | grep -q "^ii.*${COLLECTOR_DISTRO} "; then
+            echo "NRDOT Collector is already installed."
+            echo ""
+            echo "Please follow the steps below to complete the setup:"
+            echo ""
+            echo "  1. Create postgresql-config.yaml"
+            echo "     if not present. Refer to:"
+            echo "     https://docs.newrelic.com/docs/opentelemetry/database/postgresql/hosted/"
+            echo ""
+            echo "  2. Make sure the monitoring user is created"
+            echo "     and has the required permissions granted."
+            echo ""
+            echo "  3. After making the above changes, restart the NRDOT Collector:"
+            echo "     sudo systemctl restart nrdot-collector"
+            echo ""
+            exit 131
+          fi
+
+          COLLECTOR_VERSION=$(curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep '"tag_name":' | awk -F'"' '{print $4}')
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="amd64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.deb"
+          echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.deb "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          dpkg -i /tmp/nrdot-collector.deb
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.deb
+          echo "${COLLECTOR_DISTRO} installed successfully."
+
+    configure_database_user:
+      cmds:
+        - |
+          LOGIN_NAME="{{.NR_CLI_POSTGRES_LOGIN_NAME}}"
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+          SERVER="${NR_CLI_POSTGRES_SERVER:-localhost}"
+          PORT="{{.NR_CLI_POSTGRES_PORT}}"
+          DATABASES="{{.NR_CLI_POSTGRES_DATABASES}}"
+          SUPERUSER_PASSWORD=$(cat << 'NR_PG_PW_EOF'
+          {{.NR_CLI_POSTGRES_SUPERUSER_PASSWORD}}
+          NR_PG_PW_EOF
+          )
+          export PGPASSWORD="$SUPERUSER_PASSWORD"
+
+          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+          SQL_FILE=$(mktemp /tmp/nr-postgres-grant.sql.XXXXXX)
+          trap 'rm -f "$SQL_FILE"' EXIT
+          cat > "$SQL_FILE" << EOF
+          DO \$\$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${LOGIN_NAME}') THEN
+              CREATE ROLE ${LOGIN_NAME} WITH LOGIN PASSWORD '${NR_PASSWORD}';
+            END IF;
+          END
+          \$\$;
+          ALTER ROLE ${LOGIN_NAME} WITH LOGIN PASSWORD '${NR_PASSWORD}';
+          ALTER ROLE ${LOGIN_NAME} INHERIT;
+          GRANT pg_monitor TO ${LOGIN_NAME};
+          EOF
+
+          RESULT=$(psql -h "$SERVER" -p "$PORT" -U postgres -d postgres -v ON_ERROR_STOP=1 -f "$SQL_FILE" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "Failed to create/authorize the monitoring role:" >&2
+            echo "$RESULT" >&2
+            exit 1
+          fi
+          echo "$RESULT"
+
+          PERDB_SQL_FILE=$(mktemp /tmp/nr-postgres-perdb.sql.XXXXXX)
+          trap 'rm -f "$SQL_FILE" "$PERDB_SQL_FILE"' EXIT
+          cat > "$PERDB_SQL_FILE" << EOF
+          CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+          CREATE SCHEMA IF NOT EXISTS otel;
+          GRANT USAGE ON SCHEMA otel TO ${LOGIN_NAME};
+          GRANT USAGE ON SCHEMA public TO ${LOGIN_NAME};
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${LOGIN_NAME};
+          EOF
+
+          IFS=',' read -ra DB_ARRAY <<< "$DATABASES"
+          for db in "${DB_ARRAY[@]}"; do
+            db_trimmed=$(echo "$db" | xargs)
+            [ -z "$db_trimmed" ] && continue
+            DB_RESULT=$(psql -h "$SERVER" -p "$PORT" -U postgres -d "$db_trimmed" -v ON_ERROR_STOP=1 -f "$PERDB_SQL_FILE" 2>&1)
+            if [ $? -ne 0 ]; then
+              echo "Failed to configure database '${db_trimmed}':" >&2
+              echo "$DB_RESULT" >&2
+              exit 1
+            fi
+            echo "$DB_RESULT"
+          done
+
+          echo "PostgreSQL monitoring identity configured successfully."
+
+    create_collector_config:
+      cmds:
+        - |
+          PRESET="{{.NR_CLI_POSTGRES_CONFIG_PRESET}}"
+          LOGIN_NAME="{{.NR_CLI_POSTGRES_LOGIN_NAME}}"
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+          SERVER="${NR_CLI_POSTGRES_SERVER:-localhost}"
+          PORT="{{.NR_CLI_POSTGRES_PORT}}"
+          DATABASES="{{.NR_CLI_POSTGRES_DATABASES}}"
+          SUPERUSER_PASSWORD=$(cat << 'NR_PG_PW_EOF'
+          {{.NR_CLI_POSTGRES_SUPERUSER_PASSWORD}}
+          NR_PG_PW_EOF
+          )
+          export PGPASSWORD="$SUPERUSER_PASSWORD"
+          REGION="{{.NEW_RELIC_REGION}}"
+          LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          CONFIG_DIR="/etc/nrdot-collector"
+          CONFIG_PATH="${CONFIG_DIR}/postgresql-config.yaml"
+          ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+          ALTER_RESULT=$(psql -h "$SERVER" -p "$PORT" -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE ${LOGIN_NAME} WITH LOGIN PASSWORD '${NR_PASSWORD}';" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "Failed to set the monitoring role's password:" >&2
+            echo "$ALTER_RESULT" >&2
+            exit 1
+          fi
+
+          if [ "$PRESET" = "2" ]; then
+            COLLECTION_INTERVAL="30s"
+            LIMIT_MIB=500
+          else
+            COLLECTION_INTERVAL="15s"
+            LIMIT_MIB=200
+          fi
+
+          DATABASES_YAML=""
+          IFS=',' read -ra DB_ARRAY <<< "$DATABASES"
+          for db in "${DB_ARRAY[@]}"; do
+            db_trimmed=$(echo "$db" | xargs)
+            [ -z "$db_trimmed" ] && continue
+            DATABASES_YAML="${DATABASES_YAML}      - ${db_trimmed}
+          "
+          done
+
+          case "$REGION" in
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+          esac
+
+          if [ "$PRESET" = "2" ]; then
+            cat > "$CONFIG_PATH" << EOF
+          extensions:
+            health_check:
+
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                http:
+
+            host_metrics:
+              collection_interval: 30s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.time:
+                      enabled: false
+                    system.cpu.utilization:
+                      enabled: true
+                load:
+                memory:
+                  metrics:
+                    system.memory.utilization:
+                      enabled: true
+                paging:
+                  metrics:
+                    system.paging.utilization:
+                      enabled: false
+                    system.paging.faults:
+                      enabled: false
+                disk:
+                  metrics:
+                    system.disk.merged:
+                      enabled: false
+                    system.disk.pending_operations:
+                      enabled: false
+                    system.disk.weighted_io_time:
+                      enabled: false
+                network:
+                  metrics:
+                    system.network.connections:
+                      enabled: false
+                processes:
+                process:
+                  mute_process_name_error: true
+                  mute_process_exe_error: true
+                  mute_process_user_error: true
+                  mute_process_io_error: true
+                  metrics:
+                    process.cpu.utilization:
+                      enabled: true
+                    process.memory.utilization:
+                      enabled: true
+
+            nrpostgresql:
+              endpoint: ${SERVER}:${PORT}
+              username: ${LOGIN_NAME}
+              password: ${NR_PASSWORD}
+              databases:
+          EOF
+            printf '%s' "$DATABASES_YAML" >> "$CONFIG_PATH"
+            cat >> "$CONFIG_PATH" << EOF
+              collection_interval: ${COLLECTION_INTERVAL}
+
+              events:
+                db.server.top_query:
+                  enabled: true
+                db.server.query_sample:
+                  enabled: true
+
+              top_query_collection:
+                max_rows_per_query: 1000
+                top_n_query: 200
+                collection_interval: 60s
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              query_sample_collection:
+                max_rows_per_query: 1000
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              metrics:
+          EOF
+            cat >> "$CONFIG_PATH" << 'EOF'
+                postgresql.backends:
+                  enabled: true
+                postgresql.bgwriter.buffers.allocated:
+                  enabled: true
+                postgresql.bgwriter.buffers.writes:
+                  enabled: true
+                postgresql.bgwriter.checkpoint.count:
+                  enabled: true
+                postgresql.bgwriter.duration:
+                  enabled: true
+                postgresql.bgwriter.maxwritten:
+                  enabled: true
+                postgresql.blocks_read:
+                  enabled: true
+                postgresql.commits:
+                  enabled: true
+                postgresql.connection.max:
+                  enabled: true
+                postgresql.database.count:
+                  enabled: true
+                postgresql.db_size:
+                  enabled: true
+                postgresql.index.scans:
+                  enabled: true
+                postgresql.index.size:
+                  enabled: true
+                postgresql.operations:
+                  enabled: true
+                postgresql.replication.data_delay:
+                  enabled: true
+                postgresql.rollbacks:
+                  enabled: true
+                postgresql.rows:
+                  enabled: true
+                postgresql.table.count:
+                  enabled: true
+                postgresql.table.size:
+                  enabled: true
+                postgresql.table.vacuum.count:
+                  enabled: true
+                postgresql.wal.age:
+                  enabled: true
+                postgresql.wal.lag:
+                  enabled: true
+                postgresql.database.locks:
+                  enabled: true
+                postgresql.deadlocks:
+                  enabled: true
+                postgresql.function.calls:
+                  enabled: true
+                postgresql.query.conflicts:
+                  enabled: true
+                postgresql.sequential_scans:
+                  enabled: true
+                postgresql.temp.io:
+                  enabled: true
+                postgresql.temp_files:
+                  enabled: true
+                postgresql.blks_hit:
+                  enabled: true
+                postgresql.blks_read:
+                  enabled: true
+                postgresql.tup_fetched:
+                  enabled: true
+                postgresql.tup_returned:
+                  enabled: true
+                postgresql.tup_inserted:
+                  enabled: true
+                postgresql.tup_updated:
+                  enabled: true
+                postgresql.tup_deleted:
+                  enabled: true
+                postgresql.query.execution.time:
+                  enabled: true
+                postgresql.wal.delay:
+                  enabled: true
+
+          processors:
+            metrics_transform:
+              transforms:
+                - include: system.cpu.utilization
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [state]
+                      aggregation_type: mean
+                - include: system.paging.operations
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [direction]
+                      aggregation_type: sum
+
+            filter/exclude_cpu_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
+
+            filter/exclude_memory_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
+
+            filter/exclude_memory_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
+
+            filter/exclude_filesystem_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
+
+            filter/exclude_filesystem_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
+
+            filter/exclude_filesystem_inodes_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
+
+            filter/exclude_system_disk:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
+
+            filter/exclude_network:
+              metrics:
+                datapoint:
+                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
+
+            attributes/exclude_system_paging:
+              include:
+                match_type: strict
+                metric_names:
+                  - system.paging.operations
+              actions:
+                - key: type
+                  action: delete
+
+            cumulativetodelta:
+
+            transform/host:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(metric.description, "")
+                    - set(metric.unit, "")
+
+          EOF
+            cat >> "$CONFIG_PATH" << EOF
+            memory_limiter:
+              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
+              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
+              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
+
+            batch:
+
+            batch/logs:
+              send_batch_size: 15
+              send_batch_max_size: 15
+              timeout: 5s
+
+            resource_detection:
+              detectors: ["system"]
+              system:
+                hostname_sources: ["os"]
+                resource_attributes:
+                  host.id:
+                    enabled: true
+            resource_detection/cloud:
+              detectors: ["gcp", "ec2", "azure"]
+              timeout: 2s
+              override: true
+            resource_detection/env:
+              detectors: ["env"]
+              timeout: 2s
+              override: true
+
+          exporters:
+            otlphttp:
+              endpoint: ${OTLP_ENDPOINT}
+              headers:
+                api-key: ${LICENSE_KEY}
+              tls:
+                insecure: false
+              compression: gzip
+
+          service:
+            telemetry:
+              metrics:
+                level: none
+
+            extensions: [health_check]
+
+            pipelines:
+              metrics/host:
+                receivers: [host_metrics, nrpostgresql]
+                processors:
+                  - metrics_transform
+                  - filter/exclude_cpu_utilization
+                  - filter/exclude_memory_utilization
+                  - filter/exclude_memory_usage
+                  - filter/exclude_filesystem_utilization
+                  - filter/exclude_filesystem_usage
+                  - filter/exclude_filesystem_inodes_usage
+                  - filter/exclude_system_disk
+                  - filter/exclude_network
+                  - attributes/exclude_system_paging
+                  - transform/host
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - cumulativetodelta
+                  - memory_limiter
+                  - batch
+                exporters: [otlphttp]
+
+              logs/host:
+                receivers: [nrpostgresql]
+                processors:
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - batch/logs
+                exporters: [otlphttp]
+
+              traces:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlphttp]
+
+              metrics:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlphttp]
+
+              logs:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlphttp]
+          EOF
+          else
+            cat > "$CONFIG_PATH" << EOF
+          receivers:
+            nrpostgresql:
+              endpoint: ${SERVER}:${PORT}
+              username: ${LOGIN_NAME}
+              password: ${NR_PASSWORD}
+              databases:
+          EOF
+            printf '%s' "$DATABASES_YAML" >> "$CONFIG_PATH"
+            cat >> "$CONFIG_PATH" << EOF
+              collection_interval: ${COLLECTION_INTERVAL}
+
+              events:
+                db.server.top_query:
+                  enabled: true
+                db.server.query_sample:
+                  enabled: true
+
+              top_query_collection:
+                max_rows_per_query: 1000
+                top_n_query: 200
+                collection_interval: 60s
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              query_sample_collection:
+                max_rows_per_query: 1000
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              metrics:
+          EOF
+            cat >> "$CONFIG_PATH" << 'EOF'
+                postgresql.backends:
+                  enabled: true
+                postgresql.bgwriter.buffers.allocated:
+                  enabled: true
+                postgresql.bgwriter.buffers.writes:
+                  enabled: true
+                postgresql.bgwriter.checkpoint.count:
+                  enabled: true
+                postgresql.bgwriter.duration:
+                  enabled: true
+                postgresql.bgwriter.maxwritten:
+                  enabled: true
+                postgresql.blocks_read:
+                  enabled: true
+                postgresql.commits:
+                  enabled: true
+                postgresql.connection.max:
+                  enabled: true
+                postgresql.database.count:
+                  enabled: true
+                postgresql.db_size:
+                  enabled: true
+                postgresql.index.scans:
+                  enabled: true
+                postgresql.index.size:
+                  enabled: true
+                postgresql.operations:
+                  enabled: true
+                postgresql.replication.data_delay:
+                  enabled: true
+                postgresql.rollbacks:
+                  enabled: true
+                postgresql.rows:
+                  enabled: true
+                postgresql.table.count:
+                  enabled: true
+                postgresql.table.size:
+                  enabled: true
+                postgresql.table.vacuum.count:
+                  enabled: true
+                postgresql.wal.age:
+                  enabled: true
+                postgresql.wal.lag:
+                  enabled: true
+
+          processors:
+          EOF
+            cat >> "$CONFIG_PATH" << EOF
+            memory_limiter:
+              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
+              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
+              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
+
+            batch:
+
+          exporters:
+            otlphttp:
+              endpoint: ${OTLP_ENDPOINT}
+              headers:
+                api-key: ${LICENSE_KEY}
+              tls:
+                insecure: false
+              compression: gzip
+
+          service:
+            telemetry:
+              metrics:
+                level: none
+
+            pipelines:
+              metrics:
+                receivers: [nrpostgresql]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp]
+
+              logs:
+                receivers: [nrpostgresql]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp]
+          EOF
+          fi
+
+          cat > "$ENV_FILE" << EOF
+          OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
+          EOF
+
+          chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
+          chmod 600 "$CONFIG_PATH"
+
+          echo "PostgreSQL OTel config written to ${CONFIG_PATH}"
+          echo "Env file written to ${ENV_FILE}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl restart nrdot-collector
+
+          echo "Waiting for NRDOT Collector to start..."
+          for i in $(seq 1 30); do
+            if systemctl is-active --quiet nrdot-collector; then
+              echo "NRDOT Collector is running."
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "NRDOT Collector did not start in time. Check logs:" >&2
+          journalctl -u nrdot-collector --no-pager -n 50 >&2
+          exit 31
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: assert_postgres_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: create_collector_config
+        - task: restart_nrdot
+
+postInstall:
+  info: |2
+      PostgreSQL OTel config: /etc/nrdot-collector/postgresql-config.yaml
+      Env file:               /etc/nrdot-collector/nrdot-collector.conf
+      Service status:         systemctl status nrdot-collector
+      View logs:               journalctl -u nrdot-collector -f
+      Restart service:         sudo systemctl restart nrdot-collector
+
+      Note: query plans for locking or write statements are not collected by
+      default. Enabling that requires creating an otel.explain_statement()
+      SECURITY DEFINER helper function in each monitored database and granting
+      EXECUTE on it to the monitoring user - see:
+      https://docs.newrelic.com/docs/opentelemetry/database/postgresql/explain-permissions/

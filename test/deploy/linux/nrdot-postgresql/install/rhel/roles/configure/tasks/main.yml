@@ -1,0 +1,96 @@
+---
+- debug:
+    msg: Install PostgreSQL Server for NRDOT PostgreSQL Testing on RHEL/CentOS
+
+- name: Install PGDG repository RPM
+  shell: "dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+  become: yes
+
+- name: Disable the built-in postgresql AppStream module (conflicts with PGDG packages)
+  shell: "dnf -qy module disable postgresql"
+  become: yes
+
+- name: Install PostgreSQL 16 server and contrib (pg_stat_statements)
+  shell: "dnf install -y postgresql16-server postgresql16-contrib"
+  become: yes
+
+- name: Initialize the database
+  shell: "/usr/pgsql-16/bin/postgresql-16-setup initdb"
+  become: yes
+
+- name: Start and enable PostgreSQL service
+  shell: |
+    systemctl enable postgresql-16
+    systemctl restart postgresql-16
+  become: yes
+
+- name: Wait for PostgreSQL to accept connections
+  shell: |
+    for i in $(seq 1 30); do
+      if sudo -u postgres /usr/pgsql-16/bin/pg_isready > /dev/null 2>&1; then
+        echo "PostgreSQL is accepting connections."
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "PostgreSQL did not start accepting connections in time." >&2
+    exit 1
+  become: yes
+
+# shared_preload_libraries requires a full restart, so this is done before
+# setting the password (still using local peer auth via sudo -u postgres).
+- name: Configure pg_stat_statements prerequisites
+  shell: |
+    sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';"
+    sudo -u postgres psql -c "ALTER SYSTEM SET track_activity_query_size = 4096;"
+    sudo -u postgres psql -c "ALTER SYSTEM SET pg_stat_statements.track = 'ALL';"
+    sudo -u postgres psql -c "ALTER SYSTEM SET pg_stat_statements.max = 10000;"
+    sudo -u postgres psql -c "ALTER SYSTEM SET pg_stat_statements.save = on;"
+    sudo -u postgres psql -c "ALTER SYSTEM SET track_functions = 'all';"
+  become: yes
+
+# The default PGDG pg_hba.conf does not permit password-based host (TCP)
+# authentication - unlike Debian/Ubuntu's default. Insert a permissive rule
+# as the first entry so it matches before any existing host rules.
+- name: Locate pg_hba.conf
+  shell: |
+    sudo -u postgres psql -tA -c "SHOW hba_file;"
+  register: hba_file_result
+  become: yes
+
+- name: Permit password-based host authentication on 127.0.0.1
+  shell: |
+    HBA_FILE="{{ hba_file_result.stdout | trim }}"
+    sed -i '1i host    all             all             127.0.0.1/32            scram-sha-256' "$HBA_FILE"
+  become: yes
+
+- name: Restart PostgreSQL to apply shared_preload_libraries and pg_hba.conf
+  shell: "systemctl restart postgresql-16"
+  become: yes
+
+- name: Wait for PostgreSQL to accept connections after restart
+  shell: |
+    for i in $(seq 1 30); do
+      if sudo -u postgres /usr/pgsql-16/bin/pg_isready > /dev/null 2>&1; then
+        echo "PostgreSQL is accepting connections."
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "PostgreSQL did not start accepting connections in time." >&2
+    exit 1
+  become: yes
+
+- name: Set postgres superuser password
+  shell: |
+    sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'YourStrong@Passw0rd';"
+  become: yes
+
+- name: Verify pg_stat_statements is loaded
+  shell: |
+    sudo -u postgres psql -tA -c "SHOW shared_preload_libraries;"
+  become: yes
+
+- name: Verify PostgreSQL is running
+  shell: "systemctl status postgresql-16 --no-pager"
+  become: yes
