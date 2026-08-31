@@ -1,0 +1,907 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+# WORK IN PROGRESS - not for use.
+
+name: nrdot-collector-mysql-rds
+displayName: NRDOT MySQL RDS (RHEL/CentOS)
+description: New Relic install recipe for MySQL monitoring via NRDOT Collector on RHEL/CentOS hosts connecting to AWS RDS/Aurora MySQL instances
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platform: centos
+  - type: host
+    os: linux
+    platform: redhat
+
+keywords:
+  - MySQL
+  - MariaDB
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - CentOS
+  - RHEL
+  - RDS
+  - AWS
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    To capture data from your AWS RDS/Aurora MySQL instance, we need to create/authorize
+    a monitoring identity (a MySQL user). This requires the RDS master user credentials
+    for your instance, and network connectivity from this host to the RDS endpoint
+    (inbound access on the MySQL port in the RDS security group).
+
+inputVars:
+  - name: NR_CLI_MYSQL_CONFIG_PRESET
+    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    default: "1"
+  - name: NR_CLI_MYSQL_SERVER
+    prompt: "RDS MySQL/Aurora endpoint (e.g. mydb.xxxxxxxxxx.us-east-1.rds.amazonaws.com): "
+  - name: NR_CLI_MYSQL_PORT
+    prompt: "MySQL port: "
+    default: "3306"
+  - name: NR_CLI_MYSQL_MASTER_USER
+    prompt: "RDS master username: "
+  - name: NR_CLI_MYSQL_MASTER_PASSWORD
+    prompt: "RDS master user password (used once to create the monitoring user): "
+    secret: true
+  - name: NR_CLI_MYSQL_LOGIN_NAME
+    prompt: "Monitoring username: "
+    default: "newrelic"
+  - name: NR_CLI_MYSQL_DATABASE
+    prompt: "Restrict monitoring to a specific database (optional, leave blank to monitor all): "
+    default: ""
+  - name: NR_CLI_MYSQL_TLS_CA_FILE
+    prompt: "Path to a CA bundle for validating the RDS TLS certificate (optional): "
+    default: ""
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'mysql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 131
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if ! command -v mysql > /dev/null 2>&1; then
+            echo "The mysql client is required to configure MySQL monitoring. Please install the mysql-client package and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+
+    assert_mysql_version:
+      cmds:
+        - |
+          SERVER="{{.NR_CLI_MYSQL_SERVER}}"
+          PORT="{{.NR_CLI_MYSQL_PORT}}"
+          MASTER_USER="{{.NR_CLI_MYSQL_MASTER_USER}}"
+          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
+          {{.NR_CLI_MYSQL_MASTER_PASSWORD}}
+          NR_MASTER_PW_EOF
+          )
+
+          CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
+          chmod 600 "$CNF_FILE"
+          trap 'rm -f "$CNF_FILE"' EXIT
+          cat > "$CNF_FILE" << EOF
+          [client]
+          user=${MASTER_USER}
+          password=${MASTER_PASSWORD}
+          host=${SERVER}
+          port=${PORT}
+          EOF
+
+          RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "Failed to connect to MySQL to check its version:" >&2
+            echo "$RESULT" >&2
+            exit 1
+          fi
+
+          MAJOR=$(echo "$RESULT" | grep -oE '^[0-9]+' | head -1)
+          MINOR=$(echo "$RESULT" | grep -oE '^[0-9]+\.[0-9]+' | head -1 | cut -d. -f2)
+
+          if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 5 ] || { [ "$MAJOR" -eq 5 ] && [ "${MINOR:-0}" -lt 7 ]; }; then
+            echo "MySQL version ${RESULT:-unknown} is not supported. MySQL 5.7 or later is required." >&2
+            exit 1
+          fi
+
+          echo "MySQL version ${RESULT} detected - supported."
+
+          PS_STATUS=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SHOW VARIABLES LIKE 'performance_schema';" 2>&1 | awk '{print $2}')
+          if [ "$PS_STATUS" != "ON" ]; then
+            echo "performance_schema is disabled on this MySQL server." >&2
+            echo "Enable it (performance_schema=ON in my.cnf) and restart MySQL, then re-run this installation." >&2
+            exit 1
+          fi
+
+          echo "performance_schema is enabled."
+
+    install_nrdot:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          if rpm -q "$COLLECTOR_DISTRO" > /dev/null 2>&1; then
+            echo "NRDOT Collector is already installed."
+            echo ""
+            echo "Please follow the steps below to complete the setup:"
+            echo ""
+            echo "  1. Create mysql-config.yaml"
+            echo "     if not present. Refer to:"
+            echo "     https://docs.newrelic.com/docs/opentelemetry/database/mysql/rds/"
+            echo ""
+            echo "  2. Make sure the monitoring user is created"
+            echo "     and has the required permissions granted."
+            echo ""
+            echo "  3. After making the above changes, restart the NRDOT Collector:"
+            echo "     sudo systemctl restart nrdot-collector"
+            echo ""
+            exit 131
+          fi
+
+          COLLECTOR_VERSION=$(curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep '"tag_name":' | awk -F'"' '{print $4}')
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="x86_64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rpm -ivh /tmp/nrdot-collector.rpm
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.rpm
+          echo "${COLLECTOR_DISTRO} installed successfully."
+
+    configure_database_user:
+      cmds:
+        - |
+          LOGIN_NAME="{{.NR_CLI_MYSQL_LOGIN_NAME}}"
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+          SERVER="{{.NR_CLI_MYSQL_SERVER}}"
+          PORT="{{.NR_CLI_MYSQL_PORT}}"
+          MASTER_USER="{{.NR_CLI_MYSQL_MASTER_USER}}"
+          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
+          {{.NR_CLI_MYSQL_MASTER_PASSWORD}}
+          NR_MASTER_PW_EOF
+          )
+
+          CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
+          SQL_FILE=$(mktemp /tmp/nr-mysql-grant.sql.XXXXXX)
+          chmod 600 "$CNF_FILE" "$SQL_FILE"
+          trap 'rm -f "$CNF_FILE" "$SQL_FILE"' EXIT
+          cat > "$CNF_FILE" << EOF
+          [client]
+          user=${MASTER_USER}
+          password=${MASTER_PASSWORD}
+          host=${SERVER}
+          port=${PORT}
+          EOF
+
+          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+          cat > "$SQL_FILE" << EOF
+          CREATE USER IF NOT EXISTS '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';
+          ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';
+          GRANT SELECT ON performance_schema.* TO '${LOGIN_NAME}'@'%';
+          GRANT UPDATE ON performance_schema.setup_consumers TO '${LOGIN_NAME}'@'%';
+          FLUSH PRIVILEGES;
+          EOF
+
+          RESULT=$(mysql --defaults-extra-file="$CNF_FILE" < "$SQL_FILE" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "SQL script failed:" >&2
+            echo "$RESULT" >&2
+            exit 1
+          fi
+          echo "$RESULT"
+
+          echo "MySQL monitoring identity configured successfully."
+
+    create_collector_config:
+      cmds:
+        - |
+          PRESET="{{.NR_CLI_MYSQL_CONFIG_PRESET}}"
+          LOGIN_NAME="{{.NR_CLI_MYSQL_LOGIN_NAME}}"
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+          SERVER="{{.NR_CLI_MYSQL_SERVER}}"
+          PORT="{{.NR_CLI_MYSQL_PORT}}"
+          DATABASE="{{.NR_CLI_MYSQL_DATABASE}}"
+          TLS_CA_FILE="{{.NR_CLI_MYSQL_TLS_CA_FILE}}"
+          MASTER_USER="{{.NR_CLI_MYSQL_MASTER_USER}}"
+          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
+          {{.NR_CLI_MYSQL_MASTER_PASSWORD}}
+          NR_MASTER_PW_EOF
+          )
+          REGION="{{.NEW_RELIC_REGION}}"
+          LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          CONFIG_DIR="/etc/nrdot-collector"
+          CONFIG_PATH="${CONFIG_DIR}/mysql-config.yaml"
+          ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
+          chmod 600 "$CNF_FILE"
+          trap 'rm -f "$CNF_FILE"' EXIT
+          cat > "$CNF_FILE" << EOF
+          [client]
+          user=${MASTER_USER}
+          password=${MASTER_PASSWORD}
+          host=${SERVER}
+          port=${PORT}
+          EOF
+
+          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+          ALTER_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -e "ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "Failed to set the monitoring user's password:" >&2
+            echo "$ALTER_RESULT" >&2
+            exit 1
+          fi
+
+          if [ "$PRESET" = "2" ]; then
+            COLLECTION_INTERVAL="30s"
+            LIMIT_MIB=500
+          else
+            COLLECTION_INTERVAL="15s"
+            LIMIT_MIB=200
+          fi
+
+          DATABASE_LINE=""
+          if [ -n "$DATABASE" ]; then
+            DATABASE_LINE="    database: ${DATABASE}"
+          fi
+
+          case "$REGION" in
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+          esac
+
+          if [ "$PRESET" = "2" ]; then
+            cat > "$CONFIG_PATH" << EOF
+          extensions:
+            health_check:
+
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                http:
+
+            host_metrics:
+              collection_interval: 30s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.time:
+                      enabled: false
+                    system.cpu.utilization:
+                      enabled: true
+                load:
+                memory:
+                  metrics:
+                    system.memory.utilization:
+                      enabled: true
+                paging:
+                  metrics:
+                    system.paging.utilization:
+                      enabled: false
+                    system.paging.faults:
+                      enabled: false
+                disk:
+                  metrics:
+                    system.disk.merged:
+                      enabled: false
+                    system.disk.pending_operations:
+                      enabled: false
+                    system.disk.weighted_io_time:
+                      enabled: false
+                network:
+                  metrics:
+                    system.network.connections:
+                      enabled: false
+                processes:
+                process:
+                  mute_process_name_error: true
+                  mute_process_exe_error: true
+                  mute_process_user_error: true
+                  mute_process_io_error: true
+                  metrics:
+                    process.cpu.utilization:
+                      enabled: true
+                    process.memory.utilization:
+                      enabled: true
+
+            nrmysql:
+              endpoint: ${SERVER}:${PORT}
+              transport: tcp
+              username: ${LOGIN_NAME}
+              password: ${NR_PASSWORD}
+          EOF
+            [ -n "$DATABASE_LINE" ] && echo "$DATABASE_LINE" >> "$CONFIG_PATH"
+            cat >> "$CONFIG_PATH" << EOF
+              allow_native_passwords: true
+              collection_interval: ${COLLECTION_INTERVAL}
+              initial_delay: 1s
+              tls:
+                insecure: false
+                insecure_skip_verify: false
+          EOF
+            if [ -n "$TLS_CA_FILE" ]; then
+              echo "      ca_file: ${TLS_CA_FILE}" >> "$CONFIG_PATH"
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+
+              statement_events:
+                digest_text_limit: 4096
+                time_limit: 24h
+                limit: 500
+
+              query_sample_collection:
+                max_rows_per_query: 100
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              top_query_collection:
+                lookback_time: 120
+                max_query_sample_count: 5000
+                top_query_count: 200
+                collection_interval: 60s
+                query_plan_cache_size: 1000
+                query_plan_cache_ttl: 1h
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              metrics:
+          EOF
+            cat >> "$CONFIG_PATH" << 'EOF'
+                mysql.buffer_pool.data_pages:
+                  enabled: true
+                mysql.buffer_pool.limit:
+                  enabled: true
+                mysql.buffer_pool.operations:
+                  enabled: true
+                mysql.buffer_pool.page_flushes:
+                  enabled: true
+                mysql.buffer_pool.pages:
+                  enabled: true
+                mysql.buffer_pool.usage:
+                  enabled: true
+                mysql.double_writes:
+                  enabled: true
+                mysql.handlers:
+                  enabled: true
+                mysql.index.io.wait.count:
+                  enabled: true
+                mysql.index.io.wait.time:
+                  enabled: true
+                mysql.locks:
+                  enabled: true
+                mysql.log_operations:
+                  enabled: true
+                mysql.mysqlx_connections:
+                  enabled: true
+                mysql.opened_resources:
+                  enabled: true
+                mysql.operations:
+                  enabled: true
+                mysql.page_operations:
+                  enabled: true
+                mysql.prepared_statements:
+                  enabled: true
+                mysql.row_locks:
+                  enabled: true
+                mysql.row_operations:
+                  enabled: true
+                mysql.sorts:
+                  enabled: true
+                mysql.table.io.wait.count:
+                  enabled: true
+                mysql.table.io.wait.time:
+                  enabled: true
+                mysql.threads:
+                  enabled: true
+                mysql.tmp_resources:
+                  enabled: true
+                mysql.uptime:
+                  enabled: true
+                mysql.connection.count:
+                  enabled: true
+                mysql.connection.errors:
+                  enabled: true
+                mysql.max_used_connections:
+                  enabled: true
+                mysql.client.network.io:
+                  enabled: true
+                mysql.mysqlx_worker_threads:
+                  enabled: true
+                mysql.commands:
+                  enabled: true
+                mysql.query.count:
+                  enabled: true
+                mysql.query.client.count:
+                  enabled: true
+                mysql.query.slow.count:
+                  enabled: true
+                mysql.joins:
+                  enabled: true
+                mysql.statement_event.count:
+                  enabled: true
+                mysql.statement_event.wait.time:
+                  enabled: true
+                mysql.table.average_row_length:
+                  enabled: true
+                mysql.table.rows:
+                  enabled: true
+                mysql.table.size:
+                  enabled: true
+                mysql.table_open_cache:
+                  enabled: true
+                mysql.table.lock_wait.read.count:
+                  enabled: true
+                mysql.table.lock_wait.read.time:
+                  enabled: true
+                mysql.table.lock_wait.write.count:
+                  enabled: true
+                mysql.table.lock_wait.write.time:
+                  enabled: true
+                mysql.replica.sql_delay:
+                  enabled: true
+                mysql.replica.time_behind_source:
+                  enabled: true
+                mysql.page_size:
+                  enabled: true
+
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+
+          processors:
+            metrics_transform:
+              transforms:
+                - include: system.cpu.utilization
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [state]
+                      aggregation_type: mean
+                - include: system.paging.operations
+                  action: update
+                  operations:
+                    - action: aggregate_labels
+                      label_set: [direction]
+                      aggregation_type: sum
+
+            filter/exclude_cpu_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
+                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
+
+            filter/exclude_memory_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
+                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
+
+            filter/exclude_memory_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
+                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
+
+            filter/exclude_filesystem_utilization:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
+
+            filter/exclude_filesystem_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
+
+            filter/exclude_filesystem_inodes_usage:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
+                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
+
+            filter/exclude_system_disk:
+              metrics:
+                datapoint:
+                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
+                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
+
+            filter/exclude_network:
+              metrics:
+                datapoint:
+                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
+
+            attributes/exclude_system_paging:
+              include:
+                match_type: strict
+                metric_names:
+                  - system.paging.operations
+              actions:
+                - key: type
+                  action: delete
+
+            cumulativetodelta:
+
+            transform/host:
+              metric_statements:
+                - context: metric
+                  statements:
+                    - set(metric.description, "")
+                    - set(metric.unit, "")
+
+          EOF
+            cat >> "$CONFIG_PATH" << EOF
+            memory_limiter:
+              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
+              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
+              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
+
+            batch:
+
+            batch/logs:
+              send_batch_size: 15
+              send_batch_max_size: 15
+              timeout: 5s
+
+            resource_detection:
+              detectors: ["system"]
+              system:
+                hostname_sources: ["os"]
+                resource_attributes:
+                  host.id:
+                    enabled: true
+            resource_detection/cloud:
+              detectors: ["gcp", "ec2", "azure"]
+              timeout: 2s
+              override: true
+            resource_detection/env:
+              detectors: ["env"]
+              timeout: 2s
+              override: true
+
+          exporters:
+            otlphttp:
+              endpoint: ${OTLP_ENDPOINT}
+              headers:
+                api-key: ${LICENSE_KEY}
+              tls:
+                insecure: false
+              compression: gzip
+
+          service:
+            telemetry:
+              metrics:
+                level: none
+
+            extensions: [health_check]
+
+            pipelines:
+              metrics/host:
+                receivers: [host_metrics, nrmysql]
+                processors:
+                  - metrics_transform
+                  - filter/exclude_cpu_utilization
+                  - filter/exclude_memory_utilization
+                  - filter/exclude_memory_usage
+                  - filter/exclude_filesystem_utilization
+                  - filter/exclude_filesystem_usage
+                  - filter/exclude_filesystem_inodes_usage
+                  - filter/exclude_system_disk
+                  - filter/exclude_network
+                  - attributes/exclude_system_paging
+                  - transform/host
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - cumulativetodelta
+                  - memory_limiter
+                  - batch
+                exporters: [otlphttp]
+
+              logs/host:
+                receivers: [nrmysql]
+                processors:
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - batch/logs
+                exporters: [otlphttp]
+
+              traces:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlphttp]
+
+              metrics:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlphttp]
+
+              logs:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlphttp]
+          EOF
+          else
+            cat > "$CONFIG_PATH" << EOF
+          receivers:
+            nrmysql:
+              endpoint: ${SERVER}:${PORT}
+              transport: tcp
+              username: ${LOGIN_NAME}
+              password: ${NR_PASSWORD}
+          EOF
+            [ -n "$DATABASE_LINE" ] && echo "$DATABASE_LINE" >> "$CONFIG_PATH"
+            cat >> "$CONFIG_PATH" << EOF
+              allow_native_passwords: true
+              collection_interval: ${COLLECTION_INTERVAL}
+              initial_delay: 1s
+              tls:
+                insecure: false
+                insecure_skip_verify: false
+          EOF
+            if [ -n "$TLS_CA_FILE" ]; then
+              echo "      ca_file: ${TLS_CA_FILE}" >> "$CONFIG_PATH"
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+
+              statement_events:
+                digest_text_limit: 4096
+                time_limit: 24h
+                limit: 500
+
+              query_sample_collection:
+                max_rows_per_query: 100
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              top_query_collection:
+                lookback_time: 120
+                max_query_sample_count: 5000
+                top_query_count: 200
+                collection_interval: 60s
+                query_plan_cache_size: 1000
+                query_plan_cache_ttl: 1h
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              metrics:
+          EOF
+            cat >> "$CONFIG_PATH" << 'EOF'
+                mysql.buffer_pool.data_pages:
+                  enabled: true
+                mysql.buffer_pool.limit:
+                  enabled: true
+                mysql.buffer_pool.operations:
+                  enabled: true
+                mysql.buffer_pool.page_flushes:
+                  enabled: true
+                mysql.buffer_pool.pages:
+                  enabled: true
+                mysql.buffer_pool.usage:
+                  enabled: true
+                mysql.double_writes:
+                  enabled: true
+                mysql.handlers:
+                  enabled: true
+                mysql.index.io.wait.count:
+                  enabled: true
+                mysql.index.io.wait.time:
+                  enabled: true
+                mysql.locks:
+                  enabled: true
+                mysql.log_operations:
+                  enabled: true
+                mysql.mysqlx_connections:
+                  enabled: true
+                mysql.opened_resources:
+                  enabled: true
+                mysql.operations:
+                  enabled: true
+                mysql.page_operations:
+                  enabled: true
+                mysql.prepared_statements:
+                  enabled: true
+                mysql.row_locks:
+                  enabled: true
+                mysql.row_operations:
+                  enabled: true
+                mysql.sorts:
+                  enabled: true
+                mysql.table.io.wait.count:
+                  enabled: true
+                mysql.table.io.wait.time:
+                  enabled: true
+                mysql.threads:
+                  enabled: true
+                mysql.tmp_resources:
+                  enabled: true
+                mysql.uptime:
+                  enabled: true
+
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+
+          processors:
+          EOF
+            cat >> "$CONFIG_PATH" << EOF
+            memory_limiter:
+              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
+              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
+              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
+
+            batch:
+
+          exporters:
+            otlphttp:
+              endpoint: ${OTLP_ENDPOINT}
+              headers:
+                api-key: ${LICENSE_KEY}
+              tls:
+                insecure: false
+              compression: gzip
+
+          service:
+            telemetry:
+              metrics:
+                level: none
+
+            pipelines:
+              metrics:
+                receivers: [nrmysql]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp]
+
+              logs:
+                receivers: [nrmysql]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp]
+          EOF
+          fi
+
+          cat > "$ENV_FILE" << EOF
+          OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
+          EOF
+
+          chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
+          chmod 600 "$CONFIG_PATH"
+
+          echo "MySQL OTel config written to ${CONFIG_PATH}"
+          echo "Env file written to ${ENV_FILE}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          systemctl restart nrdot-collector
+
+          echo "Waiting for NRDOT Collector to start..."
+          for i in $(seq 1 30); do
+            if systemctl is-active --quiet nrdot-collector; then
+              echo "NRDOT Collector is running."
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "NRDOT Collector did not start in time. Check logs:" >&2
+          journalctl -u nrdot-collector --no-pager -n 50 >&2
+          exit 31
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: assert_mysql_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: create_collector_config
+        - task: restart_nrdot
+
+postInstall:
+  info: |2
+      MySQL OTel config: /etc/nrdot-collector/mysql-config.yaml
+      Env file:           /etc/nrdot-collector/nrdot-collector.conf
+      Service status:     systemctl status nrdot-collector
+      View logs:           journalctl -u nrdot-collector -f
+      Restart service:     sudo systemctl restart nrdot-collector
+
+      Note: query plans for write statements are not collected by default
+      (explain_mode is left at its "inline" default). Enabling "procedure"
+      mode requires creating an explain_statement stored procedure and
+      granting EXECUTE on it to the monitoring user - see:
+      https://docs.newrelic.com/docs/opentelemetry/database/mysql/advanced-config/
+
+      Note: on RDS/Aurora, the events_waits_current Performance Schema
+      consumer does not persist across restarts or failovers (the
+      mysql8.0/mysql8.4 parameter group families do not expose
+      performance_schema_consumer_* parameters). The monitoring user's
+      GRANT UPDATE ON performance_schema.setup_consumers privilege lets the
+      collector re-enable it on reconnect; otherwise re-run:
+        UPDATE performance_schema.setup_consumers SET enabled='YES'
+          WHERE name = 'events_waits_current';
+      after every restart/failover.
