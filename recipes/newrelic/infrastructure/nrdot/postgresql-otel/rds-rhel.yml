@@ -258,8 +258,11 @@ install:
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${LOGIN_NAME};
           EOF
 
-          IFS=',' read -ra DB_ARRAY <<< "$DATABASES"
-          for db in "${DB_ARRAY[@]}"; do
+          OLD_IFS="$IFS"
+          IFS=','
+          set -- $DATABASES
+          IFS="$OLD_IFS"
+          for db in "$@"; do
             db_trimmed=$(echo "$db" | xargs)
             [ -z "$db_trimmed" ] && continue
             DB_RESULT=$(psql -h "$SERVER" -p "$PORT" -U "$MASTER_USER" -d "$db_trimmed" -v ON_ERROR_STOP=1 -f "$PERDB_SQL_FILE" 2>&1)
@@ -318,8 +321,11 @@ install:
           fi
 
           DATABASES_YAML=""
-          IFS=',' read -ra DB_ARRAY <<< "$DATABASES"
-          for db in "${DB_ARRAY[@]}"; do
+          OLD_IFS="$IFS"
+          IFS=','
+          set -- $DATABASES
+          IFS="$OLD_IFS"
+          for db in "$@"; do
             db_trimmed=$(echo "$db" | xargs)
             [ -z "$db_trimmed" ] && continue
             DATABASES_YAML="${DATABASES_YAML}      - ${db_trimmed}
