@@ -31,10 +31,16 @@
     exit 1
   become: yes
 
+# root@localhost's actual default auth state on Ubuntu's mysql-server has
+# proven inconsistent to assume (auth_socket vs. a password plugin with no
+# known password). Bootstrap through /etc/mysql/debian.cnf's debian-sys-maint
+# account instead - the mysql-server package always creates it with known,
+# working admin credentials for its own maintenance scripts, regardless of
+# root's auth state.
 - name: Switch root to password-based auth and set its password
   shell: |
-    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'YourStrong@Passw0rd';"
-    mysql -u root -e "FLUSH PRIVILEGES;"
+    mysql --defaults-file=/etc/mysql/debian.cnf -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'YourStrong@Passw0rd';"
+    mysql --defaults-file=/etc/mysql/debian.cnf -e "FLUSH PRIVILEGES;"
   become: yes
 
 - name: Enable performance_schema and required consumers

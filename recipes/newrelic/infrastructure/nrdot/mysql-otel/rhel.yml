@@ -53,9 +53,15 @@ inputVars:
   - name: NR_CLI_MYSQL_LOGIN_NAME
     prompt: "Monitoring username: "
     default: "newrelic"
-  - name: NR_CLI_MYSQL_DATABASE
-    prompt: "Restrict monitoring to a specific database (optional, leave blank to monitor all): "
-    default: ""
+# NR_CLI_MYSQL_DATABASE is intentionally not declared as an inputVar: the
+# newrelic-cli's non-interactive mode requires every declared inputVar to
+# either have a non-empty default or be explicitly provided, even when the
+# field is meant to be optional (default: "" is not sufficient - see
+# b5becc66 for the same fix applied to NR_CLI_MSSQL_LOGIN_PASSWORD). Leaving
+# it undeclared lets {{.NR_CLI_MYSQL_DATABASE}} below resolve to an empty
+# string when unset, which is exactly the "monitor all databases" behavior
+# documented for this field - while still letting users set it via env var.
+
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'mysql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 

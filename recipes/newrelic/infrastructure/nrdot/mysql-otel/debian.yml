@@ -38,10 +38,15 @@ preInstall:
     (the 'root' account or equivalent) on the account running this installation.
 
     Note: this installer connects to MySQL over TCP using a password, so the
-    'root' account must use password-based authentication. On a default
-    Debian/Ubuntu install, 'root'@'localhost' uses the auth_socket plugin
-    (no password, local-socket-only) and will not work here. Switch it first:
-      ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';
+    'root' account must use password-based authentication. On some
+    Debian/Ubuntu installs, 'root'@'localhost' defaults to the auth_socket
+    plugin (no password, local-socket-only) or another state with no known
+    password, and will not work here. Switch it first, run locally as root:
+      mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';"
+    If that itself fails with "Access denied", the mysql-server package also
+    creates a debian-sys-maint account with known admin credentials in
+    /etc/mysql/debian.cnf for its own maintenance scripts - use it instead:
+      mysql --defaults-file=/etc/mysql/debian.cnf -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';"
 
 inputVars:
   - name: NR_CLI_MYSQL_CONFIG_PRESET
@@ -59,9 +64,15 @@ inputVars:
   - name: NR_CLI_MYSQL_LOGIN_NAME
     prompt: "Monitoring username: "
     default: "newrelic"
-  - name: NR_CLI_MYSQL_DATABASE
-    prompt: "Restrict monitoring to a specific database (optional, leave blank to monitor all): "
-    default: ""
+
+# NR_CLI_MYSQL_DATABASE is intentionally not declared as an inputVar: the
+# newrelic-cli's non-interactive mode requires every declared inputVar to
+# either have a non-empty default or be explicitly provided, even when the
+# field is meant to be optional (default: "" is not sufficient - see
+# b5becc66 for the same fix applied to NR_CLI_MSSQL_LOGIN_PASSWORD). Leaving
+# it undeclared lets {{.NR_CLI_MYSQL_DATABASE}} below resolve to an empty
+# string when unset, which is exactly the "monitor all databases" behavior
+# documented for this field - while still letting users set it via env var.
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'mysql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
