@@ -138,6 +138,7 @@ install:
           VERSION_NUM=$(echo "$RESULT" | tr -d '[:space:]')
           if [ -z "$VERSION_NUM" ] || [ "$VERSION_NUM" -lt 140000 ]; then
             echo "PostgreSQL version ${VERSION_NUM:-unknown} is not supported. PostgreSQL 14 or later is required." >&2
+            echo "See: https://docs.newrelic.com/docs/opentelemetry/database/postgresql/compatibility/#self-hosted" >&2
             exit 1
           fi
 
@@ -147,7 +148,8 @@ install:
           if ! echo "$PRELOAD" | grep -qi "pg_stat_statements"; then
             echo "pg_stat_statements is not loaded on this PostgreSQL server (shared_preload_libraries=${PRELOAD})." >&2
             echo "Add pg_stat_statements to shared_preload_libraries in postgresql.conf and restart" >&2
-            echo "PostgreSQL, then re-run this installation." >&2
+            echo "PostgreSQL, then re-run this installation. See:" >&2
+            echo "https://docs.newrelic.com/docs/opentelemetry/database/postgresql/compatibility/#self-hosted" >&2
             exit 1
           fi
 
@@ -264,6 +266,14 @@ install:
           IFS=','
           set -- $DATABASES
           IFS="$OLD_IFS"
+          # Always configure the default 'postgres' maintenance database too,
+          # in addition to whatever the user listed above - confirmed via live
+          # testing that the receiver's top_query feature connects there for
+          # some of its cluster-wide accounting independent of the databases
+          # list, and fails with "relation pg_stat_statements does not exist"
+          # if the extension was never created there. Harmless/idempotent if
+          # the user already included "postgres" themselves.
+          set -- postgres "$@"
           for db in "$@"; do
             db_trimmed=$(echo "$db" | xargs)
             [ -z "$db_trimmed" ] && continue

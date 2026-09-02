@@ -135,6 +135,7 @@ install:
           VERSION_NUM=$(echo "$RESULT" | tr -d '[:space:]')
           if [ -z "$VERSION_NUM" ] || [ "$VERSION_NUM" -lt 140000 ]; then
             echo "PostgreSQL version ${VERSION_NUM:-unknown} is not supported. PostgreSQL 14 or later is required." >&2
+            echo "See: https://docs.newrelic.com/docs/opentelemetry/database/postgresql/compatibility/#rdsaurora" >&2
             exit 1
           fi
 
@@ -143,8 +144,9 @@ install:
           PRELOAD=$(psql -h "$SERVER" -p "$PORT" -U "$MASTER_USER" -d postgres -tA -c "SHOW shared_preload_libraries;" 2>&1)
           if ! echo "$PRELOAD" | grep -qi "pg_stat_statements"; then
             echo "pg_stat_statements is not loaded on this PostgreSQL server (shared_preload_libraries=${PRELOAD})." >&2
-            echo "Add pg_stat_statements to shared_preload_libraries in postgresql.conf and restart" >&2
-            echo "PostgreSQL, then re-run this installation." >&2
+            echo "Add pg_stat_statements to shared_preload_libraries in the RDS/Aurora parameter" >&2
+            echo "group (apply_method: pending-reboot) and reboot the instance, then re-run this. See:" >&2
+            echo "https://docs.newrelic.com/docs/opentelemetry/database/postgresql/compatibility/#rdsaurora" >&2
             exit 1
           fi
 
@@ -262,6 +264,14 @@ install:
           IFS=','
           set -- $DATABASES
           IFS="$OLD_IFS"
+          # Always configure the default 'postgres' maintenance database too,
+          # in addition to whatever the user listed above - confirmed via live
+          # testing that the receiver's top_query feature connects there for
+          # some of its cluster-wide accounting independent of the databases
+          # list, and fails with "relation pg_stat_statements does not exist"
+          # if the extension was never created there. Harmless/idempotent if
+          # the user already included "postgres" themselves.
+          set -- postgres "$@"
           for db in "$@"; do
             db_trimmed=$(echo "$db" | xargs)
             [ -z "$db_trimmed" ] && continue
@@ -853,3 +863,14 @@ postInstall:
       SECURITY DEFINER helper function in each monitored database and granting
       EXECUTE on it to the monitoring user - see:
       https://docs.newrelic.com/docs/opentelemetry/database/postgresql/explain-permissions/
+
+      Known limitation (RDS/Aurora only): the top_query feature reads from
+      pg_stat_statements' cluster-wide view, which always includes queries
+      attributed to RDS's internal "rdsadmin" database. When it tries to
+      EXPLAIN one of those, the connection is rejected by pg_hba.conf - RDS
+      blocks all non-master users from ever connecting to rdsadmin, and
+      exclude_databases does not prevent this specific attempt (it only
+      scopes per-database metric collection). Expect recurring
+      "pg_hba.conf rejects connection ... database "rdsadmin"" errors in
+      the collector logs; they do not affect metric or query_sample
+      collection - confirmed metrics keep flowing normally alongside them.
