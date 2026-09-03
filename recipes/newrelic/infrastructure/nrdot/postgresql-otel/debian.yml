@@ -323,13 +323,7 @@ install:
             exit 1
           fi
 
-          if [ "$PRESET" = "2" ]; then
-            COLLECTION_INTERVAL="30s"
-            LIMIT_MIB=500
-          else
-            COLLECTION_INTERVAL="15s"
-            LIMIT_MIB=200
-          fi
+          COLLECTION_INTERVAL="15s"
 
           DATABASES_YAML=""
           OLD_IFS="$IFS"
@@ -344,10 +338,10 @@ install:
           done
 
           case "$REGION" in
-            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
-            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
-            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
-            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4317" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net:4317" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
           if [ "$PRESET" = "2" ]; then
@@ -381,6 +375,10 @@ install:
                       enabled: false
                     system.paging.faults:
                       enabled: false
+                filesystem:
+                  metrics:
+                    system.filesystem.utilization:
+                      enabled: true
                 disk:
                   metrics:
                     system.disk.merged:
@@ -393,22 +391,19 @@ install:
                   metrics:
                     system.network.connections:
                       enabled: false
-                processes:
-                process:
-                  mute_process_name_error: true
-                  mute_process_exe_error: true
-                  mute_process_user_error: true
-                  mute_process_io_error: true
-                  metrics:
-                    process.cpu.utilization:
-                      enabled: true
-                    process.memory.utilization:
-                      enabled: true
+                # Uncomment to enable process metrics
+                # processes:
+                # process:
+                #  metrics:
+                #    process.cpu.utilization:
+                #      enabled: true
+                #    process.cpu.time:
+                #      enabled: false
 
             nrpostgresql:
-              endpoint: ${SERVER}:${PORT}
-              username: ${LOGIN_NAME}
-              password: ${NR_PASSWORD}
+              endpoint: "${SERVER}:${PORT}"
+              username: "${LOGIN_NAME}"
+              password: "${NR_PASSWORD}"
               databases:
           EOF
             printf '%s' "$DATABASES_YAML" >> "$CONFIG_PATH"
@@ -421,65 +416,21 @@ install:
                 db.server.query_sample:
                   enabled: true
 
+              query_sample_collection:
+                max_rows_per_query: 1000
+                allowed_comment_keys: [nr_service_guid]
+
               top_query_collection:
                 max_rows_per_query: 1000
                 top_n_query: 200
                 collection_interval: 60s
-                allowed_comment_keys:
-                  - nr_service_guid
+                allowed_comment_keys: [nr_service_guid]
 
-              query_sample_collection:
-                max_rows_per_query: 1000
-                allowed_comment_keys:
-                  - nr_service_guid
-
+              # Metrics needed for the out-of-the-box dashboard but disabled by default -
+              # see "Available metrics" in the docs for the full default-on/default-off breakdown.
               metrics:
           EOF
             cat >> "$CONFIG_PATH" << 'EOF'
-                postgresql.backends:
-                  enabled: true
-                postgresql.bgwriter.buffers.allocated:
-                  enabled: true
-                postgresql.bgwriter.buffers.writes:
-                  enabled: true
-                postgresql.bgwriter.checkpoint.count:
-                  enabled: true
-                postgresql.bgwriter.duration:
-                  enabled: true
-                postgresql.bgwriter.maxwritten:
-                  enabled: true
-                postgresql.blocks_read:
-                  enabled: true
-                postgresql.commits:
-                  enabled: true
-                postgresql.connection.max:
-                  enabled: true
-                postgresql.database.count:
-                  enabled: true
-                postgresql.db_size:
-                  enabled: true
-                postgresql.index.scans:
-                  enabled: true
-                postgresql.index.size:
-                  enabled: true
-                postgresql.operations:
-                  enabled: true
-                postgresql.replication.data_delay:
-                  enabled: true
-                postgresql.rollbacks:
-                  enabled: true
-                postgresql.rows:
-                  enabled: true
-                postgresql.table.count:
-                  enabled: true
-                postgresql.table.size:
-                  enabled: true
-                postgresql.table.vacuum.count:
-                  enabled: true
-                postgresql.wal.age:
-                  enabled: true
-                postgresql.wal.lag:
-                  enabled: true
                 postgresql.database.locks:
                   enabled: true
                 postgresql.deadlocks:
@@ -493,24 +444,6 @@ install:
                 postgresql.temp.io:
                   enabled: true
                 postgresql.temp_files:
-                  enabled: true
-                postgresql.blks_hit:
-                  enabled: true
-                postgresql.blks_read:
-                  enabled: true
-                postgresql.tup_fetched:
-                  enabled: true
-                postgresql.tup_returned:
-                  enabled: true
-                postgresql.tup_inserted:
-                  enabled: true
-                postgresql.tup_updated:
-                  enabled: true
-                postgresql.tup_deleted:
-                  enabled: true
-                postgresql.query.execution.time:
-                  enabled: true
-                postgresql.wal.delay:
                   enabled: true
 
           processors:
@@ -591,7 +524,14 @@ install:
                 - key: type
                   action: delete
 
-            cumulativetodelta:
+            cumulative_to_delta:
+
+            transform:
+              trace_statements:
+                - context: span
+                  statements:
+                    - truncate_all(span.attributes, 4095)
+                    - truncate_all(resource.attributes, 4095)
 
             transform/host:
               metric_statements:
@@ -602,17 +542,21 @@ install:
 
           EOF
             cat >> "$CONFIG_PATH" << EOF
-            memory_limiter:
-              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
-              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
-              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
+            # Static server.address/server.port instead of deriving them from
+            # service.instance.id - with receiver.nrpostgresql.useOTelSemconv enabled,
+            # service.instance.id becomes a UUID v5 hash, not a "host:port" string, so
+            # a Split(...)-based transform breaks. Applies uniformly to both metrics
+            # and logs pipelines since neither depends on that internal format.
+            resource/postgresql:
+              attributes:
+                - key: server.address
+                  value: "${SERVER}"
+                  action: upsert
+                - key: server.port
+                  value: ${PORT}
+                  action: upsert
 
             batch:
-
-            batch/logs:
-              send_batch_size: 15
-              send_batch_max_size: 15
-              timeout: 5s
 
             resource_detection:
               detectors: ["system"]
@@ -631,13 +575,16 @@ install:
               override: true
 
           exporters:
-            otlphttp:
-              endpoint: ${OTLP_ENDPOINT}
+            otlp/newrelic:
+              endpoint: "${OTLP_ENDPOINT}"
               headers:
-                api-key: ${LICENSE_KEY}
-              tls:
-                insecure: false
+                api-key: "${LICENSE_KEY}"
               compression: gzip
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
 
           service:
             telemetry:
@@ -648,7 +595,7 @@ install:
 
             pipelines:
               metrics/host:
-                receivers: [host_metrics, nrpostgresql]
+                receivers: [host_metrics]
                 processors:
                   - metrics_transform
                   - filter/exclude_cpu_utilization
@@ -664,42 +611,52 @@ install:
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
-                  - cumulativetodelta
-                  - memory_limiter
+                  - cumulative_to_delta
                   - batch
-                exporters: [otlphttp]
+                exporters: [otlp/newrelic]
 
-              logs/host:
+              metrics/postgresql:
                 receivers: [nrpostgresql]
                 processors:
+                  - resource/postgresql
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
-                  - batch/logs
-                exporters: [otlphttp]
+                  - batch
+                exporters: [otlp/newrelic]
+
+              logs/postgresql:
+                receivers: [nrpostgresql]
+                processors:
+                  - resource/postgresql
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - batch
+                exporters: [otlp/newrelic]
 
               traces:
                 receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                processors: [transform, resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlp/newrelic]
 
               metrics:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp/newrelic]
 
               logs:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp/newrelic]
           EOF
           else
             cat > "$CONFIG_PATH" << EOF
           receivers:
             nrpostgresql:
-              endpoint: ${SERVER}:${PORT}
-              username: ${LOGIN_NAME}
-              password: ${NR_PASSWORD}
+              endpoint: "${SERVER}:${PORT}"
+              username: "${LOGIN_NAME}"
+              password: "${NR_PASSWORD}"
               databases:
           EOF
             printf '%s' "$DATABASES_YAML" >> "$CONFIG_PATH"
@@ -716,96 +673,73 @@ install:
                 max_rows_per_query: 1000
                 top_n_query: 200
                 collection_interval: 60s
-                allowed_comment_keys:
-                  - nr_service_guid
+                allowed_comment_keys: [nr_service_guid]
 
               query_sample_collection:
                 max_rows_per_query: 1000
-                allowed_comment_keys:
-                  - nr_service_guid
+                allowed_comment_keys: [nr_service_guid]
 
+              # Metrics needed for the out-of-the-box dashboard but disabled by default -
+              # see "Available metrics" in the docs for the full default-on/default-off breakdown.
               metrics:
           EOF
             cat >> "$CONFIG_PATH" << 'EOF'
-                postgresql.backends:
+                postgresql.database.locks:
                   enabled: true
-                postgresql.bgwriter.buffers.allocated:
+                postgresql.deadlocks:
                   enabled: true
-                postgresql.bgwriter.buffers.writes:
+                postgresql.function.calls:
                   enabled: true
-                postgresql.bgwriter.checkpoint.count:
+                postgresql.query.conflicts:
                   enabled: true
-                postgresql.bgwriter.duration:
+                postgresql.sequential_scans:
                   enabled: true
-                postgresql.bgwriter.maxwritten:
+                postgresql.temp.io:
                   enabled: true
-                postgresql.blocks_read:
-                  enabled: true
-                postgresql.commits:
-                  enabled: true
-                postgresql.connection.max:
-                  enabled: true
-                postgresql.database.count:
-                  enabled: true
-                postgresql.db_size:
-                  enabled: true
-                postgresql.index.scans:
-                  enabled: true
-                postgresql.index.size:
-                  enabled: true
-                postgresql.operations:
-                  enabled: true
-                postgresql.replication.data_delay:
-                  enabled: true
-                postgresql.rollbacks:
-                  enabled: true
-                postgresql.rows:
-                  enabled: true
-                postgresql.table.count:
-                  enabled: true
-                postgresql.table.size:
-                  enabled: true
-                postgresql.table.vacuum.count:
-                  enabled: true
-                postgresql.wal.age:
-                  enabled: true
-                postgresql.wal.lag:
+                postgresql.temp_files:
                   enabled: true
 
           processors:
           EOF
             cat >> "$CONFIG_PATH" << EOF
-            memory_limiter:
-              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
-              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
-              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
-
             batch:
+            # Static server.address/server.port instead of deriving them from
+            # service.instance.id - with receiver.nrpostgresql.useOTelSemconv enabled,
+            # service.instance.id becomes a UUID v5 hash, not a "host:port" string, so
+            # a Split(...)-based transform breaks. Applies uniformly to both metrics
+            # and logs pipelines since neither depends on that internal format.
+            resource/postgresql:
+              attributes:
+                - key: server.address
+                  value: "${SERVER}"
+                  action: upsert
+                - key: server.port
+                  value: ${PORT}
+                  action: upsert
 
           exporters:
-            otlphttp:
-              endpoint: ${OTLP_ENDPOINT}
+            otlp/newrelic:
+              endpoint: "${OTLP_ENDPOINT}"
               headers:
-                api-key: ${LICENSE_KEY}
-              tls:
-                insecure: false
+                api-key: "${LICENSE_KEY}"
               compression: gzip
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
 
           service:
-            telemetry:
-              metrics:
-                level: none
-
             pipelines:
               metrics:
                 receivers: [nrpostgresql]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                processors: [resource/postgresql, batch]
+                exporters: [otlp/newrelic]
 
               logs:
                 receivers: [nrpostgresql]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                processors: [resource/postgresql, batch]
+                exporters: [otlp/newrelic]
           EOF
           fi
 
