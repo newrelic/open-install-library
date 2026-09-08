@@ -1,0 +1,48 @@
+---
+
+- name: Verify SQL Server is installed and responsive
+  win_shell: |
+    sqlcmd -S localhost -I -Q "SELECT GETDATE()";
+  register: output
+
+- fail:
+    msg: "SqlServer is not installed on the host"
+  when: output is failed
+
+- name: Set SqlServer Authentication mode to Mixed to allow username/password login
+  win_shell: |
+    Import-Module -Name SQLPS
+    $sql = [Microsoft.SqlServer.Management.Smo.Server]::new("localhost")
+    $sql.Settings.LoginMode = 'Mixed'
+    $sql.Alter()
+    Get-Service -Name 'MSSQLSERVER' | Restart-Service -Force
+
+- name: Wait for SQL Server to accept connections after restart
+  win_shell: |
+    sqlcmd -S localhost -I -Q "SELECT 1";
+  register: output
+  retries: 30
+  delay: 2
+  until: output is not failed
+
+- fail:
+    msg: "SQL Server did not come back up after switching to Mixed Mode auth"
+  when: output is failed
+
+- name: Enable sa login and set its password
+  win_shell: |
+    sqlcmd -S localhost -I -Q "ALTER LOGIN sa WITH PASSWORD='YourStrong@Passw0rd'; ALTER LOGIN sa ENABLE;";
+  register: output
+
+- fail:
+    msg: "Failed to enable/set password for the sa login"
+  when: output is failed
+
+- name: Verify sa login works
+  win_shell: |
+    sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -Q "SELECT GETDATE()";
+  register: output
+
+- fail:
+    msg: "Unable to authenticate as sa with the configured password"
+  when: output is failed
