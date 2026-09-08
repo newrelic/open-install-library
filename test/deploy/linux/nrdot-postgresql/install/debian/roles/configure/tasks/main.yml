@@ -1,0 +1,77 @@
+---
+- debug:
+    msg: Install PostgreSQL Server for NRDOT PostgreSQL Testing on Debian/Ubuntu
+
+- name: Update package list
+  shell: "apt-get update -y"
+  become: yes
+
+- name: Install PostgreSQL server and contrib (pg_stat_statements)
+  shell: "DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib"
+  become: yes
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Start and enable PostgreSQL service
+  shell: |
+    systemctl enable postgresql
+    systemctl restart postgresql
+  become: yes
+
+- name: Wait for PostgreSQL to accept connections
+  shell: |
+    for i in $(seq 1 30); do
+      if sudo -u postgres pg_isready > /dev/null 2>&1; then
+        echo "PostgreSQL is accepting connections."
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "PostgreSQL did not start accepting connections in time." >&2
+    exit 1
+  become: yes
+
+# shared_preload_libraries requires a full restart, so this is done before
+# setting the password (still using local peer auth via sudo -u postgres).
+- name: Configure pg_stat_statements prerequisites
+  shell: |
+    sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';"
+    sudo -u postgres psql -c "ALTER SYSTEM SET track_activity_query_size = 4096;"
+    sudo -u postgres psql -c "ALTER SYSTEM SET pg_stat_statements.track = 'ALL';"
+    sudo -u postgres psql -c "ALTER SYSTEM SET pg_stat_statements.max = 10000;"
+    sudo -u postgres psql -c "ALTER SYSTEM SET pg_stat_statements.save = on;"
+    sudo -u postgres psql -c "ALTER SYSTEM SET track_functions = 'all';"
+  become: yes
+
+- name: Restart PostgreSQL to apply shared_preload_libraries
+  shell: "systemctl restart postgresql"
+  become: yes
+
+- name: Wait for PostgreSQL to accept connections after restart
+  shell: |
+    for i in $(seq 1 30); do
+      if sudo -u postgres pg_isready > /dev/null 2>&1; then
+        echo "PostgreSQL is accepting connections."
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "PostgreSQL did not start accepting connections in time." >&2
+    exit 1
+  become: yes
+
+# Ubuntu's default pg_hba.conf already permits password-based host auth on
+# 127.0.0.1 for TCP connections - only the password itself needs setting.
+- name: Set postgres superuser password
+  shell: |
+    sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'YourStrong@Passw0rd';"
+  become: yes
+
+- name: Verify pg_stat_statements is loaded
+  shell: |
+    sudo -u postgres psql -tA -c "SHOW shared_preload_libraries;"
+  become: yes
+
+- name: Verify PostgreSQL is running
+  shell: "systemctl status postgresql --no-pager"
+  become: yes
