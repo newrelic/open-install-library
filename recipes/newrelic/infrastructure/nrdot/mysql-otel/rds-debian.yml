@@ -56,22 +56,12 @@ inputVars:
   - name: NR_CLI_MYSQL_LOGIN_NAME
     prompt: "Monitoring username: "
     default: "newrelic"
-# NR_CLI_MYSQL_DATABASE is intentionally not declared as an inputVar: the
-# newrelic-cli's non-interactive mode requires every declared inputVar to
-# either have a non-empty default or be explicitly provided, even when the
-# field is meant to be optional (default: "" is not sufficient - see
-# b5becc66 for the same fix applied to NR_CLI_MSSQL_LOGIN_PASSWORD). Leaving
-# it undeclared lets {{.NR_CLI_MYSQL_DATABASE}} below resolve to an empty
-# string when unset, which is exactly the "monitor all databases" behavior
-# documented for this field - while still letting users set it via env var.
-
-# NR_CLI_MYSQL_TLS_CA_FILE is intentionally not declared as an inputVar, for
-# the same reason as NR_CLI_MYSQL_DATABASE above: the newrelic-cli's
-# non-interactive mode requires every declared inputVar to have a non-empty
-# default or be explicitly provided, even when the field is optional
-# (default: "" is not sufficient). Leaving it undeclared lets
-# {{.NR_CLI_MYSQL_TLS_CA_FILE}} below resolve to an empty string when unset,
-# which is exactly the "no ca_file set" behavior this field is meant to have.
+  - name: NR_CLI_MYSQL_DATABASE
+    prompt: "Database to monitor (leave blank to monitor all databases): "
+    default: ""
+  - name: NR_CLI_MYSQL_TLS_CA_FILE
+    prompt: "Path to a CA certificate file for validating the server's TLS certificate (leave blank to skip CA validation): "
+    default: ""
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'mysql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -132,10 +122,10 @@ install:
           cat > "$CNF_FILE" << EOF
           [client]
           user=${MASTER_USER}
-          password=${MASTER_PASSWORD}
           host=${SERVER}
           port=${PORT}
           EOF
+          export MYSQL_PWD="$MASTER_PASSWORD"
 
           RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1)
           if [ $? -ne 0 ]; then
@@ -241,10 +231,10 @@ install:
           cat > "$CNF_FILE" << EOF
           [client]
           user=${MASTER_USER}
-          password=${MASTER_PASSWORD}
           host=${SERVER}
           port=${PORT}
           EOF
+          export MYSQL_PWD="$MASTER_PASSWORD"
 
           NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
 
@@ -299,10 +289,10 @@ install:
           cat > "$CNF_FILE" << EOF
           [client]
           user=${MASTER_USER}
-          password=${MASTER_PASSWORD}
           host=${SERVER}
           port=${PORT}
           EOF
+          export MYSQL_PWD="$MASTER_PASSWORD"
 
           NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
 

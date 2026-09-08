@@ -53,14 +53,9 @@ inputVars:
   - name: NR_CLI_MYSQL_LOGIN_NAME
     prompt: "Monitoring username: "
     default: "newrelic"
-# NR_CLI_MYSQL_DATABASE is intentionally not declared as an inputVar: the
-# newrelic-cli's non-interactive mode requires every declared inputVar to
-# either have a non-empty default or be explicitly provided, even when the
-# field is meant to be optional (default: "" is not sufficient - see
-# b5becc66 for the same fix applied to NR_CLI_MSSQL_LOGIN_PASSWORD). Leaving
-# it undeclared lets {{.NR_CLI_MYSQL_DATABASE}} below resolve to an empty
-# string when unset, which is exactly the "monitor all databases" behavior
-# documented for this field - while still letting users set it via env var.
+  - name: NR_CLI_MYSQL_DATABASE
+    prompt: "Database to monitor (leave blank to monitor all databases): "
+    default: ""
 
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'mysql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
@@ -121,10 +116,10 @@ install:
           cat > "$CNF_FILE" << EOF
           [client]
           user=root
-          password=${ROOT_PASSWORD}
           host=${SERVER}
           port=${PORT}
           EOF
+          export MYSQL_PWD="$ROOT_PASSWORD"
 
           RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1)
           if [ $? -ne 0 ]; then
@@ -229,10 +224,10 @@ install:
           cat > "$CNF_FILE" << EOF
           [client]
           user=root
-          password=${ROOT_PASSWORD}
           host=${SERVER}
           port=${PORT}
           EOF
+          export MYSQL_PWD="$ROOT_PASSWORD"
 
           NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
 
@@ -285,10 +280,10 @@ install:
           cat > "$CNF_FILE" << EOF
           [client]
           user=root
-          password=${ROOT_PASSWORD}
           host=${SERVER}
           port=${PORT}
           EOF
+          export MYSQL_PWD="$ROOT_PASSWORD"
 
           NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
 
