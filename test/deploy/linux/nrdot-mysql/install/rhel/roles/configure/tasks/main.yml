@@ -1,0 +1,81 @@
+---
+- debug:
+    msg: Install MySQL Server for NRDOT MySQL Testing on RHEL/CentOS
+
+- name: Install wget
+  yum:
+    name: "wget"
+    state: latest
+  become: yes
+
+- name: Download MySQL Community repository RPM
+  shell: "wget https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm"
+  become: yes
+
+# GPG keys must be imported before the repo .rpm install - a strict dnf/yum
+# refuses to install an unverified package otherwise. Both keys are needed:
+# the repo .rpm itself is signed with one key, while mysql-community-server
+# pulled from the configured repo is signed with the other.
+- name: Import MySQL GPG keys
+  shell: "rpm --import {{ item }}"
+  loop:
+    - https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
+    - https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+  become: yes
+
+- name: Add MySQL Community repository
+  ansible.builtin.yum:
+    name: mysql80-community-release-el9-1.noarch.rpm
+    state: present
+    lock_timeout: 180
+  become: yes
+
+- name: Install MySQL server
+  ansible.builtin.yum:
+    name: mysql-community-server
+    state: present
+    lock_timeout: 180
+  become: yes
+
+- name: Start and enable MySQL service
+  shell: |
+    systemctl enable mysqld
+    systemctl restart mysqld
+  become: yes
+
+- name: Wait for MySQL to accept connections
+  shell: |
+    for i in $(seq 1 30); do
+      if mysqladmin ping --silent > /dev/null 2>&1; then
+        echo "MySQL is accepting connections."
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "MySQL did not start accepting connections in time." >&2
+    exit 1
+  become: yes
+
+- name: Get temporary root password
+  shell: "grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}'"
+  register: mysql_temp_pw
+  become: yes
+
+- name: Set root password (using the generated temporary password)
+  shell: |
+    mysql -u root -p'{{ mysql_temp_pw.stdout }}' --connect-expired-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'YourStrong@Passw0rd';"
+    mysql -u root -e "FLUSH PRIVILEGES;"
+  become: yes
+  environment:
+    MYSQL_PWD: 'YourStrong@Passw0rd'
+
+- name: Enable performance_schema and required consumers
+  shell: |
+    mysql -u root -e "UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name = 'events_waits_current';"
+  become: yes
+  environment:
+    MYSQL_PWD: 'YourStrong@Passw0rd'
+
+- name: Verify MySQL is running
+  shell: "systemctl status mysqld --no-pager"
+  become: yes
