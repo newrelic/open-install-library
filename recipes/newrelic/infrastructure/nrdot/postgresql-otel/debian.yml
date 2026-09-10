@@ -63,6 +63,12 @@ inputVars:
     default: "newrelic"
   - name: NR_CLI_POSTGRES_DATABASES
     prompt: "Databases to monitor (comma-separated, at least one required): "
+  - name: NR_CLI_POSTGRES_ENABLE_VECTOR_METRICS
+    prompt: "Enable pgvector similarity-search metrics? Requires the pgvector extension (y/n): "
+    default: "n"
+  - name: NR_CLI_POSTGRES_ENABLE_EXPLAIN_HELPER
+    prompt: "Enable EXPLAIN plan collection for locking/write statements? Creates a SECURITY DEFINER helper function (y/n): "
+    default: "n"
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'postgresql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -221,6 +227,8 @@ install:
           SERVER="{{.NR_CLI_POSTGRES_SERVER}}"
           PORT="{{.NR_CLI_POSTGRES_PORT}}"
           DATABASES="{{.NR_CLI_POSTGRES_DATABASES}}"
+          ENABLE_VECTOR="{{.NR_CLI_POSTGRES_ENABLE_VECTOR_METRICS}}"
+          ENABLE_EXPLAIN="{{.NR_CLI_POSTGRES_ENABLE_EXPLAIN_HELPER}}"
           SUPERUSER_PASSWORD=$(cat << 'NR_PG_PW_EOF'
           {{.NR_CLI_POSTGRES_SUPERUSER_PASSWORD}}
           NR_PG_PW_EOF
@@ -228,6 +236,14 @@ install:
           export PGPASSWORD="$SUPERUSER_PASSWORD"
 
           NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+          # ALTER ROLE ... INHERIT is only needed on PostgreSQL 15+ - on 14 the
+          # monitoring role inherits privileges by default already.
+          VERSION_NUM=$(psql -h "$SERVER" -p "$PORT" -U postgres -d postgres -tA -c "SELECT current_setting('server_version_num');" 2>&1 | tr -d '[:space:]')
+          INHERIT_LINE=""
+          if [ -n "$VERSION_NUM" ] && [ "$VERSION_NUM" -ge 150000 ] 2>/dev/null; then
+            INHERIT_LINE="ALTER ROLE ${LOGIN_NAME} INHERIT;"
+          fi
 
           SQL_FILE=$(mktemp /tmp/nr-postgres-grant.sql.XXXXXX)
           trap 'rm -f "$SQL_FILE"' EXIT
@@ -240,7 +256,7 @@ install:
           END
           \$\$;
           ALTER ROLE ${LOGIN_NAME} WITH LOGIN PASSWORD '${NR_PASSWORD}';
-          ALTER ROLE ${LOGIN_NAME} INHERIT;
+          ${INHERIT_LINE}
           GRANT pg_monitor TO ${LOGIN_NAME};
           EOF
 
@@ -261,6 +277,52 @@ install:
           GRANT USAGE ON SCHEMA public TO ${LOGIN_NAME};
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${LOGIN_NAME};
           EOF
+          case "$ENABLE_VECTOR" in
+            y|Y|yes|YES|Yes)
+              echo "CREATE EXTENSION IF NOT EXISTS vector;" >> "$PERDB_SQL_FILE"
+              ;;
+          esac
+          case "$ENABLE_EXPLAIN" in
+            y|Y|yes|YES|Yes)
+              cat >> "$PERDB_SQL_FILE" << EOF
+          CREATE OR REPLACE FUNCTION otel.explain_statement(l_query text)
+          RETURNS json
+          LANGUAGE plpgsql
+          SECURITY DEFINER
+          AS \$\$
+          DECLARE
+            v_plan json;
+            v_param_count int;
+            v_nulls text := '';
+            i int;
+          BEGIN
+            SET TRANSACTION READ ONLY;
+            SET plan_cache_mode = force_generic_plan;
+            EXECUTE 'PREPARE otel_explain_stmt AS ' || l_query;
+            SELECT COALESCE(array_length(parameter_types, 1), 0)
+              INTO v_param_count
+              FROM pg_prepared_statements
+              WHERE name = 'otel_explain_stmt';
+            IF v_param_count > 0 THEN
+              FOR i IN 1..v_param_count LOOP
+                v_nulls := v_nulls || CASE WHEN i > 1 THEN ', ' ELSE '' END || 'null';
+              END LOOP;
+              v_nulls := '(' || v_nulls || ')';
+            END IF;
+            EXECUTE 'EXPLAIN (FORMAT JSON) EXECUTE otel_explain_stmt' || v_nulls INTO v_plan;
+            DEALLOCATE otel_explain_stmt;
+            RETURN v_plan;
+          EXCEPTION WHEN OTHERS THEN
+            IF EXISTS (SELECT 1 FROM pg_prepared_statements WHERE name = 'otel_explain_stmt') THEN
+              DEALLOCATE otel_explain_stmt;
+            END IF;
+            RAISE;
+          END;
+          \$\$;
+          GRANT EXECUTE ON FUNCTION otel.explain_statement(text) TO ${LOGIN_NAME};
+          EOF
+              ;;
+          esac
 
           OLD_IFS="$IFS"
           IFS=','
@@ -301,6 +363,7 @@ install:
           SERVER="{{.NR_CLI_POSTGRES_SERVER}}"
           PORT="{{.NR_CLI_POSTGRES_PORT}}"
           DATABASES="{{.NR_CLI_POSTGRES_DATABASES}}"
+          ENABLE_VECTOR="{{.NR_CLI_POSTGRES_ENABLE_VECTOR_METRICS}}"
           SUPERUSER_PASSWORD=$(cat << 'NR_PG_PW_EOF'
           {{.NR_CLI_POSTGRES_SUPERUSER_PASSWORD}}
           NR_PG_PW_EOF
@@ -445,6 +508,24 @@ install:
                   enabled: true
                 postgresql.temp_files:
                   enabled: true
+          EOF
+            case "$ENABLE_VECTOR" in
+              y|Y|yes|YES|Yes)
+                cat >> "$CONFIG_PATH" << 'EOF'
+                postgresql.vector.search.calls:
+                  enabled: true
+                postgresql.vector.search.duration:
+                  enabled: true
+                postgresql.vector.search.rows_returned:
+                  enabled: true
+                postgresql.vector.insert.rows:
+                  enabled: true
+                postgresql.vector.insert.duration:
+                  enabled: true
+          EOF
+                ;;
+            esac
+            cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
             metrics_transform:
@@ -698,6 +779,24 @@ install:
                   enabled: true
                 postgresql.temp_files:
                   enabled: true
+          EOF
+            case "$ENABLE_VECTOR" in
+              y|Y|yes|YES|Yes)
+                cat >> "$CONFIG_PATH" << 'EOF'
+                postgresql.vector.search.calls:
+                  enabled: true
+                postgresql.vector.search.duration:
+                  enabled: true
+                postgresql.vector.search.rows_returned:
+                  enabled: true
+                postgresql.vector.insert.rows:
+                  enabled: true
+                postgresql.vector.insert.duration:
+                  enabled: true
+          EOF
+                ;;
+            esac
+            cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
           EOF
@@ -753,6 +852,19 @@ install:
           echo "PostgreSQL OTel config written to ${CONFIG_PATH}"
           echo "Env file written to ${ENV_FILE}"
 
+    validate_collector_config:
+      cmds:
+        - |
+          CONFIG_PATH="/etc/nrdot-collector/postgresql-config.yaml"
+          VALIDATE_RESULT=$(sudo /usr/bin/nrdot-collector validate --config="$CONFIG_PATH" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "NRDOT Collector configuration validation failed:" >&2
+            echo "$VALIDATE_RESULT" >&2
+            exit 1
+          fi
+          echo "$VALIDATE_RESULT"
+          echo "NRDOT Collector configuration is valid."
+
     restart_nrdot:
       cmds:
         - |
@@ -779,6 +891,7 @@ install:
         - task: install_nrdot
         - task: configure_database_user
         - task: create_collector_config
+        - task: validate_collector_config
         - task: restart_nrdot
 
 postInstall:
@@ -790,7 +903,7 @@ postInstall:
       Restart service:         sudo systemctl restart nrdot-collector
 
       Note: query plans for locking or write statements are not collected by
-      default. Enabling that requires creating an otel.explain_statement()
-      SECURITY DEFINER helper function in each monitored database and granting
-      EXECUTE on it to the monitoring user - see:
+      default. If you enabled the EXPLAIN helper function during install, the
+      otel.explain_statement() SECURITY DEFINER function was already created in
+      each monitored database and granted to the monitoring user. Otherwise, see:
       https://docs.newrelic.com/docs/opentelemetry/database/postgresql/explain-permissions/

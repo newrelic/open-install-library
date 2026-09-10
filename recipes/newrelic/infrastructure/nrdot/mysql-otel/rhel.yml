@@ -213,10 +213,12 @@ install:
           NR_ROOT_PW_EOF
           )
 
+          PW_FILE="/tmp/nr-mysql-newrelic-pw.tmp"
           CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
           SQL_FILE=$(mktemp /tmp/nr-mysql-grant.sql.XXXXXX)
           chmod 600 "$CNF_FILE" "$SQL_FILE"
-          trap 'rm -f "$CNF_FILE" "$SQL_FILE"' EXIT
+          NR_SUCCESS=""
+          trap 'rm -f "$CNF_FILE" "$SQL_FILE"; if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE"; fi' EXIT
           cat > "$CNF_FILE" << EOF
           [client]
           user=root
@@ -243,6 +245,10 @@ install:
           fi
           echo "$RESULT"
 
+          printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+          chmod 600 "$PW_FILE"
+          NR_SUCCESS=1
+
           echo "MySQL monitoring identity configured successfully."
 
     create_collector_config:
@@ -257,38 +263,17 @@ install:
           fi
           SERVER="${NR_CLI_MYSQL_SERVER:-localhost}"
           PORT="{{.NR_CLI_MYSQL_PORT}}"
-          ROOT_PASSWORD=$(cat << 'NR_ROOT_PW_EOF'
-          {{.NR_CLI_MYSQL_ROOT_PASSWORD}}
-          NR_ROOT_PW_EOF
-          )
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/mysql-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+          PW_FILE="/tmp/nr-mysql-newrelic-pw.tmp"
 
           mkdir -p "$CONFIG_DIR"
 
-          CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
-          chmod 600 "$CNF_FILE"
-          trap 'rm -f "$CNF_FILE"' EXIT
-          cat > "$CNF_FILE" << EOF
-          [client]
-          user=root
-          host=${SERVER}
-          port=${PORT}
-          EOF
-          export MYSQL_PWD="$ROOT_PASSWORD"
-
-          NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
-
-          ALTER_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -e "ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';" 2>&1)
-          if [ $? -ne 0 ]; then
-            echo "Failed to set the monitoring user's password:" >&2
-            echo "$ALTER_RESULT" >&2
-            exit 1
-          fi
-
+          NR_PASSWORD=$(cat "$PW_FILE")
+          rm -f "$PW_FILE"
 
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
