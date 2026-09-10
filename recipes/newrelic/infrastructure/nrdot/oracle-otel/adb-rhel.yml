@@ -1,0 +1,640 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+# WORK IN PROGRESS - not for use.
+
+name: nrdot-collector-oracle-adb
+displayName: NRDOT Oracle Autonomous Database (ADB, RHEL/CentOS/OEL collector host)
+description: New Relic install recipe for Oracle Autonomous Database (ADB) monitoring via NRDOT Collector, collector installed on RHEL/CentOS/OEL
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: rhel
+
+keywords:
+  - Oracle
+  - Oracle Database
+  - Autonomous Database
+  - ADB
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - CentOS
+  - RHEL
+  - OEL
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    Oracle Autonomous Database is a managed service, so the NRDOT Collector runs
+    on this host and reaches the database over the network. To capture data, we
+    need to create/authorize a monitoring identity (a database user) using your
+    ADB admin credentials.
+
+    Before you begin, make sure:
+      - The ADB allows TLS (non-mTLS) connections. Autonomous Database requires
+        mutual TLS by default; enable "TLS" under the ADB network settings.
+      - This host's egress IP address is allowed in the ADB access control list.
+      - Oracle SQL*Plus (Instant Client) is installed on this host and on PATH.
+
+    Collect the host, port and service name from the ADB "TLS" connection string
+    (Database connection -> TLS authentication -> TLS).
+
+inputVars:
+  - name: NR_CLI_ORACLE_HOST
+    prompt: "ADB connection host (from the ADB TLS connection string): "
+  - name: NR_CLI_ORACLE_PORT
+    prompt: "ADB listener port: "
+    default: "1522"
+  - name: NR_CLI_ORACLE_SERVICE_NAME
+    prompt: "ADB service name (for example myadb_high): "
+  - name: NR_CLI_ORACLE_ADMIN_USER
+    prompt: "ADB admin username (used once to create the monitoring user and grant privileges): "
+    default: "ADMIN"
+  - name: NR_CLI_ORACLE_ADMIN_PASSWORD
+    prompt: "ADB admin password: "
+    secret: true
+  - name: NR_CLI_ORACLE_LOGIN_NAME
+    prompt: "Monitoring username: "
+    default: "newrelic"
+  - name: NR_CLI_ORACLE_LOGIN_PASSWORD
+    prompt: "Password for the monitoring login (leave blank to auto-generate a random password): "
+    secret: true
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'oracledb.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 131
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        - |
+          if ! command -v sqlplus > /dev/null 2>&1; then
+            echo "sqlplus is required to create the monitoring user in your Autonomous Database." >&2
+            echo "Autonomous Database provides no host access, so the monitoring user must be created" >&2
+            echo "over the network from this host. Please install the Oracle Instant Client SQL*Plus" >&2
+            echo "package, make sure sqlplus is on PATH, and re-run the installation." >&2
+            exit 131
+          fi
+
+    assert_oracle_version:
+      cmds:
+        - |
+          HOST="{{.NR_CLI_ORACLE_HOST}}"
+          PORT="{{.NR_CLI_ORACLE_PORT}}"
+          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
+          ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
+          ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
+          TNS_DESC="(description=(retry_count=3)(retry_delay=3)(address=(protocol=tcps)(port=${PORT})(host=${HOST}))(connect_data=(service_name=${SERVICE_NAME}))(security=(ssl_server_dn_match=yes)))"
+
+          VERSION_OUTPUT=$(sqlplus -S /nolog << EOF 2>&1
+          WHENEVER SQLERROR EXIT SQL.SQLCODE
+          CONNECT ${ADMIN_USER}/"${ADMIN_PASSWORD}"@"${TNS_DESC}"
+          SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON
+          SELECT version FROM v\$instance;
+          EXIT;
+          EOF
+          )
+          SQLPLUS_STATUS=$?
+
+          REDACT_PATTERN=$(printf '%s' "$ADMIN_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+          redact() {
+            if [ -n "$REDACT_PATTERN" ]; then
+              sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+            else
+              cat
+            fi
+          }
+
+          if [ $SQLPLUS_STATUS -ne 0 ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|SP2-\|TNS-"; then
+            echo "Failed to connect to your Autonomous Database to check its version:" >&2
+            echo "$VERSION_OUTPUT" | redact >&2
+            echo "Please verify:" >&2
+            echo "  - The ADB allows TLS (non-mTLS) connections" >&2
+            echo "  - This host's egress IP address is allowed in the ADB access control list" >&2
+            echo "  - The host, port and service name match the ADB TLS connection string" >&2
+            exit 1
+          fi
+
+          MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '[0-9]+' | head -1)
+
+          if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
+            echo "Oracle Database version ${MAJOR_VERSION:-unknown} is not supported. Oracle Database 19c or later is required." >&2
+            echo "Raw output from version check:" >&2
+            echo "$VERSION_OUTPUT" | redact >&2
+            exit 1
+          fi
+
+          echo "Oracle Autonomous Database major version ${MAJOR_VERSION} detected - supported."
+
+    install_nrdot:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          if rpm -q "$COLLECTOR_DISTRO" > /dev/null 2>&1; then
+            echo "NRDOT Collector is already installed."
+            echo ""
+            echo "Please follow the steps below to complete the setup:"
+            echo ""
+            echo "  1. Create oracle-config.yaml"
+            echo "     if not present. Refer to:"
+            echo "     https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/#adb"
+            echo ""
+            echo "  2. Make sure the monitoring user is created"
+            echo "     and has the required permissions granted."
+            echo ""
+            echo "  3. After making the above changes, restart the NRDOT Collector:"
+            echo "     sudo systemctl restart nrdot-collector"
+            echo ""
+            exit 131
+          fi
+
+          COLLECTOR_VERSION=$(curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep '"tag_name":' | awk -F'"' '{print $4}')
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="x86_64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+          echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rpm -ivh /tmp/nrdot-collector.rpm
+          if [ $? -ne 0 ]; then
+            echo "Failed to install the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          rm -f /tmp/nrdot-collector.rpm
+          echo "${COLLECTOR_DISTRO} installed successfully."
+
+    configure_database_user:
+      cmds:
+        - |
+          LOGIN_NAME="{{.NR_CLI_ORACLE_LOGIN_NAME}}"
+          HOST="{{.NR_CLI_ORACLE_HOST}}"
+          PORT="{{.NR_CLI_ORACLE_PORT}}"
+          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
+          ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
+          ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
+          PW_FILE="/tmp/nr-oracle-adb-newrelic-pw.tmp"
+          USER_FILE="/tmp/nr-oracle-adb-db-user.tmp"
+          NR_SUCCESS=""
+          trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
+
+          TNS_DESC="(description=(retry_count=3)(retry_delay=3)(address=(protocol=tcps)(port=${PORT})(host=${HOST}))(connect_data=(service_name=${SERVICE_NAME}))(security=(ssl_server_dn_match=yes)))"
+
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+
+          LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+
+          EXISTS_RESULT=$(sqlplus -S /nolog << SQL 2>&1
+          CONNECT ${ADMIN_USER}/"${ADMIN_PASSWORD}"@"${TNS_DESC}"
+          SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
+          SELECT username FROM dba_users WHERE username='${LOGIN_UPPER}';
+          EXIT;
+          SQL
+          ) || true
+
+          if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${LOGIN_UPPER}[[:space:]]*$"; then
+            echo ""
+            echo "Monitoring user $LOGIN_NAME already exists."
+            echo ""
+            echo "What would you like to do?"
+            echo "  1. Use the existing user $LOGIN_NAME (you will be asked for the password)"
+            echo "  2. Create a new username"
+            echo ""
+            read -rp "Enter your choice (1 or 2): " USER_CHOICE
+
+            case "$USER_CHOICE" in
+              1)
+                echo ""
+                stty -echo
+                read -rp "Enter the existing password for $LOGIN_NAME: " NR_PASSWORD
+                stty echo
+                echo ""
+                printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+                chmod 600 "$PW_FILE"
+                echo "$LOGIN_NAME" > "$USER_FILE"
+                chmod 600 "$USER_FILE"
+                echo "Using existing user: $LOGIN_NAME"
+                NR_SUCCESS=1
+                exit 0
+                ;;
+              2)
+                echo ""
+                read -rp "Enter new monitoring username: " NEW_USERNAME
+                LOGIN_NAME="$NEW_USERNAME"
+                LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+                ;;
+              *)
+                echo "Invalid choice. Please re-run and enter 1 or 2." >&2
+                exit 131
+                ;;
+            esac
+          fi
+
+          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "Invalid monitoring username: $LOGIN_NAME" >&2
+            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+            exit 131
+          fi
+
+          echo "$LOGIN_NAME" > "$USER_FILE"
+          chmod 600 "$USER_FILE"
+
+          # Autonomous Database requires 12-30 characters with at least one uppercase,
+          # one lowercase and one digit. Only URL-unreserved characters are used so the
+          # password survives embedding in the receiver's datasource URL.
+          if [ -z "{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}" ]; then
+            _FIRST=$(LC_ALL=C tr -dc 'A-Z' < /dev/urandom | head -c 1)
+            _UPPER=$(LC_ALL=C tr -dc 'A-Z' < /dev/urandom | head -c 4)
+            _LOWER=$(LC_ALL=C tr -dc 'a-z' < /dev/urandom | head -c 8)
+            _DIGITS=$(LC_ALL=C tr -dc '0-9' < /dev/urandom | head -c 5)
+            _REST=$(printf '%s' "${_UPPER}${_LOWER}${_DIGITS}_" | fold -w1 | shuf | tr -d '\n')
+            NR_PASSWORD="${_FIRST}${_REST}"
+            unset _FIRST _UPPER _LOWER _DIGITS _REST
+          else
+            NR_PASSWORD="{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}"
+          fi
+          printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+          chmod 600 "$PW_FILE"
+
+          RESULT=$(sqlplus -S /nolog << SQL 2>&1
+          WHENEVER SQLERROR EXIT SQL.SQLCODE
+          CONNECT ${ADMIN_USER}/"${ADMIN_PASSWORD}"@"${TNS_DESC}"
+          CREATE USER ${LOGIN_NAME} IDENTIFIED BY "${NR_PASSWORD}";
+          GRANT CREATE SESSION TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$INSTANCE TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$DATABASE TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$CONTAINERS TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$DATAFILE TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$PDBS TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$SYSSTAT TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$SYSMETRIC TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$SESSION TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$RESOURCE_LIMIT TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$OSSTAT TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$SGAINFO TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$ROWCACHE TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$PARAMETER TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.DBA_TABLESPACE_USAGE_METRICS TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.DBA_TABLESPACES TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.DBA_DATA_FILES TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.DBA_FREE_SPACE TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.DBA_RECYCLEBIN TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$SQL TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$SQL_PLAN_STATISTICS_ALL TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$LOCK TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.V_\$SESSION_EVENT TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.DBA_PROCEDURES TO ${LOGIN_NAME};
+          GRANT SELECT ON SYS.DBA_OBJECTS TO ${LOGIN_NAME};
+          EXIT;
+          SQL
+          )
+
+          SQLPLUS_STATUS=$?
+          REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+          ADMIN_REDACT_PATTERN=$(printf '%s' "$ADMIN_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+          redact() {
+            if [ -n "$REDACT_PATTERN" ]; then
+              sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+            else
+              cat
+            fi | if [ -n "$ADMIN_REDACT_PATTERN" ]; then
+              sed "s/${ADMIN_REDACT_PATTERN}/[REDACTED]/g"
+            else
+              cat
+            fi
+          }
+
+          if [ $SQLPLUS_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
+            echo "SQL script failed:" >&2
+            echo "$RESULT" | redact >&2
+            exit 1
+          fi
+          echo "$RESULT" | redact
+
+          NR_SUCCESS=1
+          echo "Autonomous Database monitoring identity configured successfully: $LOGIN_NAME"
+
+    create_collector_config:
+      cmds:
+        - |
+          HOST="{{.NR_CLI_ORACLE_HOST}}"
+          PORT="{{.NR_CLI_ORACLE_PORT}}"
+          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
+          REGION="{{.NEW_RELIC_REGION}}"
+          LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          CONFIG_DIR="/etc/nrdot-collector"
+          CONFIG_PATH="${CONFIG_DIR}/oracle-config.yaml"
+          ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+          PW_FILE="/tmp/nr-oracle-adb-newrelic-pw.tmp"
+          USER_FILE="/tmp/nr-oracle-adb-db-user.tmp"
+
+          mkdir -p "$CONFIG_DIR"
+
+          NR_PASSWORD=$(cat "$PW_FILE")
+          LOGIN_NAME=$(cat "$USER_FILE")
+
+          # The credentials are embedded in a datasource URL, so percent-encode the
+          # characters that would otherwise terminate the userinfo component.
+          urlencode() {
+            printf '%s' "$1" | sed \
+              -e 's/%/%25/g' \
+              -e 's/@/%40/g' \
+              -e 's|/|%2F|g' \
+              -e 's/:/%3A/g' \
+              -e 's/?/%3F/g' \
+              -e 's/#/%23/g' \
+              -e 's/&/%26/g' \
+              -e 's/=/%3D/g' \
+              -e 's/+/%2B/g' \
+              -e 's/,/%2C/g' \
+              -e 's/;/%3B/g' \
+              -e 's/\[/%5B/g' \
+              -e 's/\]/%5D/g' \
+              -e 's/ /%20/g'
+          }
+
+          ENC_USER=$(urlencode "$LOGIN_NAME")
+          ENC_PASSWORD=$(urlencode "$NR_PASSWORD")
+
+          case "$REGION" in
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+          esac
+
+          cat > "$CONFIG_PATH" << EOF
+          receivers:
+            nroracledb/adb:
+              datasource: "oracle://${ENC_USER}:${ENC_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}?ssl=true&ssl%20verify=true"
+              collection_interval: 10s
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+                db.server.session.wait_sample:
+                  enabled: true
+              top_query_collection:
+                max_query_sample_count: 1000
+                top_query_count: 200
+                collection_interval: 60s
+                allowed_comment_keys:
+                  - nr_service_guid
+              query_sample_collection:
+                max_rows_per_query: 100
+                allowed_comment_keys:
+                  - nr_service_guid
+              session_wait_event_collection:
+                max_rows_per_query: 100
+              metrics:
+          EOF
+
+          cat >> "$CONFIG_PATH" << 'EOF'
+                oracledb.cpu_time:
+                  enabled: true
+                oracledb.executions:
+                  enabled: true
+                oracledb.parse_calls:
+                  enabled: true
+                oracledb.hard_parses:
+                  enabled: true
+                oracledb.logical_reads:
+                  enabled: true
+                oracledb.physical_reads:
+                  enabled: true
+                oracledb.physical_reads_direct:
+                  enabled: true
+                oracledb.physical_writes:
+                  enabled: true
+                oracledb.physical_writes_direct:
+                  enabled: true
+                oracledb.physical_read_io_requests:
+                  enabled: true
+                oracledb.physical_write_io_requests:
+                  enabled: true
+                oracledb.physical_io.cache_writes:
+                  enabled: true
+                oracledb.physical_io.requests:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - disk.io.block_size
+                oracledb.physical_io.transferred:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - disk.io.type
+                oracledb.sqlnet.io.transferred:
+                  enabled: true
+                  attributes:
+                    - network.io.direction
+                    - destination.type
+                oracledb.consistent_gets:
+                  enabled: true
+                oracledb.db_block_gets:
+                  enabled: true
+                oracledb.data_dictionary.hit_ratio:
+                  enabled: true
+                oracledb.pga_memory:
+                  enabled: true
+                oracledb.enqueue_deadlocks:
+                  enabled: true
+                oracledb.exchange_deadlocks:
+                  enabled: true
+                oracledb.sessions.usage:
+                  enabled: true
+                  attributes:
+                    - session_type
+                    - session_status
+                oracledb.logons:
+                  enabled: true
+                oracledb.user_commits:
+                  enabled: true
+                oracledb.user_rollbacks:
+                  enabled: true
+                oracledb.tablespace_size.limit:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                oracledb.tablespace_size.usage:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                oracledb.storage.usage:
+                  enabled: true
+                oracledb.storage.utilization:
+                  enabled: true
+                oracledb.recycle_bin.limit:
+                  enabled: true
+                oracledb.queries_parallelized:
+                  enabled: true
+                oracledb.ddl_statements_parallelized:
+                  enabled: true
+                oracledb.dml_statements_parallelized:
+                  enabled: true
+                oracledb.parallel_operations_not_downgraded:
+                  enabled: true
+                oracledb.parallel_operations_downgraded_1_to_25_pct:
+                  enabled: true
+                oracledb.parallel_operations_downgraded_25_to_50_pct:
+                  enabled: true
+                oracledb.parallel_operations_downgraded_50_to_75_pct:
+                  enabled: true
+                oracledb.parallel_operations_downgraded_75_to_99_pct:
+                  enabled: true
+                oracledb.parallel_operations_downgraded_to_serial:
+                  enabled: true
+          EOF
+
+          cat >> "$CONFIG_PATH" << EOF
+
+          processors:
+            batch:
+            resource/add_event_name:
+              attributes:
+                - key: host.address
+                  value: "${HOST}"
+                  action: upsert
+
+          exporters:
+            otlphttp/newrelic:
+              endpoint: "${OTLP_ENDPOINT}"
+              headers:
+                api-key: "${LICENSE_KEY}"
+              compression: gzip
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
+
+          service:
+            telemetry:
+              metrics:
+                level: none
+            pipelines:
+              metrics/oracledb:
+                receivers: [nroracledb/adb]
+                processors: [resource/add_event_name, batch]
+                exporters: [otlphttp/newrelic]
+              logs/oracledb:
+                receivers: [nroracledb/adb]
+                processors: [resource/add_event_name, batch]
+                exporters: [otlphttp/newrelic]
+          EOF
+
+          chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
+          chmod 600 "$CONFIG_PATH"
+
+          EXISTING_OPTIONS=$(grep "^OTELCOL_OPTIONS=" "$ENV_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
+          if echo "$EXISTING_OPTIONS" | grep -q -- "--config=${CONFIG_PATH}"; then
+            OTELCOL_OPTIONS="$EXISTING_OPTIONS"
+          else
+            OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
+          fi
+
+          if grep -q "^OTELCOL_OPTIONS=" "$ENV_FILE" 2>/dev/null; then
+            sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"|" "$ENV_FILE"
+          else
+            echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$ENV_FILE" > /dev/null
+          fi
+
+          rm -f "$PW_FILE" "$USER_FILE"
+          echo "Oracle ADB OTel config written to ${CONFIG_PATH}"
+          echo "OTELCOL_OPTIONS updated in ${ENV_FILE}: ${OTELCOL_OPTIONS}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          echo ""
+          echo "==> Restarting NRDOT Collector..."
+          sudo systemctl restart nrdot-collector
+
+          echo ""
+          echo "==> NRDOT Collector service status:"
+          echo ""
+          sudo systemctl status nrdot-collector --no-pager
+
+          if sudo systemctl is-active --quiet nrdot-collector; then
+            echo ""
+            echo -e "\e[32mNRDOT Collector is running successfully.\e[0m"
+          else
+            echo ""
+            echo -e "\e[31mERROR:\e[0m NRDOT Collector failed to start. Check the status output above." >&2
+            exit 131
+          fi
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: assert_oracle_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: create_collector_config
+        - task: restart_nrdot
+
+postInstall:
+  info: |2
+      Oracle ADB OTel config: /etc/nrdot-collector/oracle-config.yaml
+      Env file:               /etc/nrdot-collector/nrdot-collector.conf
+      Service status:         systemctl status nrdot-collector
+      View logs:              journalctl -u nrdot-collector -f
+      Restart service:        sudo systemctl restart nrdot-collector
