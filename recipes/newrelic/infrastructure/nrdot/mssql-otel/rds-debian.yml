@@ -89,6 +89,12 @@ install:
             exit 16
           fi
         - |
+          export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
+          if ! command -v sqlcmd > /dev/null 2>&1; then
+            echo "sqlcmd is required to configure SQL Server monitoring. Install the sqlcmd utility (https://learn.microsoft.com/sql/tools/sqlcmd/sqlcmd-utility) and re-run this recipe." >&2
+            exit 16
+          fi
+        - |
           if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
             echo "systemd is required for the nrdot-collector service configuration." >&2
             exit 131
@@ -290,10 +296,10 @@ install:
           fi
 
           case "$REGION" in
-            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
-            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
-            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
-            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4318" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4318" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net:4318" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4318" ;;
           esac
 
           if [ "$PRESET" = "2" ]; then
@@ -508,17 +514,17 @@ install:
                   enabled: true
 
               top_query_collection:
-                lookback_time: 45s
-                max_query_sample_count: 100
-                top_query_count: 30
-                collection_interval: 30s
+                lookback_time: 60s
+                max_query_sample_count: 500
+                top_query_count: 200
+                collection_interval: 60s
 
               collect_full_query_text: true
               allowed_comment_keys:
                 - nr_service_guid
 
               query_sample_collection:
-                max_rows_per_query: 50
+                max_rows_per_query: 100
 
           processors:
             metrics_transform:
@@ -636,7 +642,7 @@ install:
               override: true
 
           exporters:
-            otlphttp:
+            otlp:
               endpoint: ${OTLP_ENDPOINT}
               headers:
                 api-key: ${LICENSE_KEY}
@@ -672,7 +678,7 @@ install:
                   - cumulativetodelta
                   - memory_limiter
                   - batch
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               logs/host:
                 receivers: [nrsqlserver]
@@ -681,22 +687,22 @@ install:
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch/logs
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               traces:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               metrics:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               logs:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
           EOF
           else
             cat > "$CONFIG_PATH" << EOF
@@ -762,7 +768,7 @@ install:
             batch:
 
           exporters:
-            otlphttp:
+            otlp:
               endpoint: ${OTLP_ENDPOINT}
               headers:
                 api-key: ${LICENSE_KEY}
@@ -779,12 +785,12 @@ install:
               metrics:
                 receivers: [nrsqlserver]
                 processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               logs:
                 receivers: [nrsqlserver]
                 processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
           EOF
           fi
 
