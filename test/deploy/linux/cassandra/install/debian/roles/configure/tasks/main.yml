@@ -43,18 +43,39 @@
       cassandra readwrite
       newrelic readonly
 
+- name: Pin JAVA_HOME to JDK 17 for Cassandra (Debian 12 ships JDK 17)
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/cassandra/cassandra-env.sh
+    regexp: '^export JAVA_HOME='
+    line: 'export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64'
+    insertbefore: '^# JVM_OPTS'
+    firstmatch: true
+
 - name: Restart Cassandra
   become: true
   ansible.builtin.systemd:
     name: cassandra
     state: restarted
+    daemon_reload: yes
+
+- name: Capture Cassandra startup logs (diagnostic)
+  become: true
+  ansible.builtin.command: journalctl -u cassandra -n 50 --no-pager
+  register: cass_journal
+  ignore_errors: true
+  changed_when: false
+
+- name: Show Cassandra startup logs
+  ansible.builtin.debug:
+    msg: "{{ cass_journal.stdout_lines }}"
 
 - name: Wait for Cassandra to be ready (native transport port 9042)
   ansible.builtin.wait_for:
     host: localhost
     port: 9042
-    timeout: 120
-    delay: 10
+    timeout: 300
+    delay: 15
   become: true
 
 - block:
