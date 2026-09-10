@@ -59,16 +59,27 @@
     state: restarted
     daemon_reload: yes
 
-- name: Capture Cassandra startup logs (diagnostic)
+- name: Verify java binary and actual path
   become: true
-  ansible.builtin.command: journalctl -u cassandra -n 50 --no-pager
-  register: cass_journal
+  ansible.builtin.command: readlink -f /usr/bin/java
+  register: java_path
   ignore_errors: true
   changed_when: false
 
-- name: Show Cassandra startup logs
+- name: Show java path
   ansible.builtin.debug:
-    msg: "{{ cass_journal.stdout_lines }}"
+    msg: "Java binary resolves to: {{ java_path.stdout }}"
+
+- name: Capture Cassandra startup log file (not journald — Cassandra logs here)
+  become: true
+  ansible.builtin.command: cat /var/log/cassandra/system.log
+  register: cass_log
+  ignore_errors: true
+  changed_when: false
+
+- name: Show Cassandra system.log
+  ansible.builtin.debug:
+    msg: "{{ cass_log.stdout_lines[-50:] }}"
 
 - name: Wait for Cassandra to be ready (native transport port 9042)
   ansible.builtin.wait_for:
