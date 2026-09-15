@@ -266,17 +266,12 @@ install:
           echo "Running agent status check..."
           while [ $TRIES -lt $MAX_RETRIES ]; do
             ((TRIES++))
-            statusCheckOutput=$(curl -s --noproxy '*' http://localhost:51200/status)
-            if [ -z "$statusCheckOutput" ]; then
-              # so jq doesn't fail if empty
-              statusCheckOutput="{}"
-            fi
-            STATUS=$(echo $statusCheckOutput | /usr/local/bin/newrelic utils jq '.agent_control.healthy')
-            if [ "$STATUS" == "true" ]; then
+            HTTP_STATUS=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' http://localhost:51200/status)
+            if [ "$HTTP_STATUS" == "200" ]; then
               echo "Agent status check ok."
               break
             else
-              echo "Agent status check attempt $TRIES/$MAX_RETRIES failed. Status response: $statusCheckOutput"
+              echo "Agent status check attempt $TRIES/$MAX_RETRIES failed. HTTP status: $HTTP_STATUS"
               if [ "$TRIES" -eq "$MAX_RETRIES" ]; then
                 echo "New Relic Agent Control verification failed. Visit https://docs.newrelic.com/docs/new-relic-control/agent-control/troubleshooting/#cli-debug for troubleshooting guidance." >&2
 
