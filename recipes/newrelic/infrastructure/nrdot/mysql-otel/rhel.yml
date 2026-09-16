@@ -862,6 +862,19 @@ install:
             exit 31
           fi
 
+          # TEMPORARY DIAGNOSTIC: systemd reporting the service "active" doesn't mean
+          # the mysqlreceiver is actually authenticating/scraping successfully - a
+          # connection/auth failure just logs an error and keeps retrying every
+          # collection_interval without crashing the process. Dump recent logs
+          # unconditionally (after giving it time for at least one scrape cycle) so a
+          # failing CI run shows the collector's own error instead of just "no data
+          # received downstream." Remove once the mysql.% data-delivery issue is root-caused.
+          echo ""
+          echo "==> NRDOT Collector recent logs (diagnostic):"
+          sleep 15
+          journalctl -u nrdot-collector --no-pager -n 100
+          echo ""
+
           INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
           SKIP_FILE="/tmp/nr-mysql-skip.tmp"
 

@@ -166,6 +166,13 @@ install:
           fi
           echo "Found $INSTANCE_COUNT MSSQL instance(s) in $INSTANCES_FILE"
 
+          # TEMPORARY DIAGNOSTIC: an extra/mismatched instance has been observed on real
+          # infra downstream in assert_sql_server_version despite this count being
+          # correct - dump the raw TSV so we can see exactly what was parsed. Remove
+          # once root-caused.
+          echo "DIAG: raw INSTANCES_TSV content (cat -A):" >&2
+          cat -A "$INSTANCES_TSV" >&2 2>/dev/null || cat -A "$INSTANCES_TSV" >&2
+
           i=0
           while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_LOGIN_NAME; do
             i=$((i + 1))
@@ -192,6 +199,12 @@ install:
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
             i=$((i + 1))
+
+            # TEMPORARY DIAGNOSTIC: an unexplained extra iteration/version mismatch has
+            # been observed on real infra - print exactly what this iteration read
+            # before anything else can short-circuit it. Remove once root-caused.
+            echo "DIAG: loop iteration i=${i} HOST=[${HOST}] PORT=[${PORT}] LOGIN_NAME=[${LOGIN_NAME}]" >&2
+
             if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
               continue
             fi
@@ -203,6 +216,12 @@ install:
             RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1)
             SQL_STATUS=$?
             unset SQLCMDPASSWORD
+
+            # TEMPORARY DIAGNOSTIC: dump the raw sqlcmd result unconditionally (not
+            # just on failure) so we can see exactly what text MAJOR_VERSION is being
+            # extracted from. Remove once root-caused.
+            echo "DIAG: raw sqlcmd RESULT for instance ${i} (status=${SQL_STATUS}):" >&2
+            echo "$RESULT" | sed 's/^/DIAG: | /' >&2
 
             if [ $SQL_STATUS -ne 0 ]; then
               echo "${i}: failed to connect / check version - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
