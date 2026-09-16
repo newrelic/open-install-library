@@ -4,7 +4,7 @@
 
 name: nrdot-collector-mssql
 displayName: NRDOT MSSQL (Windows)
-description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Windows self-hosted environments (SQL Server Authentication)
+description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Windows self-hosted environments (SQL Server Authentication), one or more local instances
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -27,27 +27,50 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from SQL Server, we need to create a SQL Server login for monitoring.
-    This requires administrative access to your SQL Server instance (sysadmin role or
-    equivalent) via the 'sa' account.
+    To capture data from one or more local SQL Server instances, we need to create a
+    SQL Server login for monitoring on each, using an existing login with sysadmin
+    privileges (or equivalent) on each instance.
+
+    You will be asked for two files:
+
+      1. An instances file (YAML) listing every local SQL Server instance to monitor,
+         in the order you want them numbered (instance 1, 2, 3, ...). If you're running
+         a single SQL Server, this is still one entry - multiple entries are only
+         needed if you run multiple separate SQL Server instances on this host (e.g. on
+         different ports):
+
+           instances:
+             - host: localhost
+               port: 1433
+               login_name: newrelic
+             - host: localhost
+               port: 1434
+               login_name: newrelic
+
+      2. A secrets file (KEY=VALUE per line) supplying an admin login and password
+         for each instance above, indexed to match the instances file's order
+         (1-based). Any login with sysadmin privileges works - it doesn't have to
+         be 'sa':
+
+           NR_CLI_MSSQL_ADMIN_USER_1=sa
+           NR_CLI_MSSQL_ADMIN_PASSWORD_1=<admin password for instance 1>
+           NR_CLI_MSSQL_ADMIN_USER_2=sa
+           NR_CLI_MSSQL_ADMIN_PASSWORD_2=<admin password for instance 2>
+
+         Both NR_CLI_MSSQL_ADMIN_USER_<i> and NR_CLI_MSSQL_ADMIN_PASSWORD_<i> are
+         required for every instance.
+
+    Any instance that fails its version check or login setup is skipped (with a reason)
+    rather than aborting the whole install - the rest are still configured.
 
 inputVars:
   - name: NR_CLI_MSSQL_CONFIG_PRESET
     prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
     default: "1"
-  - name: NR_CLI_MSSQL_SERVER
-    prompt: "SQL Server host (e.g. localhost): "
-    default: "localhost"
-  - name: NR_CLI_MSSQL_PORT
-    prompt: "SQL Server port: "
-    default: "1433"
-  - name: NR_CLI_MSSQL_SA_PASSWORD
-    prompt: "SQL Server 'sa' password (used once to create the monitoring login): "
-    secret: true
-    default: " "
-  - name: NR_CLI_MSSQL_LOGIN_NAME
-    prompt: "Monitoring username: "
-    default: "newrelic"
+  - name: NR_CLI_MSSQL_INSTANCES_FILE
+    prompt: "Path to the MSSQL instances YAML file: "
+  - name: NR_CLI_MSSQL_SECRETS_FILE
+    prompt: "Path to the MSSQL secrets file (KEY=VALUE per instance): "
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'sqlserver.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -89,25 +112,74 @@ install:
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
-    assert_auth_inputs:
-      env:
-        NR_MSSQL_LOGIN_NAME: '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
+    parse_instances:
       cmds:
         - |
-          NR_SCRIPT="$TEMP/nr-mssql-assert_auth_inputs.ps1"
+          NR_SCRIPT="$TEMP/nr-mssql-parse_instances.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
-          $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          if ([string]::IsNullOrWhiteSpace($saPassword) -or $saPassword.Length -eq 0) {
-            Write-Host -ForegroundColor Red "Error: SQL Server 'sa' password is required."
-            Write-Host -ForegroundColor Red "Please re-run the installation and provide a valid SA password."
-            exit 1
+          $instancesFile = '{{.NR_CLI_MSSQL_INSTANCES_FILE}}'
+          $secretsFile = '{{.NR_CLI_MSSQL_SECRETS_FILE}}'
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
+
+          Remove-Item $instancesJsonPath, $skipJsonPath -ErrorAction SilentlyContinue
+
+          if (-not (Test-Path $instancesFile)) {
+            Write-Host -ForegroundColor Red "Instances file not found: $instancesFile"
+            exit 131
+          }
+          if (-not (Test-Path $secretsFile)) {
+            Write-Host -ForegroundColor Red "Secrets file not found: $secretsFile"
+            exit 131
           }
 
-          $loginName = $env:NR_MSSQL_LOGIN_NAME
-          if ($loginName -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
-            Write-Host -ForegroundColor Red "Error: Monitoring username must start with a letter and contain only letters, numbers, and underscores."
-            exit 1
+          # Parses the fixed 3-key-per-item shape documented in preInstall.info
+          # (host, port, login_name) - not a general-purpose YAML parser.
+          $lines = Get-Content $instancesFile
+          $instances = @()
+          $current = $null
+          foreach ($line in $lines) {
+            if ($line -match '^\s*-\s*host:\s*(.+?)\s*$') {
+              if ($current) { $instances += [PSCustomObject]$current }
+              $current = @{ host = $matches[1]; port = $null; login_name = $null }
+            } elseif ($current -and $line -match '^\s*port:\s*(.+?)\s*$') {
+              $current.port = $matches[1]
+            } elseif ($current -and $line -match '^\s*login_name:\s*(.+?)\s*$') {
+              $current.login_name = $matches[1]
+            }
           }
+          if ($current) { $instances += [PSCustomObject]$current }
+
+          if ($instances.Count -eq 0) {
+            Write-Host -ForegroundColor Red "No instances found in $instancesFile"
+            exit 131
+          }
+          Write-Host "Found $($instances.Count) MSSQL instance(s) in $instancesFile"
+
+          $secrets = @{}
+          Get-Content $secretsFile | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { $secrets[$matches[1]] = $matches[2] }
+          }
+
+          $skip = @{}
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            $userKey = "NR_CLI_MSSQL_ADMIN_USER_$idx"
+            $passKey = "NR_CLI_MSSQL_ADMIN_PASSWORD_$idx"
+            if (-not $secrets.ContainsKey($userKey) -or [string]::IsNullOrWhiteSpace($secrets[$userKey]) -or -not $secrets.ContainsKey($passKey) -or [string]::IsNullOrWhiteSpace($secrets[$passKey])) {
+              $skip["$idx"] = "missing $userKey/$passKey in secrets file"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($instances[$i].host)) SKIPPED: missing admin credentials in secrets file"
+              continue
+            }
+            $loginName = $instances[$i].login_name
+            if ($loginName -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
+              $skip["$idx"] = "invalid monitoring username '$loginName' in instances file"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($instances[$i].host)) SKIPPED: invalid monitoring username '$loginName'"
+            }
+          }
+
+          $instances | ConvertTo-Json -AsArray | Set-Content -Path $instancesJsonPath
+          $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -116,33 +188,51 @@ install:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-assert_sql_server_version.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
-          $server = '{{.NR_CLI_MSSQL_SERVER}}'
-          $port = '{{.NR_CLI_MSSQL_PORT}}'
-          $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          if ([string]::IsNullOrEmpty($saPassword)) {
-            Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
-            exit 1
-          }
-          $env:SQLCMDPASSWORD = $saPassword
-          $connArgs = @("-S", "$server,$port", "-U", "sa", "-C")
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
+          $secretsFile = '{{.NR_CLI_MSSQL_SECRETS_FILE}}'
 
-          $query = "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');"
-          $result = & sqlcmd @connArgs -b -h -1 -Q $query 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host -ForegroundColor Red "Failed to connect to SQL Server to check its version:"
-            Write-Host $result
-            exit 1
+          $instances = @(Get-Content $instancesJsonPath | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
+
+          $secrets = @{}
+          Get-Content $secretsFile | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { $secrets[$matches[1]] = $matches[2] }
           }
 
-          $majorVersionLine = ($result | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
-          $majorVersion = if ($majorVersionLine) { [int]$majorVersionLine.Trim() } else { $null }
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            if ($skip.ContainsKey("$idx")) { continue }
+            $inst = $instances[$i]
 
-          if (-not $majorVersion -or $majorVersion -lt 14) {
-            Write-Host -ForegroundColor Red "SQL Server version $majorVersion is not supported. SQL Server 2017 or later (major version 14+) is required."
-            exit 1
+            $env:SQLCMDPASSWORD = $secrets["NR_CLI_MSSQL_ADMIN_PASSWORD_$idx"]
+            $connArgs = @("-S", "$($inst.host),$($inst.port)", "-U", $secrets["NR_CLI_MSSQL_ADMIN_USER_$idx"], "-C")
+
+            $query = "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');"
+            $result = & sqlcmd @connArgs -b -h -1 -Q $query 2>&1
+            $sqlExit = $LASTEXITCODE
+            Remove-Item Env:\SQLCMDPASSWORD -ErrorAction SilentlyContinue
+
+            if ($sqlExit -ne 0) {
+              $skip["$idx"] = "failed to connect / check version - $($result -join ' ')"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($inst.host):$($inst.port)) SKIPPED: failed to connect to check its version"
+              continue
+            }
+
+            $majorVersionLine = ($result | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
+            $majorVersion = if ($majorVersionLine) { [int]$majorVersionLine.Trim() } else { $null }
+
+            if (-not $majorVersion -or $majorVersion -lt 14) {
+              $skip["$idx"] = "unsupported SQL Server version $majorVersion (2017 / major version 14+ required)"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($inst.host):$($inst.port)) SKIPPED: unsupported SQL Server version $majorVersion"
+              continue
+            }
+
+            Write-Host "Instance $idx ($($inst.host):$($inst.port)): SQL Server major version $majorVersion detected - supported."
           }
 
-          Write-Host "SQL Server major version $majorVersion detected - supported."
+          $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -219,24 +309,21 @@ install:
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
     configure_database_user:
-      env:
-        NR_MSSQL_LOGIN_NAME: '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
       cmds:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-configure_database_user.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
-          $server = '{{.NR_CLI_MSSQL_SERVER}}'
-          $port = '{{.NR_CLI_MSSQL_PORT}}'
-          $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
+          $secretsFile = '{{.NR_CLI_MSSQL_SECRETS_FILE}}'
 
-          function Invoke-GrantScript($connArgs, $file) {
-            $result = & sqlcmd @connArgs -b -i $file 2>&1
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host -ForegroundColor Red "SQL script failed:"
-              Write-Host $result
-              exit 1
-            }
-            Write-Host $result
+          $instances = @(Get-Content $instancesJsonPath | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
+
+          $secrets = @{}
+          Get-Content $secretsFile | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { $secrets[$matches[1]] = $matches[2] }
           }
 
           function Protect-TempFile($path) {
@@ -247,55 +334,65 @@ install:
             }
           }
 
-          $loginName = $env:NR_MSSQL_LOGIN_NAME
-          $chars = (48..57) + (65..90) + (97..122)
-          $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            if ($skip.ContainsKey("$idx")) { continue }
+            $inst = $instances[$i]
+            $loginName = $inst.login_name
 
-          $sql = "USE [master];`nGO`nIF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$loginName')`n  CREATE LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nELSE`n  ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nGO`nGRANT VIEW SERVER STATE TO [$loginName];`nGRANT VIEW ANY DEFINITION TO [$loginName];`nGRANT VIEW ANY DATABASE TO [$loginName];`nGO`nDECLARE @name SYSNAME;`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name]`nFROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')`nAND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    EXEC('USE [' + @name + '];`n    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$loginName'')`n    BEGIN`n      CREATE USER [$loginName] FOR LOGIN [$loginName];`n    END;`n    GRANT VIEW DATABASE STATE TO [$loginName];');`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
-          $sql | Set-Content -Path $sqlFile
-          Protect-TempFile $sqlFile
-          $saPassword = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          if ([string]::IsNullOrEmpty($saPassword)) {
-            Write-Host -ForegroundColor Red "SA password is empty when preparing to connect to SQL Server - this should not happen."
-            exit 1
+            $sqlFile = "$env:TEMP\nr-mssql-grant-$idx.sql"
+            $chars = (48..57) + (65..90) + (97..122)
+            $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+
+            $sql = "USE [master];`nGO`nIF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$loginName')`n  CREATE LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nELSE`n  ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';`nGO`nGRANT VIEW SERVER STATE TO [$loginName];`nGRANT VIEW ANY DEFINITION TO [$loginName];`nGRANT VIEW ANY DATABASE TO [$loginName];`nGO`nDECLARE @name SYSNAME;`nDECLARE db_cursor CURSOR READ_ONLY FORWARD_ONLY FOR`nSELECT [name]`nFROM [master].[sys].[databases]`nWHERE [name] NOT IN ('master', 'msdb', 'model', 'rdsadmin', 'distribution')`nAND [state] = 0;`nOPEN db_cursor;`nFETCH NEXT FROM db_cursor INTO @name;`nWHILE @@FETCH_STATUS = 0`nBEGIN`n  BEGIN TRY`n    EXEC('USE [' + @name + '];`n    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = ''$loginName'')`n    BEGIN`n      CREATE USER [$loginName] FOR LOGIN [$loginName];`n    END;`n    GRANT VIEW DATABASE STATE TO [$loginName];');`n  END TRY`n  BEGIN CATCH`n    PRINT 'Error on ' + @name + ': ' + ERROR_MESSAGE();`n  END CATCH`n  FETCH NEXT FROM db_cursor INTO @name;`nEND`nCLOSE db_cursor;`nDEALLOCATE db_cursor;`nGO"
+            $sql | Set-Content -Path $sqlFile
+            Protect-TempFile $sqlFile
+
+            $env:SQLCMDPASSWORD = $secrets["NR_CLI_MSSQL_ADMIN_PASSWORD_$idx"]
+            $result = & sqlcmd -S "$($inst.host),$($inst.port)" -U $secrets["NR_CLI_MSSQL_ADMIN_USER_$idx"] -C -b -i $sqlFile 2>&1
+            $sqlExit = $LASTEXITCODE
+            Remove-Item Env:\SQLCMDPASSWORD -ErrorAction SilentlyContinue
+            Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+
+            if ($sqlExit -ne 0) {
+              $skip["$idx"] = "monitoring login setup failed - $($result -join ' ')"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($inst.host):$($inst.port)) SKIPPED: monitoring login setup failed"
+              continue
+            }
+
+            Write-Host "Instance $idx ($($inst.host):$($inst.port)): SQL Server monitoring identity configured successfully: $loginName"
           }
-          $env:SQLCMDPASSWORD = $saPassword
-          Invoke-GrantScript @("-S", "$server,$port", "-U", "sa", "-C") $sqlFile
-          Write-Host "SQL Server monitoring identity configured successfully."
-          Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+
+          $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
     create_collector_config:
-      env:
-        NR_MSSQL_LOGIN_NAME: '{{.NR_CLI_MSSQL_LOGIN_NAME}}'
       cmds:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-create_collector_config.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
           $preset = "{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
-          $server = '{{.NR_CLI_MSSQL_SERVER}}'
-          $port = '{{.NR_CLI_MSSQL_PORT}}'
           $region = "{{.NEW_RELIC_REGION}}"
           $licenseKey = "{{.NEW_RELIC_LICENSE_KEY}}"
           $configDir = "C:\Program Files\nrdot-collector"
           $configPath = "$configDir\mssql-config.yaml"
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
+          $secretsFile = '{{.NR_CLI_MSSQL_SECRETS_FILE}}'
 
           New-Item -Path $configDir -ItemType Directory -Force | Out-Null
 
-          $interval = if ($preset -eq "2") { "30s" } else { "15s" }
+          $instances = @(Get-Content $instancesJsonPath | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
 
-          $loginName = $env:NR_MSSQL_LOGIN_NAME
-          $chars = (48..57) + (65..90) + (97..122)
-          $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
-          $env:SQLCMDPASSWORD = '{{.NR_CLI_MSSQL_SA_PASSWORD}}'
-          $alterResult = & sqlcmd -S "$server,$port" -U sa -C -b -Q "ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';" 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host -ForegroundColor Red "Failed to set the monitoring login's password:"
-            Write-Host $alterResult
-            exit 1
+          $secrets = @{}
+          Get-Content $secretsFile | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { $secrets[$matches[1]] = $matches[2] }
           }
-          $receiverFields = "    collection_interval: $interval`n    username: $loginName`n    password: $NrPassword`n    server: $server`n    port: $port"
+
+          $interval = if ($preset -eq "2") { "30s" } else { "15s" }
 
           switch ($region) {
             "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net" }
@@ -304,64 +401,14 @@ install:
             default   { $otlpEndpoint = "https://otlp.nr-data.net" }
           }
 
+          # Shared receiver settings differ by preset (Full-feature carries a longer
+          # metrics list than Standard) but are identical across instances within a
+          # preset. Built once here as plain strings and echoed per instance below
+          # instead of relying on the collector's YAML loader to support merge-key
+          # aliases via a fragile split - username/password/server/port are the only
+          # fields that vary per instance.
           if ($preset -eq "2") {
-            $template = @'
-          extensions:
-            health_check:
-
-          receivers:
-            otlp:
-              protocols:
-                grpc:
-                http:
-
-            host_metrics:
-              collection_interval: 30s
-              scrapers:
-                cpu:
-                  metrics:
-                    system.cpu.time:
-                      enabled: false
-                    system.cpu.utilization:
-                      enabled: true
-                load:
-                memory:
-                  metrics:
-                    system.memory.utilization:
-                      enabled: true
-                paging:
-                  metrics:
-                    system.paging.utilization:
-                      enabled: false
-                    system.paging.faults:
-                      enabled: false
-                disk:
-                  metrics:
-                    system.disk.merged:
-                      enabled: false
-                    system.disk.pending_operations:
-                      enabled: false
-                    system.disk.weighted_io_time:
-                      enabled: false
-                network:
-                  metrics:
-                    system.network.connections:
-                      enabled: false
-                processes:
-                process:
-                  mute_process_name_error: true
-                  mute_process_exe_error: true
-                  mute_process_user_error: true
-                  mute_process_io_error: true
-                  metrics:
-                    process.cpu.utilization:
-                      enabled: true
-                    process.memory.utilization:
-                      enabled: true
-
-            nrsqlserver:
-          __RECEIVER_FIELDS__
-              metrics:
+            $metricsList = @'
                 sqlserver.database.count:
                   enabled: true
                 sqlserver.database.file.size:
@@ -504,7 +551,37 @@ install:
                   enabled: true
                 sqlserver.table.count:
                   enabled: true
+          '@
+          } else {
+            $metricsList = @'
+                sqlserver.database.count:
+                  enabled: true
+                sqlserver.database.io:
+                  enabled: true
+                sqlserver.database.latency:
+                  enabled: true
+                sqlserver.database.operations:
+                  enabled: true
+                sqlserver.database.tempdb.space:
+                  enabled: true
+                sqlserver.database.tempdb.version_store.size:
+                  enabled: true
+                sqlserver.deadlock.rate:
+                  enabled: true
+                sqlserver.os.wait.duration:
+                  enabled: true
+                sqlserver.processes.blocked:
+                  enabled: true
+                sqlserver.memory.grants.pending.count:
+                  enabled: true
+                sqlserver.database.file.size:
+                  enabled: true
+                sqlserver.memory.area:
+                  enabled: true
+          '@
+          }
 
+          $receiverTail = @'
               events:
                 db.server.query_sample:
                   enabled: true
@@ -513,8 +590,8 @@ install:
 
               top_query_collection:
                 lookback_time: 60s
-                max_query_sample_count: 500
-                top_query_count: 200
+                max_query_sample_count: 1000
+                top_query_count: 250
                 collection_interval: 60s
 
               collect_full_query_text: true
@@ -523,7 +600,77 @@ install:
 
               query_sample_collection:
                 max_rows_per_query: 100
+          '@
 
+          $survivors = @()
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            if (-not $skip.ContainsKey("$($i + 1)")) { $survivors += ($i + 1) }
+          }
+
+          $receiversYaml = New-Object System.Text.StringBuilder
+          $isFirst = $true
+          foreach ($idx in $survivors) {
+            $inst = $instances[$idx - 1]
+            $loginName = $inst.login_name
+
+            $chars = (48..57) + (65..90) + (97..122)
+            $NrPassword = -join ($chars | Get-Random -Count 24 | ForEach-Object {[char]$_})
+            $env:SQLCMDPASSWORD = $secrets["NR_CLI_MSSQL_ADMIN_PASSWORD_$idx"]
+            $alterResult = & sqlcmd -S "$($inst.host),$($inst.port)" -U $secrets["NR_CLI_MSSQL_ADMIN_USER_$idx"] -C -b -Q "ALTER LOGIN [$loginName] WITH PASSWORD = '$NrPassword';" 2>&1
+            $alterExit = $LASTEXITCODE
+            Remove-Item Env:\SQLCMDPASSWORD -ErrorAction SilentlyContinue
+
+            if ($alterExit -ne 0) {
+              $skip["$idx"] = "failed to set the monitoring login's password - $($alterResult -join ' ')"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($inst.host):$($inst.port)) SKIPPED: failed to set the monitoring login's password"
+              continue
+            }
+
+            if ($survivors.Count -eq 1) {
+              [void]$receiversYaml.AppendLine("  nrsqlserver/instance$idx" + ":")
+              [void]$receiversYaml.AppendLine("    collection_interval: $interval")
+              [void]$receiversYaml.AppendLine("    username: $loginName")
+              [void]$receiversYaml.AppendLine("    password: $NrPassword")
+              [void]$receiversYaml.AppendLine("    server: $($inst.host)")
+              [void]$receiversYaml.AppendLine("    port: $($inst.port)")
+              [void]$receiversYaml.AppendLine("    metrics:")
+              [void]$receiversYaml.AppendLine($metricsList)
+              [void]$receiversYaml.AppendLine("")
+              [void]$receiversYaml.AppendLine($receiverTail)
+            } elseif ($isFirst) {
+              [void]$receiversYaml.AppendLine("  nrsqlserver/instance$idx" + ": &nrsqlserver-common")
+              [void]$receiversYaml.AppendLine("    collection_interval: $interval")
+              [void]$receiversYaml.AppendLine("    username: $loginName")
+              [void]$receiversYaml.AppendLine("    password: $NrPassword")
+              [void]$receiversYaml.AppendLine("    server: $($inst.host)")
+              [void]$receiversYaml.AppendLine("    port: $($inst.port)")
+              [void]$receiversYaml.AppendLine("    metrics:")
+              [void]$receiversYaml.AppendLine($metricsList)
+              [void]$receiversYaml.AppendLine("")
+              [void]$receiversYaml.AppendLine($receiverTail)
+              $isFirst = $false
+            } else {
+              [void]$receiversYaml.AppendLine("  nrsqlserver/instance$idx" + ":")
+              [void]$receiversYaml.AppendLine("    <<: *nrsqlserver-common")
+              [void]$receiversYaml.AppendLine("    username: $loginName")
+              [void]$receiversYaml.AppendLine("    password: $NrPassword")
+              [void]$receiversYaml.AppendLine("    server: $($inst.host)")
+              [void]$receiversYaml.AppendLine("    port: $($inst.port)")
+            }
+          }
+
+          $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
+
+          $monitoredCount = 0
+          foreach ($idx in $survivors) { if (-not $skip.ContainsKey("$idx")) { $monitoredCount++ } }
+          if ($monitoredCount -eq 0) {
+            Write-Host -ForegroundColor Red "No MSSQL instance passed its checks - nothing to monitor. Aborting install."
+            exit 1
+          }
+
+          $processorsAndTail = New-Object System.Text.StringBuilder
+          if ($preset -eq "2") {
+            [void]$processorsAndTail.AppendLine(@'
           processors:
             metrics_transform:
               transforms:
@@ -636,26 +783,61 @@ install:
               detectors: ["env"]
               timeout: 2s
               override: true
+          '@)
+          } else {
+            [void]$processorsAndTail.AppendLine(@'
+          processors:
+            memory_limiter:
+              check_interval: ${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
+              limit_mib:       ${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
+              spike_limit_mib: ${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
 
-          exporters:
-            otlphttp:
-              endpoint: __OTLP_ENDPOINT__
-              headers:
-                api-key: __LICENSE_KEY__
-              tls:
-                insecure: false
-              compression: gzip
+            batch:
+          '@)
+          }
 
-          service:
-            telemetry:
-              metrics:
-                level: none
+          # Per-instance server.address/server.port tagging - the original single-
+          # instance recipe had no such processor (nothing else to disambiguate), but
+          # with multiple nrsqlserver receivers now sharing config, each needs its own
+          # tag or every instance's data reads as coming from the first one.
+          foreach ($idx in $survivors) {
+            if ($skip.ContainsKey("$idx")) { continue }
+            $inst = $instances[$idx - 1]
+            [void]$processorsAndTail.AppendLine("")
+            [void]$processorsAndTail.AppendLine("            resource/sqlserver/instance$idx" + ":")
+            [void]$processorsAndTail.AppendLine("              attributes:")
+            [void]$processorsAndTail.AppendLine("                - key: server.address")
+            [void]$processorsAndTail.AppendLine("                  value: `"$($inst.host)`"")
+            [void]$processorsAndTail.AppendLine("                  action: upsert")
+            [void]$processorsAndTail.AppendLine("                - key: server.port")
+            [void]$processorsAndTail.AppendLine("                  value: $($inst.port)")
+            [void]$processorsAndTail.AppendLine("                  action: upsert")
+          }
 
-            extensions: [health_check]
-
-            pipelines:
+          [void]$processorsAndTail.AppendLine("")
+          [void]$processorsAndTail.AppendLine("exporters:")
+          [void]$processorsAndTail.AppendLine("  otlphttp:")
+          [void]$processorsAndTail.AppendLine("    endpoint: $otlpEndpoint")
+          [void]$processorsAndTail.AppendLine("    headers:")
+          [void]$processorsAndTail.AppendLine("      api-key: $licenseKey")
+          [void]$processorsAndTail.AppendLine("    tls:")
+          [void]$processorsAndTail.AppendLine("      insecure: false")
+          [void]$processorsAndTail.AppendLine("    compression: gzip")
+          [void]$processorsAndTail.AppendLine("")
+          [void]$processorsAndTail.AppendLine("service:")
+          [void]$processorsAndTail.AppendLine("  telemetry:")
+          [void]$processorsAndTail.AppendLine("    metrics:")
+          [void]$processorsAndTail.AppendLine("      level: none")
+          [void]$processorsAndTail.AppendLine("")
+          if ($preset -eq "2") {
+            [void]$processorsAndTail.AppendLine("  extensions: [health_check]")
+            [void]$processorsAndTail.AppendLine("")
+          }
+          [void]$processorsAndTail.AppendLine("  pipelines:")
+          if ($preset -eq "2") {
+            [void]$processorsAndTail.AppendLine(@'
               metrics/host:
-                receivers: [host_metrics, nrsqlserver]
+                receivers: [host_metrics]
                 processors:
                   - metrics_transform
                   - filter/exclude_cpu_utilization
@@ -674,117 +856,54 @@ install:
                   - cumulativetodelta
                   - batch
                 exporters: [otlphttp]
-
-              logs/host:
-                receivers: [nrsqlserver]
-                processors:
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - batch
-                exporters: [otlphttp]
-
+          '@)
+          }
+          foreach ($idx in $survivors) {
+            if ($skip.ContainsKey("$idx")) { continue }
+            if ($preset -eq "2") {
+              [void]$processorsAndTail.AppendLine("    metrics/instance$idx" + ":")
+              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
+              [void]$processorsAndTail.AppendLine("      processors:")
+              [void]$processorsAndTail.AppendLine("        - resource/sqlserver/instance$idx")
+              [void]$processorsAndTail.AppendLine("        - resource_detection")
+              [void]$processorsAndTail.AppendLine("        - resource_detection/cloud")
+              [void]$processorsAndTail.AppendLine("        - resource_detection/env")
+              [void]$processorsAndTail.AppendLine("        - cumulativetodelta")
+              [void]$processorsAndTail.AppendLine("        - batch")
+              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
+              [void]$processorsAndTail.AppendLine("    logs/instance$idx" + ":")
+              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
+              [void]$processorsAndTail.AppendLine("      processors: [resource/sqlserver/instance$idx, resource_detection, resource_detection/cloud, resource_detection/env, batch]")
+              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
+            } else {
+              [void]$processorsAndTail.AppendLine("    metrics/instance$idx" + ":")
+              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
+              [void]$processorsAndTail.AppendLine("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]")
+              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
+              [void]$processorsAndTail.AppendLine("    logs/instance$idx" + ":")
+              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
+              [void]$processorsAndTail.AppendLine("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]")
+              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
+            }
+          }
+          if ($preset -eq "2") {
+            [void]$processorsAndTail.AppendLine(@'
               traces:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
                 exporters: [otlphttp]
-
               metrics:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
                 exporters: [otlphttp]
-
               logs:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
                 exporters: [otlphttp]
-          '@
-          } else {
-            $template = @'
-          receivers:
-            nrsqlserver:
-          __RECEIVER_FIELDS__
-              metrics:
-                sqlserver.database.count:
-                  enabled: true
-                sqlserver.database.io:
-                  enabled: true
-                sqlserver.database.latency:
-                  enabled: true
-                sqlserver.database.operations:
-                  enabled: true
-                sqlserver.database.tempdb.space:
-                  enabled: true
-                sqlserver.database.tempdb.version_store.size:
-                  enabled: true
-                sqlserver.deadlock.rate:
-                  enabled: true
-                sqlserver.os.wait.duration:
-                  enabled: true
-                sqlserver.processes.blocked:
-                  enabled: true
-                sqlserver.memory.grants.pending.count:
-                  enabled: true
-                sqlserver.database.file.size:
-                  enabled: true
-                sqlserver.memory.area:
-                  enabled: true
-
-              events:
-                db.server.query_sample:
-                  enabled: true
-                db.server.top_query:
-                  enabled: true
-
-              top_query_collection:
-                lookback_time: 60s
-                max_query_sample_count: 1000
-                top_query_count: 250
-                collection_interval: 60s
-
-              collect_full_query_text: true
-              allowed_comment_keys:
-                - nr_service_guid
-
-              query_sample_collection:
-                max_rows_per_query: 100
-
-          processors:
-            memory_limiter:
-              check_interval: ${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
-              limit_mib:       ${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
-              spike_limit_mib: ${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
-
-            batch:
-
-          exporters:
-            otlphttp:
-              endpoint: __OTLP_ENDPOINT__
-              headers:
-                api-key: __LICENSE_KEY__
-              tls:
-                insecure: false
-              compression: gzip
-
-          service:
-            telemetry:
-              metrics:
-                level: none
-
-            pipelines:
-              metrics:
-                receivers: [nrsqlserver]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
-
-              logs:
-                receivers: [nrsqlserver]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
-          '@
+          '@)
           }
 
-          $configText = $template.Replace('__RECEIVER_FIELDS__', $receiverFields).Replace('__OTLP_ENDPOINT__', $otlpEndpoint).Replace('__LICENSE_KEY__', $licenseKey)
+          $configText = "receivers:`n" + $receiversYaml.ToString() + "`n" + $processorsAndTail.ToString()
           $configText | Set-Content -Path $configPath -Encoding utf8
 
           $grants = @("SYSTEM:(F)", "BUILTIN\Administrators:(F)")
@@ -795,7 +914,7 @@ install:
             exit 1
           }
 
-          Write-Host "MSSQL OTel config written to $configPath"
+          Write-Host "MSSQL OTel config written to $configPath ($monitoredCount instance(s))"
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -847,18 +966,43 @@ install:
           $maxRetries = 30
           $tries = 0
           Write-Host "Waiting for NRDOT Collector to start..."
+          $started = $false
           while ($tries -lt $maxRetries) {
             $tries++
             $service = Get-Service -Name "nrdot-collector" -ErrorAction SilentlyContinue
             if ($service -and $service.Status -eq "Running") {
               Write-Host "NRDOT Collector is running."
-              exit 0
+              $started = $true
+              break
             }
             Start-Sleep -Seconds 2
           }
-          Write-Host -ForegroundColor Red "NRDOT Collector did not start in time. Install log:"
-          Get-Content "$env:TEMP\nrdot_install.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
-          exit 31
+          if (-not $started) {
+            Write-Host -ForegroundColor Red "NRDOT Collector did not start in time. Install log:"
+            Get-Content "$env:TEMP\nrdot_install.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
+            exit 31
+          }
+
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
+          $instances = @(Get-Content $instancesJsonPath | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
+
+          Write-Host ""
+          Write-Host "==> MSSQL instance summary:"
+          Write-Host ""
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            $inst = $instances[$i]
+            if ($skip.ContainsKey("$idx")) {
+              Write-Host "  [SKIP] $idx`: $($inst.host):$($inst.port) - $($skip["$idx"])"
+            } else {
+              Write-Host "  [OK]   $idx`: $($inst.host):$($inst.port)"
+            }
+          }
+
+          Remove-Item $instancesJsonPath, $skipJsonPath -ErrorAction SilentlyContinue
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -866,7 +1010,7 @@ install:
       cmds:
         - task: write_recipe_metadata
         - task: assert_pre_req
-        - task: assert_auth_inputs
+        - task: parse_instances
         - task: assert_sql_server_version
         - task: install_nrdot
         - task: configure_database_user
