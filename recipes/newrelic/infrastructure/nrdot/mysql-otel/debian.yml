@@ -545,6 +545,17 @@ install:
               continue
             fi
 
+            # TEMPORARY DIAGNOSTIC: verify the monitoring user's own credentials work over
+            # an EXPLICIT TCP connection (matching exactly how the collector's receiver
+            # connects - transport: tcp), immediately after setting them, using the same
+            # host/port the receiver's endpoint will use. This isolates whether a mismatch
+            # is server-side (account/password) or specific to the collector's own Go
+            # driver. Remove once the mysql.% data-delivery issue is root-caused.
+            VERIFY_RESULT=$(mysql -h "${HOST}" -P "${PORT}" --protocol=TCP -u "${LOGIN_NAME}" --password="${NR_PASSWORD}" -e "SELECT 1;" 2>&1 < /dev/null)
+            VERIFY_STATUS=$?
+            echo "DIAG: monitoring-user TCP connection test for instance ${i} (status=${VERIFY_STATUS}):" >&2
+            echo "$VERIFY_RESULT" | sed 's/^/DIAG: | /' >&2
+
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               {
                 echo "  nrmysql/instance${i}:"
