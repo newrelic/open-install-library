@@ -4,7 +4,7 @@
 
 name: nrdot-collector-postgresql-rds
 displayName: NRDOT PostgreSQL RDS (RHEL/CentOS)
-description: New Relic install recipe for PostgreSQL monitoring via NRDOT Collector on RHEL/CentOS hosts connecting to AWS RDS/Aurora PostgreSQL instances
+description: New Relic install recipe for PostgreSQL monitoring via NRDOT Collector on RHEL/CentOS hosts connecting to one or more AWS RDS/Aurora PostgreSQL instances
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -34,31 +34,54 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from your AWS RDS/Aurora PostgreSQL instance, we need to
-    create/authorize a monitoring role. This requires the RDS master user
-    credentials for your instance, and network connectivity from this host to
-    the RDS endpoint (inbound access on the PostgreSQL port in the RDS security
-    group).
+    To capture data from one or more AWS RDS/Aurora PostgreSQL instances, we need to
+    create/authorize a monitoring role on each instance, using each instance's RDS
+    master user credentials.
+
+    You will be asked for two files:
+
+      1. An instances file (YAML) listing every RDS PostgreSQL instance to monitor, in
+         the order you want them numbered (instance 1, 2, 3, ...). `databases` is an
+         inline list - at least one database is required per instance:
+
+           instances:
+             - host: mydb1.xxxx.us-east-1.rds.amazonaws.com
+               port: 5432
+               login_name: newrelic
+               databases: [app1, app2]
+             - host: mydb2.xxxx.us-east-1.rds.amazonaws.com
+               port: 5432
+               login_name: newrelic
+               databases: [app3]
+
+      2. A secrets file (KEY=VALUE per line) supplying the RDS master credentials for
+         each instance above, indexed to match the instances file's order (1-based):
+
+           NR_CLI_POSTGRES_ADMIN_USER_1=postgres
+           NR_CLI_POSTGRES_ADMIN_PASSWORD_1=<master password for instance 1>
+           NR_CLI_POSTGRES_ADMIN_USER_2=postgres
+           NR_CLI_POSTGRES_ADMIN_PASSWORD_2=<master password for instance 2>
+
+         NR_CLI_POSTGRES_ADMIN_USER_<i> / NR_CLI_POSTGRES_ADMIN_PASSWORD_<i> are required
+         for every instance.
+
+    Any instance that fails its version check, has no databases listed, or fails user
+    setup is skipped (with a reason) rather than aborting the whole install - the rest
+    are still configured.
+
+    This also requires network connectivity from this host to every RDS endpoint
+    listed (inbound access on the PostgreSQL port in each instance's RDS security
+    group), and that 'postgres' has a password set with pg_hba.conf permitting
+    password-based host authentication (md5/scram-sha-256) for TCP connections.
 
 inputVars:
   - name: NR_CLI_POSTGRES_CONFIG_PRESET
     prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
     default: "1"
-  - name: NR_CLI_POSTGRES_SERVER
-    prompt: "RDS PostgreSQL/Aurora endpoint (e.g. mydb.xxxxxxxxxx.us-east-1.rds.amazonaws.com): "
-  - name: NR_CLI_POSTGRES_PORT
-    prompt: "PostgreSQL port: "
-    default: "5432"
-  - name: NR_CLI_POSTGRES_MASTER_USER
-    prompt: "RDS master username: "
-  - name: NR_CLI_POSTGRES_MASTER_PASSWORD
-    prompt: "RDS master user password (used once to create the monitoring role): "
-    secret: true
-  - name: NR_CLI_POSTGRES_LOGIN_NAME
-    prompt: "Monitoring username: "
-    default: "newrelic"
-  - name: NR_CLI_POSTGRES_DATABASES
-    prompt: "Databases to monitor (comma-separated, at least one required): "
+  - name: NR_CLI_POSTGRES_INSTANCES_FILE
+    prompt: "Path to the PostgreSQL RDS instances YAML file: "
+  - name: NR_CLI_POSTGRES_SECRETS_FILE
+    prompt: "Path to the PostgreSQL RDS secrets file (KEY=VALUE per instance): "
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'postgresql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -101,56 +124,131 @@ install:
             echo "systemd is required for the nrdot-collector service configuration." >&2
             exit 131
           fi
+
+    parse_instances:
+      cmds:
         - |
-          if [ -z "{{.NR_CLI_POSTGRES_DATABASES}}" ]; then
-            echo "At least one database name is required (NR_CLI_POSTGRES_DATABASES)." >&2
+          INSTANCES_FILE="{{.NR_CLI_POSTGRES_INSTANCES_FILE}}"
+          SECRETS_FILE="{{.NR_CLI_POSTGRES_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-postgres-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-postgres-rds-skip.tmp"
+
+          rm -f "$INSTANCES_TSV" "$SKIP_FILE"
+
+          if [ ! -f "$INSTANCES_FILE" ]; then
+            echo "Instances file not found: $INSTANCES_FILE" >&2
             exit 131
           fi
+          if [ ! -f "$SECRETS_FILE" ]; then
+            echo "Secrets file not found: $SECRETS_FILE" >&2
+            exit 131
+          fi
+
+          SECRETS_PERMS=$(stat -c '%a' "$SECRETS_FILE" 2>/dev/null || stat -f '%Lp' "$SECRETS_FILE" 2>/dev/null)
+          if [ -n "$SECRETS_PERMS" ]; then
+            GROUP_OTHER_BITS=$(printf '%s' "$SECRETS_PERMS" | tail -c 2)
+            if [ "$GROUP_OTHER_BITS" != "00" ]; then
+              echo "WARNING: $SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS)." >&2
+              echo "         Consider running: chmod 600 $SECRETS_FILE" >&2
+            fi
+          fi
+
+          # shellcheck disable=SC1090
+          . "$SECRETS_FILE"
+
+          # Parses the fixed 4-key-per-item shape documented in preInstall.info
+          # (host, port, login_name, databases as an inline [a, b] list) - not a
+          # general-purpose YAML parser.
+          awk '
+            /^[[:space:]]*-[[:space:]]*host:/ {
+              if (have) { print host "\t" port "\t" login_name "\t" databases }
+              host=$0; sub(/^[[:space:]]*-[[:space:]]*host:[[:space:]]*/, "", host)
+              port=""; login_name=""; databases=""; have=1; next
+            }
+            /^[[:space:]]*port:/ { port=$0; sub(/^[[:space:]]*port:[[:space:]]*/, "", port); next }
+            /^[[:space:]]*login_name:/ { login_name=$0; sub(/^[[:space:]]*login_name:[[:space:]]*/, "", login_name); next }
+            /^[[:space:]]*databases:/ {
+              databases=$0
+              sub(/^[[:space:]]*databases:[[:space:]]*\[/, "", databases)
+              sub(/\][[:space:]]*$/, "", databases)
+              next
+            }
+            END { if (have) { print host "\t" port "\t" login_name "\t" databases } }
+          ' "$INSTANCES_FILE" > "$INSTANCES_TSV"
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          if [ "$INSTANCE_COUNT" -eq 0 ]; then
+            echo "No instances found in $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          echo "Found $INSTANCE_COUNT PostgreSQL RDS instance(s) in $INSTANCES_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_LOGIN_NAME ENTRY_DATABASES; do
+            i=$((i + 1))
+            eval "ADMIN_USER_VAL=\"\${NR_CLI_POSTGRES_ADMIN_USER_${i}:-}\""
+            eval "ADMIN_PASSWORD_VAL=\"\${NR_CLI_POSTGRES_ADMIN_PASSWORD_${i}:-}\""
+            if [ -z "$ADMIN_USER_VAL" ] || [ -z "$ADMIN_PASSWORD_VAL" ]; then
+              echo "${i}: missing NR_CLI_POSTGRES_ADMIN_USER_${i}/NR_CLI_POSTGRES_ADMIN_PASSWORD_${i} in secrets file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: missing admin credentials in secrets file" >&2
+              continue
+            fi
+            if [ -z "$(echo "$ENTRY_DATABASES" | tr -d '[:space:],')" ]; then
+              echo "${i}: no databases listed in instances file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: no databases listed in instances file" >&2
+            fi
+          done < "$INSTANCES_TSV"
 
     assert_postgres_version:
       cmds:
         - |
-          SERVER="{{.NR_CLI_POSTGRES_SERVER}}"
-          PORT="{{.NR_CLI_POSTGRES_PORT}}"
-          MASTER_USER="{{.NR_CLI_POSTGRES_MASTER_USER}}"
-          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
-          {{.NR_CLI_POSTGRES_MASTER_PASSWORD}}
-          NR_MASTER_PW_EOF
-          )
-          export PGPASSWORD="$MASTER_PASSWORD"
+          SECRETS_FILE="{{.NR_CLI_POSTGRES_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-postgres-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-postgres-rds-skip.tmp"
 
-          RESULT=$(psql -h "$SERVER" -p "$PORT" -U "$MASTER_USER" -d postgres -tA -c "SELECT current_setting('server_version_num');" 2>&1)
-          if [ $? -ne 0 ]; then
-            echo "Failed to connect to PostgreSQL to check its version:" >&2
-            echo "$RESULT" >&2
-            if echo "$RESULT" | grep -qi "password authentication failed\|no pg_hba.conf entry"; then
-              echo "" >&2
-              echo "Verify 'postgres' has a password set and pg_hba.conf permits password-based" >&2
-              echo "host authentication (md5/scram-sha-256) for TCP connections - see the note" >&2
-              echo "in this recipe's pre-install info." >&2
+          # shellcheck disable=SC1090
+          . "$SECRETS_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
             fi
-            exit 1
-          fi
 
-          VERSION_NUM=$(echo "$RESULT" | tr -d '[:space:]')
-          if [ -z "$VERSION_NUM" ] || [ "$VERSION_NUM" -lt 140000 ]; then
-            echo "PostgreSQL version ${VERSION_NUM:-unknown} is not supported. PostgreSQL 14 or later is required." >&2
-            echo "See: https://docs.newrelic.com/docs/opentelemetry/database/postgresql/compatibility/#rdsaurora" >&2
-            exit 1
-          fi
+            eval "ADMIN_USER=\"\${NR_CLI_POSTGRES_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_POSTGRES_ADMIN_PASSWORD_${i}}\""
+            export PGPASSWORD="$ADMIN_PASSWORD"
 
-          echo "PostgreSQL version ${VERSION_NUM} detected - supported."
+            RESULT=$(psql -h "$HOST" -p "$PORT" -U "$ADMIN_USER" -d postgres -tA -c "SELECT current_setting('server_version_num');" 2>&1)
+            VERSION_STATUS=$?
 
-          PRELOAD=$(psql -h "$SERVER" -p "$PORT" -U "$MASTER_USER" -d postgres -tA -c "SHOW shared_preload_libraries;" 2>&1)
-          if ! echo "$PRELOAD" | grep -qi "pg_stat_statements"; then
-            echo "pg_stat_statements is not loaded on this PostgreSQL server (shared_preload_libraries=${PRELOAD})." >&2
-            echo "Add pg_stat_statements to shared_preload_libraries in the RDS/Aurora parameter" >&2
-            echo "group (apply_method: pending-reboot) and reboot the instance, then re-run this. See:" >&2
-            echo "https://docs.newrelic.com/docs/opentelemetry/database/postgresql/compatibility/#rdsaurora" >&2
-            exit 1
-          fi
+            if [ $VERSION_STATUS -ne 0 ]; then
+              unset PGPASSWORD
+              echo "${i}: failed to connect / check version - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: failed to connect to check its version" >&2
+              continue
+            fi
 
-          echo "pg_stat_statements is loaded."
+            VERSION_NUM=$(echo "$RESULT" | tr -d '[:space:]')
+            if [ -z "$VERSION_NUM" ] || [ "$VERSION_NUM" -lt 140000 ]; then
+              unset PGPASSWORD
+              echo "${i}: unsupported PostgreSQL version ${VERSION_NUM:-unknown} (14 or later required)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: unsupported PostgreSQL version ${VERSION_NUM:-unknown}" >&2
+              continue
+            fi
+
+            PRELOAD=$(psql -h "$HOST" -p "$PORT" -U "$ADMIN_USER" -d postgres -tA -c "SHOW shared_preload_libraries;" 2>&1)
+            unset PGPASSWORD
+
+            if ! echo "$PRELOAD" | grep -qi "pg_stat_statements"; then
+              echo "${i}: pg_stat_statements is not loaded (shared_preload_libraries=${PRELOAD})" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: pg_stat_statements is not loaded" >&2
+              continue
+            fi
+
+            echo "Instance ${i} (${HOST}): PostgreSQL version ${VERSION_NUM} detected - supported, pg_stat_statements loaded."
+          done < "$INSTANCES_TSV"
 
     install_nrdot:
       cmds:
@@ -209,27 +307,34 @@ install:
     configure_database_user:
       cmds:
         - |
-          LOGIN_NAME="{{.NR_CLI_POSTGRES_LOGIN_NAME}}"
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
-          SERVER="{{.NR_CLI_POSTGRES_SERVER}}"
-          PORT="{{.NR_CLI_POSTGRES_PORT}}"
-          DATABASES="{{.NR_CLI_POSTGRES_DATABASES}}"
-          MASTER_USER="{{.NR_CLI_POSTGRES_MASTER_USER}}"
-          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
-          {{.NR_CLI_POSTGRES_MASTER_PASSWORD}}
-          NR_MASTER_PW_EOF
-          )
-          export PGPASSWORD="$MASTER_PASSWORD"
+          SECRETS_FILE="{{.NR_CLI_POSTGRES_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-postgres-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-postgres-rds-skip.tmp"
 
-          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+          # shellcheck disable=SC1090
+          . "$SECRETS_FILE"
 
-          SQL_FILE=$(mktemp /tmp/nr-postgres-grant.sql.XXXXXX)
-          trap 'rm -f "$SQL_FILE"' EXIT
-          cat > "$SQL_FILE" << EOF
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+              echo "${i}: invalid monitoring username '${LOGIN_NAME}' in instances file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: invalid monitoring username '${LOGIN_NAME}'" >&2
+              continue
+            fi
+
+            eval "ADMIN_USER=\"\${NR_CLI_POSTGRES_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_POSTGRES_ADMIN_PASSWORD_${i}}\""
+            export PGPASSWORD="$ADMIN_PASSWORD"
+
+            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+            SQL_FILE=$(mktemp "/tmp/nr-postgres-grant-${i}.sql.XXXXXX")
+            cat > "$SQL_FILE" << EOF
           DO \$\$
           BEGIN
             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${LOGIN_NAME}') THEN
@@ -242,17 +347,19 @@ install:
           GRANT pg_monitor TO ${LOGIN_NAME};
           EOF
 
-          RESULT=$(psql -h "$SERVER" -p "$PORT" -U "$MASTER_USER" -d postgres -v ON_ERROR_STOP=1 -f "$SQL_FILE" 2>&1)
-          if [ $? -ne 0 ]; then
-            echo "Failed to create/authorize the monitoring role:" >&2
-            echo "$RESULT" >&2
-            exit 1
-          fi
-          echo "$RESULT"
+            RESULT=$(psql -h "$HOST" -p "$PORT" -U "$ADMIN_USER" -d postgres -v ON_ERROR_STOP=1 -f "$SQL_FILE" 2>&1)
+            ROLE_STATUS=$?
+            rm -f "$SQL_FILE"
 
-          PERDB_SQL_FILE=$(mktemp /tmp/nr-postgres-perdb.sql.XXXXXX)
-          trap 'rm -f "$SQL_FILE" "$PERDB_SQL_FILE"' EXIT
-          cat > "$PERDB_SQL_FILE" << EOF
+            if [ $ROLE_STATUS -ne 0 ]; then
+              unset PGPASSWORD
+              echo "${i}: failed to create/authorize the monitoring role - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: failed to create/authorize the monitoring role" >&2
+              continue
+            fi
+
+            PERDB_SQL_FILE=$(mktemp "/tmp/nr-postgres-perdb-${i}.sql.XXXXXX")
+            cat > "$PERDB_SQL_FILE" << EOF
           CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
           CREATE SCHEMA IF NOT EXISTS otel;
           GRANT USAGE ON SCHEMA otel TO ${LOGIN_NAME};
@@ -260,81 +367,51 @@ install:
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${LOGIN_NAME};
           EOF
 
-          OLD_IFS="$IFS"
-          IFS=','
-          set -- $DATABASES
-          IFS="$OLD_IFS"
-          # Always configure the default 'postgres' maintenance database too,
-          # in addition to whatever the user listed above - confirmed via live
-          # testing that the receiver's top_query feature connects there for
-          # some of its cluster-wide accounting independent of the databases
-          # list, and fails with "relation pg_stat_statements does not exist"
-          # if the extension was never created there. Harmless/idempotent if
-          # the user already included "postgres" themselves.
-          set -- postgres "$@"
-          for db in "$@"; do
-            db_trimmed=$(echo "$db" | xargs)
-            [ -z "$db_trimmed" ] && continue
-            DB_RESULT=$(psql -h "$SERVER" -p "$PORT" -U "$MASTER_USER" -d "$db_trimmed" -v ON_ERROR_STOP=1 -f "$PERDB_SQL_FILE" 2>&1)
-            if [ $? -ne 0 ]; then
-              echo "Failed to configure database '${db_trimmed}':" >&2
-              echo "$DB_RESULT" >&2
-              exit 1
-            fi
-            echo "$DB_RESULT"
-          done
+            OLD_IFS="$IFS"
+            IFS=','
+            set -- $DATABASES
+            IFS="$OLD_IFS"
+            # Always configure the default 'postgres' maintenance database too - see
+            # the note in the single-instance recipe this was ported from: the
+            # receiver's top_query feature connects there independent of the
+            # databases list. Harmless/idempotent if already included.
+            set -- postgres "$@"
+            PERDB_FAILED=""
+            for db in "$@"; do
+              db_trimmed=$(echo "$db" | xargs)
+              [ -z "$db_trimmed" ] && continue
+              DB_RESULT=$(psql -h "$HOST" -p "$PORT" -U "$ADMIN_USER" -d "$db_trimmed" -v ON_ERROR_STOP=1 -f "$PERDB_SQL_FILE" 2>&1)
+              if [ $? -ne 0 ]; then
+                echo "${i}: failed to configure database '${db_trimmed}' - $(echo "$DB_RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+                echo "Instance ${i} (${HOST}) SKIPPED: failed to configure database '${db_trimmed}'" >&2
+                PERDB_FAILED=1
+                break
+              fi
+            done
+            rm -f "$PERDB_SQL_FILE"
+            unset PGPASSWORD
 
-          echo "PostgreSQL monitoring identity configured successfully."
+            if [ -n "$PERDB_FAILED" ]; then
+              continue
+            fi
+
+            echo "Instance ${i} (${HOST}): PostgreSQL monitoring identity configured successfully: $LOGIN_NAME"
+          done < "$INSTANCES_TSV"
 
     create_collector_config:
       cmds:
         - |
           PRESET="{{.NR_CLI_POSTGRES_CONFIG_PRESET}}"
-          LOGIN_NAME="{{.NR_CLI_POSTGRES_LOGIN_NAME}}"
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
-          SERVER="{{.NR_CLI_POSTGRES_SERVER}}"
-          PORT="{{.NR_CLI_POSTGRES_PORT}}"
-          DATABASES="{{.NR_CLI_POSTGRES_DATABASES}}"
-          MASTER_USER="{{.NR_CLI_POSTGRES_MASTER_USER}}"
-          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
-          {{.NR_CLI_POSTGRES_MASTER_PASSWORD}}
-          NR_MASTER_PW_EOF
-          )
-          export PGPASSWORD="$MASTER_PASSWORD"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/postgresql-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
-
-          mkdir -p "$CONFIG_DIR"
-
-          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-
-          ALTER_RESULT=$(psql -h "$SERVER" -p "$PORT" -U "$MASTER_USER" -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE ${LOGIN_NAME} WITH LOGIN PASSWORD '${NR_PASSWORD}';" 2>&1)
-          if [ $? -ne 0 ]; then
-            echo "Failed to set the monitoring role's password:" >&2
-            echo "$ALTER_RESULT" >&2
-            exit 1
-          fi
-
+          INSTANCES_TSV="/tmp/nr-postgres-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-postgres-rds-skip.tmp"
           COLLECTION_INTERVAL="15s"
 
-          DATABASES_YAML=""
-          OLD_IFS="$IFS"
-          IFS=','
-          set -- $DATABASES
-          IFS="$OLD_IFS"
-          for db in "$@"; do
-            db_trimmed=$(echo "$db" | xargs)
-            [ -z "$db_trimmed" ] && continue
-            DATABASES_YAML="${DATABASES_YAML}      - ${db_trimmed}
-          "
-          done
+          mkdir -p "$CONFIG_DIR"
 
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
@@ -343,8 +420,55 @@ install:
             *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
+          # Shared receiver settings (exclude_databases/collection_interval/events/
+          # query_sample_collection/top_query_collection/metrics) are identical for
+          # every instance. Captured once here and echoed per instance below instead
+          # of relying on the collector's YAML loader to support merge-key aliases
+          # via a fragile split - endpoint/username/password/databases are the only
+          # fields that vary per instance and are always written explicitly.
+          RECEIVER_DEFAULTS=$(cat << 'BLOCK'
+              exclude_databases:
+                - rdsadmin
+              collection_interval: 15s
+
+              events:
+                db.server.top_query:
+                  enabled: true
+                db.server.query_sample:
+                  enabled: true
+
+              query_sample_collection:
+                max_rows_per_query: 1000
+                allowed_comment_keys: [nr_service_guid]
+
+              top_query_collection:
+                max_rows_per_query: 1000
+                top_n_query: 200
+                collection_interval: 60s
+                allowed_comment_keys: [nr_service_guid]
+
+              # Metrics needed for the out-of-the-box dashboard but disabled by default -
+              # see "Available metrics" in the docs for the full default-on/default-off breakdown.
+              metrics:
+                postgresql.database.locks:
+                  enabled: true
+                postgresql.deadlocks:
+                  enabled: true
+                postgresql.function.calls:
+                  enabled: true
+                postgresql.query.conflicts:
+                  enabled: true
+                postgresql.sequential_scans:
+                  enabled: true
+                postgresql.temp.io:
+                  enabled: true
+                postgresql.temp_files:
+                  enabled: true
+          BLOCK
+          )
+
           if [ "$PRESET" = "2" ]; then
-            cat > "$CONFIG_PATH" << EOF
+            cat > "$CONFIG_PATH" << 'EOF'
           extensions:
             health_check:
 
@@ -398,54 +522,107 @@ install:
                 #      enabled: true
                 #    process.cpu.time:
                 #      enabled: false
-
-            nrpostgresql:
-              endpoint: "${SERVER}:${PORT}"
-              username: "${LOGIN_NAME}"
-              password: "${NR_PASSWORD}"
-              databases:
           EOF
-            printf '%s' "$DATABASES_YAML" >> "$CONFIG_PATH"
-            cat >> "$CONFIG_PATH" << EOF
-              exclude_databases:
-                - rdsadmin
-              collection_interval: ${COLLECTION_INTERVAL}
-
-              events:
-                db.server.top_query:
-                  enabled: true
-                db.server.query_sample:
-                  enabled: true
-
-              query_sample_collection:
-                max_rows_per_query: 1000
-                allowed_comment_keys: [nr_service_guid]
-
-              top_query_collection:
-                max_rows_per_query: 1000
-                top_n_query: 200
-                collection_interval: 60s
-                allowed_comment_keys: [nr_service_guid]
-
-              # Metrics needed for the out-of-the-box dashboard but disabled by default -
-              # see "Available metrics" in the docs for the full default-on/default-off breakdown.
-              metrics:
+          else
+            cat > "$CONFIG_PATH" << 'EOF'
+          receivers:
           EOF
+          fi
+
+          # Count survivors up front to decide whether the anchor/merge-key pattern
+          # documented at https://docs.newrelic.com/docs/opentelemetry/database/postgresql/multi-receiver/
+          # applies - a single instance has nothing to merge into, so it gets a plain
+          # receiver, matching that doc's naming convention (nrpostgresql/dbN).
+          SURVIVOR_COUNT=0
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            SURVIVOR_COUNT=$((SURVIVOR_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          MONITORED_COUNT=0
+          IS_FIRST_SURVIVOR=1
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            eval "ADMIN_USER=\"\${NR_CLI_POSTGRES_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_POSTGRES_ADMIN_PASSWORD_${i}}\""
+            export PGPASSWORD="$ADMIN_PASSWORD"
+
+            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+            ALTER_RESULT=$(psql -h "$HOST" -p "$PORT" -U "$ADMIN_USER" -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE ${LOGIN_NAME} WITH LOGIN PASSWORD '${NR_PASSWORD}';" 2>&1)
+            ALTER_STATUS=$?
+            unset PGPASSWORD
+
+            if [ $ALTER_STATUS -ne 0 ]; then
+              echo "${i}: failed to set the monitoring role's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: failed to set the monitoring role's password" >&2
+              continue
+            fi
+
+            DATABASES_YAML=""
+            OLD_IFS="$IFS"
+            IFS=','
+            set -- $DATABASES
+            IFS="$OLD_IFS"
+            for db in "$@"; do
+              db_trimmed=$(echo "$db" | xargs)
+              [ -z "$db_trimmed" ] && continue
+              DATABASES_YAML="${DATABASES_YAML}      - ${db_trimmed}
+          "
+            done
+
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              {
+                echo "  nrpostgresql/db${i}:"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    databases:"
+                printf '%s' "$DATABASES_YAML"
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+            elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
+              {
+                echo "  nrpostgresql/db${i}: &nrpostgresql-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    databases:"
+                printf '%s' "$DATABASES_YAML"
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+              IS_FIRST_SURVIVOR=0
+            else
+              {
+                echo "  nrpostgresql/db${i}:"
+                echo "    <<: *nrpostgresql-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    databases:"
+                printf '%s' "$DATABASES_YAML"
+              } >> "$CONFIG_PATH"
+            fi
+
+            MONITORED_COUNT=$((MONITORED_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          if [ "$MONITORED_COUNT" -eq 0 ]; then
+            echo "No PostgreSQL RDS instance passed its checks - nothing to monitor. Aborting install." >&2
+            exit 1
+          fi
+
+          if [ "$PRESET" = "2" ]; then
             cat >> "$CONFIG_PATH" << 'EOF'
-                postgresql.database.locks:
-                  enabled: true
-                postgresql.deadlocks:
-                  enabled: true
-                postgresql.function.calls:
-                  enabled: true
-                postgresql.query.conflicts:
-                  enabled: true
-                postgresql.sequential_scans:
-                  enabled: true
-                postgresql.temp.io:
-                  enabled: true
-                postgresql.temp_files:
-                  enabled: true
 
           processors:
             metrics_transform:
@@ -541,22 +718,6 @@ install:
                     - set(metric.description, "")
                     - set(metric.unit, "")
 
-          EOF
-            cat >> "$CONFIG_PATH" << EOF
-            # Static server.address/server.port instead of deriving them from
-            # service.instance.id - with receiver.nrpostgresql.useOTelSemconv enabled,
-            # service.instance.id becomes a UUID v5 hash, not a "host:port" string, so
-            # a Split(...)-based transform breaks. Applies uniformly to both metrics
-            # and logs pipelines since neither depends on that internal format.
-            resource/postgresql:
-              attributes:
-                - key: server.address
-                  value: "${SERVER}"
-                  action: upsert
-                - key: server.port
-                  value: ${PORT}
-                  action: upsert
-
             batch:
 
             resource_detection:
@@ -574,6 +735,40 @@ install:
               detectors: ["env"]
               timeout: 2s
               override: true
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
+
+          processors:
+            batch:
+          EOF
+          fi
+
+          # Static server.address/server.port per instance, reusing the same HOST/PORT
+          # already set on that instance's receiver `endpoint` field above - with
+          # receiver.nrpostgresql.useOTelSemconv enabled, service.instance.id becomes a
+          # UUID v5 hash rather than a "host:port" string, so a per-instance processor
+          # is used instead of deriving these from that field.
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+
+            resource/postgresql/db${i}:
+              attributes:
+                - key: server.address
+                  value: "${HOST}"
+                  action: upsert
+                - key: server.port
+                  value: ${PORT}
+                  action: upsert
+          EOF
+          done < "$INSTANCES_TSV"
+
+          cat >> "$CONFIG_PATH" << EOF
 
           exporters:
             otlp/newrelic:
@@ -588,6 +783,10 @@ install:
                 max_elapsed_time: 300s
 
           service:
+          EOF
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
             telemetry:
               metrics:
                 level: none
@@ -615,26 +814,57 @@ install:
                   - cumulative_to_delta
                   - batch
                 exporters: [otlp/newrelic]
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
+            pipelines:
+          EOF
+          fi
 
-              metrics/postgresql:
-                receivers: [nrpostgresql]
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            if [ "$PRESET" = "2" ]; then
+              cat >> "$CONFIG_PATH" << EOF
+              metrics/postgresql/db${i}:
+                receivers: [nrpostgresql/db${i}]
                 processors:
-                  - resource/postgresql
+                  - resource/postgresql/db${i}
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch
                 exporters: [otlp/newrelic]
 
-              logs/postgresql:
-                receivers: [nrpostgresql]
+              logs/postgresql/db${i}:
+                receivers: [nrpostgresql/db${i}]
                 processors:
-                  - resource/postgresql
+                  - resource/postgresql/db${i}
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch
                 exporters: [otlp/newrelic]
+          EOF
+            else
+              cat >> "$CONFIG_PATH" << EOF
+              metrics/db${i}:
+                receivers: [nrpostgresql/db${i}]
+                processors: [resource/postgresql/db${i}, batch]
+                exporters: [otlp/newrelic]
+              logs/db${i}:
+                receivers: [nrpostgresql/db${i}]
+                processors: [resource/postgresql/db${i}, batch]
+                exporters: [otlp/newrelic]
+          EOF
+            fi
+          done < "$INSTANCES_TSV"
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
 
               traces:
                 receivers: [otlp]
@@ -651,99 +881,6 @@ install:
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
                 exporters: [otlp/newrelic]
           EOF
-          else
-            cat > "$CONFIG_PATH" << EOF
-          receivers:
-            nrpostgresql:
-              endpoint: "${SERVER}:${PORT}"
-              username: "${LOGIN_NAME}"
-              password: "${NR_PASSWORD}"
-              databases:
-          EOF
-            printf '%s' "$DATABASES_YAML" >> "$CONFIG_PATH"
-            cat >> "$CONFIG_PATH" << EOF
-              exclude_databases:
-                - rdsadmin
-              collection_interval: ${COLLECTION_INTERVAL}
-
-              events:
-                db.server.top_query:
-                  enabled: true
-                db.server.query_sample:
-                  enabled: true
-
-              top_query_collection:
-                max_rows_per_query: 1000
-                top_n_query: 200
-                collection_interval: 60s
-                allowed_comment_keys: [nr_service_guid]
-
-              query_sample_collection:
-                max_rows_per_query: 1000
-                allowed_comment_keys: [nr_service_guid]
-
-              # Metrics needed for the out-of-the-box dashboard but disabled by default -
-              # see "Available metrics" in the docs for the full default-on/default-off breakdown.
-              metrics:
-          EOF
-            cat >> "$CONFIG_PATH" << 'EOF'
-                postgresql.database.locks:
-                  enabled: true
-                postgresql.deadlocks:
-                  enabled: true
-                postgresql.function.calls:
-                  enabled: true
-                postgresql.query.conflicts:
-                  enabled: true
-                postgresql.sequential_scans:
-                  enabled: true
-                postgresql.temp.io:
-                  enabled: true
-                postgresql.temp_files:
-                  enabled: true
-
-          processors:
-          EOF
-            cat >> "$CONFIG_PATH" << EOF
-            batch:
-            # Static server.address/server.port instead of deriving them from
-            # service.instance.id - with receiver.nrpostgresql.useOTelSemconv enabled,
-            # service.instance.id becomes a UUID v5 hash, not a "host:port" string, so
-            # a Split(...)-based transform breaks. Applies uniformly to both metrics
-            # and logs pipelines since neither depends on that internal format.
-            resource/postgresql:
-              attributes:
-                - key: server.address
-                  value: "${SERVER}"
-                  action: upsert
-                - key: server.port
-                  value: ${PORT}
-                  action: upsert
-
-          exporters:
-            otlp/newrelic:
-              endpoint: "${OTLP_ENDPOINT}"
-              headers:
-                api-key: "${LICENSE_KEY}"
-              compression: gzip
-              retry_on_failure:
-                enabled: true
-                initial_interval: 5s
-                max_interval: 30s
-                max_elapsed_time: 300s
-
-          service:
-            pipelines:
-              metrics:
-                receivers: [nrpostgresql]
-                processors: [resource/postgresql, batch]
-                exporters: [otlp/newrelic]
-
-              logs:
-                receivers: [nrpostgresql]
-                processors: [resource/postgresql, batch]
-                exporters: [otlp/newrelic]
-          EOF
           fi
 
           cat > "$ENV_FILE" << EOF
@@ -753,7 +890,7 @@ install:
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
 
-          echo "PostgreSQL OTel config written to ${CONFIG_PATH}"
+          echo "PostgreSQL OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} instance(s))"
           echo "Env file written to ${ENV_FILE}"
 
     restart_nrdot:
@@ -762,22 +899,46 @@ install:
           systemctl restart nrdot-collector
 
           echo "Waiting for NRDOT Collector to start..."
+          NR_STARTED=""
           for i in $(seq 1 30); do
             if systemctl is-active --quiet nrdot-collector; then
               echo "NRDOT Collector is running."
-              exit 0
+              NR_STARTED=1
+              break
             fi
             sleep 2
           done
 
-          echo "NRDOT Collector did not start in time. Check logs:" >&2
-          journalctl -u nrdot-collector --no-pager -n 50 >&2
-          exit 31
+          if [ -z "$NR_STARTED" ]; then
+            echo "NRDOT Collector did not start in time. Check logs:" >&2
+            journalctl -u nrdot-collector --no-pager -n 50 >&2
+            exit 31
+          fi
+
+          INSTANCES_TSV="/tmp/nr-postgres-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-postgres-rds-skip.tmp"
+
+          echo ""
+          echo "==> PostgreSQL RDS instance summary:"
+          echo ""
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            REASON=$(grep "^${i}:" "$SKIP_FILE" 2>/dev/null | sed "s/^${i}: //")
+            if [ -n "$REASON" ]; then
+              echo "  [SKIP] ${i}: ${HOST} - ${REASON}"
+            else
+              echo "  [OK]   ${i}: ${HOST} (databases: ${DATABASES})"
+            fi
+          done < "$INSTANCES_TSV"
+
+          rm -f /tmp/nr-postgres-grant-*.sql.* /tmp/nr-postgres-perdb-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE"
 
     default:
       cmds:
         - task: write_recipe_metadata
         - task: assert_pre_req
+        - task: parse_instances
         - task: assert_postgres_version
         - task: install_nrdot
         - task: configure_database_user

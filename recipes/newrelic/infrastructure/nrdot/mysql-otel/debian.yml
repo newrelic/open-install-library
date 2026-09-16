@@ -4,7 +4,7 @@
 
 name: nrdot-collector-mysql
 displayName: NRDOT MySQL (Debian/Ubuntu)
-description: New Relic install recipe for MySQL monitoring via NRDOT Collector on Debian/Ubuntu self-hosted environments
+description: New Relic install recipe for MySQL monitoring via NRDOT Collector on Debian/Ubuntu self-hosted environments, one or more local instances
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -33,37 +33,55 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from MySQL, we need to create/authorize a monitoring identity
-    (a MySQL user). This requires administrative access to your MySQL server
-    (the 'root' account or equivalent) on the account running this installation.
+    To capture data from one or more local MySQL instances, we need to create/authorize
+    a monitoring identity (a MySQL user) on each, using each instance's 'root' account.
 
-    Note: this installer connects to MySQL over TCP using a password, so the
-    'root' account must use password-based authentication. On some
-    Debian/Ubuntu installs, 'root'@'localhost' defaults to the auth_socket
-    plugin (no password, local-socket-only) or another state with no known
-    password, and will not work here. Switch it first, run locally as root:
+    Note: this installer connects to MySQL over TCP using a password, so 'root' must
+    use password-based authentication on every instance. On some Debian/Ubuntu installs,
+    'root'@'localhost' defaults to the auth_socket plugin (no password, local-socket-only)
+    or another state with no known password, and will not work here. Switch it first, run
+    locally as root on each instance:
       mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';"
-    If that itself fails with "Access denied", the mysql-server package also
-    creates a debian-sys-maint account with known admin credentials in
-    /etc/mysql/debian.cnf for its own maintenance scripts - use it instead:
+    If that itself fails with "Access denied", the mysql-server package also creates a
+    debian-sys-maint account with known admin credentials in /etc/mysql/debian.cnf for
+    its own maintenance scripts - use it instead:
       mysql --defaults-file=/etc/mysql/debian.cnf -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';"
+
+    You will be asked for two files:
+
+      1. An instances file (YAML) listing every local MySQL instance to monitor, in the
+         order you want them numbered (instance 1, 2, 3, ...). If you're running a single
+         MySQL server, this is still one entry - multiple entries are only needed if you
+         run multiple separate MySQL server processes on this host (e.g. on different
+         ports):
+
+           instances:
+             - host: localhost
+               port: 3306
+               login_name: newrelic
+             - host: localhost
+               port: 3307
+               login_name: newrelic
+
+      2. A secrets file (KEY=VALUE per line) supplying the 'root' password for each
+         instance above, indexed to match the instances file's order (1-based):
+
+           NR_CLI_MYSQL_ROOT_PASSWORD_1=<root password for instance 1>
+           NR_CLI_MYSQL_ROOT_PASSWORD_2=<root password for instance 2>
+
+         NR_CLI_MYSQL_ROOT_PASSWORD_<i> is required for every instance.
+
+    Any instance that fails its version check or user setup is skipped (with a reason)
+    rather than aborting the whole install - the rest are still configured.
 
 inputVars:
   - name: NR_CLI_MYSQL_CONFIG_PRESET
     prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
     default: "1"
-  - name: NR_CLI_MYSQL_SERVER
-    prompt: "MySQL host (e.g. localhost): "
-    default: "localhost"
-  - name: NR_CLI_MYSQL_PORT
-    prompt: "MySQL port: "
-    default: "3306"
-  - name: NR_CLI_MYSQL_ROOT_PASSWORD
-    prompt: "MySQL 'root' password (used once to create the monitoring user): "
-    secret: true
-  - name: NR_CLI_MYSQL_LOGIN_NAME
-    prompt: "Monitoring username: "
-    default: "newrelic"
+  - name: NR_CLI_MYSQL_INSTANCES_FILE
+    prompt: "Path to the MySQL instances YAML file: "
+  - name: NR_CLI_MYSQL_SECRETS_FILE
+    prompt: "Path to the MySQL secrets file (KEY=VALUE per instance): "
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'mysql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -107,58 +125,135 @@ install:
             exit 131
           fi
 
+    parse_instances:
+      cmds:
+        - |
+          INSTANCES_FILE="{{.NR_CLI_MYSQL_INSTANCES_FILE}}"
+          SECRETS_FILE="{{.NR_CLI_MYSQL_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
+          SKIP_FILE="/tmp/nr-mysql-skip.tmp"
+
+          rm -f "$INSTANCES_TSV" "$SKIP_FILE"
+
+          if [ ! -f "$INSTANCES_FILE" ]; then
+            echo "Instances file not found: $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          if [ ! -f "$SECRETS_FILE" ]; then
+            echo "Secrets file not found: $SECRETS_FILE" >&2
+            exit 131
+          fi
+
+          SECRETS_PERMS=$(stat -c '%a' "$SECRETS_FILE" 2>/dev/null || stat -f '%Lp' "$SECRETS_FILE" 2>/dev/null)
+          if [ -n "$SECRETS_PERMS" ]; then
+            GROUP_OTHER_BITS=$(printf '%s' "$SECRETS_PERMS" | tail -c 2)
+            if [ "$GROUP_OTHER_BITS" != "00" ]; then
+              echo "WARNING: $SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS)." >&2
+              echo "         Consider running: chmod 600 $SECRETS_FILE" >&2
+            fi
+          fi
+
+          # shellcheck disable=SC1090
+          . "$SECRETS_FILE"
+
+          # Parses the fixed 3-key-per-item shape documented in preInstall.info
+          # (host, port, login_name) - not a general-purpose YAML parser.
+          awk '
+            /^[[:space:]]*-[[:space:]]*host:/ {
+              if (have) { print host "\t" port "\t" login_name }
+              host=$0; sub(/^[[:space:]]*-[[:space:]]*host:[[:space:]]*/, "", host)
+              port=""; login_name=""; have=1; next
+            }
+            /^[[:space:]]*port:/ { port=$0; sub(/^[[:space:]]*port:[[:space:]]*/, "", port); next }
+            /^[[:space:]]*login_name:/ { login_name=$0; sub(/^[[:space:]]*login_name:[[:space:]]*/, "", login_name); next }
+            END { if (have) { print host "\t" port "\t" login_name } }
+          ' "$INSTANCES_FILE" > "$INSTANCES_TSV"
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          if [ "$INSTANCE_COUNT" -eq 0 ]; then
+            echo "No instances found in $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          echo "Found $INSTANCE_COUNT MySQL instance(s) in $INSTANCES_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_LOGIN_NAME; do
+            i=$((i + 1))
+            eval "ROOT_PASSWORD_VAL=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}:-}\""
+            if [ -z "$ROOT_PASSWORD_VAL" ]; then
+              echo "${i}: missing NR_CLI_MYSQL_ROOT_PASSWORD_${i} in secrets file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}:${ENTRY_PORT}) SKIPPED: missing root password in secrets file" >&2
+            fi
+          done < "$INSTANCES_TSV"
+
     assert_mysql_version:
       cmds:
         - |
-          SERVER="${NR_CLI_MYSQL_SERVER:-localhost}"
-          PORT="{{.NR_CLI_MYSQL_PORT}}"
-          ROOT_PASSWORD=$(cat << 'NR_ROOT_PW_EOF'
-          {{.NR_CLI_MYSQL_ROOT_PASSWORD}}
-          NR_ROOT_PW_EOF
-          )
+          SECRETS_FILE="{{.NR_CLI_MYSQL_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
+          SKIP_FILE="/tmp/nr-mysql-skip.tmp"
 
-          CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
-          chmod 600 "$CNF_FILE"
-          trap 'rm -f "$CNF_FILE"' EXIT
-          cat > "$CNF_FILE" << EOF
+          # shellcheck disable=SC1090
+          . "$SECRETS_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            eval "ROOT_PASSWORD=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}}\""
+
+            CNF_FILE=$(mktemp "/tmp/nr-mysql-admin-${i}.cnf.XXXXXX")
+            chmod 600 "$CNF_FILE"
+            cat > "$CNF_FILE" << EOF
           [client]
           user=root
-          host=${SERVER}
+          host=${HOST}
           port=${PORT}
           EOF
-          export MYSQL_PWD="$ROOT_PASSWORD"
+            export MYSQL_PWD="$ROOT_PASSWORD"
 
-          RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1)
-          if [ $? -ne 0 ]; then
-            echo "Failed to connect to MySQL to check its version:" >&2
-            echo "$RESULT" >&2
-            if echo "$RESULT" | grep -qi "Access denied"; then
-              echo "" >&2
-              echo "If this is a default Debian/Ubuntu MySQL install, 'root'@'localhost' likely" >&2
-              echo "uses the auth_socket plugin (no TCP/password access). Switch it first:" >&2
-              echo "  ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';" >&2
+            RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1)
+            VERSION_STATUS=$?
+
+            if [ $VERSION_STATUS -ne 0 ]; then
+              rm -f "$CNF_FILE"
+              unset MYSQL_PWD
+              echo "${i}: failed to connect / check version - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to connect to check its version" >&2
+              if echo "$RESULT" | grep -qi "Access denied"; then
+                echo "  If this is a default Debian/Ubuntu MySQL install, 'root'@'localhost' likely" >&2
+                echo "  uses the auth_socket plugin (no TCP/password access) on this instance. Switch it:" >&2
+                echo "  ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';" >&2
+              fi
+              continue
             fi
-            exit 1
-          fi
 
-          MAJOR=$(echo "$RESULT" | grep -oE '^[0-9]+' | head -1)
-          MINOR=$(echo "$RESULT" | grep -oE '^[0-9]+\.[0-9]+' | head -1 | cut -d. -f2)
+            MAJOR=$(echo "$RESULT" | grep -oE '^[0-9]+' | head -1)
+            MINOR=$(echo "$RESULT" | grep -oE '^[0-9]+\.[0-9]+' | head -1 | cut -d. -f2)
 
-          if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 5 ] || { [ "$MAJOR" -eq 5 ] && [ "${MINOR:-0}" -lt 7 ]; }; then
-            echo "MySQL version ${RESULT:-unknown} is not supported. MySQL 5.7 or later is required." >&2
-            exit 1
-          fi
+            if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 5 ] || { [ "$MAJOR" -eq 5 ] && [ "${MINOR:-0}" -lt 7 ]; }; then
+              rm -f "$CNF_FILE"
+              unset MYSQL_PWD
+              echo "${i}: unsupported MySQL version ${RESULT:-unknown} (5.7 or later required)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: unsupported MySQL version ${RESULT:-unknown}" >&2
+              continue
+            fi
 
-          echo "MySQL version ${RESULT} detected - supported."
+            PS_STATUS=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SHOW VARIABLES LIKE 'performance_schema';" 2>&1 | awk '{print $2}')
+            rm -f "$CNF_FILE"
+            unset MYSQL_PWD
 
-          PS_STATUS=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SHOW VARIABLES LIKE 'performance_schema';" 2>&1 | awk '{print $2}')
-          if [ "$PS_STATUS" != "ON" ]; then
-            echo "performance_schema is disabled on this MySQL server." >&2
-            echo "Enable it (performance_schema=ON in my.cnf) and restart MySQL, then re-run this installation." >&2
-            exit 1
-          fi
+            if [ "$PS_STATUS" != "ON" ]; then
+              echo "${i}: performance_schema is disabled (enable performance_schema=ON in my.cnf)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: performance_schema is disabled" >&2
+              continue
+            fi
 
-          echo "performance_schema is enabled."
+            echo "Instance ${i} (${HOST}:${PORT}): MySQL version ${RESULT} detected - supported, performance_schema enabled."
+          done < "$INSTANCES_TSV"
 
     install_nrdot:
       cmds:
@@ -217,34 +312,42 @@ install:
     configure_database_user:
       cmds:
         - |
-          LOGIN_NAME="{{.NR_CLI_MYSQL_LOGIN_NAME}}"
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
-          SERVER="${NR_CLI_MYSQL_SERVER:-localhost}"
-          PORT="{{.NR_CLI_MYSQL_PORT}}"
-          ROOT_PASSWORD=$(cat << 'NR_ROOT_PW_EOF'
-          {{.NR_CLI_MYSQL_ROOT_PASSWORD}}
-          NR_ROOT_PW_EOF
-          )
+          SECRETS_FILE="{{.NR_CLI_MYSQL_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
+          SKIP_FILE="/tmp/nr-mysql-skip.tmp"
 
-          CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
-          SQL_FILE=$(mktemp /tmp/nr-mysql-grant.sql.XXXXXX)
-          chmod 600 "$CNF_FILE" "$SQL_FILE"
-          trap 'rm -f "$CNF_FILE" "$SQL_FILE"' EXIT
-          cat > "$CNF_FILE" << EOF
+          # shellcheck disable=SC1090
+          . "$SECRETS_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+              echo "${i}: invalid monitoring username '${LOGIN_NAME}' in instances file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: invalid monitoring username '${LOGIN_NAME}'" >&2
+              continue
+            fi
+
+            eval "ROOT_PASSWORD=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}}\""
+
+            CNF_FILE=$(mktemp "/tmp/nr-mysql-admin-${i}.cnf.XXXXXX")
+            SQL_FILE=$(mktemp "/tmp/nr-mysql-grant-${i}.sql.XXXXXX")
+            chmod 600 "$CNF_FILE" "$SQL_FILE"
+            cat > "$CNF_FILE" << EOF
           [client]
           user=root
-          host=${SERVER}
+          host=${HOST}
           port=${PORT}
           EOF
-          export MYSQL_PWD="$ROOT_PASSWORD"
+            export MYSQL_PWD="$ROOT_PASSWORD"
 
-          NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
+            NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
 
-          cat > "$SQL_FILE" << EOF
+            cat > "$SQL_FILE" << EOF
           CREATE USER IF NOT EXISTS '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';
           ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';
           GRANT SELECT ON performance_schema.* TO '${LOGIN_NAME}'@'%';
@@ -252,59 +355,33 @@ install:
           FLUSH PRIVILEGES;
           EOF
 
-          RESULT=$(mysql --defaults-extra-file="$CNF_FILE" < "$SQL_FILE" 2>&1)
-          if [ $? -ne 0 ]; then
-            echo "SQL script failed:" >&2
-            echo "$RESULT" >&2
-            exit 1
-          fi
-          echo "$RESULT"
+            RESULT=$(mysql --defaults-extra-file="$CNF_FILE" < "$SQL_FILE" 2>&1)
+            SQL_STATUS=$?
+            rm -f "$CNF_FILE" "$SQL_FILE"
+            unset MYSQL_PWD
 
-          echo "MySQL monitoring identity configured successfully."
+            if [ $SQL_STATUS -ne 0 ]; then
+              echo "${i}: monitoring user setup failed - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: monitoring user setup failed" >&2
+              continue
+            fi
+
+            echo "Instance ${i} (${HOST}:${PORT}): MySQL monitoring identity configured successfully: $LOGIN_NAME"
+          done < "$INSTANCES_TSV"
 
     create_collector_config:
       cmds:
         - |
           PRESET="{{.NR_CLI_MYSQL_CONFIG_PRESET}}"
-          LOGIN_NAME="{{.NR_CLI_MYSQL_LOGIN_NAME}}"
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
-          SERVER="${NR_CLI_MYSQL_SERVER:-localhost}"
-          PORT="{{.NR_CLI_MYSQL_PORT}}"
-          ROOT_PASSWORD=$(cat << 'NR_ROOT_PW_EOF'
-          {{.NR_CLI_MYSQL_ROOT_PASSWORD}}
-          NR_ROOT_PW_EOF
-          )
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/mysql-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+          INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
+          SKIP_FILE="/tmp/nr-mysql-skip.tmp"
 
           mkdir -p "$CONFIG_DIR"
-
-          CNF_FILE=$(mktemp /tmp/nr-mysql-admin.cnf.XXXXXX)
-          chmod 600 "$CNF_FILE"
-          trap 'rm -f "$CNF_FILE"' EXIT
-          cat > "$CNF_FILE" << EOF
-          [client]
-          user=root
-          host=${SERVER}
-          port=${PORT}
-          EOF
-          export MYSQL_PWD="$ROOT_PASSWORD"
-
-          NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
-
-          ALTER_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -e "ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';" 2>&1)
-          if [ $? -ne 0 ]; then
-            echo "Failed to set the monitoring user's password:" >&2
-            echo "$ALTER_RESULT" >&2
-            exit 1
-          fi
 
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
@@ -313,8 +390,53 @@ install:
             *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
+          # Shared receiver settings (transport/allow_native_passwords/collection_interval/
+          # tls/explain_mode/statement_events/query_sample_collection/top_query_collection/
+          # events) are identical for every instance. Captured once here and echoed per
+          # instance below instead of relying on the collector's YAML loader to support
+          # merge-key aliases via a fragile split.
+          RECEIVER_DEFAULTS=$(cat << 'BLOCK'
+              transport: tcp
+              allow_native_passwords: true
+              collection_interval: 10s
+              initial_delay: 1s
+              tls:
+                insecure: true
+                insecure_skip_verify: true
+              # "procedure" collects EXPLAIN plans for write statements (UPDATE/DELETE/INSERT/REPLACE)
+              # without granting DML to the monitoring user, via a SQL SECURITY DEFINER procedure.
+              # Falls back to "inline" (default) automatically if the procedure is absent for a schema.
+              # Requires one-time setup per schema -- see Prerequisites -> DML query plan collection.
+              explain_mode: procedure
+              statement_events:
+                digest_text_limit: 4096
+                time_limit: 24h
+                limit: 500
+              query_sample_collection:
+                max_rows_per_query: 100
+                # APM-DB correlation: surfaces the nr_service_guid SQL comment tag (e.g. injected by
+                # transaction_tracer.sql_metadata_comments in the Java agent) as db.query.comment_tags /
+                # db.query.comment_tags.nr_service_guid. Empty list by default -- nothing is extracted
+                # unless the key is explicitly allow-listed here.
+                allowed_comment_keys: [nr_service_guid]
+              top_query_collection:
+                lookback_time: 120
+                max_query_sample_count: 5000
+                top_query_count: 200
+                collection_interval: 60s
+                query_plan_cache_size: 1000
+                query_plan_cache_ttl: 1h
+                allowed_comment_keys: [nr_service_guid]
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+          BLOCK
+          )
+
           if [ "$PRESET" = "2" ]; then
-            cat > "$CONFIG_PATH" << EOF
+            cat > "$CONFIG_PATH" << 'EOF'
           extensions:
             health_check:
 
@@ -368,49 +490,98 @@ install:
                 #      enabled: true
                 #    process.cpu.time:
                 #      enabled: false
-
-            nrmysql:
-              endpoint: "${SERVER}:${PORT}"
-              transport: tcp
-              username: "${LOGIN_NAME}"
-              password: "${NR_PASSWORD}"
           EOF
-            cat >> "$CONFIG_PATH" << EOF
-              allow_native_passwords: true
-              collection_interval: 10s
-              initial_delay: 1s
-              tls:
-                insecure: true
-                insecure_skip_verify: true
-              # "procedure" collects EXPLAIN plans for write statements (UPDATE/DELETE/INSERT/REPLACE)
-              # without granting DML to the monitoring user, via a SQL SECURITY DEFINER procedure.
-              # Falls back to "inline" (default) automatically if the procedure is absent for a schema.
-              # Requires one-time setup per schema -- see Prerequisites -> DML query plan collection.
-              explain_mode: procedure
-              statement_events:
-                digest_text_limit: 4096
-                time_limit: 24h
-                limit: 500
-              query_sample_collection:
-                max_rows_per_query: 100
-                # APM-DB correlation: surfaces the nr_service_guid SQL comment tag (e.g. injected by
-                # transaction_tracer.sql_metadata_comments in the Java agent) as db.query.comment_tags /
-                # db.query.comment_tags.nr_service_guid. Empty list by default -- nothing is extracted
-                # unless the key is explicitly allow-listed here.
-                allowed_comment_keys: [nr_service_guid]
-              top_query_collection:
-                lookback_time: 120
-                max_query_sample_count: 5000
-                top_query_count: 200
-                collection_interval: 60s
-                query_plan_cache_size: 1000
-                query_plan_cache_ttl: 1h
-                allowed_comment_keys: [nr_service_guid]
-              events:
-                db.server.query_sample:
-                  enabled: true
-                db.server.top_query:
-                  enabled: true
+          else
+            cat > "$CONFIG_PATH" << 'EOF'
+          receivers:
+          EOF
+          fi
+
+          # Count survivors up front to decide whether the anchor/merge-key pattern
+          # documented at https://docs.newrelic.com/docs/opentelemetry/database/mysql/multi-receiver/
+          # applies - a single instance has nothing to merge into, so it gets a plain
+          # receiver, matching that doc's naming convention (nrmysql/instanceN).
+          SURVIVOR_COUNT=0
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            SURVIVOR_COUNT=$((SURVIVOR_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          MONITORED_COUNT=0
+          IS_FIRST_SURVIVOR=1
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            eval "ROOT_PASSWORD=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}}\""
+
+            CNF_FILE=$(mktemp "/tmp/nr-mysql-admin-${i}.cnf.XXXXXX")
+            chmod 600 "$CNF_FILE"
+            cat > "$CNF_FILE" << EOF
+          [client]
+          user=root
+          host=${HOST}
+          port=${PORT}
+          EOF
+            export MYSQL_PWD="$ROOT_PASSWORD"
+
+            NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
+
+            ALTER_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -e "ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';" 2>&1)
+            ALTER_STATUS=$?
+            rm -f "$CNF_FILE"
+            unset MYSQL_PWD
+
+            if [ $ALTER_STATUS -ne 0 ]; then
+              echo "${i}: failed to set the monitoring user's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to set the monitoring user's password" >&2
+              continue
+            fi
+
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              {
+                echo "  nrmysql/instance${i}:"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+            elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
+              {
+                echo "  nrmysql/instance${i}: &nrmysql-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+              IS_FIRST_SURVIVOR=0
+            else
+              {
+                echo "  nrmysql/instance${i}:"
+                echo "    <<: *nrmysql-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+              } >> "$CONFIG_PATH"
+            fi
+
+            MONITORED_COUNT=$((MONITORED_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          if [ "$MONITORED_COUNT" -eq 0 ]; then
+            echo "No MySQL instance passed its checks - nothing to monitor. Aborting install." >&2
+            exit 1
+          fi
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
             metrics_transform:
@@ -506,22 +677,6 @@ install:
                     - set(metric.description, "")
                     - set(metric.unit, "")
 
-          EOF
-            cat >> "$CONFIG_PATH" << EOF
-            # Static server.address/server.port, reusing the same ${SERVER}/${PORT}
-            # values already set on the receiver's own \`endpoint\` field above -- nrmysqlreceiver
-            # itself emits no server.address/server.port, only its own mysql.instance.endpoint
-            # (a combined "host:port" string). Applies uniformly to both metrics and logs
-            # pipelines since neither depends on how that string is derived.
-            resource/mysql:
-              attributes:
-                - key: server.address
-                  value: "${SERVER}"
-                  action: upsert
-                - key: server.port
-                  value: ${PORT}
-                  action: upsert
-
             batch:
 
             resource_detection:
@@ -541,6 +696,39 @@ install:
               detectors: ["env"]
               timeout: 2s
               override: true
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
+
+          processors:
+            batch:
+          EOF
+          fi
+
+          # Static server.address/server.port per instance, reusing the same HOST/PORT
+          # already set on that instance's receiver `endpoint` field above -- nrmysql
+          # itself emits no server.address/server.port, only its own
+          # mysql.instance.endpoint (a combined "host:port" string).
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+
+            resource/mysql/instance${i}:
+              attributes:
+                - key: server.address
+                  value: "${HOST}"
+                  action: upsert
+                - key: server.port
+                  value: ${PORT}
+                  action: upsert
+          EOF
+          done < "$INSTANCES_TSV"
+
+          cat >> "$CONFIG_PATH" << EOF
 
           exporters:
             otlp/newrelic:
@@ -555,6 +743,10 @@ install:
                 max_elapsed_time: 300s
 
           service:
+          EOF
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
             telemetry:
               metrics:
                 level: none
@@ -582,26 +774,57 @@ install:
                   - cumulative_to_delta
                   - batch
                 exporters: [otlp/newrelic]
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
+            pipelines:
+          EOF
+          fi
 
-              metrics/mysql:
-                receivers: [nrmysql]
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            if [ "$PRESET" = "2" ]; then
+              cat >> "$CONFIG_PATH" << EOF
+              metrics/mysql/instance${i}:
+                receivers: [nrmysql/instance${i}]
                 processors:
-                  - resource/mysql
+                  - resource/mysql/instance${i}
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch
                 exporters: [otlp/newrelic]
 
-              logs/mysql:
-                receivers: [nrmysql]
+              logs/mysql/instance${i}:
+                receivers: [nrmysql/instance${i}]
                 processors:
-                  - resource/mysql
+                  - resource/mysql/instance${i}
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch
                 exporters: [otlp/newrelic]
+          EOF
+            else
+              cat >> "$CONFIG_PATH" << EOF
+              metrics/instance${i}:
+                receivers: [nrmysql/instance${i}]
+                processors: [resource/mysql/instance${i}, batch]
+                exporters: [otlp/newrelic]
+              logs/instance${i}:
+                receivers: [nrmysql/instance${i}]
+                processors: [resource/mysql/instance${i}, batch]
+                exporters: [otlp/newrelic]
+          EOF
+            fi
+          done < "$INSTANCES_TSV"
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
 
               traces:
                 receivers: [otlp]
@@ -618,78 +841,6 @@ install:
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
                 exporters: [otlp/newrelic]
           EOF
-          else
-            cat > "$CONFIG_PATH" << EOF
-          receivers:
-            nrmysql:
-              endpoint: "${SERVER}:${PORT}"
-              transport: tcp
-              username: "${LOGIN_NAME}"
-              password: "${NR_PASSWORD}"
-          EOF
-            cat >> "$CONFIG_PATH" << EOF
-              allow_native_passwords: true
-              collection_interval: 10s
-              initial_delay: 1s
-              tls:
-                insecure: true
-                insecure_skip_verify: true
-              explain_mode: procedure
-              statement_events:
-                digest_text_limit: 4096
-                time_limit: 24h
-                limit: 500
-              query_sample_collection:
-                max_rows_per_query: 100
-                allowed_comment_keys: [nr_service_guid]
-              top_query_collection:
-                lookback_time: 120
-                max_query_sample_count: 5000
-                top_query_count: 200
-                collection_interval: 60s
-                query_plan_cache_size: 1000
-                query_plan_cache_ttl: 1h
-                allowed_comment_keys: [nr_service_guid]
-              events:
-                db.server.query_sample:
-                  enabled: true
-                db.server.top_query:
-                  enabled: true
-
-          processors:
-            batch:
-            resource/mysql:
-              attributes:
-                - key: server.address
-                  value: "${SERVER}"
-                  action: upsert
-                - key: server.port
-                  value: ${PORT}
-                  action: upsert
-
-          exporters:
-            otlp/newrelic:
-              endpoint: "${OTLP_ENDPOINT}"
-              headers:
-                api-key: "${LICENSE_KEY}"
-              compression: gzip
-              retry_on_failure:
-                enabled: true
-                initial_interval: 5s
-                max_interval: 30s
-                max_elapsed_time: 300s
-
-          service:
-            pipelines:
-              metrics:
-                receivers: [nrmysql]
-                processors: [resource/mysql, batch]
-                exporters: [otlp/newrelic]
-              logs:
-                receivers: [nrmysql]
-                processors: [resource/mysql, batch]
-                exporters: [otlp/newrelic]
-          EOF
           fi
 
           cat > "$ENV_FILE" << EOF
@@ -699,7 +850,7 @@ install:
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
 
-          echo "MySQL OTel config written to ${CONFIG_PATH}"
+          echo "MySQL OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} instance(s))"
           echo "Env file written to ${ENV_FILE}"
 
     restart_nrdot:
@@ -708,22 +859,46 @@ install:
           systemctl restart nrdot-collector
 
           echo "Waiting for NRDOT Collector to start..."
+          NR_STARTED=""
           for i in $(seq 1 30); do
             if systemctl is-active --quiet nrdot-collector; then
               echo "NRDOT Collector is running."
-              exit 0
+              NR_STARTED=1
+              break
             fi
             sleep 2
           done
 
-          echo "NRDOT Collector did not start in time. Check logs:" >&2
-          journalctl -u nrdot-collector --no-pager -n 50 >&2
-          exit 31
+          if [ -z "$NR_STARTED" ]; then
+            echo "NRDOT Collector did not start in time. Check logs:" >&2
+            journalctl -u nrdot-collector --no-pager -n 50 >&2
+            exit 31
+          fi
+
+          INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
+          SKIP_FILE="/tmp/nr-mysql-skip.tmp"
+
+          echo ""
+          echo "==> MySQL instance summary:"
+          echo ""
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            REASON=$(grep "^${i}:" "$SKIP_FILE" 2>/dev/null | sed "s/^${i}: //")
+            if [ -n "$REASON" ]; then
+              echo "  [SKIP] ${i}: ${HOST}:${PORT} - ${REASON}"
+            else
+              echo "  [OK]   ${i}: ${HOST}:${PORT}"
+            fi
+          done < "$INSTANCES_TSV"
+
+          rm -f /tmp/nr-mysql-admin-*.cnf.* /tmp/nr-mysql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE"
 
     default:
       cmds:
         - task: write_recipe_metadata
         - task: assert_pre_req
+        - task: parse_instances
         - task: assert_mysql_version
         - task: install_nrdot
         - task: configure_database_user
