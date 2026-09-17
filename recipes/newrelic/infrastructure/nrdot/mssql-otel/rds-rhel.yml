@@ -200,7 +200,7 @@ install:
             eval "ADMIN_PASSWORD=\"\${NR_CLI_MSSQL_ADMIN_PASSWORD_${i}}\""
             export SQLCMDPASSWORD="$ADMIN_PASSWORD"
 
-            RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1)
+            RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1 < /dev/null)
             SQL_STATUS=$?
             unset SQLCMDPASSWORD
 
@@ -283,6 +283,11 @@ install:
           SECRETS_FILE="{{.NR_CLI_MSSQL_SECRETS_FILE}}"
           INSTANCES_TSV="/tmp/nr-mssql-rds-instances.tsv"
           SKIP_FILE="/tmp/nr-mssql-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mssql-rds-passwords.tmp"
+
+          rm -f "$PASSWORDS_FILE"
+          : > "$PASSWORDS_FILE"
+          chmod 600 "$PASSWORDS_FILE"
 
           # shellcheck disable=SC1090
           . "$SECRETS_FILE"
@@ -347,7 +352,7 @@ install:
           GO
           EOF
 
-            RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -i "$SQL_FILE" 2>&1)
+            RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -i "$SQL_FILE" 2>&1 < /dev/null)
             SQL_STATUS=$?
             rm -f "$SQL_FILE"
             unset SQLCMDPASSWORD
@@ -358,6 +363,7 @@ install:
               continue
             fi
 
+            echo "${i}=${NR_PASSWORD}" >> "$PASSWORDS_FILE"
             echo "Instance ${i} (${HOST}:${PORT}): SQL Server monitoring identity configured successfully: $LOGIN_NAME"
           done < "$INSTANCES_TSV"
 
@@ -374,6 +380,7 @@ install:
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
           INSTANCES_TSV="/tmp/nr-mssql-rds-instances.tsv"
           SKIP_FILE="/tmp/nr-mssql-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mssql-rds-passwords.tmp"
 
           mkdir -p "$CONFIG_DIR"
 
@@ -694,19 +701,12 @@ install:
               continue
             fi
 
-            eval "ADMIN_USER=\"\${NR_CLI_MSSQL_ADMIN_USER_${i}}\""
-            eval "ADMIN_PASSWORD=\"\${NR_CLI_MSSQL_ADMIN_PASSWORD_${i}}\""
-            export SQLCMDPASSWORD="$ADMIN_PASSWORD"
-
-            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-
-            ALTER_RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -Q "ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';" 2>&1)
-            ALTER_STATUS=$?
-            unset SQLCMDPASSWORD
-
-            if [ $ALTER_STATUS -ne 0 ] || echo "$ALTER_RESULT" | grep -qi "Sqlcmd: Error:"; then
-              echo "${i}: failed to set the monitoring login's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
-              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to set the monitoring login's password" >&2
+            # Reuse the password configure_database_user already set on this login -
+            # no need to generate and apply a second one.
+            NR_PASSWORD=$(grep "^${i}=" "$PASSWORDS_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+            if [ -z "$NR_PASSWORD" ]; then
+              echo "${i}: monitoring login password not found - configure_database_user did not record one" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: monitoring login password not found" >&2
               continue
             fi
 
@@ -1066,7 +1066,7 @@ install:
             fi
           done < "$INSTANCES_TSV"
 
-          rm -f /tmp/nr-mssql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE"
+          rm -f /tmp/nr-mssql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE" /tmp/nr-mssql-rds-passwords.tmp
 
     default:
       cmds:

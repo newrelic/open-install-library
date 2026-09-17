@@ -214,7 +214,7 @@ install:
           EOF
             export MYSQL_PWD="$ADMIN_PASSWORD"
 
-            RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1)
+            RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1 < /dev/null)
             VERSION_STATUS=$?
 
             if [ $VERSION_STATUS -ne 0 ]; then
@@ -236,7 +236,7 @@ install:
               continue
             fi
 
-            PS_STATUS=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SHOW VARIABLES LIKE 'performance_schema';" 2>&1 | awk '{print $2}')
+            PS_STATUS=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SHOW VARIABLES LIKE 'performance_schema';" 2>&1 < /dev/null | awk '{print $2}')
             rm -f "$CNF_FILE"
             unset MYSQL_PWD
 
@@ -309,6 +309,11 @@ install:
           SECRETS_FILE="{{.NR_CLI_MYSQL_SECRETS_FILE}}"
           INSTANCES_TSV="/tmp/nr-mysql-rds-instances.tsv"
           SKIP_FILE="/tmp/nr-mysql-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mysql-rds-passwords.tmp"
+
+          rm -f "$PASSWORDS_FILE"
+          : > "$PASSWORDS_FILE"
+          chmod 600 "$PASSWORDS_FILE"
 
           # shellcheck disable=SC1090
           . "$SECRETS_FILE"
@@ -361,6 +366,7 @@ install:
               continue
             fi
 
+            echo "${i}=${NR_PASSWORD}" >> "$PASSWORDS_FILE"
             echo "Instance ${i} (${HOST}): MySQL monitoring identity configured successfully: $LOGIN_NAME"
           done < "$INSTANCES_TSV"
 
@@ -376,6 +382,7 @@ install:
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
           INSTANCES_TSV="/tmp/nr-mysql-rds-instances.tsv"
           SKIP_FILE="/tmp/nr-mysql-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mysql-rds-passwords.tmp"
 
           mkdir -p "$CONFIG_DIR"
 
@@ -530,29 +537,12 @@ install:
               continue
             fi
 
-            eval "ADMIN_USER=\"\${NR_CLI_MYSQL_ADMIN_USER_${i}}\""
-            eval "ADMIN_PASSWORD=\"\${NR_CLI_MYSQL_ADMIN_PASSWORD_${i}}\""
-
-            CNF_FILE=$(mktemp "/tmp/nr-mysql-admin-${i}.cnf.XXXXXX")
-            chmod 600 "$CNF_FILE"
-            cat > "$CNF_FILE" << EOF
-          [client]
-          user=${ADMIN_USER}
-          host=${HOST}
-          port=${PORT}
-          EOF
-            export MYSQL_PWD="$ADMIN_PASSWORD"
-
-            NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
-
-            ALTER_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -e "ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED BY '${NR_PASSWORD}';" 2>&1)
-            ALTER_STATUS=$?
-            rm -f "$CNF_FILE"
-            unset MYSQL_PWD
-
-            if [ $ALTER_STATUS -ne 0 ]; then
-              echo "${i}: failed to set the monitoring user's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
-              echo "Instance ${i} (${HOST}) SKIPPED: failed to set the monitoring user's password" >&2
+            # Reuse the password configure_database_user already set on this user - no
+            # need to generate and apply a second one.
+            NR_PASSWORD=$(grep "^${i}=" "$PASSWORDS_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+            if [ -z "$NR_PASSWORD" ]; then
+              echo "${i}: monitoring user password not found - configure_database_user did not record one" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring user password not found" >&2
               continue
             fi
 
@@ -907,7 +897,7 @@ install:
             fi
           done < "$INSTANCES_TSV"
 
-          rm -f /tmp/nr-mysql-admin-*.cnf.* /tmp/nr-mysql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE"
+          rm -f /tmp/nr-mysql-admin-*.cnf.* /tmp/nr-mysql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE" /tmp/nr-mysql-rds-passwords.tmp
 
     default:
       cmds:

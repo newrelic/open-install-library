@@ -235,7 +235,7 @@ install:
             eval "SUPERUSER_PASSWORD=\"\${NR_CLI_POSTGRES_SUPERUSER_PASSWORD_${i}}\""
             export PGPASSWORD="$SUPERUSER_PASSWORD"
 
-            RESULT=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d postgres -tA -c "SELECT current_setting('server_version_num');" 2>&1)
+            RESULT=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d postgres -tA -c "SELECT current_setting('server_version_num');" 2>&1 < /dev/null)
             VERSION_STATUS=$?
 
             if [ $VERSION_STATUS -ne 0 ]; then
@@ -253,7 +253,7 @@ install:
               continue
             fi
 
-            PRELOAD=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d postgres -tA -c "SHOW shared_preload_libraries;" 2>&1)
+            PRELOAD=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d postgres -tA -c "SHOW shared_preload_libraries;" 2>&1 < /dev/null)
             unset PGPASSWORD
 
             if ! echo "$PRELOAD" | grep -qi "pg_stat_statements"; then
@@ -368,7 +368,7 @@ install:
           GRANT pg_monitor TO ${LOGIN_NAME};
           EOF
 
-            RESULT=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d postgres -v ON_ERROR_STOP=1 -f "$SQL_FILE" 2>&1)
+            RESULT=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d postgres -v ON_ERROR_STOP=1 -f "$SQL_FILE" 2>&1 < /dev/null)
             ROLE_STATUS=$?
             rm -f "$SQL_FILE"
 
@@ -450,7 +450,7 @@ install:
             for db in "$@"; do
               db_trimmed=$(echo "$db" | xargs)
               [ -z "$db_trimmed" ] && continue
-              DB_RESULT=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d "$db_trimmed" -v ON_ERROR_STOP=1 -f "$PERDB_SQL_FILE" 2>&1)
+              DB_RESULT=$(psql -h "$HOST" -p "$PORT" -U "$SUPERUSER_USER" -d "$db_trimmed" -v ON_ERROR_STOP=1 -f "$PERDB_SQL_FILE" 2>&1 < /dev/null)
               if [ $? -ne 0 ]; then
                 echo "${i}: failed to configure database '${db_trimmed}' - $(echo "$DB_RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
                 echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to configure database '${db_trimmed}'" >&2
