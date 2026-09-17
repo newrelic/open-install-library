@@ -315,6 +315,11 @@ install:
           SECRETS_FILE="{{.NR_CLI_MYSQL_SECRETS_FILE}}"
           INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
           SKIP_FILE="/tmp/nr-mysql-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mysql-passwords.tmp"
+
+          rm -f "$PASSWORDS_FILE"
+          : > "$PASSWORDS_FILE"
+          chmod 600 "$PASSWORDS_FILE"
 
           # shellcheck disable=SC1090
           . "$SECRETS_FILE"
@@ -366,6 +371,7 @@ install:
               continue
             fi
 
+            echo "${i}=${NR_PASSWORD}" >> "$PASSWORDS_FILE"
             echo "Instance ${i} (${HOST}:${PORT}): MySQL monitoring identity configured successfully: $LOGIN_NAME"
           done < "$INSTANCES_TSV"
 
@@ -380,6 +386,7 @@ install:
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
           INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
           SKIP_FILE="/tmp/nr-mysql-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mysql-passwords.tmp"
 
           mkdir -p "$CONFIG_DIR"
 
@@ -520,51 +527,14 @@ install:
               continue
             fi
 
-            eval "ROOT_PASSWORD=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}}\""
-
-            CNF_FILE=$(mktemp "/tmp/nr-mysql-admin-${i}.cnf.XXXXXX")
-            chmod 600 "$CNF_FILE"
-            cat > "$CNF_FILE" << EOF
-          [client]
-          user=root
-          host=${HOST}
-          port=${PORT}
-          EOF
-            export MYSQL_PWD="$ROOT_PASSWORD"
-
-            NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
-
-            ALTER_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -e "ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED WITH mysql_native_password BY '${NR_PASSWORD}'; FLUSH PRIVILEGES;" 2>&1)
-            ALTER_STATUS=$?
-
-            if [ $ALTER_STATUS -ne 0 ]; then
-              rm -f "$CNF_FILE"
-              unset MYSQL_PWD
-              echo "${i}: failed to set the monitoring user's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
-              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to set the monitoring user's password" >&2
+            # Reuse the password configure_database_user already set on this user - no
+            # need to generate and apply a second one.
+            NR_PASSWORD=$(grep "^${i}=" "$PASSWORDS_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+            if [ -z "$NR_PASSWORD" ]; then
+              echo "${i}: monitoring user password not found - configure_database_user did not record one" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: monitoring user password not found" >&2
               continue
             fi
-
-            # TEMPORARY DIAGNOSTIC: query the server's own catalog for this account's
-            # actual state right after the ALTER, using the same root connection that
-            # just set it - direct evidence instead of inferring from a client's error.
-            CATALOG_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT user, host, plugin, account_locked, password_expired FROM mysql.user WHERE user = '${LOGIN_NAME}';" 2>&1)
-            echo "DIAG: mysql.user catalog row(s) for '${LOGIN_NAME}' on instance ${i}:" >&2
-            echo "$CATALOG_RESULT" | sed 's/^/DIAG: | /' >&2
-
-            rm -f "$CNF_FILE"
-            unset MYSQL_PWD
-
-            # TEMPORARY DIAGNOSTIC: verify the monitoring user's own credentials work over
-            # an EXPLICIT TCP connection (matching exactly how the collector's receiver
-            # connects - transport: tcp), immediately after setting them, using the same
-            # host/port the receiver's endpoint will use. This isolates whether a mismatch
-            # is server-side (account/password) or specific to the collector's own Go
-            # driver. Remove once the mysql.% data-delivery issue is root-caused.
-            VERIFY_RESULT=$(mysql -h "${HOST}" -P "${PORT}" --protocol=TCP -u "${LOGIN_NAME}" --password="${NR_PASSWORD}" -e "SELECT 1;" 2>&1 < /dev/null)
-            VERIFY_STATUS=$?
-            echo "DIAG: monitoring-user TCP connection test for instance ${i} (status=${VERIFY_STATUS}):" >&2
-            echo "$VERIFY_RESULT" | sed 's/^/DIAG: | /' >&2
 
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               {
@@ -871,15 +841,6 @@ install:
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
 
-          # TEMPORARY DIAGNOSTIC: dump the actual receiver block as written to disk -
-          # zero new external-tool invocations (unlike the mysql.user catalog query and
-          # TCP verification test above, which have shown a separate, unrelated failure
-          # to reconnect as root/the monitoring user on a SECOND client invocation within
-          # this same script - suspect a task-runner shell quirk, not a real account
-          # problem). This isolates whether the config file itself holds the right value.
-          echo "DIAG: generated receiver block in ${CONFIG_PATH}:" >&2
-          grep -A 4 "^  nrmysql" "$CONFIG_PATH" | sed 's/^/DIAG: | /' >&2
-
           echo "MySQL OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} instance(s))"
           echo "Env file written to ${ENV_FILE}"
 
@@ -905,19 +866,6 @@ install:
             exit 31
           fi
 
-          # TEMPORARY DIAGNOSTIC: systemd reporting the service "active" doesn't mean
-          # the mysqlreceiver is actually authenticating/scraping successfully - a
-          # connection/auth failure just logs an error and keeps retrying every
-          # collection_interval without crashing the process. Dump recent logs
-          # unconditionally (after giving it time for at least one scrape cycle) so a
-          # failing CI run shows the collector's own error instead of just "no data
-          # received downstream." Remove once the mysql.% data-delivery issue is root-caused.
-          echo ""
-          echo "==> NRDOT Collector recent logs (diagnostic):"
-          sleep 15
-          journalctl -u nrdot-collector --no-pager -n 100
-          echo ""
-
           INSTANCES_TSV="/tmp/nr-mysql-instances.tsv"
           SKIP_FILE="/tmp/nr-mysql-skip.tmp"
 
@@ -935,7 +883,7 @@ install:
             fi
           done < "$INSTANCES_TSV"
 
-          rm -f /tmp/nr-mysql-admin-*.cnf.* /tmp/nr-mysql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE"
+          rm -f /tmp/nr-mysql-admin-*.cnf.* /tmp/nr-mysql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE" /tmp/nr-mysql-passwords.tmp
 
     default:
       cmds:

@@ -166,13 +166,6 @@ install:
           fi
           echo "Found $INSTANCE_COUNT MSSQL instance(s) in $INSTANCES_FILE"
 
-          # TEMPORARY DIAGNOSTIC: an extra/mismatched instance has been observed on real
-          # infra downstream in assert_sql_server_version despite this count being
-          # correct - dump the raw TSV so we can see exactly what was parsed. Remove
-          # once root-caused.
-          echo "DIAG: raw INSTANCES_TSV content (cat -A):" >&2
-          cat -A "$INSTANCES_TSV" >&2 2>/dev/null || cat -A "$INSTANCES_TSV" >&2
-
           i=0
           while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_LOGIN_NAME; do
             i=$((i + 1))
@@ -200,11 +193,6 @@ install:
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
             i=$((i + 1))
 
-            # TEMPORARY DIAGNOSTIC: an unexplained extra iteration/version mismatch has
-            # been observed on real infra - print exactly what this iteration read
-            # before anything else can short-circuit it. Remove once root-caused.
-            echo "DIAG: loop iteration i=${i} HOST=[${HOST}] PORT=[${PORT}] LOGIN_NAME=[${LOGIN_NAME}]" >&2
-
             if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
               continue
             fi
@@ -216,12 +204,6 @@ install:
             RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1 < /dev/null)
             SQL_STATUS=$?
             unset SQLCMDPASSWORD
-
-            # TEMPORARY DIAGNOSTIC: dump the raw sqlcmd result unconditionally (not
-            # just on failure) so we can see exactly what text MAJOR_VERSION is being
-            # extracted from. Remove once root-caused.
-            echo "DIAG: raw sqlcmd RESULT for instance ${i} (status=${SQL_STATUS}):" >&2
-            echo "$RESULT" | sed 's/^/DIAG: | /' >&2
 
             if [ $SQL_STATUS -ne 0 ]; then
               echo "${i}: failed to connect / check version - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
@@ -302,6 +284,11 @@ install:
           SECRETS_FILE="{{.NR_CLI_MSSQL_SECRETS_FILE}}"
           INSTANCES_TSV="/tmp/nr-mssql-instances.tsv"
           SKIP_FILE="/tmp/nr-mssql-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mssql-passwords.tmp"
+
+          rm -f "$PASSWORDS_FILE"
+          : > "$PASSWORDS_FILE"
+          chmod 600 "$PASSWORDS_FILE"
 
           # shellcheck disable=SC1090
           . "$SECRETS_FILE"
@@ -377,14 +364,13 @@ install:
               continue
             fi
 
+            echo "${i}=${NR_PASSWORD}" >> "$PASSWORDS_FILE"
             echo "Instance ${i} (${HOST}:${PORT}): SQL Server monitoring identity configured successfully: $LOGIN_NAME"
           done < "$INSTANCES_TSV"
 
     create_collector_config:
       cmds:
         - |
-          export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
-
           PRESET="{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
@@ -393,6 +379,7 @@ install:
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
           INSTANCES_TSV="/tmp/nr-mssql-instances.tsv"
           SKIP_FILE="/tmp/nr-mssql-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mssql-passwords.tmp"
 
           mkdir -p "$CONFIG_DIR"
 
@@ -690,39 +677,14 @@ install:
               continue
             fi
 
-            eval "ADMIN_USER=\"\${NR_CLI_MSSQL_ADMIN_USER_${i}}\""
-            eval "ADMIN_PASSWORD=\"\${NR_CLI_MSSQL_ADMIN_PASSWORD_${i}}\""
-            export SQLCMDPASSWORD="$ADMIN_PASSWORD"
-
-            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-
-            ALTER_RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -Q "ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';" 2>&1 < /dev/null)
-            ALTER_STATUS=$?
-
-            if [ $ALTER_STATUS -ne 0 ]; then
-              unset SQLCMDPASSWORD
-              echo "${i}: failed to set the monitoring login's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
-              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to set the monitoring login's password" >&2
+            # Reuse the password configure_database_user already set on this login -
+            # no need to generate and apply a second one.
+            NR_PASSWORD=$(grep "^${i}=" "$PASSWORDS_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+            if [ -z "$NR_PASSWORD" ]; then
+              echo "${i}: monitoring login password not found - configure_database_user did not record one" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: monitoring login password not found" >&2
               continue
             fi
-
-            # TEMPORARY DIAGNOSTIC: query the server's own catalog for this login's
-            # actual state right after the ALTER, using the same admin connection that
-            # just set it - direct evidence instead of inferring from a client's error.
-            CATALOG_RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT name, is_disabled, is_policy_checked, is_expiration_checked, type_desc FROM sys.sql_logins WHERE name = '${LOGIN_NAME}';" 2>&1 < /dev/null)
-            echo "DIAG: sys.sql_logins catalog row(s) for '${LOGIN_NAME}' on instance ${i}:" >&2
-            echo "$CATALOG_RESULT" | sed 's/^/DIAG: | /' >&2
-
-            # TEMPORARY DIAGNOSTIC: verify the monitoring login's own credentials work
-            # with a fresh connection, immediately after setting them, using the same
-            # host/port/protocol the receiver's endpoint will use.
-            unset SQLCMDPASSWORD
-            export SQLCMDPASSWORD="$NR_PASSWORD"
-            VERIFY_RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${LOGIN_NAME}" -C -b -h -1 -Q "SELECT 1;" 2>&1 < /dev/null)
-            VERIFY_STATUS=$?
-            echo "DIAG: monitoring-login connection test for instance ${i} (status=${VERIFY_STATUS}):" >&2
-            echo "$VERIFY_RESULT" | sed 's/^/DIAG: | /' >&2
-            unset SQLCMDPASSWORD
 
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               {
@@ -848,16 +810,6 @@ install:
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
 
-          # TEMPORARY DIAGNOSTIC: dump the actual receiver block as written to disk -
-          # zero new external-tool invocations (unlike the sys.sql_logins catalog query
-          # and connection verification test above, which have shown a separate,
-          # unrelated failure to reconnect as admin/the monitoring login on a SECOND
-          # client invocation within this same script - suspect a task-runner shell
-          # quirk, not a real account problem). This isolates whether the config file
-          # itself holds the right value.
-          echo "DIAG: generated receiver block in ${CONFIG_PATH}:" >&2
-          grep -A 6 "^  nrsqlserver" "$CONFIG_PATH" | sed 's/^/DIAG: | /' >&2
-
           echo "MSSQL OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} instance(s))"
           echo "Env file written to ${ENV_FILE}"
 
@@ -883,20 +835,6 @@ install:
             exit 31
           fi
 
-          # TEMPORARY DIAGNOSTIC: systemd reporting the service "active" doesn't mean
-          # the nrsqlserver receiver is actually authenticating/scraping successfully -
-          # a connection/auth failure just logs an error and keeps retrying every
-          # collection_interval without crashing the process. Dump recent logs
-          # unconditionally (after giving it time for at least one scrape cycle) so a
-          # failing CI run shows the collector's own error instead of just "no data
-          # received downstream." Remove once the sqlserver.% data-delivery issue is
-          # root-caused.
-          echo ""
-          echo "==> NRDOT Collector recent logs (diagnostic):"
-          sleep 15
-          journalctl -u nrdot-collector --no-pager -n 100
-          echo ""
-
           INSTANCES_TSV="/tmp/nr-mssql-instances.tsv"
           SKIP_FILE="/tmp/nr-mssql-skip.tmp"
 
@@ -914,7 +852,7 @@ install:
             fi
           done < "$INSTANCES_TSV"
 
-          rm -f /tmp/nr-mssql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE"
+          rm -f /tmp/nr-mssql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE" /tmp/nr-mssql-passwords.tmp
 
     default:
       cmds:
