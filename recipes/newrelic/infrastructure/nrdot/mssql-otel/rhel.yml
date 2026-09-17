@@ -698,20 +698,38 @@ install:
 
             ALTER_RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -Q "ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';" 2>&1 < /dev/null)
             ALTER_STATUS=$?
-            unset SQLCMDPASSWORD
 
             if [ $ALTER_STATUS -ne 0 ]; then
+              unset SQLCMDPASSWORD
               echo "${i}: failed to set the monitoring login's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
               echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to set the monitoring login's password" >&2
               continue
             fi
+
+            # TEMPORARY DIAGNOSTIC: query the server's own catalog for this login's
+            # actual state right after the ALTER, using the same admin connection that
+            # just set it - direct evidence instead of inferring from a client's error.
+            CATALOG_RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT name, is_disabled, is_policy_checked, is_expiration_checked, type_desc FROM sys.sql_logins WHERE name = '${LOGIN_NAME}';" 2>&1 < /dev/null)
+            echo "DIAG: sys.sql_logins catalog row(s) for '${LOGIN_NAME}' on instance ${i}:" >&2
+            echo "$CATALOG_RESULT" | sed 's/^/DIAG: | /' >&2
+
+            # TEMPORARY DIAGNOSTIC: verify the monitoring login's own credentials work
+            # with a fresh connection, immediately after setting them, using the same
+            # host/port/protocol the receiver's endpoint will use.
+            unset SQLCMDPASSWORD
+            export SQLCMDPASSWORD="$NR_PASSWORD"
+            VERIFY_RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${LOGIN_NAME}" -C -b -h -1 -Q "SELECT 1;" 2>&1 < /dev/null)
+            VERIFY_STATUS=$?
+            echo "DIAG: monitoring-login connection test for instance ${i} (status=${VERIFY_STATUS}):" >&2
+            echo "$VERIFY_RESULT" | sed 's/^/DIAG: | /' >&2
+            unset SQLCMDPASSWORD
 
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               {
                 echo "  nrsqlserver/instance${i}:"
                 echo "    collection_interval: 15s"
                 echo "    username: ${LOGIN_NAME}"
-                echo "    password: ${NR_PASSWORD}"
+                echo "    password: \"${NR_PASSWORD}\""
                 echo "    server: ${HOST}"
                 echo "    port: ${PORT}"
                 echo "    metrics:"
@@ -724,7 +742,7 @@ install:
                 echo "  nrsqlserver/instance${i}: &nrsqlserver-common"
                 echo "    collection_interval: 15s"
                 echo "    username: ${LOGIN_NAME}"
-                echo "    password: ${NR_PASSWORD}"
+                echo "    password: \"${NR_PASSWORD}\""
                 echo "    server: ${HOST}"
                 echo "    port: ${PORT}"
                 echo "    metrics:"
@@ -738,7 +756,7 @@ install:
                 echo "  nrsqlserver/instance${i}:"
                 echo "    <<: *nrsqlserver-common"
                 echo "    username: ${LOGIN_NAME}"
-                echo "    password: ${NR_PASSWORD}"
+                echo "    password: \"${NR_PASSWORD}\""
                 echo "    server: ${HOST}"
                 echo "    port: ${PORT}"
               } >> "$CONFIG_PATH"

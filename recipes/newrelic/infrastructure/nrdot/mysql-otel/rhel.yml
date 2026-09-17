@@ -523,14 +523,24 @@ install:
 
             ALTER_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -e "ALTER USER '${LOGIN_NAME}'@'%' IDENTIFIED WITH mysql_native_password BY '${NR_PASSWORD}';" 2>&1)
             ALTER_STATUS=$?
-            rm -f "$CNF_FILE"
-            unset MYSQL_PWD
 
             if [ $ALTER_STATUS -ne 0 ]; then
+              rm -f "$CNF_FILE"
+              unset MYSQL_PWD
               echo "${i}: failed to set the monitoring user's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
               echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to set the monitoring user's password" >&2
               continue
             fi
+
+            # TEMPORARY DIAGNOSTIC: query the server's own catalog for this account's
+            # actual state right after the ALTER, using the same root connection that
+            # just set it - direct evidence instead of inferring from a client's error.
+            CATALOG_RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT user, host, plugin, account_locked, password_expired FROM mysql.user WHERE user = '${LOGIN_NAME}';" 2>&1)
+            echo "DIAG: mysql.user catalog row(s) for '${LOGIN_NAME}' on instance ${i}:" >&2
+            echo "$CATALOG_RESULT" | sed 's/^/DIAG: | /' >&2
+
+            rm -f "$CNF_FILE"
+            unset MYSQL_PWD
 
             # TEMPORARY DIAGNOSTIC: verify the monitoring user's own credentials work over
             # an EXPLICIT TCP connection (matching exactly how the collector's receiver
