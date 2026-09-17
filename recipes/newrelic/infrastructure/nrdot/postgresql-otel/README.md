@@ -68,19 +68,22 @@ EOF
 
 ### Step 2: create the secrets file
 
-Each local instance has its own `postgres` superuser password. Index them to match the
-instances file's order:
+Each local instance has its own superuser username and password (any superuser role
+works — it doesn't have to be `postgres`). Index them to match the instances file's
+order:
 
 ```bash
 umask 077
 cat > ~/postgres-secrets.env << 'EOF'
+NR_CLI_POSTGRES_SUPERUSER_USER_1=postgres
 NR_CLI_POSTGRES_SUPERUSER_PASSWORD_1=YourSuperuserPassword1
+NR_CLI_POSTGRES_SUPERUSER_USER_2=postgres
 NR_CLI_POSTGRES_SUPERUSER_PASSWORD_2=YourSuperuserPassword2
 EOF
 chmod 600 ~/postgres-secrets.env
 ```
-`NR_CLI_POSTGRES_SUPERUSER_PASSWORD_<i>` is required for every instance — there's no
-admin *username* field here (self-hosted always connects as `postgres`).
+Both `NR_CLI_POSTGRES_SUPERUSER_USER_<i>` and `NR_CLI_POSTGRES_SUPERUSER_PASSWORD_<i>`
+are required for every instance.
 
 A fresh install has no password set on `postgres` by default — set one first on **each**
 instance:

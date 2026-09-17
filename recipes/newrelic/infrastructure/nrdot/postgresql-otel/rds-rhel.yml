@@ -82,6 +82,13 @@ inputVars:
     prompt: "Path to the PostgreSQL RDS instances YAML file: "
   - name: NR_CLI_POSTGRES_SECRETS_FILE
     prompt: "Path to the PostgreSQL RDS secrets file (KEY=VALUE per instance): "
+  - name: NR_CLI_POSTGRES_ENABLE_EXPLAIN_HELPER
+    prompt: >-
+      Collect query plans for locking/write statements too? Creates a
+      SECURITY DEFINER helper function (otel.explain_statement) in each
+      monitored database, granting the monitoring user EXPLAIN execution
+      without granting DML access. PREVIEW feature (y/N):
+    default: "n"
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'postgresql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -310,6 +317,12 @@ install:
           SECRETS_FILE="{{.NR_CLI_POSTGRES_SECRETS_FILE}}"
           INSTANCES_TSV="/tmp/nr-postgres-rds-instances.tsv"
           SKIP_FILE="/tmp/nr-postgres-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-postgres-rds-passwords.tmp"
+          ENABLE_EXPLAIN_HELPER="{{.NR_CLI_POSTGRES_ENABLE_EXPLAIN_HELPER}}"
+
+          rm -f "$PASSWORDS_FILE"
+          : > "$PASSWORDS_FILE"
+          chmod 600 "$PASSWORDS_FILE"
 
           # shellcheck disable=SC1090
           . "$SECRETS_FILE"
@@ -367,6 +380,55 @@ install:
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${LOGIN_NAME};
           EOF
 
+            # Opt-in only (NR_CLI_POSTGRES_ENABLE_EXPLAIN_HELPER) - this is a
+            # SECURITY DEFINER function, a real privilege-escalation primitive, so it's
+            # never created unless explicitly requested. SQL copied verbatim from
+            # https://docs.newrelic.com/docs/opentelemetry/database/postgresql/explain-permissions/
+            case "$ENABLE_EXPLAIN_HELPER" in
+              y|Y|yes|YES|Yes)
+                cat >> "$PERDB_SQL_FILE" << EOF
+          CREATE OR REPLACE FUNCTION otel.explain_statement(l_query text)
+          RETURNS json
+          LANGUAGE plpgsql
+          SECURITY DEFINER
+          AS \$\$
+          DECLARE
+              v_plan json;
+              v_param_count int;
+              v_nulls text := '';
+              i int;
+          BEGIN
+              SET TRANSACTION READ ONLY;
+              SET plan_cache_mode = force_generic_plan;
+
+              EXECUTE 'PREPARE otel_explain_stmt AS ' || l_query;
+
+              SELECT COALESCE(array_length(parameter_types, 1), 0) INTO v_param_count
+              FROM pg_prepared_statements WHERE name = 'otel_explain_stmt';
+
+              IF v_param_count > 0 THEN
+                  FOR i IN 1..v_param_count LOOP
+                      v_nulls := v_nulls || CASE WHEN i > 1 THEN ', ' ELSE '' END || 'null';
+                  END LOOP;
+                  v_nulls := '(' || v_nulls || ')';
+              END IF;
+
+              EXECUTE 'EXPLAIN (FORMAT JSON) EXECUTE otel_explain_stmt' || v_nulls INTO v_plan;
+              DEALLOCATE otel_explain_stmt;
+              RETURN v_plan;
+          EXCEPTION WHEN OTHERS THEN
+              IF EXISTS (SELECT 1 FROM pg_prepared_statements WHERE name = 'otel_explain_stmt') THEN
+                  DEALLOCATE otel_explain_stmt;
+              END IF;
+              RAISE;
+          END;
+          \$\$;
+
+          GRANT EXECUTE ON FUNCTION otel.explain_statement(text) TO ${LOGIN_NAME};
+          EOF
+                ;;
+            esac
+
             OLD_IFS="$IFS"
             IFS=','
             set -- $DATABASES
@@ -395,6 +457,7 @@ install:
               continue
             fi
 
+            echo "${i}=${NR_PASSWORD}" >> "$PASSWORDS_FILE"
             echo "Instance ${i} (${HOST}): PostgreSQL monitoring identity configured successfully: $LOGIN_NAME"
           done < "$INSTANCES_TSV"
 
@@ -409,6 +472,7 @@ install:
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
           INSTANCES_TSV="/tmp/nr-postgres-rds-instances.tsv"
           SKIP_FILE="/tmp/nr-postgres-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-postgres-rds-passwords.tmp"
           COLLECTION_INTERVAL="15s"
 
           mkdir -p "$CONFIG_DIR"
@@ -552,19 +616,12 @@ install:
               continue
             fi
 
-            eval "ADMIN_USER=\"\${NR_CLI_POSTGRES_ADMIN_USER_${i}}\""
-            eval "ADMIN_PASSWORD=\"\${NR_CLI_POSTGRES_ADMIN_PASSWORD_${i}}\""
-            export PGPASSWORD="$ADMIN_PASSWORD"
-
-            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-
-            ALTER_RESULT=$(psql -h "$HOST" -p "$PORT" -U "$ADMIN_USER" -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE ${LOGIN_NAME} WITH LOGIN PASSWORD '${NR_PASSWORD}';" 2>&1)
-            ALTER_STATUS=$?
-            unset PGPASSWORD
-
-            if [ $ALTER_STATUS -ne 0 ]; then
-              echo "${i}: failed to set the monitoring role's password - $(echo "$ALTER_RESULT" | tr '\n' ' ')" >> "$SKIP_FILE"
-              echo "Instance ${i} (${HOST}) SKIPPED: failed to set the monitoring role's password" >&2
+            # Reuse the password configure_database_user already set on this role -
+            # no need to generate and apply a second one.
+            NR_PASSWORD=$(grep "^${i}=" "$PASSWORDS_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+            if [ -z "$NR_PASSWORD" ]; then
+              echo "${i}: monitoring role password not found - configure_database_user did not record one" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring role password not found" >&2
               continue
             fi
 
@@ -932,7 +989,7 @@ install:
             fi
           done < "$INSTANCES_TSV"
 
-          rm -f /tmp/nr-postgres-grant-*.sql.* /tmp/nr-postgres-perdb-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE"
+          rm -f /tmp/nr-postgres-grant-*.sql.* /tmp/nr-postgres-perdb-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE" /tmp/nr-postgres-rds-passwords.tmp
 
     default:
       cmds:
@@ -953,10 +1010,12 @@ postInstall:
       View logs:               journalctl -u nrdot-collector -f
       Restart service:         sudo systemctl restart nrdot-collector
 
-      Note: query plans for locking or write statements are not collected by
-      default. Enabling that requires creating an otel.explain_statement()
-      SECURITY DEFINER helper function in each monitored database and granting
-      EXECUTE on it to the monitoring user - see:
+      Note: query plans for locking or write statements are only collected if
+      you opted in during install (creates an otel.explain_statement()
+      SECURITY DEFINER helper function in each monitored database, granting
+      the monitoring user EXPLAIN execution without DML access - a PREVIEW
+      feature). If you skipped that prompt, you can still enable it later by
+      running the recipe again or creating the function manually - see:
       https://docs.newrelic.com/docs/opentelemetry/database/postgresql/explain-permissions/
 
       Known limitation (RDS/Aurora only): the top_query feature reads from
