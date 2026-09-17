@@ -62,20 +62,22 @@ EOF
 
 ### Step 2: create the secrets file
 
-Each local instance has its own `root` password. Index them to match the instances
-file's order:
+Each local instance has its own admin username and password (any user with full
+administrative privileges works — it doesn't have to be `root`). Index them to match
+the instances file's order:
 
 ```bash
 umask 077
 cat > ~/mysql-secrets.env << 'EOF'
-NR_CLI_MYSQL_ROOT_PASSWORD_1=YourRootPassword1
-NR_CLI_MYSQL_ROOT_PASSWORD_2=YourRootPassword2
+NR_CLI_MYSQL_ADMIN_USER_1=root
+NR_CLI_MYSQL_ADMIN_PASSWORD_1=YourRootPassword1
+NR_CLI_MYSQL_ADMIN_USER_2=root
+NR_CLI_MYSQL_ADMIN_PASSWORD_2=YourRootPassword2
 EOF
 chmod 600 ~/mysql-secrets.env
 ```
-`NR_CLI_MYSQL_ROOT_PASSWORD_<i>` is required for every instance — there's no admin
-*username* field here (self-hosted always connects as `root`, matching the single-
-instance recipe this was extended from).
+Both `NR_CLI_MYSQL_ADMIN_USER_<i>` and `NR_CLI_MYSQL_ADMIN_PASSWORD_<i>` are required
+for every instance.
 
 If `root`@`localhost` uses the `auth_socket` plugin (common on fresh Debian/Ubuntu
 installs — no password, local-socket-only), switch it first on **each** instance:

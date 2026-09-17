@@ -34,13 +34,14 @@ preInstall:
     - targeted
   info: |
     To capture data from one or more local MySQL instances, we need to create/authorize
-    a monitoring identity (a MySQL user) on each, using each instance's 'root' account.
+    a monitoring identity (a MySQL user) on each, using an existing user with full
+    administrative privileges (e.g. 'root', or any equivalent account) on each instance.
 
-    Note: this installer connects to MySQL over TCP using a password, so 'root' must
-    use password-based authentication on every instance. On some Debian/Ubuntu installs,
-    'root'@'localhost' defaults to the auth_socket plugin (no password, local-socket-only)
-    or another state with no known password, and will not work here. Switch it first, run
-    locally as root on each instance:
+    Note: this installer connects to MySQL over TCP using a password, so that admin
+    account must use password-based authentication on every instance. On some
+    Debian/Ubuntu installs, 'root'@'localhost' defaults to the auth_socket plugin (no
+    password, local-socket-only) or another state with no known password, and will not
+    work here. Switch it first, run locally as root on each instance:
       mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '<password>';"
     If that itself fails with "Access denied", the mysql-server package also creates a
     debian-sys-maint account with known admin credentials in /etc/mysql/debian.cnf for
@@ -63,13 +64,18 @@ preInstall:
                port: 3307
                login_name: newrelic
 
-      2. A secrets file (KEY=VALUE per line) supplying the 'root' password for each
-         instance above, indexed to match the instances file's order (1-based):
+      2. A secrets file (KEY=VALUE per line) supplying an admin username and password
+         for each instance above, indexed to match the instances file's order
+         (1-based). Any user with full administrative privileges works - it doesn't
+         have to be 'root':
 
-           NR_CLI_MYSQL_ROOT_PASSWORD_1=<root password for instance 1>
-           NR_CLI_MYSQL_ROOT_PASSWORD_2=<root password for instance 2>
+           NR_CLI_MYSQL_ADMIN_USER_1=root
+           NR_CLI_MYSQL_ADMIN_PASSWORD_1=<admin password for instance 1>
+           NR_CLI_MYSQL_ADMIN_USER_2=root
+           NR_CLI_MYSQL_ADMIN_PASSWORD_2=<admin password for instance 2>
 
-         NR_CLI_MYSQL_ROOT_PASSWORD_<i> is required for every instance.
+         Both NR_CLI_MYSQL_ADMIN_USER_<i> and NR_CLI_MYSQL_ADMIN_PASSWORD_<i> are
+         required for every instance.
 
     Any instance that fails its version check or user setup is skipped (with a reason)
     rather than aborting the whole install - the rest are still configured.
@@ -179,10 +185,11 @@ install:
           i=0
           while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_LOGIN_NAME; do
             i=$((i + 1))
-            eval "ROOT_PASSWORD_VAL=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}:-}\""
-            if [ -z "$ROOT_PASSWORD_VAL" ]; then
-              echo "${i}: missing NR_CLI_MYSQL_ROOT_PASSWORD_${i} in secrets file" >> "$SKIP_FILE"
-              echo "Instance ${i} (${ENTRY_HOST}:${ENTRY_PORT}) SKIPPED: missing root password in secrets file" >&2
+            eval "ADMIN_USER_VAL=\"\${NR_CLI_MYSQL_ADMIN_USER_${i}:-}\""
+            eval "ADMIN_PASSWORD_VAL=\"\${NR_CLI_MYSQL_ADMIN_PASSWORD_${i}:-}\""
+            if [ -z "$ADMIN_USER_VAL" ] || [ -z "$ADMIN_PASSWORD_VAL" ]; then
+              echo "${i}: missing NR_CLI_MYSQL_ADMIN_USER_${i}/NR_CLI_MYSQL_ADMIN_PASSWORD_${i} in secrets file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}:${ENTRY_PORT}) SKIPPED: missing admin credentials in secrets file" >&2
             fi
           done < "$INSTANCES_TSV"
 
@@ -203,17 +210,18 @@ install:
               continue
             fi
 
-            eval "ROOT_PASSWORD=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}}\""
+            eval "ADMIN_USER=\"\${NR_CLI_MYSQL_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_MYSQL_ADMIN_PASSWORD_${i}}\""
 
             CNF_FILE=$(mktemp "/tmp/nr-mysql-admin-${i}.cnf.XXXXXX")
             chmod 600 "$CNF_FILE"
             cat > "$CNF_FILE" << EOF
           [client]
-          user=root
+          user=${ADMIN_USER}
           host=${HOST}
           port=${PORT}
           EOF
-            export MYSQL_PWD="$ROOT_PASSWORD"
+            export MYSQL_PWD="$ADMIN_PASSWORD"
 
             RESULT=$(mysql --defaults-extra-file="$CNF_FILE" -N -e "SELECT VERSION();" 2>&1)
             VERSION_STATUS=$?
@@ -337,18 +345,19 @@ install:
               continue
             fi
 
-            eval "ROOT_PASSWORD=\"\${NR_CLI_MYSQL_ROOT_PASSWORD_${i}}\""
+            eval "ADMIN_USER=\"\${NR_CLI_MYSQL_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_MYSQL_ADMIN_PASSWORD_${i}}\""
 
             CNF_FILE=$(mktemp "/tmp/nr-mysql-admin-${i}.cnf.XXXXXX")
             SQL_FILE=$(mktemp "/tmp/nr-mysql-grant-${i}.sql.XXXXXX")
             chmod 600 "$CNF_FILE" "$SQL_FILE"
             cat > "$CNF_FILE" << EOF
           [client]
-          user=root
+          user=${ADMIN_USER}
           host=${HOST}
           port=${PORT}
           EOF
-            export MYSQL_PWD="$ROOT_PASSWORD"
+            export MYSQL_PWD="$ADMIN_PASSWORD"
 
             NR_PASSWORD="$(tr -dc 'a-z' < /dev/urandom | head -c 6)$(tr -dc 'A-Z' < /dev/urandom | head -c 6)$(tr -dc '0-9' < /dev/urandom | head -c 6)$(tr -dc '_+=.~^-' < /dev/urandom | head -c 6)"
 
