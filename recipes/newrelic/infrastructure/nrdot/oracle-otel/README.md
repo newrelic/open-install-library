@@ -27,6 +27,22 @@ monitoring every instance you listed. If an instance fails its version check or 
 setup, it's skipped (with a reason) rather than aborting the whole install — the rest
 still get configured.
 
+> **Breaking change, no fallback:** these recipes previously took a single-instance set
+> of flat inputVars. For self-hosted (`oci-linux.yml`): `NR_CLI_ORACLE_CONTAINER_TYPE`,
+> `NR_CLI_ORACLE_PDB_NAME`, `NR_CLI_ORACLE_HOST`, `NR_CLI_ORACLE_PORT`,
+> `NR_CLI_ORACLE_SSH_USER`, `NR_CLI_ORACLE_LOGIN_NAME`, `NR_CLI_ORACLE_LOGIN_PASSWORD`,
+> `NR_CLI_ORACLE_SERVICE_NAME`. For RDS: the same shape with
+> `NR_CLI_ORACLE_ADMIN_USER`/`NR_CLI_ORACLE_ADMIN_PASSWORD` in place of SSH access. All
+> of these vars have been **removed entirely**, with no deprecated/compatibility path —
+> most of what they configured (container type, PDB name, service name, per-instance
+> credentials) is now a **field inside each instance entry** in the instances file
+> rather than a top-level var, so there's no 1:1 substitution possible even for a
+> single-instance install. A scripted or `-y` install still setting the old vars will
+> have them silently ignored and then fail with "Instances file not found" rather than a
+> clear migration error. This is an intentional redesign, made while these recipes are
+> still marked `WORK IN PROGRESS - not for use` — update any existing automation to the
+> new instances-file/secrets-file inputs before relying on this recipe.
+
 ---
 
 ## AWS RDS (`rds-debian.yml` / `rds-rhel.yml`)
@@ -93,8 +109,9 @@ Optional per instance: `NR_CLI_ORACLE_LOGIN_PASSWORD_<i>=SomeFixedPassword` — 
 monitoring user's password explicitly instead of letting the recipe auto-generate a
 random one. Leave it unset (the common case) to auto-generate.
 
-The recipe sources this file directly — it does not need to be valid shell beyond plain
-`KEY=VALUE` assignment.
+The recipe parses this file as plain `KEY=VALUE` lines — it never executes it as a
+shell script, so anything beyond a simple assignment on a line (shell syntax, command
+substitution, etc.) is safely ignored rather than run.
 
 Create it with restrictive permissions from the start:
 ```bash
@@ -108,10 +125,10 @@ EOF
 chmod 600 ~/oracle-secrets.env   # redundant with umask, but explicit
 ```
 
-If the file ends up group/world-readable, the recipe prints a warning (and tells you the
-exact `chmod` to run) but still proceeds — it's a warning, not a hard failure. The
-recipe never deletes this file (it's yours to manage and may be reused across
-reinstalls).
+If the file ends up group/world-readable, the recipe refuses to proceed at all (prints
+the exact `chmod` to run, then exits) rather than just warning — fix the permissions and
+re-run. The recipe never deletes this file (it's yours to manage and may be reused
+across reinstalls).
 
 ### Step 3: run the install
 
@@ -214,6 +231,9 @@ NR_CLI_ORACLE_LOGIN_PASSWORD_1=SomeFixedPassword1
 EOF
 chmod 600 ~/oracle-secrets.env
 ```
+
+If you do provide this file and it ends up group/world-readable, the recipe refuses to
+proceed (same hard-fail behavior as the RDS recipes above) rather than just warning.
 
 Leave the secrets file path blank at the install prompt (or point it at a file that
 doesn't exist) if you don't need to pin any passwords — every instance will

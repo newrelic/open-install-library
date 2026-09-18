@@ -21,6 +21,19 @@ Each PostgreSQL instance also needs its own **list of databases** to monitor. An
 instance that fails its checks (version, missing databases, role setup) is skipped
 (with a reason) rather than aborting the whole install.
 
+> **Breaking change, no fallback:** these recipes previously took a single-instance set
+> of flat inputVars — `NR_CLI_POSTGRES_SERVER`, `NR_CLI_POSTGRES_PORT`,
+> `NR_CLI_POSTGRES_SUPERUSER_PASSWORD`, `NR_CLI_POSTGRES_LOGIN_NAME`,
+> `NR_CLI_POSTGRES_DATABASES` for self-hosted, plus
+> `NR_CLI_POSTGRES_MASTER_USER`/`NR_CLI_POSTGRES_MASTER_PASSWORD` for RDS. Those vars
+> have been **removed entirely**, with no deprecated/compatibility path, in favor of the
+> two-file pattern documented below. A scripted or `-y` install still setting the old
+> vars will have them silently ignored and then fail with "Instances file not found"
+> rather than a clear migration error. This is an intentional redesign, made while these
+> recipes are still marked `WORK IN PROGRESS - not for use` — update any existing
+> automation to the new instances-file/secrets-file inputs before relying on this
+> recipe.
+
 ---
 
 ## Self-hosted (`debian.yml` / `rhel.yml`)
@@ -103,7 +116,8 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 (swap `rhel.yml` on a RHEL/CentOS host)
 
 Prompts: `NRDOT configuration` (1=Standard, 2=Full-feature), instances file path,
-secrets file path.
+secrets file path, and a **PREVIEW** opt-in for write-statement query plans — see
+"EXPLAIN helper (preview, opt-in)" in Notes below before deciding whether to enable it.
 
 ---
 
@@ -167,7 +181,8 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 (swap `rds-rhel.yml` on a RHEL/CentOS host)
 
 Prompts: `NRDOT configuration` (1=Standard, 2=Full-feature), instances file path,
-secrets file path.
+secrets file path, and a **PREVIEW** opt-in for write-statement query plans — see
+"EXPLAIN helper (preview, opt-in)" in Notes below before deciding whether to enable it.
 
 ---
 
@@ -202,3 +217,14 @@ reason for any skipped instance).
 - RDS/Aurora only: expect recurring `pg_hba.conf rejects connection ... database
   "rdsadmin"` lines in the collector logs for every instance — this doesn't affect
   metric or query-sample collection (see the RDS recipe's `postInstall` note for why).
+- **EXPLAIN helper (preview, opt-in):** by default, write/locking statements only get
+  inline `EXPLAIN` plans, which fail with a permission error if the monitoring role
+  lacks DML access (which it should never have). Answering `y` to the install-time
+  prompt creates an `otel.explain_statement()` `SECURITY DEFINER` function in each
+  monitored database, granting the monitoring role `EXPLAIN` execution without granting
+  DML — the exact SQL is copied verbatim from New Relic's docs at
+  https://docs.newrelic.com/docs/opentelemetry/database/postgresql/explain-permissions/.
+  This is a genuine privilege-escalation primitive (the function runs with the definer's
+  privileges, not the caller's), so it defaults to off and is flagged as a **Preview**
+  feature by New Relic's own docs. If you skip it at install time, you can still create
+  the function manually later, or re-run the recipe and answer `y`.

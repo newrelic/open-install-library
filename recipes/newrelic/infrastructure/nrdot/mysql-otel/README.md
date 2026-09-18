@@ -22,6 +22,18 @@ credential set, you provide two files — an instances file and a secrets file �
 instance that fails its checks is skipped (with a reason) rather than aborting the whole
 install.
 
+> **Breaking change, no fallback:** these recipes previously took a single-instance set
+> of flat inputVars — `NR_CLI_MYSQL_SERVER`, `NR_CLI_MYSQL_PORT`,
+> `NR_CLI_MYSQL_ROOT_PASSWORD`, `NR_CLI_MYSQL_LOGIN_NAME` for self-hosted, plus
+> `NR_CLI_MYSQL_MASTER_USER`/`NR_CLI_MYSQL_MASTER_PASSWORD` for RDS. Those vars have
+> been **removed entirely**, with no deprecated/compatibility path, in favor of the
+> two-file pattern documented below. A scripted or `-y` install still setting the old
+> vars will have them silently ignored and then fail with "Instances file not found"
+> rather than a clear migration error. This is an intentional redesign, made while these
+> recipes are still marked `WORK IN PROGRESS - not for use` — update any existing
+> automation to the new instances-file/secrets-file inputs before relying on this
+> recipe.
+
 ---
 
 ## Self-hosted (`debian.yml` / `rhel.yml`)

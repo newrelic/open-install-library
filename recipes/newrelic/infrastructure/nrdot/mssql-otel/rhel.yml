@@ -1,6 +1,5 @@
 # Visit our schema definition for additional information on this file format.
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
-# WORK IN PROGRESS - not for use.
 
 name: nrdot-collector-mssql
 displayName: NRDOT MSSQL (RHEL/CentOS)
@@ -138,13 +137,20 @@ install:
           if [ -n "$SECRETS_PERMS" ]; then
             GROUP_OTHER_BITS=$(printf '%s' "$SECRETS_PERMS" | tail -c 2)
             if [ "$GROUP_OTHER_BITS" != "00" ]; then
-              echo "WARNING: $SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS)." >&2
-              echo "         Consider running: chmod 600 $SECRETS_FILE" >&2
+              echo "$SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS) - refusing to proceed." >&2
+              echo "Run: chmod 600 $SECRETS_FILE" >&2
+              exit 131
             fi
           fi
 
-          # shellcheck disable=SC1090
-          . "$SECRETS_FILE"
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges).
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
 
           # Parses the fixed 3-key-per-item shape documented in preInstall.info
           # (host, port, login_name) - not a general-purpose YAML parser.
@@ -186,8 +192,14 @@ install:
           INSTANCES_TSV="/tmp/nr-mssql-instances.tsv"
           SKIP_FILE="/tmp/nr-mssql-skip.tmp"
 
-          # shellcheck disable=SC1090
-          . "$SECRETS_FILE"
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges) - permissions already validated in parse_instances.
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
 
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
@@ -290,8 +302,14 @@ install:
           : > "$PASSWORDS_FILE"
           chmod 600 "$PASSWORDS_FILE"
 
-          # shellcheck disable=SC1090
-          . "$SECRETS_FILE"
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges) - permissions already validated in parse_instances.
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
 
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do

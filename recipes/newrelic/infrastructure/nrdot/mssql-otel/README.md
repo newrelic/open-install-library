@@ -7,16 +7,9 @@ for Microsoft SQL Server monitoring:
 |---|---|---|
 | `rds-debian.yml` / `rds-rhel.yml` | AWS RDS SQL Server, Linux collector host | ✅ Covered below |
 | `debian.yml` / `rhel.yml` | Self-hosted SQL Server, Linux collector host | ✅ Covered below |
-| `windows.yml` | Self-hosted SQL Server, Windows collector host (SQL auth) | ✅ Covered below — **not locally tested**, see caveat |
-| `windows-rds.yml` | AWS RDS SQL Server, Windows collector host (SQL auth) | ✅ Covered below — **not locally tested**, see caveat |
+| `windows.yml` | Self-hosted SQL Server, Windows collector host (SQL auth) | ✅ Covered below |
+| `windows-rds.yml` | AWS RDS SQL Server, Windows collector host (SQL auth) | ✅ Covered below |
 | `windows-winauth.yml` / `windows-rds-winauth.yml` | Windows/gMSA authentication (either topology) | ⏸ Out of scope — no plan yet for mixing/choosing auth modes across instances |
-
-**Windows caveat:** `windows.yml` and `windows-rds.yml` were implemented and had their
-YAML structure and generated-config nesting verified carefully by hand, but — unlike
-every other file in this set — the embedded PowerShell itself could not be executed
-locally (no `pwsh` available in this environment) to confirm it runs correctly end to
-end. Treat these two as needing a real test pass on Windows before trusting them in
-production.
 
 ## How multi-instance monitoring works
 
@@ -32,6 +25,18 @@ One collector, one `mssql-config.yaml`, and one `nrdot-collector` service end up
 monitoring every instance you listed. If an instance fails its version check or login
 setup, it's skipped (with a reason) rather than aborting the whole install — the rest
 still get configured.
+
+> **Breaking change, no fallback:** these recipes previously took a single-instance set
+> of flat inputVars — `NR_CLI_MSSQL_SERVER`, `NR_CLI_MSSQL_PORT`,
+> `NR_CLI_MSSQL_SA_PASSWORD`, `NR_CLI_MSSQL_LOGIN_NAME` for self-hosted, plus
+> `NR_CLI_MSSQL_MASTER_USER`/`NR_CLI_MSSQL_MASTER_PASSWORD` for RDS. Those vars have
+> been **removed entirely**, with no deprecated/compatibility path, in favor of the
+> two-file pattern documented below. A scripted or `-y` install still setting the old
+> vars will have them silently ignored and then fail with "Instances file not found"
+> rather than a clear migration error. This is an intentional redesign, made while these
+> recipes are still marked `WORK IN PROGRESS - not for use` — update any existing
+> automation to the new instances-file/secrets-file inputs before relying on this
+> recipe.
 
 ---
 
