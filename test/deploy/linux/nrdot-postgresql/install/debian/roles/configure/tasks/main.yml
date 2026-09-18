@@ -75,3 +75,29 @@
 - name: Verify PostgreSQL is running
   shell: "systemctl status postgresql --no-pager"
   become: yes
+
+# The debian.yml recipe now takes an instances file + secrets file instead of
+# single host/port/password inputVars - write both here so the install-recipe
+# role's env_var can just point at their paths. 'postgres' (the maintenance
+# database) satisfies the "at least one database" requirement without needing
+# to create an app database on the test host.
+- name: Write NRDOT PostgreSQL instances file for the multi-instance recipe
+  copy:
+    dest: "/home/{{ ansible_user }}/nrdot-postgresql-instances.yml"
+    content: |
+      instances:
+        - host: localhost
+          port: 5432
+          login_name: newrelic
+          databases: [postgres]
+    mode: '0644'
+  become: yes
+
+- name: Write NRDOT PostgreSQL secrets file for the multi-instance recipe
+  copy:
+    dest: "/home/{{ ansible_user }}/nrdot-postgresql-secrets.env"
+    content: |
+      NR_CLI_POSTGRES_SUPERUSER_USER_1=postgres
+      NR_CLI_POSTGRES_SUPERUSER_PASSWORD_1=YourStrong@Passw0rd
+    mode: '0600'
+  become: yes

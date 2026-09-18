@@ -46,3 +46,28 @@
 - fail:
     msg: "Unable to authenticate as sa with the configured password"
   when: output is failed
+
+# windows.yml now takes an instances file + secrets file instead of single
+# host/port/login inputVars - write both here so the install-recipe role's
+# env_var can just point at their paths. Self-hosted no longer assumes 'sa'
+# specifically, but 'sa' is still a perfectly valid admin login to use.
+- name: Ensure C:\Temp exists
+  ansible.windows.win_file:
+    path: "C:\\Temp"
+    state: directory
+
+- name: Write NRDOT MSSQL instances file for the multi-instance recipe
+  ansible.windows.win_copy:
+    dest: "C:\\Temp\\nrdot-mssql-instances.yml"
+    content: |
+      instances:
+        - host: localhost
+          port: 1433
+          login_name: newrelic
+
+- name: Write NRDOT MSSQL secrets file for the multi-instance recipe
+  ansible.windows.win_copy:
+    dest: "C:\\Temp\\nrdot-mssql-secrets.env"
+    content: |
+      NR_CLI_MSSQL_ADMIN_USER_1=sa
+      NR_CLI_MSSQL_ADMIN_PASSWORD_1=YourStrong@Passw0rd
