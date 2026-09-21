@@ -86,6 +86,12 @@ install:
             exit 16
           fi
         - |
+          export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
+          if ! command -v sqlcmd > /dev/null 2>&1; then
+            echo "sqlcmd is required to configure SQL Server monitoring. Install the sqlcmd utility (https://learn.microsoft.com/sql/tools/sqlcmd/sqlcmd-utility) and re-run this recipe." >&2
+            exit 16
+          fi
+        - |
           if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
             echo "systemd is required for the nrdot-collector service configuration." >&2
             exit 131
@@ -290,10 +296,10 @@ install:
           fi
 
           case "$REGION" in
-            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
-            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
-            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
-            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4318" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4318" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net:4318" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4318" ;;
           esac
 
           cat > "$CONFIG_PATH" << EOF
@@ -334,32 +340,6 @@ install:
                   enabled: true
                 sqlserver.database.tempdb.version_store.size:
                   enabled: true
-                sqlserver.database.principals.count:
-                  enabled: true
-                sqlserver.database.principals.old:
-                  enabled: true
-                sqlserver.database.principals.orphaned_users:
-                  enabled: true
-                sqlserver.database.principals.recently_created:
-                  enabled: true
-                sqlserver.database.role.members.count:
-                  enabled: true
-                sqlserver.database.role.memberships.count:
-                  enabled: true
-                sqlserver.database.role.permission.risk_level:
-                  enabled: true
-                sqlserver.database.role.roles.count:
-                  enabled: true
-                sqlserver.database.security.role_membership.count:
-                  enabled: true
-                sqlserver.server.security.principal.count:
-                  enabled: true
-                sqlserver.server.security.role_membership.count:
-                  enabled: true
-                sqlserver.lock.by_mode.count:
-                  enabled: true
-                sqlserver.lock.by_resource.count:
-                  enabled: true
                 sqlserver.lock.timeout.rate:
                   enabled: true
                 sqlserver.lock.wait.count:
@@ -385,8 +365,6 @@ install:
                 sqlserver.memory.grants.pending.count:
                   enabled: true
                 sqlserver.memory.page.count:
-                  enabled: true
-                sqlserver.memory.target:
                   enabled: true
                 sqlserver.memory.usage:
                   enabled: true
@@ -500,8 +478,6 @@ install:
                   enabled: true
                 sqlserver.table.count:
                   enabled: true
-                sqlserver.kill_connection.error.rate:
-                  enabled: true
           EOF
           else
             cat >> "$CONFIG_PATH" << 'EOF'
@@ -540,6 +516,26 @@ install:
                 db.server.top_query:
                   enabled: true
 
+          EOF
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
+              top_query_collection:
+                lookback_time: 60s
+                max_query_sample_count: 500
+                top_query_count: 200
+                collection_interval: 60s
+
+              collect_full_query_text: true
+              allowed_comment_keys:
+                - nr_service_guid
+
+              query_sample_collection:
+                max_rows_per_query: 100
+
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
               top_query_collection:
                 lookback_time: 60s
                 max_query_sample_count: 1000
@@ -553,6 +549,10 @@ install:
               query_sample_collection:
                 max_rows_per_query: 100
 
+          EOF
+          fi
+
+          cat >> "$CONFIG_PATH" << 'EOF'
           processors:
           EOF
 
@@ -568,7 +568,7 @@ install:
 
           cat >> "$CONFIG_PATH" << EOF
           exporters:
-            otlphttp:
+            otlp:
               endpoint: ${OTLP_ENDPOINT}
               headers:
                 api-key: ${LICENSE_KEY}
@@ -585,12 +585,12 @@ install:
               metrics:
                 receivers: [nrsqlserver]
                 processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               logs:
                 receivers: [nrsqlserver]
                 processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
           EOF
 
           cat > "$ENV_FILE" << EOF
