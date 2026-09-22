@@ -43,9 +43,8 @@ still get configured.
 > rather than a top-level var, so there's no 1:1 substitution possible even for a
 > single-instance install. A scripted or `-y` install still setting the old vars will
 > have them silently ignored and then fail with "Instances file not found" rather than a
-> clear migration error. This is an intentional redesign, made while these recipes are
-> still marked `WORK IN PROGRESS - not for use` — update any existing automation to the
-> new instances-file/secrets-file inputs before relying on this recipe.
+> clear migration error. Update any existing automation to the new
+> instances-file/secrets-file inputs before relying on this recipe.
 
 ---
 
