@@ -1,10 +1,9 @@
 # Visit our schema definition for additional information on this file format.
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
-# WORK IN PROGRESS - not for use.
 
 name: nrdot-collector-oracle-rds
 displayName: NRDOT Oracle Database (AWS RDS, RHEL/CentOS/OEL collector host)
-description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector against an AWS RDS Oracle instance, collector installed on RHEL/CentOS/OEL
+description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector against one or more AWS RDS Oracle instances, collector installed on RHEL/CentOS/OEL
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -37,31 +36,48 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from your RDS Oracle Database, we need to create/authorize a
-    monitoring identity (a database user) using the RDS master user's credentials.
+    To capture data from one or more RDS Oracle Databases, we need to create/authorize a
+    monitoring identity (a database user) on each instance, using each instance's RDS
+    master user credentials.
+
+    You will be asked for two files:
+
+      1. An instances file (YAML) listing every RDS Oracle instance to monitor, in the
+         order you want them numbered (instance 1, 2, 3, ...):
+
+           instances:
+             - host: rds-orders.xxxx.us-east-1.rds.amazonaws.com
+               port: 1521
+               service: ORDERSDB
+               login_name: newrelic
+             - host: rds-billing.xxxx.us-east-1.rds.amazonaws.com
+               port: 1521
+               service: BILLINGDB
+               login_name: newrelic
+
+      2. A secrets file (KEY=VALUE per line) supplying the RDS master credentials for
+         each instance above, indexed to match the instances file's order (1-based):
+
+           NR_CLI_ORACLE_ADMIN_USER_1=admin
+           NR_CLI_ORACLE_ADMIN_PASSWORD_1=<master password for instance 1>
+           NR_CLI_ORACLE_ADMIN_USER_2=admin
+           NR_CLI_ORACLE_ADMIN_PASSWORD_2=<master password for instance 2>
+           NR_CLI_ORACLE_LOGIN_PASSWORD_1=<optional - leave unset to auto-generate>
+
+         NR_CLI_ORACLE_ADMIN_USER_<i> / NR_CLI_ORACLE_ADMIN_PASSWORD_<i> are required
+         for every instance. NR_CLI_ORACLE_LOGIN_PASSWORD_<i> is optional.
+
+    Any instance that fails its version check or user setup is skipped (with a reason)
+    rather than aborting the whole install - the rest are still configured.
 
 inputVars:
   - name: NR_CLI_ORACLE_CONFIG_PRESET
     prompt: "NRDOT configuration - 1) Database only  2) Host + Database: "
     default: "1"
-  - name: NR_CLI_ORACLE_HOST
-    prompt: "RDS Oracle endpoint: "
-  - name: NR_CLI_ORACLE_PORT
-    prompt: "Oracle listener port: "
-    default: "1521"
-  - name: NR_CLI_ORACLE_ADMIN_USER
-    prompt: "RDS master username (used once to create the monitoring user and grant privileges): "
-  - name: NR_CLI_ORACLE_ADMIN_PASSWORD
-    prompt: "RDS master password: "
-    secret: true
-  - name: NR_CLI_ORACLE_LOGIN_NAME
-    prompt: "Monitoring username: "
-    default: "newrelic"
-  - name: NR_CLI_ORACLE_LOGIN_PASSWORD
-    prompt: "Password for the monitoring login (leave blank to auto-generate a random password): "
-    secret: true
-  - name: NR_CLI_ORACLE_SERVICE_NAME
-    prompt: "RDS DB service name for the collector connection: "
+  - name: NR_CLI_ORACLE_INSTANCES_FILE
+    prompt: "Path to the Oracle RDS instances YAML file: "
+  - name: NR_CLI_ORACLE_SECRETS_FILE
+    prompt: "Path to the Oracle RDS secrets file (KEY=VALUE per instance): "
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'oracledb.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -100,16 +116,103 @@ install:
             exit 131
           fi
 
+    parse_instances:
+      cmds:
+        - |
+          INSTANCES_FILE="{{.NR_CLI_ORACLE_INSTANCES_FILE}}"
+          SECRETS_FILE="{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-oracle-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-rds-skip.tmp"
+
+          rm -f "$INSTANCES_TSV" "$SKIP_FILE"
+
+          if [ ! -f "$INSTANCES_FILE" ]; then
+            echo "Instances file not found: $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          if [ ! -f "$SECRETS_FILE" ]; then
+            echo "Secrets file not found: $SECRETS_FILE" >&2
+            exit 131
+          fi
+
+          SECRETS_PERMS=$(stat -c '%a' "$SECRETS_FILE" 2>/dev/null || stat -f '%Lp' "$SECRETS_FILE" 2>/dev/null)
+          if [ -n "$SECRETS_PERMS" ]; then
+            GROUP_OTHER_BITS=$(printf '%s' "$SECRETS_PERMS" | tail -c 2)
+            if [ "$GROUP_OTHER_BITS" != "00" ]; then
+              echo "$SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS) - refusing to proceed." >&2
+              echo "Run: chmod 600 $SECRETS_FILE" >&2
+              exit 131
+            fi
+          fi
+
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges).
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
+
+          # Parses the fixed 4-key-per-item shape documented in preInstall.info
+          # (host, port, service, login_name) - not a general-purpose YAML parser.
+          awk '
+            /^[[:space:]]*-[[:space:]]*host:/ {
+              if (have) { print host "\t" port "\t" service "\t" login_name }
+              host=$0; sub(/^[[:space:]]*-[[:space:]]*host:[[:space:]]*/, "", host)
+              port=""; service=""; login_name=""; have=1; next
+            }
+            /^[[:space:]]*port:/ { port=$0; sub(/^[[:space:]]*port:[[:space:]]*/, "", port); next }
+            /^[[:space:]]*service:/ { service=$0; sub(/^[[:space:]]*service:[[:space:]]*/, "", service); next }
+            /^[[:space:]]*login_name:/ { login_name=$0; sub(/^[[:space:]]*login_name:[[:space:]]*/, "", login_name); next }
+            END { if (have) { print host "\t" port "\t" service "\t" login_name } }
+          ' "$INSTANCES_FILE" > "$INSTANCES_TSV"
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          if [ "$INSTANCE_COUNT" -eq 0 ]; then
+            echo "No instances found in $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          echo "Found $INSTANCE_COUNT Oracle RDS instance(s) in $INSTANCES_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_SERVICE ENTRY_LOGIN_NAME; do
+            i=$((i + 1))
+            eval "ADMIN_USER_VAL=\"\${NR_CLI_ORACLE_ADMIN_USER_${i}:-}\""
+            eval "ADMIN_PASSWORD_VAL=\"\${NR_CLI_ORACLE_ADMIN_PASSWORD_${i}:-}\""
+            if [ -z "$ADMIN_USER_VAL" ] || [ -z "$ADMIN_PASSWORD_VAL" ]; then
+              echo "${i}: missing NR_CLI_ORACLE_ADMIN_USER_${i}/NR_CLI_ORACLE_ADMIN_PASSWORD_${i} in secrets file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: missing admin credentials in secrets file" >&2
+            fi
+          done < "$INSTANCES_TSV"
+
     assert_oracle_version:
       cmds:
         - |
-          HOST="{{.NR_CLI_ORACLE_HOST}}"
-          PORT="{{.NR_CLI_ORACLE_PORT}}"
-          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
-          ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
-          ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
+          SECRETS_FILE="{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-oracle-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-rds-skip.tmp"
 
-          VERSION_OUTPUT=$(sqlplus -S /nolog << EOF
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges) - permissions already validated in parse_instances.
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            eval "ADMIN_USER=\"\${NR_CLI_ORACLE_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_ORACLE_ADMIN_PASSWORD_${i}}\""
+
+            VERSION_OUTPUT=$(sqlplus -S /nolog << EOF
           WHENEVER SQLERROR EXIT SQL.SQLCODE
           CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
           SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON
@@ -117,22 +220,22 @@ install:
           EXIT;
           EOF
           )
-          if [ $? -ne 0 ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|SP2-"; then
-            echo "Failed to connect to the RDS Oracle Database to check its version:" >&2
-            echo "$VERSION_OUTPUT" >&2
-            exit 1
-          fi
+            if [ $? -ne 0 ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|SP2-"; then
+              echo "${i}: failed to connect / check version - $(echo "$VERSION_OUTPUT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: failed to connect to check its version" >&2
+              continue
+            fi
 
-          MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '^[0-9]+' | head -1)
+            MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '^[0-9]+' | head -1)
 
-          if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
-            echo "Oracle Database version ${MAJOR_VERSION:-unknown} is not supported. Oracle Database 19c or later is required." >&2
-            echo "Raw output from version check:" >&2
-            echo "$VERSION_OUTPUT" >&2
-            exit 1
-          fi
+            if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
+              echo "${i}: unsupported Oracle Database version ${MAJOR_VERSION:-unknown} (19c or later required)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: unsupported Oracle Database version ${MAJOR_VERSION:-unknown}" >&2
+              continue
+            fi
 
-          echo "Oracle Database major version ${MAJOR_VERSION} detected - supported."
+            echo "Instance ${i} (${HOST}): Oracle Database major version ${MAJOR_VERSION} detected - supported."
+          done < "$INSTANCES_TSV"
 
     install_nrdot:
       cmds:
@@ -191,26 +294,53 @@ install:
     configure_database_user:
       cmds:
         - |
-          LOGIN_NAME="{{.NR_CLI_ORACLE_LOGIN_NAME}}"
-          HOST="{{.NR_CLI_ORACLE_HOST}}"
-          PORT="{{.NR_CLI_ORACLE_PORT}}"
-          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
-          ADMIN_USER="{{.NR_CLI_ORACLE_ADMIN_USER}}"
-          ADMIN_PASSWORD="{{.NR_CLI_ORACLE_ADMIN_PASSWORD}}"
-          PW_FILE="/tmp/nr-oracle-rds-newrelic-pw.tmp"
-          USER_FILE="/tmp/nr-oracle-rds-db-user.tmp"
-          NR_SUCCESS=""
-          trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
+          SECRETS_FILE="{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-oracle-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-rds-skip.tmp"
 
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges) - permissions already validated in parse_instances.
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
 
-          LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          i=0
+          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
+            i=$((i + 1))
+            LINE=$(sed -n "${i}p" "$INSTANCES_TSV")
+            HOST=$(printf '%s' "$LINE" | cut -f1)
+            PORT=$(printf '%s' "$LINE" | cut -f2)
+            SERVICE_NAME=$(printf '%s' "$LINE" | cut -f3)
+            LOGIN_NAME=$(printf '%s' "$LINE" | cut -f4)
 
-          EXISTS_RESULT=$(sqlplus -S /nolog << SQL 2>&1
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            eval "ADMIN_USER=\"\${NR_CLI_ORACLE_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_ORACLE_ADMIN_PASSWORD_${i}}\""
+            eval "LOGIN_PASSWORD_OVERRIDE=\"\${NR_CLI_ORACLE_LOGIN_PASSWORD_${i}:-}\""
+
+            PW_FILE="/tmp/nr-oracle-rds-newrelic-pw-${i}.tmp"
+            USER_FILE="/tmp/nr-oracle-rds-db-user-${i}.tmp"
+
+            (
+              NR_SUCCESS=""
+              trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
+
+              if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+                echo "Invalid monitoring username: $LOGIN_NAME" >&2
+                echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+                exit 1
+              fi
+
+              LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+
+              EXISTS_RESULT=$(sqlplus -S /nolog << SQL 2>&1
           CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
           SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
           SELECT username FROM dba_users WHERE username='${LOGIN_UPPER}';
@@ -218,62 +348,62 @@ install:
           SQL
           ) || true
 
-          if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${LOGIN_UPPER}[[:space:]]*$"; then
-            echo ""
-            echo "Monitoring user $LOGIN_NAME already exists."
-            echo ""
-            echo "What would you like to do?"
-            echo "  1. Use the existing user $LOGIN_NAME (you will be asked for the password)"
-            echo "  2. Create a new username"
-            echo ""
-            read -rp "Enter your choice (1 or 2): " USER_CHOICE
-
-            case "$USER_CHOICE" in
-              1)
+              if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${LOGIN_UPPER}[[:space:]]*$"; then
                 echo ""
-                stty -echo
-                read -rp "Enter the existing password for $LOGIN_NAME: " NR_PASSWORD
-                stty echo
+                echo "Instance ${i} (${HOST}): monitoring user $LOGIN_NAME already exists."
                 echo ""
-                printf '%s' "$NR_PASSWORD" > "$PW_FILE"
-                chmod 600 "$PW_FILE"
-                echo "$LOGIN_NAME" > "$USER_FILE"
-                chmod 600 "$USER_FILE"
-                echo "Using existing user: $LOGIN_NAME"
-                NR_SUCCESS=1
-                exit 0
-                ;;
-              2)
+                echo "What would you like to do?"
+                echo "  1. Use the existing user $LOGIN_NAME (you will be asked for the password)"
+                echo "  2. Create a new username"
                 echo ""
-                read -rp "Enter new monitoring username: " NEW_USERNAME
-                LOGIN_NAME="$NEW_USERNAME"
-                LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
-                ;;
-              *)
-                echo "Invalid choice. Please re-run and enter 1 or 2." >&2
-                exit 131
-                ;;
-            esac
-          fi
+                read -rp "Enter your choice (1 or 2): " USER_CHOICE
 
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
+                case "$USER_CHOICE" in
+                  1)
+                    echo ""
+                    stty -echo
+                    read -rp "Enter the existing password for $LOGIN_NAME: " NR_PASSWORD
+                    stty echo
+                    echo ""
+                    printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+                    chmod 600 "$PW_FILE"
+                    echo "$LOGIN_NAME" > "$USER_FILE"
+                    chmod 600 "$USER_FILE"
+                    echo "Using existing user: $LOGIN_NAME"
+                    NR_SUCCESS=1
+                    exit 0
+                    ;;
+                  2)
+                    echo ""
+                    read -rp "Enter new monitoring username for instance ${i}: " NEW_USERNAME
+                    LOGIN_NAME="$NEW_USERNAME"
+                    LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+                    ;;
+                  *)
+                    echo "Invalid choice. Please re-run and enter 1 or 2." >&2
+                    exit 1
+                    ;;
+                esac
+              fi
 
-          echo "$LOGIN_NAME" > "$USER_FILE"
-          chmod 600 "$USER_FILE"
+              if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+                echo "Invalid monitoring username: $LOGIN_NAME" >&2
+                echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+                exit 1
+              fi
 
-          if [ -z "{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}" ]; then
-            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-          else
-            NR_PASSWORD="{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}"
-          fi
-          printf '%s' "$NR_PASSWORD" > "$PW_FILE"
-          chmod 600 "$PW_FILE"
+              echo "$LOGIN_NAME" > "$USER_FILE"
+              chmod 600 "$USER_FILE"
 
-          RESULT=$(sqlplus -S /nolog << SQL 2>&1
+              if [ -z "$LOGIN_PASSWORD_OVERRIDE" ]; then
+                NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+              else
+                NR_PASSWORD="$LOGIN_PASSWORD_OVERRIDE"
+              fi
+              printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+              chmod 600 "$PW_FILE"
+
+              RESULT=$(sqlplus -S /nolog << SQL 2>&1
           WHENEVER SQLERROR EXIT SQL.SQLCODE
           CONNECT ${ADMIN_USER}/${ADMIN_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}
           CREATE USER ${LOGIN_NAME} IDENTIFIED BY "${NR_PASSWORD}";
@@ -313,45 +443,46 @@ install:
           SQL
           )
 
-          SQLPLUS_STATUS=$?
-          REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
-          redact() {
-            if [ -n "$REDACT_PATTERN" ]; then
-              sed "s/${REDACT_PATTERN}/[REDACTED]/g"
-            else
-              cat
+              SQLPLUS_STATUS=$?
+              REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+              redact() {
+                if [ -n "$REDACT_PATTERN" ]; then
+                  sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+                else
+                  cat
+                fi
+              }
+
+              if [ $SQLPLUS_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
+                echo "SQL script failed:" >&2
+                echo "$RESULT" | redact >&2
+                exit 1
+              fi
+              echo "$RESULT" | redact
+
+              NR_SUCCESS=1
+              echo "RDS Oracle Database monitoring identity configured successfully for instance ${i}: $LOGIN_NAME"
+            )
+            SUBSHELL_STATUS=$?
+            if [ $SUBSHELL_STATUS -ne 0 ]; then
+              echo "${i}: monitoring user setup failed (see errors above)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring user setup failed" >&2
             fi
-          }
-
-          if [ $SQLPLUS_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
-            echo "SQL script failed:" >&2
-            echo "$RESULT" | redact >&2
-            exit 1
-          fi
-          echo "$RESULT" | redact
-
-          NR_SUCCESS=1
-          echo "RDS Oracle Database monitoring identity configured successfully: $LOGIN_NAME"
+          done
 
     create_collector_config:
       cmds:
         - |
           PRESET="{{.NR_CLI_ORACLE_CONFIG_PRESET}}"
-          HOST="{{.NR_CLI_ORACLE_HOST}}"
-          PORT="{{.NR_CLI_ORACLE_PORT}}"
-          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/oracle-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
-          PW_FILE="/tmp/nr-oracle-rds-newrelic-pw.tmp"
-          USER_FILE="/tmp/nr-oracle-rds-db-user.tmp"
+          INSTANCES_TSV="/tmp/nr-oracle-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-rds-skip.tmp"
 
           mkdir -p "$CONFIG_DIR"
-
-          NR_PASSWORD=$(cat "$PW_FILE")
-          LOGIN_NAME=$(cat "$USER_FILE")
 
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
@@ -360,65 +491,12 @@ install:
             *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
-          if [ "$PRESET" = "2" ]; then
-            cat > "$CONFIG_PATH" << EOF
-          extensions:
-            health_check:
-
-          receivers:
-            otlp:
-              protocols:
-                grpc:
-                http:
-
-            hostmetrics:
-              collection_interval: 60s
-              scrapers:
-                cpu:
-                  metrics:
-                    system.cpu.time:
-                      enabled: false
-                    system.cpu.utilization:
-                      enabled: true
-                load:
-                memory:
-                  metrics:
-                    system.memory.utilization:
-                      enabled: true
-                paging:
-                  metrics:
-                    system.paging.utilization:
-                      enabled: false
-                    system.paging.faults:
-                      enabled: false
-                filesystem:
-                  metrics:
-                    system.filesystem.utilization:
-                      enabled: true
-                disk:
-                  metrics:
-                    system.disk.merged:
-                      enabled: false
-                    system.disk.pending_operations:
-                      enabled: false
-                    system.disk.weighted_io_time:
-                      enabled: false
-                network:
-                  metrics:
-                    system.network.connections:
-                      enabled: false
-
-            filelog:
-              include:
-                - /var/log/messages
-                - /var/log/secure
-                - /var/log/yum.log
-
-            nroracledb:
-              endpoint: "${HOST}:${PORT}"
-              username: "${LOGIN_NAME}"
-              password: "${NR_PASSWORD}"
-              service: "${SERVICE_NAME}"
+          # Shared receiver settings (events/top_query/query_sample/session_wait/metrics/
+          # resource_attributes) are identical for every instance. Captured once here and
+          # echoed per instance below instead of relying on the collector's YAML loader to
+          # support merge-key aliases (unverified) - this keeps the generated file plain,
+          # fully-resolved YAML.
+          RECEIVER_DEFAULTS=$(cat << 'BLOCK'
               collection_interval: 10s
               events:
                 db.server.query_sample:
@@ -440,40 +518,6 @@ install:
               session_wait_event_collection:
                 max_rows_per_query: 100
               metrics:
-          EOF
-          else
-            cat > "$CONFIG_PATH" << EOF
-          receivers:
-            nroracledb:
-              endpoint: "${HOST}:${PORT}"
-              username: "${LOGIN_NAME}"
-              password: "${NR_PASSWORD}"
-              service: "${SERVICE_NAME}"
-              collection_interval: 10s
-              events:
-                db.server.query_sample:
-                  enabled: true
-                db.server.top_query:
-                  enabled: true
-                db.server.session.wait_sample:
-                  enabled: true
-              top_query_collection:
-                max_query_sample_count: 1000
-                top_query_count: 200
-                collection_interval: 60s
-                allowed_comment_keys:
-                  - nr_service_guid
-              query_sample_collection:
-                max_rows_per_query: 100
-                allowed_comment_keys:
-                  - nr_service_guid
-              session_wait_event_collection:
-                max_rows_per_query: 100
-              metrics:
-          EOF
-          fi
-
-          cat >> "$CONFIG_PATH" << 'EOF'
                 oracledb.cpu_time:
                   enabled: true
                   attributes:
@@ -742,7 +786,139 @@ install:
                   enabled: true
                 service.instance.id:
                   enabled: true
+          BLOCK
+          )
+
+          if [ "$PRESET" = "2" ]; then
+            cat > "$CONFIG_PATH" << 'EOF'
+          extensions:
+            health_check:
+
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                http:
+
+            hostmetrics:
+              collection_interval: 60s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.time:
+                      enabled: false
+                    system.cpu.utilization:
+                      enabled: true
+                load:
+                memory:
+                  metrics:
+                    system.memory.utilization:
+                      enabled: true
+                paging:
+                  metrics:
+                    system.paging.utilization:
+                      enabled: false
+                    system.paging.faults:
+                      enabled: false
+                filesystem:
+                  metrics:
+                    system.filesystem.utilization:
+                      enabled: true
+                disk:
+                  metrics:
+                    system.disk.merged:
+                      enabled: false
+                    system.disk.pending_operations:
+                      enabled: false
+                    system.disk.weighted_io_time:
+                      enabled: false
+                network:
+                  metrics:
+                    system.network.connections:
+                      enabled: false
+
+            filelog:
+              include:
+                - /var/log/messages
+                - /var/log/secure
+                - /var/log/yum.log
           EOF
+          else
+            cat > "$CONFIG_PATH" << 'EOF'
+          receivers:
+          EOF
+          fi
+
+          # Count survivors up front to decide whether the anchor/merge-key pattern from
+          # https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/#rds-multi-receiver-config
+          # applies - a single instance has nothing to merge into, so it gets a plain receiver.
+          SURVIVOR_COUNT=0
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            SURVIVOR_COUNT=$((SURVIVOR_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          MONITORED_COUNT=0
+          IS_FIRST_SURVIVOR=1
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            PW_FILE="/tmp/nr-oracle-rds-newrelic-pw-${i}.tmp"
+            USER_FILE="/tmp/nr-oracle-rds-db-user-${i}.tmp"
+            if [ ! -f "$PW_FILE" ] || [ ! -f "$USER_FILE" ]; then
+              echo "${i}: monitoring credentials missing at config-generation time" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring credentials missing at config-generation time" >&2
+              continue
+            fi
+
+            NR_PASSWORD=$(cat "$PW_FILE")
+            CONFIGURED_LOGIN_NAME=$(cat "$USER_FILE")
+
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              {
+                echo "  nroracledb/${i}:"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    service: \"${SERVICE_NAME}\""
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+            elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
+              {
+                echo "  nroracledb/${i}: &nroracledb-rds-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    service: \"${SERVICE_NAME}\""
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+              IS_FIRST_SURVIVOR=0
+            else
+              {
+                echo "  nroracledb/${i}:"
+                echo "    <<: *nroracledb-rds-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    service: \"${SERVICE_NAME}\""
+              } >> "$CONFIG_PATH"
+            fi
+
+            MONITORED_COUNT=$((MONITORED_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          if [ "$MONITORED_COUNT" -eq 0 ]; then
+            echo "No Oracle RDS instance passed its checks - nothing to monitor. Aborting install." >&2
+            exit 1
+          fi
 
           if [ "$PRESET" = "2" ]; then
             cat >> "$CONFIG_PATH" << 'EOF'
@@ -865,12 +1041,33 @@ install:
               limit_mib: \${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
 
             batch:
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
 
-            resource/add_event_name:
+          processors:
+            batch:
+          EOF
+          fi
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+
+            resource/add_event_name/${i}:
               attributes:
                 - key: host.address
                   value: "${HOST}"
                   action: upsert
+          EOF
+          done < "$INSTANCES_TSV"
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
 
             resourcedetection:
               detectors: ["system"]
@@ -940,26 +1137,9 @@ install:
                 receivers: [otlp]
                 processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
                 exporters: [otlp]
-              metrics/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
-                exporters: [otlp]
-              logs/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
-                exporters: [otlp]
-            extensions: [health_check]
           EOF
           else
             cat >> "$CONFIG_PATH" << EOF
-
-          processors:
-            batch:
-            resource/add_event_name:
-              attributes:
-                - key: host.address
-                  value: "${HOST}"
-                  action: upsert
 
           exporters:
             otlp/newrelic:
@@ -975,14 +1155,35 @@ install:
 
           service:
             pipelines:
-              metrics/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
-                exporters: [otlp/newrelic]
-              logs/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
-                exporters: [otlp/newrelic]
+          EOF
+          fi
+
+          EXPORTER_NAME="otlp/newrelic"
+          if [ "$PRESET" = "2" ]; then
+            EXPORTER_NAME="otlp"
+          fi
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+              metrics/oracledb/${i}:
+                receivers: [nroracledb/${i}]
+                processors: [resource/add_event_name/${i}, batch]
+                exporters: [${EXPORTER_NAME}]
+              logs/oracledb/${i}:
+                receivers: [nroracledb/${i}]
+                processors: [resource/add_event_name/${i}, batch]
+                exporters: [${EXPORTER_NAME}]
+          EOF
+          done < "$INSTANCES_TSV"
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
+            extensions: [health_check]
           EOF
           fi
 
@@ -993,8 +1194,7 @@ install:
           OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
           EOF
 
-          rm -f "$PW_FILE" "$USER_FILE"
-          echo "Oracle OTel config written to ${CONFIG_PATH}"
+          echo "Oracle OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} instance(s))"
           echo "Env file written to ${ENV_FILE}"
 
     restart_nrdot:
@@ -1018,10 +1218,30 @@ install:
             exit 131
           fi
 
+          INSTANCES_TSV="/tmp/nr-oracle-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-rds-skip.tmp"
+
+          echo ""
+          echo "==> Oracle RDS instance summary:"
+          echo ""
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            REASON=$(grep "^${i}:" "$SKIP_FILE" 2>/dev/null | sed "s/^${i}: //")
+            if [ -n "$REASON" ]; then
+              echo "  [SKIP] ${i}: ${HOST} (service ${SERVICE_NAME}) - ${REASON}"
+            else
+              echo "  [OK]   ${i}: ${HOST} (service ${SERVICE_NAME})"
+            fi
+          done < "$INSTANCES_TSV"
+
+          rm -f /tmp/nr-oracle-rds-newrelic-pw-*.tmp /tmp/nr-oracle-rds-db-user-*.tmp "$INSTANCES_TSV" "$SKIP_FILE"
+
     default:
       cmds:
         - task: write_recipe_metadata
         - task: assert_pre_req
+        - task: parse_instances
         - task: assert_oracle_version
         - task: install_nrdot
         - task: configure_database_user

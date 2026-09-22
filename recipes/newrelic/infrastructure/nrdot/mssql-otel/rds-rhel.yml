@@ -1,10 +1,9 @@
 # Visit our schema definition for additional information on this file format.
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
-# WORK IN PROGRESS - not for use.
 
 name: nrdot-collector-mssql-rds
 displayName: NRDOT MSSQL RDS (RHEL/CentOS)
-description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on RHEL/CentOS hosts connecting to AWS RDS SQL Server instances
+description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on RHEL/CentOS hosts connecting to one or more AWS RDS SQL Server instances
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -34,28 +33,49 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from your AWS RDS SQL Server instance, we need to create/authorize
-    a monitoring identity (a SQL login). This requires the RDS master user credentials
-    for your instance, and network connectivity from this host to the RDS endpoint
-    (inbound access on the SQL Server port in the RDS security group).
+    To capture data from one or more AWS RDS SQL Server instances, we need to
+    create/authorize a monitoring identity (a SQL login) on each instance, using each
+    instance's RDS master user credentials.
+
+    You will be asked for two files:
+
+      1. An instances file (YAML) listing every RDS SQL Server instance to monitor, in
+         the order you want them numbered (instance 1, 2, 3, ...):
+
+           instances:
+             - host: mydb1.xxxx.us-east-1.rds.amazonaws.com
+               port: 1433
+               login_name: newrelic
+             - host: mydb2.xxxx.us-east-1.rds.amazonaws.com
+               port: 1433
+               login_name: newrelic
+
+      2. A secrets file (KEY=VALUE per line) supplying the RDS master credentials for
+         each instance above, indexed to match the instances file's order (1-based):
+
+           NR_CLI_MSSQL_ADMIN_USER_1=admin
+           NR_CLI_MSSQL_ADMIN_PASSWORD_1=<master password for instance 1>
+           NR_CLI_MSSQL_ADMIN_USER_2=admin
+           NR_CLI_MSSQL_ADMIN_PASSWORD_2=<master password for instance 2>
+
+         NR_CLI_MSSQL_ADMIN_USER_<i> / NR_CLI_MSSQL_ADMIN_PASSWORD_<i> are required for
+         every instance.
+
+    Any instance that fails its version check or login setup is skipped (with a reason)
+    rather than aborting the whole install - the rest are still configured.
+
+    This also requires network connectivity from this host to every RDS endpoint
+    listed (inbound access on the SQL Server port in each instance's RDS security
+    group).
 
 inputVars:
   - name: NR_CLI_MSSQL_CONFIG_PRESET
     prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
     default: "1"
-  - name: NR_CLI_MSSQL_SERVER
-    prompt: "RDS SQL Server endpoint (e.g. mydb.xxxxxxxxxx.us-east-1.rds.amazonaws.com): "
-  - name: NR_CLI_MSSQL_PORT
-    prompt: "SQL Server port: "
-    default: "1433"
-  - name: NR_CLI_MSSQL_MASTER_USER
-    prompt: "RDS master username: "
-  - name: NR_CLI_MSSQL_MASTER_PASSWORD
-    prompt: "RDS master user password (used once to create the monitoring login): "
-    secret: true
-  - name: NR_CLI_MSSQL_LOGIN_NAME
-    prompt: "Monitoring username: "
-    default: "newrelic"
+  - name: NR_CLI_MSSQL_INSTANCES_FILE
+    prompt: "Path to the MSSQL RDS instances YAML file: "
+  - name: NR_CLI_MSSQL_SECRETS_FILE
+    prompt: "Path to the MSSQL RDS secrets file (KEY=VALUE per instance): "
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'sqlserver.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -94,35 +114,124 @@ install:
             exit 131
           fi
 
+    parse_instances:
+      cmds:
+        - |
+          INSTANCES_FILE="{{.NR_CLI_MSSQL_INSTANCES_FILE}}"
+          SECRETS_FILE="{{.NR_CLI_MSSQL_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-mssql-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-mssql-rds-skip.tmp"
+
+          rm -f "$INSTANCES_TSV" "$SKIP_FILE"
+
+          if [ ! -f "$INSTANCES_FILE" ]; then
+            echo "Instances file not found: $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          if [ ! -f "$SECRETS_FILE" ]; then
+            echo "Secrets file not found: $SECRETS_FILE" >&2
+            exit 131
+          fi
+
+          SECRETS_PERMS=$(stat -c '%a' "$SECRETS_FILE" 2>/dev/null || stat -f '%Lp' "$SECRETS_FILE" 2>/dev/null)
+          if [ -n "$SECRETS_PERMS" ]; then
+            GROUP_OTHER_BITS=$(printf '%s' "$SECRETS_PERMS" | tail -c 2)
+            if [ "$GROUP_OTHER_BITS" != "00" ]; then
+              echo "$SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS) - refusing to proceed." >&2
+              echo "Run: chmod 600 $SECRETS_FILE" >&2
+              exit 131
+            fi
+          fi
+
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges).
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
+
+          # Parses the fixed 3-key-per-item shape documented in preInstall.info
+          # (host, port, login_name) - not a general-purpose YAML parser.
+          awk '
+            /^[[:space:]]*-[[:space:]]*host:/ {
+              if (have) { print host "\t" port "\t" login_name }
+              host=$0; sub(/^[[:space:]]*-[[:space:]]*host:[[:space:]]*/, "", host)
+              port=""; login_name=""; have=1; next
+            }
+            /^[[:space:]]*port:/ { port=$0; sub(/^[[:space:]]*port:[[:space:]]*/, "", port); next }
+            /^[[:space:]]*login_name:/ { login_name=$0; sub(/^[[:space:]]*login_name:[[:space:]]*/, "", login_name); next }
+            END { if (have) { print host "\t" port "\t" login_name } }
+          ' "$INSTANCES_FILE" > "$INSTANCES_TSV"
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          if [ "$INSTANCE_COUNT" -eq 0 ]; then
+            echo "No instances found in $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          echo "Found $INSTANCE_COUNT MSSQL RDS instance(s) in $INSTANCES_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_LOGIN_NAME; do
+            i=$((i + 1))
+            eval "ADMIN_USER_VAL=\"\${NR_CLI_MSSQL_ADMIN_USER_${i}:-}\""
+            eval "ADMIN_PASSWORD_VAL=\"\${NR_CLI_MSSQL_ADMIN_PASSWORD_${i}:-}\""
+            if [ -z "$ADMIN_USER_VAL" ] || [ -z "$ADMIN_PASSWORD_VAL" ]; then
+              echo "${i}: missing NR_CLI_MSSQL_ADMIN_USER_${i}/NR_CLI_MSSQL_ADMIN_PASSWORD_${i} in secrets file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: missing admin credentials in secrets file" >&2
+            fi
+          done < "$INSTANCES_TSV"
+
     assert_sql_server_version:
       cmds:
         - |
           export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
 
-          SERVER="{{.NR_CLI_MSSQL_SERVER}}"
-          PORT="{{.NR_CLI_MSSQL_PORT}}"
-          MASTER_USER="{{.NR_CLI_MSSQL_MASTER_USER}}"
-          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
-          {{.NR_CLI_MSSQL_MASTER_PASSWORD}}
-          NR_MASTER_PW_EOF
-          )
-          export SQLCMDPASSWORD="$MASTER_PASSWORD"
+          SECRETS_FILE="{{.NR_CLI_MSSQL_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-mssql-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-mssql-rds-skip.tmp"
 
-          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1)
-          if [ $? -ne 0 ] || echo "$RESULT" | grep -qi "Sqlcmd: Error:"; then
-            echo "Failed to connect to SQL Server to check its version:" >&2
-            echo "$RESULT" >&2
-            exit 1
-          fi
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges) - permissions already validated in parse_instances.
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
 
-          MAJOR_VERSION=$(echo "$RESULT" | grep -oE '[0-9]+' | head -1)
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
 
-          if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 14 ]; then
-            echo "SQL Server version ${MAJOR_VERSION:-unknown} is not supported. SQL Server 2017 or later (major version 14+) is required." >&2
-            exit 1
-          fi
+            eval "ADMIN_USER=\"\${NR_CLI_MSSQL_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_MSSQL_ADMIN_PASSWORD_${i}}\""
+            export SQLCMDPASSWORD="$ADMIN_PASSWORD"
 
-          echo "SQL Server major version ${MAJOR_VERSION} detected - supported."
+            RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -h -1 -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');" 2>&1 < /dev/null)
+            SQL_STATUS=$?
+            unset SQLCMDPASSWORD
+
+            if [ $SQL_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "Sqlcmd: Error:"; then
+              echo "${i}: failed to connect / check version - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: failed to connect to check its version" >&2
+              continue
+            fi
+
+            MAJOR_VERSION=$(echo "$RESULT" | grep -oE '[0-9]+' | head -1)
+
+            if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 14 ]; then
+              echo "${i}: unsupported SQL Server version ${MAJOR_VERSION:-unknown} (2017 / major version 14+ required)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: unsupported SQL Server version ${MAJOR_VERSION:-unknown}" >&2
+              continue
+            fi
+
+            echo "Instance ${i} (${HOST}:${PORT}): SQL Server major version ${MAJOR_VERSION} detected - supported."
+          done < "$INSTANCES_TSV"
 
     install_nrdot:
       cmds:
@@ -183,26 +292,45 @@ install:
         - |
           export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
 
-          LOGIN_NAME="{{.NR_CLI_MSSQL_LOGIN_NAME}}"
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
-          SERVER="{{.NR_CLI_MSSQL_SERVER}}"
-          PORT="{{.NR_CLI_MSSQL_PORT}}"
-          MASTER_USER="{{.NR_CLI_MSSQL_MASTER_USER}}"
-          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
-          {{.NR_CLI_MSSQL_MASTER_PASSWORD}}
-          NR_MASTER_PW_EOF
-          )
-          export SQLCMDPASSWORD="$MASTER_PASSWORD"
-          SQL_FILE=$(mktemp /tmp/nr-mssql-grant.sql.XXXXXX)
-          trap 'rm -f "$SQL_FILE"' EXIT
+          SECRETS_FILE="{{.NR_CLI_MSSQL_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-mssql-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-mssql-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mssql-rds-passwords.tmp"
 
-          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+          rm -f "$PASSWORDS_FILE"
+          : > "$PASSWORDS_FILE"
+          chmod 600 "$PASSWORDS_FILE"
 
-          cat > "$SQL_FILE" << EOF
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges) - permissions already validated in parse_instances.
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+              echo "${i}: invalid monitoring username '${LOGIN_NAME}' in instances file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: invalid monitoring username '${LOGIN_NAME}'" >&2
+              continue
+            fi
+
+            eval "ADMIN_USER=\"\${NR_CLI_MSSQL_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_MSSQL_ADMIN_PASSWORD_${i}}\""
+            export SQLCMDPASSWORD="$ADMIN_PASSWORD"
+
+            SQL_FILE=$(mktemp "/tmp/nr-mssql-grant-${i}.sql.XXXXXX")
+            NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
+
+            cat > "$SQL_FILE" << EOF
           USE [master];
           GO
           IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '${LOGIN_NAME}')
@@ -242,52 +370,37 @@ install:
           GO
           EOF
 
-          RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -C -b -i "$SQL_FILE" 2>&1)
-          if [ $? -ne 0 ] || echo "$RESULT" | grep -qi "Sqlcmd: Error:"; then
-            echo "SQL script failed:" >&2
-            echo "$RESULT" >&2
-            exit 1
-          fi
-          echo "$RESULT"
+            RESULT=$(sqlcmd -S "${HOST},${PORT}" -U "${ADMIN_USER}" -C -b -i "$SQL_FILE" 2>&1 < /dev/null)
+            SQL_STATUS=$?
+            rm -f "$SQL_FILE"
+            unset SQLCMDPASSWORD
 
-          echo "SQL Server monitoring identity configured successfully."
+            if [ $SQL_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "Sqlcmd: Error:"; then
+              echo "${i}: monitoring login setup failed - $(echo "$RESULT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: monitoring login setup failed" >&2
+              continue
+            fi
+
+            echo "${i}=${NR_PASSWORD}" >> "$PASSWORDS_FILE"
+            echo "Instance ${i} (${HOST}:${PORT}): SQL Server monitoring identity configured successfully: $LOGIN_NAME"
+          done < "$INSTANCES_TSV"
 
     create_collector_config:
       cmds:
         - |
+          export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
+
           PRESET="{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
-          LOGIN_NAME="{{.NR_CLI_MSSQL_LOGIN_NAME}}"
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
-          SERVER="{{.NR_CLI_MSSQL_SERVER}}"
-          PORT="{{.NR_CLI_MSSQL_PORT}}"
-          MASTER_USER="{{.NR_CLI_MSSQL_MASTER_USER}}"
-          MASTER_PASSWORD=$(cat << 'NR_MASTER_PW_EOF'
-          {{.NR_CLI_MSSQL_MASTER_PASSWORD}}
-          NR_MASTER_PW_EOF
-          )
-          export SQLCMDPASSWORD="$MASTER_PASSWORD"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/mssql-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+          INSTANCES_TSV="/tmp/nr-mssql-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-mssql-rds-skip.tmp"
+          PASSWORDS_FILE="/tmp/nr-mssql-rds-passwords.tmp"
 
           mkdir -p "$CONFIG_DIR"
-
-          export PATH="/opt/mssql-tools18/bin:/opt/mssql-tools/bin:$PATH"
-
-          NR_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-
-          ALTER_RESULT=$(sqlcmd -S "${SERVER},${PORT}" -U "${MASTER_USER}" -C -b -Q "ALTER LOGIN [${LOGIN_NAME}] WITH PASSWORD = '${NR_PASSWORD}';" 2>&1)
-          if [ $? -ne 0 ] || echo "$ALTER_RESULT" | grep -qi "Sqlcmd: Error:"; then
-            echo "Failed to set the monitoring login's password:" >&2
-            echo "$ALTER_RESULT" >&2
-            exit 1
-          fi
 
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
@@ -296,67 +409,15 @@ install:
             *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
           esac
 
+          # Shared receiver settings differ by preset (Full-feature carries a longer
+          # metrics list, max_concurrent_queries, and different collection intervals
+          # than Standard) but are identical across instances within a preset. Captured
+          # once here and echoed per instance below instead of relying on the collector's
+          # YAML loader to support merge-key aliases via a fragile split - username/
+          # password/server/port are the only fields that vary per instance.
           if [ "$PRESET" = "2" ]; then
-            cat > "$CONFIG_PATH" << EOF
-          extensions:
-            health_check:
-
-          receivers:
-            otlp:
-              protocols:
-                grpc:
-                http:
-
-            host_metrics:
+            RECEIVER_DEFAULTS=$(cat << 'BLOCK'
               collection_interval: 30s
-              scrapers:
-                cpu:
-                  metrics:
-                    system.cpu.time:
-                      enabled: false
-                    system.cpu.utilization:
-                      enabled: true
-                load:
-                memory:
-                  metrics:
-                    system.memory.utilization:
-                      enabled: true
-                paging:
-                  metrics:
-                    system.paging.utilization:
-                      enabled: false
-                    system.paging.faults:
-                      enabled: false
-                disk:
-                  metrics:
-                    system.disk.merged:
-                      enabled: false
-                    system.disk.pending_operations:
-                      enabled: false
-                    system.disk.weighted_io_time:
-                      enabled: false
-                network:
-                  metrics:
-                    system.network.connections:
-                      enabled: false
-                processes:
-                process:
-                  mute_process_name_error: true
-                  mute_process_exe_error: true
-                  mute_process_user_error: true
-                  mute_process_io_error: true
-                  metrics:
-                    process.cpu.utilization:
-                      enabled: true
-                    process.memory.utilization:
-                      enabled: true
-
-            nrsqlserver:
-              collection_interval: 30s
-              username: ${LOGIN_NAME}
-              password: ${NR_PASSWORD}
-              server: ${SERVER}
-              port: ${PORT}
               max_concurrent_queries: 4
 
               metrics:
@@ -519,6 +580,194 @@ install:
 
               query_sample_collection:
                 max_rows_per_query: 50
+          BLOCK
+          )
+          else
+            RECEIVER_DEFAULTS=$(cat << 'BLOCK'
+              collection_interval: 15s
+
+              metrics:
+                sqlserver.database.count:
+                  enabled: true
+                sqlserver.database.io:
+                  enabled: true
+                sqlserver.database.latency:
+                  enabled: true
+                sqlserver.database.operations:
+                  enabled: true
+                sqlserver.database.tempdb.space:
+                  enabled: true
+                sqlserver.database.tempdb.version_store.size:
+                  enabled: true
+                sqlserver.deadlock.rate:
+                  enabled: true
+                sqlserver.os.wait.duration:
+                  enabled: true
+                sqlserver.processes.blocked:
+                  enabled: true
+                sqlserver.memory.grants.pending.count:
+                  enabled: true
+                sqlserver.database.file.size:
+                  enabled: true
+                sqlserver.memory.area:
+                  enabled: true
+
+              events:
+                db.server.query_sample:
+                  enabled: true
+                db.server.top_query:
+                  enabled: true
+
+              top_query_collection:
+                lookback_time: 60s
+                max_query_sample_count: 1000
+                top_query_count: 250
+                collection_interval: 60s
+
+              collect_full_query_text: true
+              allowed_comment_keys:
+                - nr_service_guid
+
+              query_sample_collection:
+                max_rows_per_query: 100
+          BLOCK
+          )
+          fi
+
+          if [ "$PRESET" = "2" ]; then
+            cat > "$CONFIG_PATH" << 'EOF'
+          extensions:
+            health_check:
+
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                http:
+
+            host_metrics:
+              collection_interval: 30s
+              scrapers:
+                cpu:
+                  metrics:
+                    system.cpu.time:
+                      enabled: false
+                    system.cpu.utilization:
+                      enabled: true
+                load:
+                memory:
+                  metrics:
+                    system.memory.utilization:
+                      enabled: true
+                paging:
+                  metrics:
+                    system.paging.utilization:
+                      enabled: false
+                    system.paging.faults:
+                      enabled: false
+                disk:
+                  metrics:
+                    system.disk.merged:
+                      enabled: false
+                    system.disk.pending_operations:
+                      enabled: false
+                    system.disk.weighted_io_time:
+                      enabled: false
+                network:
+                  metrics:
+                    system.network.connections:
+                      enabled: false
+                processes:
+                process:
+                  mute_process_name_error: true
+                  mute_process_exe_error: true
+                  mute_process_user_error: true
+                  mute_process_io_error: true
+                  metrics:
+                    process.cpu.utilization:
+                      enabled: true
+                    process.memory.utilization:
+                      enabled: true
+          EOF
+          else
+            cat > "$CONFIG_PATH" << 'EOF'
+          receivers:
+          EOF
+          fi
+
+          # Count survivors up front to decide whether the anchor/merge-key pattern
+          # applies - a single instance has nothing to merge into, so it gets a plain
+          # receiver. No published multi-receiver doc exists for MSSQL yet, so this
+          # mirrors MySQL's documented naming convention (nrsqlserver/instanceN) rather
+          # than inventing a new one.
+          SURVIVOR_COUNT=0
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            SURVIVOR_COUNT=$((SURVIVOR_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          MONITORED_COUNT=0
+          IS_FIRST_SURVIVOR=1
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            # Reuse the password configure_database_user already set on this login -
+            # no need to generate and apply a second one.
+            NR_PASSWORD=$(grep "^${i}=" "$PASSWORDS_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+            if [ -z "$NR_PASSWORD" ]; then
+              echo "${i}: monitoring login password not found - configure_database_user did not record one" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}:${PORT}) SKIPPED: monitoring login password not found" >&2
+              continue
+            fi
+
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              {
+                echo "  nrsqlserver/instance${i}:"
+                echo "    username: ${LOGIN_NAME}"
+                echo "    password: ${NR_PASSWORD}"
+                echo "    server: ${HOST}"
+                echo "    port: ${PORT}"
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+            elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
+              {
+                echo "  nrsqlserver/instance${i}: &nrsqlserver-common"
+                echo "    username: ${LOGIN_NAME}"
+                echo "    password: ${NR_PASSWORD}"
+                echo "    server: ${HOST}"
+                echo "    port: ${PORT}"
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+              IS_FIRST_SURVIVOR=0
+            else
+              {
+                echo "  nrsqlserver/instance${i}:"
+                echo "    <<: *nrsqlserver-common"
+                echo "    username: ${LOGIN_NAME}"
+                echo "    password: ${NR_PASSWORD}"
+                echo "    server: ${HOST}"
+                echo "    port: ${PORT}"
+              } >> "$CONFIG_PATH"
+            fi
+
+            MONITORED_COUNT=$((MONITORED_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          if [ "$MONITORED_COUNT" -eq 0 ]; then
+            echo "No MSSQL RDS instance passed its checks - nothing to monitor. Aborting install." >&2
+            exit 1
+          fi
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
             metrics_transform:
@@ -634,6 +883,44 @@ install:
               detectors: ["env"]
               timeout: 2s
               override: true
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
+
+          processors:
+            memory_limiter:
+              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
+              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
+              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
+
+            batch:
+          EOF
+          fi
+
+          # Per-instance server.address/server.port tagging - the original single-
+          # instance recipe had no such processor (nothing else to disambiguate), but
+          # with multiple nrsqlserver receivers now sharing config, each needs its own
+          # tag or every instance's data reads as coming from the first one.
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+
+            resource/sqlserver/instance${i}:
+              attributes:
+                - key: server.address
+                  value: "${HOST}"
+                  action: upsert
+                - key: server.port
+                  value: ${PORT}
+                  action: upsert
+          EOF
+          done < "$INSTANCES_TSV"
+
+          cat >> "$CONFIG_PATH" << EOF
 
           exporters:
             otlphttp:
@@ -649,11 +936,15 @@ install:
               metrics:
                 level: none
 
+          EOF
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
             extensions: [health_check]
 
             pipelines:
               metrics/host:
-                receivers: [host_metrics, nrsqlserver]
+                receivers: [host_metrics]
                 processors:
                   - metrics_transform
                   - filter/exclude_cpu_utilization
@@ -673,15 +964,59 @@ install:
                   - memory_limiter
                   - batch
                 exporters: [otlphttp]
+          EOF
+          else
+            cat >> "$CONFIG_PATH" << 'EOF'
+            pipelines:
+          EOF
+          fi
 
-              logs/host:
-                receivers: [nrsqlserver]
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            if [ "$PRESET" = "2" ]; then
+              cat >> "$CONFIG_PATH" << EOF
+              metrics/instance${i}:
+                receivers: [nrsqlserver/instance${i}]
                 processors:
+                  - resource/sqlserver/instance${i}
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - cumulativetodelta
+                  - memory_limiter
+                  - batch
+                exporters: [otlphttp]
+
+              logs/instance${i}:
+                receivers: [nrsqlserver/instance${i}]
+                processors:
+                  - resource/sqlserver/instance${i}
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch/logs
                 exporters: [otlphttp]
+          EOF
+            else
+              cat >> "$CONFIG_PATH" << EOF
+              metrics/instance${i}:
+                receivers: [nrsqlserver/instance${i}]
+                processors: [resource/sqlserver/instance${i}, memory_limiter, batch]
+                exporters: [otlphttp]
+              logs/instance${i}:
+                receivers: [nrsqlserver/instance${i}]
+                processors: [resource/sqlserver/instance${i}, memory_limiter, batch]
+                exporters: [otlphttp]
+          EOF
+            fi
+          done < "$INSTANCES_TSV"
+
+          if [ "$PRESET" = "2" ]; then
+            cat >> "$CONFIG_PATH" << 'EOF'
 
               traces:
                 receivers: [otlp]
@@ -698,94 +1033,6 @@ install:
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
                 exporters: [otlphttp]
           EOF
-          else
-            cat > "$CONFIG_PATH" << EOF
-          receivers:
-            nrsqlserver:
-              collection_interval: 15s
-              username: ${LOGIN_NAME}
-              password: ${NR_PASSWORD}
-              server: ${SERVER}
-              port: ${PORT}
-
-              metrics:
-                sqlserver.database.count:
-                  enabled: true
-                sqlserver.database.io:
-                  enabled: true
-                sqlserver.database.latency:
-                  enabled: true
-                sqlserver.database.operations:
-                  enabled: true
-                sqlserver.database.tempdb.space:
-                  enabled: true
-                sqlserver.database.tempdb.version_store.size:
-                  enabled: true
-                sqlserver.deadlock.rate:
-                  enabled: true
-                sqlserver.os.wait.duration:
-                  enabled: true
-                sqlserver.processes.blocked:
-                  enabled: true
-                sqlserver.memory.grants.pending.count:
-                  enabled: true
-                sqlserver.database.file.size:
-                  enabled: true
-                sqlserver.memory.area:
-                  enabled: true
-
-              events:
-                db.server.query_sample:
-                  enabled: true
-                db.server.top_query:
-                  enabled: true
-
-              top_query_collection:
-                lookback_time: 60s
-                max_query_sample_count: 1000
-                top_query_count: 250
-                collection_interval: 60s
-
-              collect_full_query_text: true
-              allowed_comment_keys:
-                - nr_service_guid
-
-              query_sample_collection:
-                max_rows_per_query: 100
-
-          processors:
-            memory_limiter:
-              check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
-              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
-              spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
-
-            batch:
-
-          exporters:
-            otlphttp:
-              endpoint: ${OTLP_ENDPOINT}
-              headers:
-                api-key: ${LICENSE_KEY}
-              tls:
-                insecure: false
-              compression: gzip
-
-          service:
-            telemetry:
-              metrics:
-                level: none
-
-            pipelines:
-              metrics:
-                receivers: [nrsqlserver]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
-
-              logs:
-                receivers: [nrsqlserver]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
-          EOF
           fi
 
           cat > "$ENV_FILE" << EOF
@@ -795,7 +1042,7 @@ install:
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
 
-          echo "MSSQL OTel config written to ${CONFIG_PATH}"
+          echo "MSSQL OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} instance(s))"
           echo "Env file written to ${ENV_FILE}"
 
     restart_nrdot:
@@ -804,22 +1051,46 @@ install:
           systemctl restart nrdot-collector
 
           echo "Waiting for NRDOT Collector to start..."
+          NR_STARTED=""
           for i in $(seq 1 30); do
             if systemctl is-active --quiet nrdot-collector; then
               echo "NRDOT Collector is running."
-              exit 0
+              NR_STARTED=1
+              break
             fi
             sleep 2
           done
 
-          echo "NRDOT Collector did not start in time. Check logs:" >&2
-          journalctl -u nrdot-collector --no-pager -n 50 >&2
-          exit 31
+          if [ -z "$NR_STARTED" ]; then
+            echo "NRDOT Collector did not start in time. Check logs:" >&2
+            journalctl -u nrdot-collector --no-pager -n 50 >&2
+            exit 31
+          fi
+
+          INSTANCES_TSV="/tmp/nr-mssql-rds-instances.tsv"
+          SKIP_FILE="/tmp/nr-mssql-rds-skip.tmp"
+
+          echo ""
+          echo "==> MSSQL RDS instance summary:"
+          echo ""
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            REASON=$(grep "^${i}:" "$SKIP_FILE" 2>/dev/null | sed "s/^${i}: //")
+            if [ -n "$REASON" ]; then
+              echo "  [SKIP] ${i}: ${HOST}:${PORT} - ${REASON}"
+            else
+              echo "  [OK]   ${i}: ${HOST}:${PORT}"
+            fi
+          done < "$INSTANCES_TSV"
+
+          rm -f /tmp/nr-mssql-grant-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE" /tmp/nr-mssql-rds-passwords.tmp
 
     default:
       cmds:
         - task: write_recipe_metadata
         - task: assert_pre_req
+        - task: parse_instances
         - task: assert_sql_server_version
         - task: install_nrdot
         - task: configure_database_user
