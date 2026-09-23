@@ -583,6 +583,17 @@ install:
           EOF
           fi
 
+          # Add otlp receiver for distributed tracing if enabled
+          ENABLE_DT="${NR_CLI_ENABLE_DT:-false}"
+          if [ "$ENABLE_DT" = "true" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+          EOF
+          fi
+
           cat >> "$COLLECTOR_CONFIG" << 'EOF'
 
           processors:
@@ -625,6 +636,24 @@ install:
                   os.type:
                     enabled: true
           EOF
+
+          # Add distributed-tracing processors if enabled
+          if [ "$ENABLE_DT" = "true" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+            filter/drop_rootless_es:
+              error_mode: ignore
+              traces:
+                span:
+                  - 'instrumentation_scope.name == "elasticsearch" and IsRootSpan()'
+            transform/strip_es_host:
+              error_mode: ignore
+              trace_statements:
+                - context: span
+                  statements:
+                    - delete_key(attributes, "http.request.headers.host") where instrumentation_scope.name == "elasticsearch"
+                    - delete_key(attributes, "server.address") where instrumentation_scope.name == "elasticsearch"
+          EOF
+          fi
 
           # Add batch processor with different settings based on preset
           if [ "$CONFIG_PRESET" = "optimized" ]; then
@@ -786,6 +815,16 @@ install:
                 exporters: [otlphttp]
           EOF
             fi
+          fi
+
+          # Add traces pipeline for distributed tracing if enabled
+          if [ "$ENABLE_DT" = "true" ]; then
+            cat >> "$COLLECTOR_CONFIG" << 'EOF'
+              traces:
+                receivers: [otlp]
+                processors: [memory_limiter, filter/drop_rootless_es, transform/strip_es_host, batch]
+                exporters: [otlphttp]
+          EOF
           fi
 
           echo "Elasticsearch OTel config written to ${COLLECTOR_CONFIG}"
