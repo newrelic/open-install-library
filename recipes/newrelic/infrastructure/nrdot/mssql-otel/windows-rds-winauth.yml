@@ -4,7 +4,7 @@
 
 name: nrdot-collector-mssql-rds-winauth
 displayName: NRDOT MSSQL RDS Windows Auth (Windows)
-description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Windows connecting to AWS RDS SQL Server instances (Windows Domain Authentication or gMSA)
+description: New Relic install recipe for MSSQL monitoring via NRDOT Collector on Windows connecting to AWS RDS SQL Server instances (Windows Domain Authentication or gMSA), one or more instances
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -28,12 +28,31 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from your AWS RDS SQL Server instance, we need to authorize a
-    monitoring identity (a Windows domain account or a gMSA account). This requires
-    administrative access to your RDS instance, and your RDS instance must already
-    be joined to an AWS Managed Microsoft AD domain. This host also needs network
-    connectivity to the RDS endpoint (inbound access on the SQL Server port in the
-    RDS security group).
+    To capture data from your AWS RDS SQL Server instances, we need to authorize a
+    monitoring identity (a Windows domain account or a gMSA account) on every RDS
+    instance you list. This requires administrative access to each RDS instance, and
+    each RDS instance must already be joined to an AWS Managed Microsoft AD domain.
+    This host also needs network connectivity to every RDS endpoint (inbound access
+    on the SQL Server port in each RDS security group).
+
+    You will be asked for an instances file (YAML) listing every RDS endpoint to
+    monitor, in the order you want them numbered (instance 1, 2, 3, ...). A single
+    RDS instance is still one entry:
+
+      instances:
+        - host: mydb1.xxxxxxxxxx.us-east-1.rds.amazonaws.com
+          port: 1433
+        - host: mydb2.xxxxxxxxxx.us-east-1.rds.amazonaws.com
+          port: 1433
+
+    One Windows identity monitors every instance in the file, so it must be allowed
+    on all of them:
+      - Windows Domain Auth: one domain account and its password.
+      - gMSA: one gMSA account (recommended for production - AD rotates its password).
+
+    Any instance that fails its version check or permission setup is skipped (with a
+    reason) and the rest are still configured. If no instance is left, the install
+    stops before changing anything else.
 
 inputVars:
   - name: NR_CLI_MSSQL_CONFIG_PRESET
@@ -42,11 +61,8 @@ inputVars:
   - name: NR_CLI_MSSQL_AUTH_MODE
     prompt: "SQL Server authentication - 1) Windows Domain Auth  2) gMSA: "
     default: "1"
-  - name: NR_CLI_MSSQL_SERVER
-    prompt: "RDS SQL Server endpoint (e.g. mydb.xxxxxxxxxx.us-east-1.rds.amazonaws.com): "
-  - name: NR_CLI_MSSQL_PORT
-    prompt: "SQL Server port: "
-    default: "1433"
+  - name: NR_CLI_MSSQL_INSTANCES_FILE
+    prompt: "Path to the MSSQL RDS instances YAML file: "
   - name: NR_CLI_MSSQL_WIN_ACCOUNT
     prompt: "Windows domain account to grant permissions to, DOMAIN\\username (Windows Domain Auth only; leave blank otherwise): "
     default: " "
@@ -131,32 +147,136 @@ install:
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
+    parse_instances:
+      cmds:
+        - |
+          NR_SCRIPT="$TEMP/nr-mssql-parse_instances.ps1"
+          powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
+          $instancesFile = '{{.NR_CLI_MSSQL_INSTANCES_FILE}}'
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
+
+          Remove-Item $instancesJsonPath, $skipJsonPath -ErrorAction SilentlyContinue
+
+          if ([string]::IsNullOrWhiteSpace($instancesFile) -or -not (Test-Path $instancesFile)) {
+            Write-Host -ForegroundColor Red "Instances file not found: $instancesFile"
+            exit 131
+          }
+
+          # Parses the fixed 2-key-per-item shape documented in preInstall.info
+          # (host, port) - not a general-purpose YAML parser.
+          function Get-Value($raw) { (($raw -replace '\s+#.*$', '').Trim()).Trim('"').Trim("'") }
+
+          $instances = @()
+          $current = $null
+          foreach ($line in (Get-Content $instancesFile)) {
+            if ($line -match '^\s*-\s*host:(.*)$') {
+              if ($current) { $instances += [PSCustomObject]$current }
+              $current = @{ host = (Get-Value $matches[1]); port = $null }
+            } elseif ($current -and $line -match '^\s*port:(.*)$') {
+              $current.port = Get-Value $matches[1]
+            }
+          }
+          if ($current) { $instances += [PSCustomObject]$current }
+
+          if ($instances.Count -eq 0) {
+            Write-Host -ForegroundColor Red "No instances found in $instancesFile"
+            exit 131
+          }
+          Write-Host "Found $($instances.Count) MSSQL RDS instance(s) in $instancesFile"
+
+          # host is embedded in the collector datasource string and sqlcmd -S.
+          $skip = @{}
+          $seen = @{}
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            $inst = $instances[$i]
+            $portNum = 0
+            if ([string]::IsNullOrWhiteSpace($inst.host) -or $inst.host -match '[;''"\s]') {
+              $skip["$idx"] = "invalid host '$($inst.host)'"
+            } elseif (-not [int]::TryParse("$($inst.port)", [ref]$portNum) -or $portNum -lt 1 -or $portNum -gt 65535) {
+              $skip["$idx"] = "invalid port '$($inst.port)'"
+            } else {
+              $key = "$($inst.host.ToLowerInvariant()):$portNum"
+              if ($seen.ContainsKey($key)) {
+                $skip["$idx"] = "duplicate of instance $($seen[$key])"
+              } else {
+                $seen[$key] = $idx
+                $inst.port = "$portNum"
+              }
+            }
+            if ($skip.ContainsKey("$idx")) {
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($inst.host):$($inst.port)) SKIPPED: $($skip["$idx"])"
+            }
+          }
+
+          ConvertTo-Json -InputObject @($instances) -Depth 5 | Set-Content -Path $instancesJsonPath
+          $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
+          PS1EOF
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
+
     assert_sql_server_version:
       cmds:
         - |
           NR_SCRIPT="$TEMP/nr-mssql-assert_sql_server_version.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
-          $server = '{{.NR_CLI_MSSQL_SERVER}}'
-          $port = '{{.NR_CLI_MSSQL_PORT}}'
-          $connArgs = @("-S", "$server,$port", "-E", "-C")
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
 
-          $query = "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');"
-          $result = & sqlcmd @connArgs -b -h -1 -Q $query 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host -ForegroundColor Red "Failed to connect to SQL Server to check its version:"
-            Write-Host $result
-            exit 1
+          $instances = [array](Get-Content $instancesJsonPath -Raw | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
+
+          function Write-InstanceSummary {
+            Write-Host ""
+            Write-Host "==> MSSQL instance summary:"
+            Write-Host ""
+            for ($i = 0; $i -lt $instances.Count; $i++) {
+              $idx = $i + 1
+              $inst = $instances[$i]
+              if ($skip.ContainsKey("$idx")) {
+                Write-Host "  [SKIP] $idx`: $($inst.host):$($inst.port) - $($skip["$idx"])"
+              } else {
+                Write-Host "  [OK]   $idx`: $($inst.host):$($inst.port)"
+              }
+            }
+            Write-Host ""
           }
 
-          $majorVersionLine = ($result | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
-          $majorVersion = if ($majorVersionLine) { [int]$majorVersionLine.Trim() } else { $null }
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            if ($skip.ContainsKey("$idx")) { continue }
+            $inst = $instances[$i]
 
-          if (-not $majorVersion -or $majorVersion -lt 14) {
-            Write-Host -ForegroundColor Red "SQL Server version $majorVersion is not supported. SQL Server 2017 or later (major version 14+) is required."
-            exit 1
+            $query = "SET NOCOUNT ON; SELECT SERVERPROPERTY('ProductMajorVersion');"
+            $result = & sqlcmd -S "$($inst.host),$($inst.port)" -E -C -b -h -1 -Q $query 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              $skip["$idx"] = "failed to connect / check version - $($result -join ' ')"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($inst.host):$($inst.port)) SKIPPED: failed to connect to check its version"
+              continue
+            }
+
+            $majorVersionLine = ($result | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
+            $majorVersion = if ($majorVersionLine) { [int]$majorVersionLine.Trim() } else { $null }
+
+            if (-not $majorVersion -or $majorVersion -lt 14) {
+              $skip["$idx"] = "unsupported SQL Server version $majorVersion (2017 / major version 14+ required)"
+              Write-Host -ForegroundColor Yellow "Instance $idx ($($inst.host):$($inst.port)) SKIPPED: unsupported SQL Server version $majorVersion"
+              continue
+            }
+
+            Write-Host "Instance $idx ($($inst.host):$($inst.port)): SQL Server major version $majorVersion detected - supported."
           }
 
-          Write-Host "SQL Server major version $majorVersion detected - supported."
+          $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
+
+          $remaining = @(1..$instances.Count | Where-Object { -not $skip.ContainsKey("$_") })
+          if ($remaining.Count -eq 0) {
+            Write-InstanceSummary
+            Write-Host -ForegroundColor Red "No MSSQL RDS instance passed its checks - nothing to monitor. Aborting install."
+            Remove-Item $instancesJsonPath, $skipJsonPath -ErrorAction SilentlyContinue
+            exit 1
+          }
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -238,18 +358,27 @@ install:
           NR_SCRIPT="$TEMP/nr-mssql-configure_database_user.ps1"
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
           $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
-          $server = '{{.NR_CLI_MSSQL_SERVER}}'
-          $port = '{{.NR_CLI_MSSQL_PORT}}'
-          $sqlFile = "$env:TEMP\nr-mssql-grant.sql"
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
 
-          function Invoke-GrantScript($connArgs, $file) {
-            $result = & sqlcmd @connArgs -b -i $file 2>&1
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host -ForegroundColor Red "SQL script failed:"
-              Write-Host $result
-              exit 1
+          $instances = [array](Get-Content $instancesJsonPath -Raw | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
+
+          function Write-InstanceSummary {
+            Write-Host ""
+            Write-Host "==> MSSQL instance summary:"
+            Write-Host ""
+            for ($i = 0; $i -lt $instances.Count; $i++) {
+              $idx = $i + 1
+              $inst = $instances[$i]
+              if ($skip.ContainsKey("$idx")) {
+                Write-Host "  [SKIP] $idx`: $($inst.host):$($inst.port) - $($skip["$idx"])"
+              } else {
+                Write-Host "  [OK]   $idx`: $($inst.host):$($inst.port)"
+              }
             }
-            Write-Host $result
+            Write-Host ""
           }
 
           function Protect-TempFile($path) {
@@ -260,8 +389,8 @@ install:
             }
           }
 
-          if ($mode -eq "1") {
-            $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
+          function Get-GrantSql($account) {
+            if ($mode -eq "1") {
             $sql = @"
           USE [master];
           GO
@@ -299,8 +428,8 @@ install:
           DEALLOCATE db_cursor;
           GO
           "@
-          } else {
-            $gmsa = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
+            } else {
+            $gmsa = $account
             $sql = @"
           USE master;
           GO
@@ -337,13 +466,48 @@ install:
           DEALLOCATE db_cursor;
           GO
           "@
+            }
+            return $sql
           }
 
-          $sql | Set-Content -Path $sqlFile
-          Protect-TempFile $sqlFile
-          Invoke-GrantScript @("-S", "$server,$port", "-E", "-C") $sqlFile
-          Write-Host "SQL Server monitoring identity configured successfully."
-          Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+          if ($mode -eq "1") {
+            $account = '{{.NR_CLI_MSSQL_WIN_ACCOUNT}}'
+          } else {
+            $account = '{{.NR_CLI_MSSQL_GMSA_ACCOUNT}}'
+          }
+
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            if ($skip.ContainsKey("$idx")) { continue }
+            $inst = $instances[$i]
+            $label = "Instance $idx ($($inst.host):$($inst.port))"
+            Write-Host "${label}: granting SQL Server monitoring permissions to $account"
+
+            $sqlFile = "$env:TEMP\nr-mssql-grant-$idx.sql"
+            Get-GrantSql $account | Set-Content -Path $sqlFile
+            Protect-TempFile $sqlFile
+            $result = & sqlcmd -S "$($inst.host),$($inst.port)" -E -C -b -i $sqlFile 2>&1
+            $sqlExit = $LASTEXITCODE
+            Remove-Item -Path $sqlFile -ErrorAction SilentlyContinue
+
+            if ($sqlExit -ne 0) {
+              $skip["$idx"] = "monitoring identity setup failed - $($result -join ' ')"
+              Write-Host -ForegroundColor Yellow "$label SKIPPED: monitoring identity setup failed"
+              continue
+            }
+            Write-Host ($result | Out-String)
+            Write-Host "${label}: SQL Server monitoring identity configured successfully: $account"
+          }
+
+          $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
+
+          $remaining = @(1..$instances.Count | Where-Object { -not $skip.ContainsKey("$_") })
+          if ($remaining.Count -eq 0) {
+            Write-InstanceSummary
+            Write-Host -ForegroundColor Red "No MSSQL RDS instance passed its checks - nothing to monitor. Aborting install."
+            Remove-Item $instancesJsonPath, $skipJsonPath -ErrorAction SilentlyContinue
+            exit 1
+          }
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -384,18 +548,24 @@ install:
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
           $mode = "{{.NR_CLI_MSSQL_AUTH_MODE}}"
           $preset = "{{.NR_CLI_MSSQL_CONFIG_PRESET}}"
-          $server = '{{.NR_CLI_MSSQL_SERVER}}'
-          $port = '{{.NR_CLI_MSSQL_PORT}}'
           $region = "{{.NEW_RELIC_REGION}}"
           $licenseKey = "{{.NEW_RELIC_LICENSE_KEY}}"
           $configDir = "C:\Program Files\nrdot-collector"
           $configPath = "$configDir\mssql-config.yaml"
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
 
           New-Item -Path $configDir -ItemType Directory -Force | Out-Null
 
+          $instances = [array](Get-Content $instancesJsonPath -Raw | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
+          $survivors = @(1..$instances.Count | Where-Object { -not $skip.ContainsKey("$_") })
+
           $interval = if ($preset -eq "2") { "30s" } else { "15s" }
 
-          $receiverFields = "    collection_interval: $interval`n    datasource: `"server=$server;port=$port;integrated security=true;encrypt=true;TrustServerCertificate=true;`""
+          function Get-Datasource($inst) { "server=$($inst.host);port=$($inst.port);integrated security=true;encrypt=true;TrustServerCertificate=true;" }
+          function Get-ReceiverFields($inst) { "    collection_interval: $interval`n    datasource: `"$(Get-Datasource $inst)`"" }
 
           switch ($region) {
             "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net" }
@@ -882,7 +1052,82 @@ install:
           '@
           }
 
-          $configText = $template.Replace('__RECEIVER_FIELDS__', $receiverFields).Replace('__OTLP_ENDPOINT__', $otlpEndpoint).Replace('__LICENSE_KEY__', $licenseKey)
+          if ($survivors.Count -eq 1) {
+            $configText = $template.Replace('__RECEIVER_FIELDS__', (Get-ReceiverFields $instances[$survivors[0] - 1]))
+          } else {
+            # Split the single-instance template into receiver / processors / exporters / pipelines and rebuild each per instance.
+            $template = $template -replace "`r`n", "`n"
+            $head, $rest = $template -split [regex]::Escape("  nrsqlserver:`n__RECEIVER_FIELDS__`n"), 2
+            $receiverBody, $rest = $rest -split "`nprocessors:`n", 2
+            $processorsBody, $rest = $rest -split "`nexporters:`n", 2
+            $exportersAndService, $oldPipelines = $rest -split "`n  pipelines:`n", 2
+
+            $receivers = New-Object System.Text.StringBuilder
+            $resourceProcessors = New-Object System.Text.StringBuilder
+            $instancePipelines = New-Object System.Text.StringBuilder
+            $isFirst = $true
+            foreach ($idx in $survivors) {
+              $inst = $instances[$idx - 1]
+              if ($isFirst) {
+                [void]$receivers.Append("  nrsqlserver/instance$idx" + ": &nrsqlserver-common`n")
+                [void]$receivers.Append((Get-ReceiverFields $inst) + "`n")
+                [void]$receivers.Append($receiverBody)
+                $isFirst = $false
+              } else {
+                [void]$receivers.Append("  nrsqlserver/instance$idx" + ":`n")
+                [void]$receivers.Append("    <<: *nrsqlserver-common`n")
+                [void]$receivers.Append("    datasource: `"$(Get-Datasource $inst)`"`n")
+              }
+
+              [void]$resourceProcessors.Append("`n  resource/sqlserver/instance$idx" + ":`n")
+              [void]$resourceProcessors.Append("    attributes:`n")
+              [void]$resourceProcessors.Append("      - key: server.address`n")
+              [void]$resourceProcessors.Append("        value: `"$($inst.host)`"`n")
+              [void]$resourceProcessors.Append("        action: upsert`n")
+              [void]$resourceProcessors.Append("      - key: server.port`n")
+              [void]$resourceProcessors.Append("        value: $($inst.port)`n")
+              [void]$resourceProcessors.Append("        action: upsert`n")
+
+              if ($preset -eq "2") {
+                [void]$instancePipelines.Append("    metrics/instance$idx" + ":`n")
+                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
+                [void]$instancePipelines.Append("      processors:`n")
+                [void]$instancePipelines.Append("        - resource/sqlserver/instance$idx`n")
+                [void]$instancePipelines.Append("        - resource_detection`n")
+                [void]$instancePipelines.Append("        - resource_detection/cloud`n")
+                [void]$instancePipelines.Append("        - resource_detection/env`n")
+                [void]$instancePipelines.Append("        - cumulativetodelta`n")
+                [void]$instancePipelines.Append("        - batch`n")
+                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
+                [void]$instancePipelines.Append("    logs/instance$idx" + ":`n")
+                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
+                [void]$instancePipelines.Append("      processors: [resource/sqlserver/instance$idx, resource_detection, resource_detection/cloud, resource_detection/env, batch]`n")
+                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
+              } else {
+                [void]$instancePipelines.Append("    metrics/instance$idx" + ":`n")
+                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
+                [void]$instancePipelines.Append("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]`n")
+                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
+                [void]$instancePipelines.Append("    logs/instance$idx" + ":`n")
+                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
+                [void]$instancePipelines.Append("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]`n")
+                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
+              }
+            }
+
+            if ($preset -eq "2") {
+              # Full preset: host metrics keep their own pipeline; the otlp pipelines are kept as-is.
+              $hostPipeline = ($oldPipelines -split "`n    logs/host:`n", 2)[0].Replace("receivers: [host_metrics, nrsqlserver]", "receivers: [host_metrics]")
+              $otlpPipelines = $oldPipelines.Substring($oldPipelines.IndexOf("    traces:"))
+              $newPipelines = $hostPipeline + "`n" + $instancePipelines.ToString() + $otlpPipelines
+            } else {
+              $newPipelines = $instancePipelines.ToString().TrimEnd("`n") + "`n"
+            }
+
+            $configText = $head + $receivers.ToString() + "`nprocessors:`n" + $processorsBody + $resourceProcessors.ToString() + "`nexporters:`n" + $exportersAndService + "`n  pipelines:`n" + $newPipelines
+          }
+
+          $configText = $configText.Replace('__OTLP_ENDPOINT__', $otlpEndpoint).Replace('__LICENSE_KEY__', $licenseKey)
           $configText | Set-Content -Path $configPath -Encoding utf8
 
           $serviceAccount = $null
@@ -901,7 +1146,7 @@ install:
             exit 1
           }
 
-          Write-Host "MSSQL OTel config written to $configPath"
+          Write-Host "MSSQL OTel config written to $configPath ($($survivors.Count) instance(s))"
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -952,19 +1197,44 @@ install:
           powershell -NoProfile -Command "[Console]::In.ReadToEnd() | Set-Content -Path '$NR_SCRIPT' -NoNewline" <<'PS1EOF'
           $maxRetries = 30
           $tries = 0
+          $started = $false
           Write-Host "Waiting for NRDOT Collector to start..."
           while ($tries -lt $maxRetries) {
             $tries++
             $service = Get-Service -Name "nrdot-collector" -ErrorAction SilentlyContinue
             if ($service -and $service.Status -eq "Running") {
               Write-Host "NRDOT Collector is running."
-              exit 0
+              $started = $true
+              break
             }
             Start-Sleep -Seconds 2
           }
-          Write-Host -ForegroundColor Red "NRDOT Collector did not start in time. Install log:"
-          Get-Content "$env:TEMP\nrdot_install.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
-          exit 31
+          if (-not $started) {
+            Write-Host -ForegroundColor Red "NRDOT Collector did not start in time. Install log:"
+            Get-Content "$env:TEMP\nrdot_install.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
+            exit 31
+          }
+
+          $instancesJsonPath = "$env:TEMP\nr-mssql-instances.json"
+          $skipJsonPath = "$env:TEMP\nr-mssql-skip.json"
+          $instances = [array](Get-Content $instancesJsonPath -Raw | ConvertFrom-Json)
+          $skip = @{}
+          (Get-Content $skipJsonPath -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $skip[$_.Name] = $_.Value }
+
+          Write-Host ""
+          Write-Host "==> MSSQL instance summary:"
+          Write-Host ""
+          for ($i = 0; $i -lt $instances.Count; $i++) {
+            $idx = $i + 1
+            $inst = $instances[$i]
+            if ($skip.ContainsKey("$idx")) {
+              Write-Host "  [SKIP] $idx`: $($inst.host):$($inst.port) - $($skip["$idx"])"
+            } else {
+              Write-Host "  [OK]   $idx`: $($inst.host):$($inst.port)"
+            }
+          }
+
+          Remove-Item $instancesJsonPath, $skipJsonPath -ErrorAction SilentlyContinue
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -973,6 +1243,7 @@ install:
         - task: write_recipe_metadata
         - task: assert_pre_req
         - task: assert_auth_inputs
+        - task: parse_instances
         - task: assert_sql_server_version
         - task: install_nrdot
         - task: configure_database_user
