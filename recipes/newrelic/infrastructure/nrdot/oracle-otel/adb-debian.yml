@@ -1,0 +1,881 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-oracle-adb
+displayName: NRDOT Oracle Autonomous Database (ADB, Debian/Ubuntu collector host)
+description: New Relic install recipe for Oracle Autonomous Database (ADB) monitoring via NRDOT Collector against one or more ADB instances, collector installed on Debian/Ubuntu
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+  - type: host
+    os: linux
+    platform: ubuntu
+
+keywords:
+  - Oracle
+  - Oracle Database
+  - Autonomous Database
+  - ADB
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Database
+  - Linux
+  - Debian
+  - Ubuntu
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+  info: |
+    Oracle Autonomous Database is a managed service, so the NRDOT Collector runs
+    on this host and reaches the database(s) over the network. To capture data, we
+    need to create/authorize a monitoring identity (a database user) on each ADB
+    instance, using each instance's ADB admin credentials.
+
+    Each ADB instance connects using mutual TLS (mTLS), which is ADB's default; no
+    ADB network-setting changes are required. For each instance, download its
+    Oracle Wallet (ADB console -> Database connection -> Download wallet) and
+    unzip it to its own directory on this host - do not share one wallet
+    directory between different ADB instances.
+
+    You will be asked for two files:
+
+      1. An instances file (YAML) listing every ADB instance to monitor, in the
+         order you want them numbered (instance 1, 2, 3, ...):
+
+           instances:
+             - host: adb1.adb.us-ashburn-1.oraclecloud.com
+               port: 1522
+               service: myadb1_high
+               login_name: newrelic
+               wallet_dir: /home/opc/wallet1
+             - host: adb2.adb.us-ashburn-1.oraclecloud.com
+               port: 1522
+               service: myadb2_high
+               login_name: newrelic
+               wallet_dir: /home/opc/wallet2
+
+         host, port and service come from each instance's ADB connection string
+         (Database connection -> Connection strings). wallet_dir is the directory
+         where that instance's wallet was unzipped.
+
+      2. A secrets file (KEY=VALUE per line) supplying the ADB admin credentials
+         for each instance above, indexed to match the instances file's order
+         (1-based):
+
+           NR_CLI_ORACLE_ADMIN_USER_1=ADMIN
+           NR_CLI_ORACLE_ADMIN_PASSWORD_1=<admin password for instance 1>
+           NR_CLI_ORACLE_ADMIN_USER_2=ADMIN
+           NR_CLI_ORACLE_ADMIN_PASSWORD_2=<admin password for instance 2>
+           NR_CLI_ORACLE_LOGIN_PASSWORD_1=<optional - leave unset to auto-generate>
+
+         NR_CLI_ORACLE_ADMIN_USER_<i> / NR_CLI_ORACLE_ADMIN_PASSWORD_<i> are
+         required for every instance. NR_CLI_ORACLE_LOGIN_PASSWORD_<i> is optional.
+
+    Also make sure:
+      - Each host's egress IP address is allowed in the corresponding ADB access
+        control list.
+      - Oracle SQL*Plus (Instant Client) is installed on this host and on PATH.
+
+    Any instance that fails its version check or user setup is skipped (with a
+    reason) rather than aborting the whole install - the rest are still configured.
+
+inputVars:
+  - name: NR_CLI_ORACLE_INSTANCES_FILE
+    prompt: "Path to the ADB instances YAML file: "
+  - name: NR_CLI_ORACLE_SECRETS_FILE
+    prompt: "Path to the ADB secrets file (KEY=VALUE per instance): "
+
+validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'oracledb.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
+
+successLinkConfig:
+  type: EXPLORER
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+
+  tasks:
+    write_recipe_metadata:
+      cmds:
+        - |
+          echo '{"Metadata":{"CapturedCliOutput":"true"}}' | tee {{.NR_CLI_OUTPUT}} > /dev/null
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 131
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        - |
+          if ! command -v sqlplus > /dev/null 2>&1; then
+            echo "sqlplus is required to create the monitoring user in your Autonomous Database." >&2
+            echo "Autonomous Database provides no host access, so the monitoring user must be created" >&2
+            echo "over the network from this host. Please install the Oracle Instant Client SQL*Plus" >&2
+            echo "package, make sure sqlplus is on PATH, and re-run the installation." >&2
+            exit 131
+          fi
+
+    parse_instances:
+      cmds:
+        - |
+          INSTANCES_FILE="{{.NR_CLI_ORACLE_INSTANCES_FILE}}"
+          SECRETS_FILE="{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-oracle-adb-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-adb-skip.tmp"
+
+          rm -f "$INSTANCES_TSV" "$SKIP_FILE"
+
+          if [ ! -f "$INSTANCES_FILE" ]; then
+            echo "Instances file not found: $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          if [ ! -f "$SECRETS_FILE" ]; then
+            echo "Secrets file not found: $SECRETS_FILE" >&2
+            exit 131
+          fi
+
+          SECRETS_PERMS=$(stat -c '%a' "$SECRETS_FILE" 2>/dev/null || stat -f '%Lp' "$SECRETS_FILE" 2>/dev/null)
+          if [ -n "$SECRETS_PERMS" ]; then
+            GROUP_OTHER_BITS=$(printf '%s' "$SECRETS_PERMS" | tail -c 2)
+            if [ "$GROUP_OTHER_BITS" != "00" ]; then
+              echo "$SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS) - refusing to proceed." >&2
+              echo "Run: chmod 600 $SECRETS_FILE" >&2
+              exit 131
+            fi
+          fi
+
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges).
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "$SECRETS_FILE"
+
+          # Parses the fixed 5-key-per-item shape documented in preInstall.info
+          # (host, port, service, login_name, wallet_dir) - not a general-purpose YAML parser.
+          awk '
+            /^[[:space:]]*-[[:space:]]*host:/ {
+              if (have) { print host "\t" port "\t" service "\t" login_name "\t" wallet_dir }
+              host=$0; sub(/^[[:space:]]*-[[:space:]]*host:[[:space:]]*/, "", host)
+              port=""; service=""; login_name=""; wallet_dir=""; have=1; next
+            }
+            /^[[:space:]]*port:/ { port=$0; sub(/^[[:space:]]*port:[[:space:]]*/, "", port); next }
+            /^[[:space:]]*service:/ { service=$0; sub(/^[[:space:]]*service:[[:space:]]*/, "", service); next }
+            /^[[:space:]]*login_name:/ { login_name=$0; sub(/^[[:space:]]*login_name:[[:space:]]*/, "", login_name); next }
+            /^[[:space:]]*wallet_dir:/ { wallet_dir=$0; sub(/^[[:space:]]*wallet_dir:[[:space:]]*/, "", wallet_dir); next }
+            END { if (have) { print host "\t" port "\t" service "\t" login_name "\t" wallet_dir } }
+          ' "$INSTANCES_FILE" > "$INSTANCES_TSV"
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          if [ "$INSTANCE_COUNT" -eq 0 ]; then
+            echo "No instances found in $INSTANCES_FILE" >&2
+            exit 131
+          fi
+
+          i=0
+          while IFS="$(printf '\t')" read -r ENTRY_HOST ENTRY_PORT ENTRY_SERVICE ENTRY_LOGIN_NAME ENTRY_WALLET_DIR; do
+            i=$((i + 1))
+            eval "ADMIN_USER_VAL=\"\${NR_CLI_ORACLE_ADMIN_USER_${i}:-}\""
+            eval "ADMIN_PASSWORD_VAL=\"\${NR_CLI_ORACLE_ADMIN_PASSWORD_${i}:-}\""
+            if [ -z "$ADMIN_USER_VAL" ] || [ -z "$ADMIN_PASSWORD_VAL" ]; then
+              echo "${i}: missing NR_CLI_ORACLE_ADMIN_USER_${i}/NR_CLI_ORACLE_ADMIN_PASSWORD_${i} in secrets file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: missing admin credentials in secrets file" >&2
+              continue
+            fi
+            if [ ! -d "$ENTRY_WALLET_DIR" ]; then
+              echo "${i}: wallet directory not found: $ENTRY_WALLET_DIR" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: wallet directory not found: $ENTRY_WALLET_DIR" >&2
+              continue
+            fi
+            if [ ! -f "$ENTRY_WALLET_DIR/cwallet.sso" ] || [ ! -f "$ENTRY_WALLET_DIR/sqlnet.ora" ]; then
+              echo "${i}: wallet directory does not look like an unzipped Oracle Wallet: $ENTRY_WALLET_DIR" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: wallet directory does not look like an unzipped Oracle Wallet" >&2
+              continue
+            fi
+          done < "$INSTANCES_TSV"
+
+    assert_oracle_version:
+      cmds:
+        - |
+          INSTANCES_TSV="/tmp/nr-oracle-adb-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-adb-skip.tmp"
+
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges).
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME WALLET_DIR; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            eval "ADMIN_USER=\"\${NR_CLI_ORACLE_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_ORACLE_ADMIN_PASSWORD_${i}}\""
+            export TNS_ADMIN="$WALLET_DIR"
+            TNS_DESC="(description=(retry_count=3)(retry_delay=3)(address=(protocol=tcps)(port=${PORT})(host=${HOST}))(connect_data=(service_name=${SERVICE_NAME}))(security=(ssl_server_dn_match=yes)))"
+
+            # Built with printf piped into sqlplus (not a heredoc): a heredoc whose
+            # closing delimiter is indented to match this script's own indentation
+            # is not recognized as a terminator by go-task's shell interpreter,
+            # which fails the whole task with "unclosed here-document" instead of
+            # running the query.
+            VERSION_OUTPUT=$(printf '%s\n' \
+              "WHENEVER SQLERROR EXIT SQL.SQLCODE" \
+              "CONNECT ${ADMIN_USER}/\"${ADMIN_PASSWORD}\"@\"${TNS_DESC}\"" \
+              "SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON" \
+              "SELECT version FROM v\$instance;" \
+              "EXIT;" | sqlplus -S /nolog 2>&1)
+            SQLPLUS_STATUS=$?
+
+            if [ $SQLPLUS_STATUS -ne 0 ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|SP2-\|TNS-"; then
+              REASON=$(echo "$VERSION_OUTPUT" | tr '\n' ' ' | sed 's/  */ /g')
+              echo "${i}: failed to connect / check version - ${REASON}" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: failed to connect to check its version" >&2
+              continue
+            fi
+
+            MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '[0-9]+' | head -1)
+
+            if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
+              echo "${i}: unsupported Oracle Database version ${MAJOR_VERSION:-unknown} (19c or later required)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: unsupported Oracle Database version ${MAJOR_VERSION:-unknown}" >&2
+              continue
+            fi
+
+            echo "Instance ${i} (${HOST}): Oracle Autonomous Database major version ${MAJOR_VERSION} detected - supported."
+          done < "$INSTANCES_TSV"
+
+    install_nrdot:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          if dpkg -l | grep -q "^ii.*${COLLECTOR_DISTRO} "; then
+            echo "NRDOT Collector is already installed."
+            echo ""
+            echo "Please follow the steps below to complete the setup:"
+            echo ""
+            echo "  1. Create oracle-config.yaml"
+            echo "     if not present. Refer to:"
+            echo "     https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/#adb"
+            echo ""
+            echo "  2. Make sure the monitoring user is created"
+            echo "     and has the required permissions granted."
+            echo ""
+            echo "  3. After making the above changes, restart the NRDOT Collector:"
+            echo "     sudo systemctl restart nrdot-collector"
+            echo ""
+            exit 131
+          fi
+
+          COLLECTOR_VERSION=$(curl -sf "https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest" | grep '"tag_name":' | awk -F'"' '{print $4}')
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="amd64"
+          fi
+
+          DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.deb"
+          echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+          echo "Downloading from: ${DOWNLOAD_URL}"
+
+          curl -L --output /tmp/nrdot-collector.deb "$DOWNLOAD_URL"
+          if [ $? -ne 0 ]; then
+            echo "Failed to download the nrdot-collector package." >&2
+            exit 1
+          fi
+
+          DEBIAN_FRONTEND=noninteractive dpkg -i /tmp/nrdot-collector.deb
+          if [ $? -ne 0 ]; then
+            echo "dpkg install failed, attempting to fix broken dependencies..." >&2
+            apt-get -o DPkg::Lock::Timeout=60 install -f -y
+            if [ $? -ne 0 ]; then
+              echo "Failed to install the nrdot-collector package." >&2
+              exit 1
+            fi
+          fi
+
+          rm -f /tmp/nrdot-collector.deb
+          echo "${COLLECTOR_DISTRO} installed successfully."
+
+    configure_database_user:
+      cmds:
+        - |
+          INSTANCES_TSV="/tmp/nr-oracle-adb-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-adb-skip.tmp"
+
+          # Parse KEY=VALUE pairs without executing the file as shell script (unlike
+          # sourcing, which would run any shell syntax in it with this recipe's root
+          # privileges).
+          while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+            case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+            printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+            export "$SECRET_KEY=$SECRET_VALUE"
+          done < "{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          i=0
+          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            LINE=$(sed -n "${i}p" "$INSTANCES_TSV")
+            HOST=$(printf '%s' "$LINE" | cut -f1)
+            PORT=$(printf '%s' "$LINE" | cut -f2)
+            SERVICE_NAME=$(printf '%s' "$LINE" | cut -f3)
+            LOGIN_NAME=$(printf '%s' "$LINE" | cut -f4)
+            WALLET_DIR=$(printf '%s' "$LINE" | cut -f5)
+
+            eval "ADMIN_USER=\"\${NR_CLI_ORACLE_ADMIN_USER_${i}}\""
+            eval "ADMIN_PASSWORD=\"\${NR_CLI_ORACLE_ADMIN_PASSWORD_${i}}\""
+            eval "LOGIN_PASSWORD_OVERRIDE=\"\${NR_CLI_ORACLE_LOGIN_PASSWORD_${i}:-}\""
+
+            export TNS_ADMIN="$WALLET_DIR"
+            TNS_DESC="(description=(retry_count=3)(retry_delay=3)(address=(protocol=tcps)(port=${PORT})(host=${HOST}))(connect_data=(service_name=${SERVICE_NAME}))(security=(ssl_server_dn_match=yes)))"
+
+            PW_FILE="/tmp/nr-oracle-adb-newrelic-pw-${i}.tmp"
+            USER_FILE="/tmp/nr-oracle-adb-db-user-${i}.tmp"
+
+            (
+              NR_SUCCESS=""
+              trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
+
+              if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+                echo "Instance ${i} (${HOST}): invalid monitoring username: $LOGIN_NAME" >&2
+                echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+                exit 1
+              fi
+
+              LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+
+              EXISTS_RESULT=$(printf '%s\n' \
+                "CONNECT ${ADMIN_USER}/\"${ADMIN_PASSWORD}\"@\"${TNS_DESC}\"" \
+                "SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF" \
+                "SELECT username FROM dba_users WHERE username='${LOGIN_UPPER}';" \
+                "EXIT;" | sqlplus -S /nolog 2>&1) || true
+
+              if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${LOGIN_UPPER}[[:space:]]*$"; then
+                echo ""
+                echo "Instance ${i} (${HOST}): monitoring user $LOGIN_NAME already exists."
+                echo ""
+                echo "What would you like to do?"
+                echo "  1. Use the existing user $LOGIN_NAME (you will be asked for the password)"
+                echo "  2. Create a new username"
+                echo ""
+                read -rp "Enter your choice for instance ${i} (1 or 2): " USER_CHOICE
+
+                case "$USER_CHOICE" in
+                  1)
+                    echo ""
+                    stty -echo
+                    read -rp "Enter the existing password for $LOGIN_NAME (instance ${i}): " NR_PASSWORD
+                    stty echo
+                    echo ""
+                    printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+                    chmod 600 "$PW_FILE"
+                    echo "$LOGIN_NAME" > "$USER_FILE"
+                    chmod 600 "$USER_FILE"
+                    echo "Instance ${i} (${HOST}): using existing user: $LOGIN_NAME"
+                    NR_SUCCESS=1
+                    exit 0
+                    ;;
+                  2)
+                    echo ""
+                    read -rp "Enter new monitoring username for instance ${i}: " NEW_USERNAME
+                    LOGIN_NAME="$NEW_USERNAME"
+                    LOGIN_UPPER=$(echo "$LOGIN_NAME" | tr '[:lower:]' '[:upper:]')
+                    ;;
+                  *)
+                    echo "Invalid choice for instance ${i}. Skipping." >&2
+                    exit 1
+                    ;;
+                esac
+              fi
+
+              if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+                echo "Instance ${i} (${HOST}): invalid monitoring username: $LOGIN_NAME" >&2
+                echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+                exit 1
+              fi
+
+              echo "$LOGIN_NAME" > "$USER_FILE"
+              chmod 600 "$USER_FILE"
+
+              # Autonomous Database requires 12-30 characters with at least one uppercase,
+              # one lowercase and one digit. Only URL-unreserved characters are used so the
+              # password survives embedding in the receiver's datasource URL.
+              if [ -z "$LOGIN_PASSWORD_OVERRIDE" ]; then
+                _FIRST=$(LC_ALL=C tr -dc 'A-Z' < /dev/urandom | head -c 1)
+                _UPPER=$(LC_ALL=C tr -dc 'A-Z' < /dev/urandom | head -c 4)
+                _LOWER=$(LC_ALL=C tr -dc 'a-z' < /dev/urandom | head -c 8)
+                _DIGITS=$(LC_ALL=C tr -dc '0-9' < /dev/urandom | head -c 5)
+                _REST=$(printf '%s' "${_UPPER}${_LOWER}${_DIGITS}_" | fold -w1 | shuf | tr -d '\n')
+                NR_PASSWORD="${_FIRST}${_REST}"
+                unset _FIRST _UPPER _LOWER _DIGITS _REST
+              else
+                NR_PASSWORD="$LOGIN_PASSWORD_OVERRIDE"
+              fi
+              printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+              chmod 600 "$PW_FILE"
+
+              RESULT=$(printf '%s\n' \
+                "WHENEVER SQLERROR EXIT SQL.SQLCODE" \
+                "CONNECT ${ADMIN_USER}/\"${ADMIN_PASSWORD}\"@\"${TNS_DESC}\"" \
+                "CREATE USER ${LOGIN_NAME} IDENTIFIED BY \"${NR_PASSWORD}\";" \
+                "GRANT CREATE SESSION TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$INSTANCE TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$DATABASE TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$CONTAINERS TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$DATAFILE TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$PDBS TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$SYSSTAT TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$SYSMETRIC TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$SESSION TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$RESOURCE_LIMIT TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$OSSTAT TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$SGAINFO TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$ROWCACHE TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$PARAMETER TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.DBA_TABLESPACE_USAGE_METRICS TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.DBA_TABLESPACES TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.DBA_DATA_FILES TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.DBA_FREE_SPACE TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.DBA_RECYCLEBIN TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$SQL TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$SQL_PLAN_STATISTICS_ALL TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$LOCK TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$SESSION_EVENT TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.DBA_PROCEDURES TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.DBA_OBJECTS TO ${LOGIN_NAME};" \
+                "EXIT;" | sqlplus -S /nolog 2>&1)
+
+              SQLPLUS_STATUS=$?
+              REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+              ADMIN_REDACT_PATTERN=$(printf '%s' "$ADMIN_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+              redact() {
+                if [ -n "$REDACT_PATTERN" ]; then
+                  sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+                else
+                  cat
+                fi | if [ -n "$ADMIN_REDACT_PATTERN" ]; then
+                  sed "s/${ADMIN_REDACT_PATTERN}/[REDACTED]/g"
+                else
+                  cat
+                fi
+              }
+
+              if [ $SQLPLUS_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
+                echo "Instance ${i} (${HOST}): SQL script failed:" >&2
+                echo "$RESULT" | redact >&2
+                exit 1
+              fi
+              echo "$RESULT" | redact
+
+              NR_SUCCESS=1
+              echo "Instance ${i} (${HOST}): Autonomous Database monitoring identity configured successfully: $LOGIN_NAME"
+            )
+            SUBSHELL_STATUS=$?
+            if [ $SUBSHELL_STATUS -ne 0 ]; then
+              echo "${i}: monitoring user setup failed (see errors above)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring user setup failed" >&2
+            fi
+          done
+
+    create_collector_config:
+      cmds:
+        - |
+          INSTANCES_TSV="/tmp/nr-oracle-adb-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-adb-skip.tmp"
+          REGION="{{.NEW_RELIC_REGION}}"
+          LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
+          CONFIG_DIR="/etc/nrdot-collector"
+          CONFIG_PATH="${CONFIG_DIR}/oracle-config.yaml"
+          ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          # The credentials are embedded in a datasource URL, so percent-encode the
+          # characters that would otherwise terminate the userinfo component.
+          urlencode() {
+            printf '%s' "$1" | sed \
+              -e 's/%/%25/g' \
+              -e 's/@/%40/g' \
+              -e 's|/|%2F|g' \
+              -e 's/:/%3A/g' \
+              -e 's/?/%3F/g' \
+              -e 's/#/%23/g' \
+              -e 's/&/%26/g' \
+              -e 's/=/%3D/g' \
+              -e 's/+/%2B/g' \
+              -e 's/,/%2C/g' \
+              -e 's/;/%3B/g' \
+              -e 's/\[/%5B/g' \
+              -e 's/\]/%5D/g' \
+              -e 's/ /%20/g'
+          }
+
+          case "$REGION" in
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+          esac
+
+          # Built with one echo per line (not a heredoc): a heredoc whose closing
+          # delimiter is indented to match this script's own indentation is not
+          # recognized as a terminator by the shell, so it fails to end here and
+          # silently swallows the rest of the script as literal text instead.
+          RECEIVER_DEFAULTS=$( {
+            echo "    collection_interval: 10s"
+            echo "    events:"
+            echo "      db.server.query_sample:"
+            echo "        enabled: true"
+            echo "      db.server.top_query:"
+            echo "        enabled: true"
+            echo "      db.server.session.wait_sample:"
+            echo "        enabled: true"
+            echo "    top_query_collection:"
+            echo "      max_query_sample_count: 1000"
+            echo "      top_query_count: 200"
+            echo "      collection_interval: 60s"
+            echo "      allowed_comment_keys:"
+            echo "        - nr_service_guid"
+            echo "    query_sample_collection:"
+            echo "      max_rows_per_query: 100"
+            echo "      allowed_comment_keys:"
+            echo "        - nr_service_guid"
+            echo "    session_wait_event_collection:"
+            echo "      max_rows_per_query: 100"
+            echo "    metrics:"
+            echo "      oracledb.cpu_time:"
+            echo "        enabled: true"
+            echo "      oracledb.executions:"
+            echo "        enabled: true"
+            echo "      oracledb.parse_calls:"
+            echo "        enabled: true"
+            echo "      oracledb.hard_parses:"
+            echo "        enabled: true"
+            echo "      oracledb.logical_reads:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_reads:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_reads_direct:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_writes:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_writes_direct:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_read_io_requests:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_write_io_requests:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_io.cache_writes:"
+            echo "        enabled: true"
+            echo "      oracledb.physical_io.requests:"
+            echo "        enabled: true"
+            echo "        attributes:"
+            echo "          - disk.io.direction"
+            echo "          - disk.io.block_size"
+            echo "      oracledb.physical_io.transferred:"
+            echo "        enabled: true"
+            echo "        attributes:"
+            echo "          - disk.io.direction"
+            echo "          - disk.io.type"
+            echo "      oracledb.sqlnet.io.transferred:"
+            echo "        enabled: true"
+            echo "        attributes:"
+            echo "          - network.io.direction"
+            echo "          - destination.type"
+            echo "      oracledb.consistent_gets:"
+            echo "        enabled: true"
+            echo "      oracledb.db_block_gets:"
+            echo "        enabled: true"
+            echo "      oracledb.data_dictionary.hit_ratio:"
+            echo "        enabled: true"
+            echo "      oracledb.pga_memory:"
+            echo "        enabled: true"
+            echo "      oracledb.enqueue_deadlocks:"
+            echo "        enabled: true"
+            echo "      oracledb.exchange_deadlocks:"
+            echo "        enabled: true"
+            echo "      oracledb.sessions.usage:"
+            echo "        enabled: true"
+            echo "        attributes:"
+            echo "          - session_type"
+            echo "          - session_status"
+            echo "      oracledb.logons:"
+            echo "        enabled: true"
+            echo "      oracledb.user_commits:"
+            echo "        enabled: true"
+            echo "      oracledb.user_rollbacks:"
+            echo "        enabled: true"
+            echo "      oracledb.tablespace_size.limit:"
+            echo "        enabled: true"
+            echo "        attributes:"
+            echo "          - tablespace_name"
+            echo "      oracledb.tablespace_size.usage:"
+            echo "        enabled: true"
+            echo "        attributes:"
+            echo "          - tablespace_name"
+            echo "      oracledb.storage.usage:"
+            echo "        enabled: true"
+            echo "      oracledb.storage.utilization:"
+            echo "        enabled: true"
+            echo "      oracledb.recycle_bin.limit:"
+            echo "        enabled: true"
+            echo "      oracledb.queries_parallelized:"
+            echo "        enabled: true"
+            echo "      oracledb.ddl_statements_parallelized:"
+            echo "        enabled: true"
+            echo "      oracledb.dml_statements_parallelized:"
+            echo "        enabled: true"
+            echo "      oracledb.parallel_operations_not_downgraded:"
+            echo "        enabled: true"
+            echo "      oracledb.parallel_operations_downgraded_1_to_25_pct:"
+            echo "        enabled: true"
+            echo "      oracledb.parallel_operations_downgraded_25_to_50_pct:"
+            echo "        enabled: true"
+            echo "      oracledb.parallel_operations_downgraded_50_to_75_pct:"
+            echo "        enabled: true"
+            echo "      oracledb.parallel_operations_downgraded_75_to_99_pct:"
+            echo "        enabled: true"
+            echo "      oracledb.parallel_operations_downgraded_to_serial:"
+            echo "        enabled: true"
+          } )
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          MONITORED_COUNT=0
+          i=0
+          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then continue; fi
+            MONITORED_COUNT=$((MONITORED_COUNT + 1))
+          done
+
+          if [ "$MONITORED_COUNT" -eq 0 ]; then
+            echo "No Oracle Autonomous Database instance passed its checks - nothing to monitor. Aborting install." >&2
+            exit 1
+          fi
+
+          # MONITORED_COUNT (computed above) doubles as the survivor count here - a
+          # single instance has nothing to merge into, so it gets a plain receiver,
+          # matching the anchor/merge-key pattern used by other multi-instance
+          # database recipes in this repo (mssql-otel, postgresql-otel, mysql-otel,
+          # oracle-otel/rds-*).
+          echo "receivers:" > "$CONFIG_PATH"
+
+          IS_FIRST_SURVIVOR=1
+          i=0
+          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then continue; fi
+
+            LINE=$(sed -n "${i}p" "$INSTANCES_TSV")
+            HOST=$(printf '%s' "$LINE" | cut -f1)
+            PORT=$(printf '%s' "$LINE" | cut -f2)
+            SERVICE_NAME=$(printf '%s' "$LINE" | cut -f3)
+            WALLET_DIR=$(printf '%s' "$LINE" | cut -f5)
+
+            PW_FILE="/tmp/nr-oracle-adb-newrelic-pw-${i}.tmp"
+            USER_FILE="/tmp/nr-oracle-adb-db-user-${i}.tmp"
+            if [ ! -f "$PW_FILE" ] || [ ! -f "$USER_FILE" ]; then
+              echo "${i}: monitoring credentials missing at config-generation time" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring credentials missing at config-generation time" >&2
+              continue
+            fi
+            NR_PASSWORD=$(cat "$PW_FILE")
+            LOGIN_NAME=$(cat "$USER_FILE")
+
+            ENC_USER=$(urlencode "$LOGIN_NAME")
+            ENC_PASSWORD=$(urlencode "$NR_PASSWORD")
+            ENC_WALLET_DIR=$(urlencode "$WALLET_DIR")
+            DATASOURCE="oracle://${ENC_USER}:${ENC_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}?SSL=enable&SSL%20Verify=true&WALLET=${ENC_WALLET_DIR}"
+
+            if [ "$MONITORED_COUNT" -eq 1 ]; then
+              echo "  nroracledb/adb${i}:" >> "$CONFIG_PATH"
+              echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
+              echo "$RECEIVER_DEFAULTS" >> "$CONFIG_PATH"
+            elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
+              echo "  nroracledb/adb${i}: &nroracledb-adb-common" >> "$CONFIG_PATH"
+              echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
+              echo "$RECEIVER_DEFAULTS" >> "$CONFIG_PATH"
+              IS_FIRST_SURVIVOR=0
+            else
+              echo "  nroracledb/adb${i}:" >> "$CONFIG_PATH"
+              echo "    <<: *nroracledb-adb-common" >> "$CONFIG_PATH"
+              echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
+            fi
+          done
+
+          {
+            echo ""
+            echo "processors:"
+            echo "  batch:"
+          } >> "$CONFIG_PATH"
+
+          i=0
+          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then continue; fi
+            LINE=$(sed -n "${i}p" "$INSTANCES_TSV")
+            HOST=$(printf '%s' "$LINE" | cut -f1)
+            {
+              echo "  resource/add_event_name/${i}:"
+              echo "    attributes:"
+              echo "      - key: host.address"
+              echo "        value: \"${HOST}\""
+              echo "        action: upsert"
+            } >> "$CONFIG_PATH"
+          done
+
+          {
+            echo ""
+            echo "exporters:"
+            echo "  otlphttp/newrelic:"
+            echo "    endpoint: \"${OTLP_ENDPOINT}\""
+            echo "    headers:"
+            echo "      api-key: \"${LICENSE_KEY}\""
+            echo "    compression: gzip"
+            echo "    retry_on_failure:"
+            echo "      enabled: true"
+            echo "      initial_interval: 5s"
+            echo "      max_interval: 30s"
+            echo "      max_elapsed_time: 300s"
+            echo ""
+            echo "service:"
+            echo "  telemetry:"
+            echo "    metrics:"
+            echo "      level: none"
+            echo "  pipelines:"
+          } >> "$CONFIG_PATH"
+
+          i=0
+          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then continue; fi
+            {
+              echo "    metrics/oracledb/${i}:"
+              echo "      receivers: [nroracledb/adb${i}]"
+              echo "      processors: [resource/add_event_name/${i}, batch]"
+              echo "      exporters: [otlphttp/newrelic]"
+              echo "    logs/oracledb/${i}:"
+              echo "      receivers: [nroracledb/adb${i}]"
+              echo "      processors: [resource/add_event_name/${i}, batch]"
+              echo "      exporters: [otlphttp/newrelic]"
+            } >> "$CONFIG_PATH"
+          done
+
+          chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
+          chmod 600 "$CONFIG_PATH"
+
+          EXISTING_OPTIONS=$(grep "^OTELCOL_OPTIONS=" "$ENV_FILE" 2>/dev/null | sed 's/^OTELCOL_OPTIONS=//' | tr -d '"')
+          if echo "$EXISTING_OPTIONS" | grep -q -- "--config=${CONFIG_PATH}"; then
+            OTELCOL_OPTIONS="$EXISTING_OPTIONS"
+          else
+            OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
+          fi
+
+          if grep -q "^OTELCOL_OPTIONS=" "$ENV_FILE" 2>/dev/null; then
+            sed -i "s|^OTELCOL_OPTIONS=.*|OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"|" "$ENV_FILE"
+          else
+            echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$ENV_FILE" > /dev/null
+          fi
+
+          echo "Oracle ADB OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} of ${INSTANCE_COUNT} instance(s) monitored)"
+          echo "OTELCOL_OPTIONS updated in ${ENV_FILE}: ${OTELCOL_OPTIONS}"
+
+    restart_nrdot:
+      cmds:
+        - |
+          INSTANCES_TSV="/tmp/nr-oracle-adb-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-adb-skip.tmp"
+
+          echo ""
+          echo "==> Restarting NRDOT Collector..."
+          sudo systemctl restart nrdot-collector
+
+          echo ""
+          echo "==> NRDOT Collector service status:"
+          echo ""
+          sudo systemctl status nrdot-collector --no-pager
+
+          if sudo systemctl is-active --quiet nrdot-collector; then
+            echo ""
+            echo -e "\e[32mNRDOT Collector is running successfully.\e[0m"
+          else
+            echo ""
+            echo -e "\e[31mERROR:\e[0m NRDOT Collector failed to start. Check the status output above." >&2
+            exit 131
+          fi
+
+          echo ""
+          echo "==> Instance summary:"
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME WALLET_DIR; do
+            i=$((i + 1))
+            REASON=$(grep "^${i}:" "$SKIP_FILE" 2>/dev/null | sed "s/^${i}: //")
+            if [ -n "$REASON" ]; then
+              echo "  [SKIP] ${i}: ${HOST} (service ${SERVICE_NAME}) - ${REASON}"
+            else
+              echo "  [OK]   ${i}: ${HOST} (service ${SERVICE_NAME})"
+            fi
+          done < "$INSTANCES_TSV"
+
+          rm -f /tmp/nr-oracle-adb-newrelic-pw-*.tmp /tmp/nr-oracle-adb-db-user-*.tmp "$INSTANCES_TSV" "$SKIP_FILE"
+
+    default:
+      cmds:
+        - task: write_recipe_metadata
+        - task: assert_pre_req
+        - task: parse_instances
+        - task: assert_oracle_version
+        - task: install_nrdot
+        - task: configure_database_user
+        - task: create_collector_config
+        - task: restart_nrdot
+
+postInstall:
+  info: |2
+      Oracle ADB OTel config: /etc/nrdot-collector/oracle-config.yaml
+      Env file:               /etc/nrdot-collector/nrdot-collector.conf
+      Service status:         systemctl status nrdot-collector
+      View logs:              journalctl -u nrdot-collector -f
+      Restart service:        sudo systemctl restart nrdot-collector
