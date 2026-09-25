@@ -1,0 +1,744 @@
+# Visit our schema definition for additional information on this file format.
+# https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
+
+name: nrdot-collector-docker
+displayName: NRDOT Collector - Docker Stats
+description: New Relic install recipe for Docker container monitoring via the NRDOT OpenTelemetry Collector
+repository: https://github.com/newrelic/nrdot-collector-releases
+
+installTargets:
+  - type: host
+    os: linux
+    platformFamily: debian
+    platformVersion: "(10|11|12)\\.*"
+  - type: host
+    os: linux
+    platform: ubuntu
+    platformVersion: "(18|20|22|24)\\.04"
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2"
+  - type: host
+    os: linux
+    platform: amazon
+    platformVersion: "2023.*"
+  - type: host
+    os: linux
+    platform: centos
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: oracle
+    platformVersion: "(7|8|9)\\.*"
+  - type: host
+    os: linux
+    platform: redhat
+    platformVersion: "(7|8|9)\\.*"
+
+keywords:
+  - NRDOT
+  - OpenTelemetry
+  - OTel
+  - Collector
+  - Docker
+  - Containers
+  - docker_stats
+
+processMatch: []
+
+preInstall:
+  discoveryMode:
+    - targeted
+
+install:
+  version: "3"
+  silent: true
+
+  vars:
+    IS_SYSTEMCTL:
+      sh: command -v systemctl | wc -l
+    DOCKER_OTEL_CONFIG: |
+      extensions:
+        health_check:
+          endpoint: 0.0.0.0:13133
+
+      receivers:
+        docker_stats:
+          endpoint: unix:///var/run/docker.sock
+          collection_interval: 15s
+          timeout: 20s
+          api_version: "1.25"
+          metrics:
+            # ── CPU ────────────────────────────────────────────────────────────────
+            container.cpu.usage.total:
+              enabled: true
+            container.cpu.usage:
+              enabled: true
+            container.cpu.limit:
+              enabled: true
+            container.cpu.utilization:
+              enabled: true
+            container.cpu.throttling_data.periods:
+              enabled: true
+            container.cpu.throttling_data.throttled_periods:
+              enabled: true
+            # disabled cpu metrics
+            container.cpu.usage.system:
+              enabled: false
+            container.cpu.usage.percpu:
+              enabled: false
+            container.cpu.usage.kernelmode:
+              enabled: false
+            container.cpu.usage.usermode:
+              enabled: false
+            container.cpu.throttling_data.throttled_time:
+              enabled: false
+            container.cpu.shares:
+              enabled: false
+            container.cpu.logical.count:
+              enabled: false
+
+            # ── Memory ─────────────────────────────────────────────────────────────
+            container.memory.usage.total:
+              enabled: true
+            container.memory.usage.limit:
+              enabled: true
+            container.memory.percent:
+              enabled: true
+            # disabled memory metrics
+            container.memory.usage.max:
+              enabled: false
+            container.memory.file:
+              enabled: false
+            container.memory.anon:
+              enabled: false
+            container.memory.cache:
+              enabled: false
+            container.memory.rss:
+              enabled: false
+            container.memory.rss_huge:
+              enabled: false
+            container.memory.dirty:
+              enabled: false
+            container.memory.writeback:
+              enabled: false
+            container.memory.mapped_file:
+              enabled: false
+            container.memory.pgfault:
+              enabled: false
+            container.memory.pgmajfault:
+              enabled: false
+            container.memory.pgpgin:
+              enabled: false
+            container.memory.pgpgout:
+              enabled: false
+            container.memory.active_anon:
+              enabled: false
+            container.memory.inactive_anon:
+              enabled: false
+            container.memory.active_file:
+              enabled: false
+            container.memory.inactive_file:
+              enabled: false
+            container.memory.unevictable:
+              enabled: false
+            container.memory.hierarchical_memory_limit:
+              enabled: false
+            container.memory.hierarchical_memsw_limit:
+              enabled: false
+            container.memory.total_cache:
+              enabled: false
+            container.memory.total_rss:
+              enabled: false
+            container.memory.total_rss_huge:
+              enabled: false
+            container.memory.total_dirty:
+              enabled: false
+            container.memory.total_writeback:
+              enabled: false
+            container.memory.total_mapped_file:
+              enabled: false
+            container.memory.total_pgfault:
+              enabled: false
+            container.memory.total_pgmajfault:
+              enabled: false
+            container.memory.total_pgpgin:
+              enabled: false
+            container.memory.total_pgpgout:
+              enabled: false
+            container.memory.total_active_anon:
+              enabled: false
+            container.memory.total_inactive_anon:
+              enabled: false
+            container.memory.total_active_file:
+              enabled: false
+            container.memory.total_inactive_file:
+              enabled: false
+            container.memory.total_unevictable:
+              enabled: false
+            container.memory.fails:
+              enabled: false
+
+            # ── Network ────────────────────────────────────────────────────────────
+            container.network.io.usage.tx_bytes:
+              enabled: true
+            container.network.io.usage.rx_bytes:
+              enabled: true
+            container.network.io.usage.tx_dropped:
+              enabled: true
+            container.network.io.usage.rx_dropped:
+              enabled: true
+            container.network.io.usage.tx_errors:
+              enabled: true
+            container.network.io.usage.rx_errors:
+              enabled: true
+            container.network.io.usage.tx_packets:
+              enabled: true
+            container.network.io.usage.rx_packets:
+              enabled: true
+
+            # ── Block I/O ──────────────────────────────────────────────────────────
+            container.blockio.io_service_bytes_recursive:
+              enabled: true
+            # disabled blockio metrics
+            container.blockio.io_serviced_recursive:
+              enabled: false
+            container.blockio.io_queued_recursive:
+              enabled: false
+            container.blockio.io_merged_recursive:
+              enabled: false
+            container.blockio.io_time_recursive:
+              enabled: false
+            container.blockio.io_wait_time_recursive:
+              enabled: false
+            container.blockio.io_service_time_recursive:
+              enabled: false
+            container.blockio.sectors_recursive:
+              enabled: false
+
+            # ── Container ──────────────────────────────────────────────────────────
+            container.restarts:
+              enabled: true
+            # disabled container metrics
+            container.uptime:
+              enabled: false
+            container.pids.count:
+              enabled: false
+            container.pids.limit:
+              enabled: false
+
+      processors:
+        batch:
+          timeout: 10s
+          send_batch_size: 1024
+
+        # Drop high-cardinality / unstable resource attributes
+        resource:
+          attributes:
+            # container.runtime is always "docker" → zero signal, wastes bytes
+            - key: container.runtime
+              action: delete
+
+        # Cardinality reduction filters
+        filter:
+          metrics:
+            datapoint:
+              # blockio: keep only operation=total, drop read/write/sync/async/discard
+              # reduces this metric from 6 series → 1 series per container
+              - 'metric.name == "container.blockio.io_service_bytes_recursive" and attributes["operation"] != "total"'
+              # network: drop loopback interface — not useful for monitoring
+              - 'attributes["interface"] == "lo"'
+
+        transform:
+          metric_statements:
+            - context: metric
+              statements:
+                - set(description, "")
+                - set(unit, "")
+
+        attributes:
+          actions:
+            - key: nr.entity_type
+              value: CONTAINER
+              action: upsert
+
+      exporters:
+        otlp_http:
+          endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+          headers:
+            api-key: ${env:NEW_RELIC_LICENSE_KEY}
+
+      service:
+        extensions: [health_check]
+        pipelines:
+          metrics:
+            receivers: [docker_stats]
+            processors: [resource, filter, attributes, transform, batch]
+            exporters: [otlp_http]
+
+    DOCKER_OTEL_CONFIG_WITH_LOGS: |
+      extensions:
+        health_check:
+          endpoint: 0.0.0.0:13133
+        # Docker observer - discovers running containers
+        docker_observer:
+          endpoint: unix:///var/run/docker.sock
+          use_hostname_if_present: true
+
+      receivers:
+        # Receiver creator - dynamically creates filelog receivers for discovered containers
+        receiver_creator:
+          watch_observers: [docker_observer]
+          receivers:
+            filelog:
+              rule: type == "container"
+              config:
+                include:
+                  - /var/lib/docker/containers/`container_id`/`container_id`-json.log
+                poll_interval: 200ms
+                start_at: end
+                include_file_name: false
+                include_file_path: false
+                operators:
+                  - id: container-parser
+                    type: container
+                    format: docker
+                    add_metadata_from_filepath: false
+        docker_stats:
+          endpoint: unix:///var/run/docker.sock
+          collection_interval: 15s
+          timeout: 20s
+          api_version: "1.25"
+          metrics:
+            # ── CPU ────────────────────────────────────────────────────────────────
+            container.cpu.usage.total:
+              enabled: true
+            container.cpu.usage:
+              enabled: true
+            container.cpu.limit:
+              enabled: true
+            container.cpu.utilization:
+              enabled: true
+            container.cpu.throttling_data.periods:
+              enabled: true
+            container.cpu.throttling_data.throttled_periods:
+              enabled: true
+            # disabled cpu metrics
+            container.cpu.usage.system:
+              enabled: false
+            container.cpu.usage.percpu:
+              enabled: false
+            container.cpu.usage.kernelmode:
+              enabled: false
+            container.cpu.usage.usermode:
+              enabled: false
+            container.cpu.throttling_data.throttled_time:
+              enabled: false
+            container.cpu.shares:
+              enabled: false
+            container.cpu.logical.count:
+              enabled: false
+
+            # ── Memory ─────────────────────────────────────────────────────────────
+            container.memory.usage.total:
+              enabled: true
+            container.memory.usage.limit:
+              enabled: true
+            container.memory.percent:
+              enabled: true
+            # disabled memory metrics
+            container.memory.usage.max:
+              enabled: false
+            container.memory.file:
+              enabled: false
+            container.memory.anon:
+              enabled: false
+            container.memory.cache:
+              enabled: false
+            container.memory.rss:
+              enabled: false
+            container.memory.rss_huge:
+              enabled: false
+            container.memory.dirty:
+              enabled: false
+            container.memory.writeback:
+              enabled: false
+            container.memory.mapped_file:
+              enabled: false
+            container.memory.pgfault:
+              enabled: false
+            container.memory.pgmajfault:
+              enabled: false
+            container.memory.pgpgin:
+              enabled: false
+            container.memory.pgpgout:
+              enabled: false
+            container.memory.active_anon:
+              enabled: false
+            container.memory.inactive_anon:
+              enabled: false
+            container.memory.active_file:
+              enabled: false
+            container.memory.inactive_file:
+              enabled: false
+            container.memory.unevictable:
+              enabled: false
+            container.memory.hierarchical_memory_limit:
+              enabled: false
+            container.memory.hierarchical_memsw_limit:
+              enabled: false
+            container.memory.total_cache:
+              enabled: false
+            container.memory.total_rss:
+              enabled: false
+            container.memory.total_rss_huge:
+              enabled: false
+            container.memory.total_dirty:
+              enabled: false
+            container.memory.total_writeback:
+              enabled: false
+            container.memory.total_mapped_file:
+              enabled: false
+            container.memory.total_pgfault:
+              enabled: false
+            container.memory.total_pgmajfault:
+              enabled: false
+            container.memory.total_pgpgin:
+              enabled: false
+            container.memory.total_pgpgout:
+              enabled: false
+            container.memory.total_active_anon:
+              enabled: false
+            container.memory.total_inactive_anon:
+              enabled: false
+            container.memory.total_active_file:
+              enabled: false
+            container.memory.total_inactive_file:
+              enabled: false
+            container.memory.total_unevictable:
+              enabled: false
+            container.memory.fails:
+              enabled: false
+
+            # ── Network ────────────────────────────────────────────────────────────
+            container.network.io.usage.tx_bytes:
+              enabled: true
+            container.network.io.usage.rx_bytes:
+              enabled: true
+            container.network.io.usage.tx_dropped:
+              enabled: true
+            container.network.io.usage.rx_dropped:
+              enabled: true
+            container.network.io.usage.tx_errors:
+              enabled: true
+            container.network.io.usage.rx_errors:
+              enabled: true
+            container.network.io.usage.tx_packets:
+              enabled: true
+            container.network.io.usage.rx_packets:
+              enabled: true
+
+            # ── Block I/O ──────────────────────────────────────────────────────────
+            container.blockio.io_service_bytes_recursive:
+              enabled: true
+            # disabled blockio metrics
+            container.blockio.io_serviced_recursive:
+              enabled: false
+            container.blockio.io_queued_recursive:
+              enabled: false
+            container.blockio.io_merged_recursive:
+              enabled: false
+            container.blockio.io_time_recursive:
+              enabled: false
+            container.blockio.io_wait_time_recursive:
+              enabled: false
+            container.blockio.io_service_time_recursive:
+              enabled: false
+            container.blockio.sectors_recursive:
+              enabled: false
+
+            # ── Container ──────────────────────────────────────────────────────────
+            container.restarts:
+              enabled: true
+            # disabled container metrics
+            container.uptime:
+              enabled: false
+            container.pids.count:
+              enabled: false
+            container.pids.limit:
+              enabled: false
+
+      processors:
+        batch:
+          timeout: 10s
+          send_batch_size: 1024
+
+        # Drop high-cardinality / unstable resource attributes
+        resource:
+          attributes:
+            # container.runtime is always "docker" → zero signal, wastes bytes
+            - key: container.runtime
+              action: delete
+
+        # Cardinality reduction filters
+        filter:
+          metrics:
+            datapoint:
+              # blockio: keep only operation=total, drop read/write/sync/async/discard
+              # reduces this metric from 6 series → 1 series per container
+              - 'metric.name == "container.blockio.io_service_bytes_recursive" and attributes["operation"] != "total"'
+              # network: drop loopback interface — not useful for monitoring
+              - 'attributes["interface"] == "lo"'
+
+        transform:
+          metric_statements:
+            - context: metric
+              statements:
+                - set(description, "")
+                - set(unit, "")
+
+        attributes:
+          actions:
+            - key: nr.entity_type
+              value: CONTAINER
+              action: upsert
+
+      exporters:
+        otlp_http:
+          endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+          headers:
+            api-key: ${env:NEW_RELIC_LICENSE_KEY}
+
+      service:
+        extensions: [health_check, docker_observer]
+        pipelines:
+          metrics:
+            receivers: [docker_stats]
+            processors: [resource, filter, attributes, transform, batch]
+            exporters: [otlp_http]
+          logs:
+            receivers: [receiver_creator]
+            processors: [batch]
+            exporters: [otlp_http]
+
+  tasks:
+    default:
+      cmds:
+        - task: assert_pre_req
+        - task: install_collector
+        - task: configure_env
+        - task: write_docker_config
+        - task: start_collector
+        - task: assert_collector_status_ok
+
+    assert_pre_req:
+      cmds:
+        - |
+          if [ "$(id -u)" != "0" ]; then
+            echo "This newrelic install must be run under sudo or root" >&2
+            exit 3
+          fi
+        - |
+          if ! command -v curl > /dev/null 2>&1; then
+            echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
+            exit 16
+          fi
+        - |
+          if [ "{{.IS_SYSTEMCTL}}" -eq 0 ]; then
+            echo "systemd is required for the nrdot-collector service configuration." >&2
+            exit 131
+          fi
+        - |
+          if [ ! -S /var/run/docker.sock ]; then
+            echo "Docker socket not found at /var/run/docker.sock. Ensure Docker is installed and running." >&2
+            exit 132
+          fi
+
+    install_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+
+          # Fetch the latest release version from GitHub
+          COLLECTOR_VERSION=$(curl -s https://api.github.com/repos/newrelic/nrdot-collector-releases/releases/latest \
+            | grep '"tag_name"' \
+            | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
+
+          if [ -z "$COLLECTOR_VERSION" ]; then
+            echo "Failed to fetch the latest release version from GitHub. Please check your internet connection." >&2
+            exit 1
+          fi
+
+          # Detect package manager
+          if command -v dpkg &>/dev/null; then
+            ARCH="amd64"
+            IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+            if [ $IS_ARM -gt 0 ]; then ARCH="arm64"; fi
+
+            if dpkg -l | grep -q "^ii.*nrdot-collector "; then
+              INSTALLED_VERSION=$(dpkg -l nrdot-collector | awk '/^ii/{print $3}')
+              if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+                echo "nrdot-collector ${COLLECTOR_VERSION} is already installed. Skipping download."
+                exit 0
+              else
+                echo "Upgrading nrdot-collector from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+              fi
+            else
+              echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+            fi
+
+            DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.deb"
+            echo "Downloading from: ${DOWNLOAD_URL}"
+            curl -L --output /tmp/nrdot-collector.deb "$DOWNLOAD_URL"
+            if [ $? -ne 0 ]; then echo "Failed to download package." >&2; exit 1; fi
+
+            dpkg -i /tmp/nrdot-collector.deb
+            if [ $? -ne 0 ]; then
+              apt-get install -f -y
+              if [ $? -ne 0 ]; then echo "Failed to install package." >&2; exit 1; fi
+            fi
+            rm -f /tmp/nrdot-collector.deb
+
+          elif command -v rpm &>/dev/null; then
+            ARCH="x86_64"
+            IS_ARM=$(uname -m | grep -i 'aarch64' | wc -l)
+            if [ $IS_ARM -gt 0 ]; then ARCH="arm64"; fi
+
+            if rpm -q nrdot-collector &>/dev/null; then
+              INSTALLED_VERSION=$(rpm -q --queryformat '%{VERSION}' nrdot-collector)
+              if [ "$INSTALLED_VERSION" = "$COLLECTOR_VERSION" ]; then
+                echo "nrdot-collector ${COLLECTOR_VERSION} is already installed. Skipping."
+                exit 0
+              else
+                echo "Upgrading nrdot-collector from ${INSTALLED_VERSION} to ${COLLECTOR_VERSION}"
+              fi
+            else
+              echo "Installing ${COLLECTOR_DISTRO} version: ${COLLECTOR_VERSION}"
+            fi
+
+            DOWNLOAD_URL="https://github.com/newrelic/nrdot-collector-releases/releases/download/${COLLECTOR_VERSION}/${COLLECTOR_DISTRO}_${COLLECTOR_VERSION}_linux_${ARCH}.rpm"
+            echo "Downloading from: ${DOWNLOAD_URL}"
+            curl -L --output /tmp/nrdot-collector.rpm "$DOWNLOAD_URL"
+            if [ $? -ne 0 ]; then echo "Failed to download package." >&2; exit 1; fi
+
+            rpm -U /tmp/nrdot-collector.rpm
+            if [ $? -ne 0 ]; then echo "Failed to install package." >&2; exit 1; fi
+            rm -f /tmp/nrdot-collector.rpm
+
+          else
+            echo "Unsupported package manager. Expected dpkg or rpm." >&2
+            exit 1
+          fi
+
+          echo "${COLLECTOR_DISTRO} installed successfully."
+      silent: true
+
+    configure_env:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          CONFIG_DIR="/etc/${COLLECTOR_DISTRO}"
+          CONFIG_FILE="${CONFIG_DIR}/${COLLECTOR_DISTRO}.conf"
+
+          mkdir -p "$CONFIG_DIR"
+
+          # Write or update the license key
+          if grep -q "^NEW_RELIC_LICENSE_KEY=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^NEW_RELIC_LICENSE_KEY=.*|NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}|" "$CONFIG_FILE"
+          else
+            echo "NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          # Set OTLP endpoint based on region
+          if [ "${NEW_RELIC_REGION}" = "EU" ]; then
+            OTLP_ENDPOINT="https://otlp.eu01.nr-data.net"
+          elif [ "${NEW_RELIC_REGION}" = "staging" ]; then
+            OTLP_ENDPOINT="https://staging-otlp.nr-data.net"
+          else
+            OTLP_ENDPOINT="https://otlp.nr-data.net"
+          fi
+
+          if grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$CONFIG_FILE" 2>/dev/null; then
+            sed -i "s|^OTEL_EXPORTER_OTLP_ENDPOINT=.*|OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}|" "$CONFIG_FILE"
+          else
+            echo "OTEL_EXPORTER_OTLP_ENDPOINT=${OTLP_ENDPOINT}" | tee -a "$CONFIG_FILE" > /dev/null
+          fi
+
+          chmod 600 "$CONFIG_FILE"
+          echo "Configuration written to ${CONFIG_FILE}"
+
+    write_docker_config:
+      cmds:
+        - |
+          DOCKER_CONFIG="/etc/nrdot-collector/docker-config.yaml"
+          OVERRIDE_DIR="/etc/systemd/system/nrdot-collector.service.d"
+          OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
+
+          mkdir -p "/etc/nrdot-collector"
+          mkdir -p "$OVERRIDE_DIR"
+
+          # Write dockerstats OTel config.
+          # Quoted heredoc delimiter ('OTELEOF') preserves ${env:...} OTel placeholders as literals.
+          # NRDOT_COLLECT_LOGS=true adds a filelog receiver for Docker container logs.
+          if [ "${NRDOT_COLLECT_LOGS}" = "true" ]; then
+            cat > "$DOCKER_CONFIG" << 'OTELEOF'
+          {{.DOCKER_OTEL_CONFIG_WITH_LOGS}}
+          OTELEOF
+            echo "Docker OTel config (metrics + logs) written to ${DOCKER_CONFIG}"
+          else
+            cat > "$DOCKER_CONFIG" << 'OTELEOF'
+          {{.DOCKER_OTEL_CONFIG}}
+          OTELEOF
+            echo "Docker OTel config (metrics only) written to ${DOCKER_CONFIG}"
+          fi
+
+          # Write systemd override — empty ExecStart= clears the default before setting ours.
+          cat > "$OVERRIDE_FILE" << 'EOF'
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/nrdot-collector --config=/etc/nrdot-collector/docker-config.yaml
+          EOF
+          echo "Systemd override created: ${OVERRIDE_FILE}"
+
+    start_collector:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          systemctl daemon-reload
+          systemctl enable "${COLLECTOR_DISTRO}.service"
+          systemctl reload-or-restart "${COLLECTOR_DISTRO}.service"
+          echo "${COLLECTOR_DISTRO} service started and enabled."
+
+    assert_collector_status_ok:
+      cmds:
+        - |
+          COLLECTOR_DISTRO="nrdot-collector"
+          MAX_RETRIES=30
+          TRIES=0
+          echo "Waiting for ${COLLECTOR_DISTRO} to start..."
+          while [ $TRIES -lt $MAX_RETRIES ]; do
+            TRIES=$((TRIES + 1))
+            if systemctl is-active --quiet "${COLLECTOR_DISTRO}.service"; then
+              echo "${COLLECTOR_DISTRO} is running."
+              HEALTH=$(curl -s http://localhost:13133 2>/dev/null || echo "")
+              if echo "$HEALTH" | grep -q '"status":"Server available"'; then
+                echo "${COLLECTOR_DISTRO} health check passed."
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+
+          echo "${COLLECTOR_DISTRO} has not started after installation." >&2
+          if [ "{{.IS_SYSTEMCTL}}" -gt 0 ]; then
+            journalctl -u "${COLLECTOR_DISTRO}.service" --no-pager --lines=20
+          fi
+          exit 31
+
+postInstall:
+  info: |2
+      Docker OTel config:  /etc/nrdot-collector/docker-config.yaml
+      Env config:          /etc/nrdot-collector/nrdot-collector.conf
+      Systemd override:    /etc/systemd/system/nrdot-collector.service.d/override.conf
+      Service status:      systemctl status nrdot-collector
