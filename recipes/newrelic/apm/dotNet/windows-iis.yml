@@ -38,15 +38,18 @@ successLinkConfig:
   type: EXPLORER
   filter: '"`tags.language` = ''dotnet''"'
 
+# Go-task Taskfile executed by the New Relic CLI installer.
 install:
   version: "3"
   silent: true
 
   tasks:
+    # Runs the tasks below in order to install, configure, and validate the agent.
     default:
       cmds:
         - task: verify_continue
         - task: assert_admin_perms
+        - task: ensure_strong_crypto
         - task: stop
         - task: remove_any_previous
         - task: assert_required_powershell
@@ -57,6 +60,8 @@ install:
         - task: cli_validate
         - task: ensure_sites_started
 
+    # Shows a warning that IIS will restart, then prompts to continue unless NEW_RELIC_ASSUME_YES=true.
+    # Exits 130 if the user declines.
     verify_continue:
       cmds:
         - |
@@ -97,6 +102,7 @@ install:
             }
           }
           '
+    # Exits 131 if the current PowerShell session is not running as Administrator.
     assert_admin_perms:
       cmds:
         - |
@@ -108,6 +114,94 @@ install:
           }
           '
 
+    # Checks for missing SchUseStrongCrypto/SystemDefaultTlsVersions on .NET Framework 4 registry keys;
+    # prompts to enable it (unless NEW_RELIC_ASSUME_YES=true) and sets the registry value if approved.
+    # ignore_error: true, so this task never fails the install.
+    ensure_strong_crypto:
+      ignore_error: true
+      cmds:
+        - |
+          powershell -command '
+          $keyPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\.NETFramework\v4.0.30319"
+          )
+          $docsUrl = "https://docs.newrelic.com/docs/apm/agents/net-agent/troubleshooting/no-data-appears-after-disabling-tls-10/#windows-registry"
+
+          $foundCount = 0
+          $missing = @()
+          foreach ($keyPath in $keyPaths) {
+            if (-not (Test-Path $keyPath)) { continue }
+            $foundCount++
+            $props = Get-ItemProperty -Path $keyPath -ErrorAction SilentlyContinue
+            if ($props.SchUseStrongCrypto -eq 1 -or $props.SystemDefaultTlsVersions -eq 1) { continue }
+            $missing += $keyPath
+          }
+
+          if ($foundCount -eq 0) {
+            Write-Host "NR_DOTNET_STRONG_CRYPTO: skipped; no .NET Framework 4 registry key found"
+            exit 0
+          }
+          if ($missing.Count -eq 0) {
+            Write-Host "NR_DOTNET_STRONG_CRYPTO: already-enabled"
+            exit 0
+          }
+
+          $missingList = $missing -join ", "
+          function Write-ManualFix {
+            param ([string[]]$Paths)
+            Write-Host -ForegroundColor Yellow "To enable TLS 1.2 for .NET Framework manually, run these commands as Administrator, then run iisreset:"
+            foreach ($path in $Paths) {
+              $regPath = $path -replace "^HKLM:", "HKLM"
+              Write-Host -ForegroundColor Yellow "  reg add $regPath /v SchUseStrongCrypto /t REG_DWORD /d 1 /f"
+            }
+            Write-Host -ForegroundColor Yellow "More information: $docsUrl"
+          }
+
+          Write-Host ""
+          Write-Host -ForegroundColor Yellow "WARNING: .NET Framework applications on this server, including those hosted in IIS, will be unable to connect to New Relic, because TLS 1.2 is not enabled for .NET Framework."
+          Write-Host -ForegroundColor Yellow "The installer can fix this by setting the registry value SchUseStrongCrypto=1. This change affects all .NET Framework applications on this server."
+          Write-Host -ForegroundColor Yellow "Registry keys to change: $missingList"
+          Write-Host ""
+
+          $answer = "y"
+          $NEW_RELIC_ASSUME_YES = "{{.NEW_RELIC_ASSUME_YES}}"
+          if ($NEW_RELIC_ASSUME_YES -ieq "false") {
+            while ($true) {
+              Write-Host "Do you want to enable TLS 1.2 for .NET Framework Y/N (default: Y)? " -NoNewLine
+              $answer = $Host.UI.ReadLine()
+              if ([string]::IsNullOrWhiteSpace($answer)) { $answer = "y" }
+              if ($answer -ieq "y" -or $answer -ieq "n") { break }
+              Write-Host "Please type y or n only."
+            }
+          }
+
+          if ($answer -ieq "n") {
+            Write-Host "NR_DOTNET_STRONG_CRYPTO: declined by user; .NET Framework applications on this server will be unable to connect to New Relic (not set: $missingList)"
+            Write-ManualFix -Paths $missing
+            exit 0
+          }
+
+          $failed = @()
+          foreach ($keyPath in $missing) {
+            try {
+              New-ItemProperty -Path $keyPath -Name "SchUseStrongCrypto" -PropertyType DWord -Value 1 -Force -ErrorAction Stop | Out-Null
+              Write-Host "NR_DOTNET_STRONG_CRYPTO: set SchUseStrongCrypto=1 in $keyPath"
+            }
+            catch {
+              $failed += $keyPath
+              Write-Host "NR_DOTNET_STRONG_CRYPTO: set-failed for $keyPath ($($_.Exception.Message))"
+            }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host -ForegroundColor Yellow "Warning: the installer could not enable TLS 1.2 for .NET Framework. .NET Framework applications on this server will be unable to connect to New Relic until it is enabled."
+            Write-ManualFix -Paths $failed
+          }
+          exit 0
+          '
+
+    # Stops IIS via iisreset, retrying up to 30 times with a 2 second delay between attempts.
+    # Exits 134 if IIS never stops.
     stop:
       cmds:
         - |
@@ -136,6 +230,9 @@ install:
           }
           '
 
+    # Finds any existing New Relic .NET Agent MSI install (32 and 64 bit registry Uninstall keys)
+    # and uninstalls it silently via msiexec.
+    # ignore_error: true, so this task never fails the install.
     remove_any_previous:
       ignore_error: true
       cmds:
@@ -186,6 +283,7 @@ install:
           }
           '
 
+    # Exits 131 if powershell.exe is not available on the system.
     assert_required_powershell:
       cmds:
         - |
@@ -201,6 +299,8 @@ install:
           }
           '
 
+    # Enables TLS 1.2/1.3 for the download, then downloads the agent MSI (using HTTPS_PROXY if set).
+    # Exits with a download-specific error code (24 unknown, 25 web error, 26 file/IO or access error) on failure.
     download:
       cmds:
         - |
@@ -235,6 +335,9 @@ install:
           }
           '
 
+    # Runs the downloaded MSI silently with the license key.
+    # Treats exit codes 0, 1641, and 3010 as success; any other msiexec exit code is raised as this task's exit code.
+    # Exits 139 if msiexec.exe cannot be launched.
     install:
       cmds:
         - |
@@ -256,6 +359,9 @@ install:
           '
         - echo "New Relic .NET Agent installed"
 
+    # Edits newrelic.config: clears existing <application> entries, points at the staging collector
+    # if NEW_RELIC_REGION is STAGING, adds proxy settings from HTTPS_PROXY, enables application logging
+    # and log forwarding, and adds NEW_RELIC_CLI_TAGS as labels. Exits 136 on failure.
     configure:
       cmds:
         - |
@@ -341,6 +447,8 @@ install:
           '
         - echo "New Relic .NET Agent configured"
 
+    # Starts IIS via iisreset, retrying up to 30 times with a 2 second delay between attempts.
+    # Exits 135 if IIS never starts.
     start:
       cmds:
         - |
@@ -369,6 +477,9 @@ install:
           }
           '
 
+    # Runs newrelic.exe diagnose validate to confirm the agent is reporting data.
+    # A non-zero validate exit code only prints a warning; it does not fail the install.
+    # Exits 133 only if newrelic.exe cannot be launched.
     cli_validate:
       cmds:
         - |
@@ -391,6 +502,8 @@ install:
           }
           '
 
+    # ignore_error: true, so this task never fails the install.
+    # Calls Get-WebURL on IIS sites and discards the result; any error is caught and ignored.
     ensure_sites_started:
       ignore_error: true
       cmds:
