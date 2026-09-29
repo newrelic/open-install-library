@@ -519,6 +519,10 @@ install:
                 db.server.query_sample:
                   enabled: true
 
+              resource_attributes:
+                db.system.version:
+                  enabled: true
+
               query_sample_collection:
                 max_rows_per_query: 1000
                 allowed_comment_keys: [nr_service_guid]
@@ -613,8 +617,10 @@ install:
 
           # Count survivors up front to decide whether the anchor/merge-key pattern
           # documented at https://docs.newrelic.com/docs/opentelemetry/database/postgresql/multi-receiver/
-          # applies - a single instance has nothing to merge into, so it gets a plain
-          # receiver, matching that doc's naming convention (nrpostgresql/dbN).
+          # applies - a single instance has nothing to merge into, so it gets the plain
+          # unsuffixed name (nrpostgresql) matching the single-instance hosted doc at
+          # https://docs.newrelic.com/docs/opentelemetry/database/postgresql/hosted/,
+          # rather than the /dbN suffix used once there's more than one instance.
           SURVIVOR_COUNT=0
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
@@ -657,7 +663,7 @@ install:
 
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               {
-                echo "  nrpostgresql/db${i}:"
+                echo "  nrpostgresql:"
                 echo "    endpoint: \"${HOST}:${PORT}\""
                 echo "    username: \"${LOGIN_NAME}\""
                 echo "    password: \"${NR_PASSWORD}\""
@@ -819,30 +825,6 @@ install:
           EOF
           fi
 
-          # Static server.address/server.port per instance, reusing the same HOST/PORT
-          # already set on that instance's receiver `endpoint` field above - with
-          # receiver.nrpostgresql.useOTelSemconv enabled, service.instance.id becomes a
-          # UUID v5 hash rather than a "host:port" string, so a per-instance processor
-          # is used instead of deriving these from that field.
-          i=0
-          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
-              continue
-            fi
-            cat >> "$CONFIG_PATH" << EOF
-
-            resource/postgresql/db${i}:
-              attributes:
-                - key: server.address
-                  value: "${HOST}"
-                  action: upsert
-                - key: server.port
-                  value: ${PORT}
-                  action: upsert
-          EOF
-          done < "$INSTANCES_TSV"
-
           cat >> "$CONFIG_PATH" << EOF
 
           exporters:
@@ -902,22 +884,33 @@ install:
             if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
               continue
             fi
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RECEIVER_NAME="nrpostgresql"
+              METRICS_DB_PIPELINE="metrics"
+              LOGS_DB_PIPELINE="logs"
+              METRICS_PG_PIPELINE="metrics/postgresql"
+              LOGS_PG_PIPELINE="logs/postgresql"
+            else
+              RECEIVER_NAME="nrpostgresql/db${i}"
+              METRICS_DB_PIPELINE="metrics/db${i}"
+              LOGS_DB_PIPELINE="logs/db${i}"
+              METRICS_PG_PIPELINE="metrics/postgresql/db${i}"
+              LOGS_PG_PIPELINE="logs/postgresql/db${i}"
+            fi
             if [ "$PRESET" = "2" ]; then
               cat >> "$CONFIG_PATH" << EOF
-              metrics/postgresql/db${i}:
-                receivers: [nrpostgresql/db${i}]
+              ${METRICS_PG_PIPELINE}:
+                receivers: [${RECEIVER_NAME}]
                 processors:
-                  - resource/postgresql/db${i}
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch
                 exporters: [otlp/newrelic]
 
-              logs/postgresql/db${i}:
-                receivers: [nrpostgresql/db${i}]
+              ${LOGS_PG_PIPELINE}:
+                receivers: [${RECEIVER_NAME}]
                 processors:
-                  - resource/postgresql/db${i}
                   - resource_detection
                   - resource_detection/cloud
                   - resource_detection/env
@@ -926,13 +919,13 @@ install:
           EOF
             else
               cat >> "$CONFIG_PATH" << EOF
-              metrics/db${i}:
-                receivers: [nrpostgresql/db${i}]
-                processors: [resource/postgresql/db${i}, batch]
+              ${METRICS_DB_PIPELINE}:
+                receivers: [${RECEIVER_NAME}]
+                processors: [batch]
                 exporters: [otlp/newrelic]
-              logs/db${i}:
-                receivers: [nrpostgresql/db${i}]
-                processors: [resource/postgresql/db${i}, batch]
+              ${LOGS_DB_PIPELINE}:
+                receivers: [${RECEIVER_NAME}]
+                processors: [batch]
                 exporters: [otlp/newrelic]
           EOF
             fi
