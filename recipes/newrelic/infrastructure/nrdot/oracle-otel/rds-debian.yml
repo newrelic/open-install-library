@@ -506,6 +506,10 @@ install:
                   enabled: true
                 db.server.session.wait_sample:
                   enabled: true
+                db.server.top_procedure:
+                  enabled: true
+                db.server.query_plan:
+                  enabled: true
               top_query_collection:
                 max_query_sample_count: 1000
                 top_query_count: 200
@@ -518,6 +522,10 @@ install:
                   - nr_service_guid
               session_wait_event_collection:
                 max_rows_per_query: 100
+              top_procedure_collection:
+                max_procedure_sample_count: 1000
+                top_procedure_count: 250
+                collection_interval: 60s
               metrics:
                 oracledb.cpu_time:
                   enabled: true
@@ -773,19 +781,7 @@ install:
                   attributes:
                     - oracle.db.pdb
               resource_attributes:
-                host.name:
-                  enabled: true
-                oracle.db.hosting_type:
-                  enabled: true
-                oracle.db.open_mode:
-                  enabled: true
-                oracle.db.role:
-                  enabled: true
-                oracle.db.version:
-                  enabled: true
-                oracledb.instance.name:
-                  enabled: true
-                service.instance.id:
+                oracle.db.edition:
                   enabled: true
           BLOCK
           )
@@ -1051,21 +1047,6 @@ install:
           EOF
           fi
 
-          i=0
-          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
-              continue
-            fi
-            cat >> "$CONFIG_PATH" << EOF
-
-            resource/add_event_name/${i}:
-              attributes:
-                - key: host.address
-                  value: "${HOST}"
-                  action: upsert
-          EOF
-          done < "$INSTANCES_TSV"
 
           if [ "$PRESET" = "2" ]; then
             cat >> "$CONFIG_PATH" << 'EOF'
@@ -1173,11 +1154,11 @@ install:
             cat >> "$CONFIG_PATH" << EOF
               metrics/oracledb/${i}:
                 receivers: [nroracledb/${i}]
-                processors: [resource/add_event_name/${i}, batch]
+                processors: [batch]
                 exporters: [${EXPORTER_NAME}]
               logs/oracledb/${i}:
                 receivers: [nroracledb/${i}]
-                processors: [resource/add_event_name/${i}, batch]
+                processors: [batch]
                 exporters: [${EXPORTER_NAME}]
           EOF
           done < "$INSTANCES_TSV"

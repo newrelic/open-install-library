@@ -369,8 +369,9 @@ You'll be prompted for:
 One `nrdot-collector` service, one `/etc/nrdot-collector/oracle-config.yaml`, with a
 separate receiver and pipeline pair per instance that passed its checks — `nroracledb/<N>`
 for RDS/self-hosted, `nroracledb/adb<N>` for ADB. For 2+ instances, the receivers share
-their common settings (collection interval, events, top-query/query-sample collection,
-the ~60-entry metrics list) via a YAML anchor, following the pattern documented at
+their common settings (collection interval, events, top-query/query-sample/top-procedure/
+query-plan collection, the ~60-entry metrics list, and a single `oracle.db.edition`
+resource attribute override) via a YAML anchor, following the pattern documented at
 https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/#rds-multi-receiver-config.
 For RDS/self-hosted, only `endpoint`, `username`, `password`, and `service` differ per
 instance. For ADB, the connection is a single `datasource` URL (embedding the wallet
