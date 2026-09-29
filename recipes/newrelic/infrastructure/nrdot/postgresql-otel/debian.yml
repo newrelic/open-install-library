@@ -991,6 +991,72 @@ install:
             fi
           done < "$INSTANCES_TSV"
 
+          echo ""
+          echo "===== TEMPORARY DIAGNOSTIC (remove before merge) ====="
+
+          echo "--- generated collector config ---"
+          cat /etc/nrdot-collector/postgresql-config.yaml 2>&1
+
+          echo ""
+          echo "--- env file ---"
+          cat /etc/nrdot-collector/nrdot-collector.conf 2>&1
+
+          echo ""
+          echo "--- DNS resolution order for each monitored host ---"
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            echo "instance ${i} (${HOST}):"
+            getent ahosts "${HOST}" 2>&1 || echo "  getent failed"
+          done < "$INSTANCES_TSV"
+
+          echo ""
+          echo "--- TCP reachability to OTLP endpoint ---"
+          REGION="{{.NEW_RELIC_REGION}}"
+          case "$REGION" in
+            staging) OTLP_HOST="staging-otlp.nr-data.net" ;;
+            EU)      OTLP_HOST="otlp.eu01.nr-data.net" ;;
+            JP)      OTLP_HOST="otlp.jp.nr-data.net" ;;
+            *)       OTLP_HOST="otlp.nr-data.net" ;;
+          esac
+          timeout 5 bash -c "echo > /dev/tcp/${OTLP_HOST}/4317" 2>&1 && echo "TCP connect to ${OTLP_HOST}:4317 - OK" || echo "TCP connect to ${OTLP_HOST}:4317 - FAILED"
+
+          echo ""
+          echo "--- direct psql auth check using the exact host/credentials the receiver uses ---"
+          PASSWORDS_FILE="/tmp/nr-postgres-passwords.tmp"
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME DATABASES; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            NR_PASSWORD=$(grep "^${i}=" "$PASSWORDS_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+            if [ -z "$NR_PASSWORD" ]; then
+              echo "instance ${i}: no recorded monitoring password, skipping auth check"
+              continue
+            fi
+            echo "instance ${i} (${HOST}:${PORT}) as ${LOGIN_NAME}:"
+            PGPASSWORD="$NR_PASSWORD" psql -h "$HOST" -p "$PORT" -U "$LOGIN_NAME" -d postgres -tA -c "SELECT 1;" 2>&1
+          done < "$INSTANCES_TSV"
+
+          echo ""
+          echo "--- waiting 60s for a few collection cycles before checking collector health ---"
+          sleep 60
+
+          echo ""
+          echo "--- systemctl status nrdot-collector ---"
+          systemctl status nrdot-collector --no-pager 2>&1
+
+          echo ""
+          echo "--- last 150 lines of nrdot-collector journal ---"
+          journalctl -u nrdot-collector --no-pager -n 150 2>&1
+
+          echo "===== END TEMPORARY DIAGNOSTIC ====="
+          echo ""
+
           rm -f /tmp/nr-postgres-grant-*.sql.* /tmp/nr-postgres-perdb-*.sql.* "$INSTANCES_TSV" "$SKIP_FILE" /tmp/nr-postgres-passwords.tmp
 
     default:
