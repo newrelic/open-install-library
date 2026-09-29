@@ -28,21 +28,23 @@ the source of docs.newrelic.com.
 
 1. Runs weekdays at 03:30 UTC, or manually from the Actions tab (optionally for one product).
 2. No drift: nothing happens.
-3. Drift, and the `ANTHROPIC_API_KEY` secret is set: Claude edits the recipes, re-runs the
-   check, and a PR is opened on the `docs-drift/nrdot` branch. Its body lists what was
-   changed, what was left, and the full before/after reports. Later runs update the same PR.
-4. Drift with no recipe changes (no API key, or nothing safe to fix): a single
-   `docs-drift` issue is opened or updated with the report.
+3. Drift: a PR is opened on the `docs-drift/nrdot` branch (later runs update the same PR).
+   It always contains `.github/docs-drift/drift-report.md` and the full report in its body.
+   - **Without `ANTHROPIC_API_KEY`** (default): the PR is a **draft** with the report only.
+     Check out `docs-drift/nrdot`, fix the recipes, push, and mark it ready for review.
+   - **With `ANTHROPIC_API_KEY`**: Claude edits the recipes and re-runs the check first. The
+     PR is ready for review and its body lists what was changed and what was left, and why.
+     If Claude changes nothing, it's a draft as above.
 
 Nothing is merged automatically. Review each change against the linked doc section. The
 docs can be wrong too; if so, add an entry to `accepted-deviations.yml` rather than
-merging a bad change.
+merging a bad change. Delete `drift-report.md` from the branch before merging.
 
 ### Repository settings
 
 | Setting | Required | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` secret | for auto-fix PRs | Lets Claude update the recipes. |
+| `ANTHROPIC_API_KEY` secret | no | Optional. Lets Claude (Anthropic's AI) propose the recipe fixes. Without it you get draft PRs with the report only. |
 | `DOCS_DRIFT_TOKEN` secret | recommended | GitHub App token or fine-grained PAT (contents + pull requests: write). PRs opened with the default `GITHUB_TOKEN` don't trigger other workflows, so `validation.yml` wouldn't run on the drift PR. |
 | `DOCS_DRIFT_MODEL` variable | no | Overrides the Claude model (default `claude-opus-5-5`). |
 | Actions → "Allow GitHub Actions to create and approve pull requests" | yes | Needed when using `GITHUB_TOKEN`. |

@@ -200,8 +200,11 @@ def render_recipe_config(recipe, render, scenario, sandbox):
     secrets_file = os.path.join(sandbox, "secrets.env")
     with open(secrets_file, "w") as f:
         for i, _ in enumerate(instances, 1):
+            # Keys only - recipes just check the values are non-empty, and the tasks that
+            # would use them (connecting to Oracle) are never run.
             for line in render.get("secrets_per_instance", []):
-                f.write(line.format(i=i) + "\n")
+                key = line.format(i=i).split("=", 1)[0]
+                f.write(f"{key}=REDACTED\n")
     os.chmod(secrets_file, 0o600)
 
     for i, inst in enumerate(instances, 1):
@@ -233,8 +236,11 @@ def render_recipe_config(recipe, render, scenario, sandbox):
         script = sb(script)
         # Recipe instance fixtures may reference the sandbox (e.g. wallet_dir).
         script = SHELL_PRELUDE + script
+        # Minimal environment: the recipe must not see the caller's credentials (API keys,
+        # tokens) - everything it needs comes from the dummy fixture values above.
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": sandbox, "LC_ALL": "C", "TMPDIR": sandbox}
         proc = subprocess.run(["bash", "-c", script], cwd=sandbox, capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL, timeout=120)
+                              stdin=subprocess.DEVNULL, timeout=120, env=env)
         if proc.returncode != 0:
             raise RuntimeError(f"task '{task}' exited {proc.returncode}:\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
 

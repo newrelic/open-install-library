@@ -3,7 +3,7 @@ name: Docs drift check (NRDOT database recipes)
 # Compares the NRDOT database recipes' grants, rendered collector configs and doc links
 # against github.com/newrelic/docs-website. On drift it opens (or updates) a single PR:
 #   - with ANTHROPIC_API_KEY set, Claude updates the recipes and the PR carries the fix
-#   - without it, the PR/issue carries the report only, for a human to act on
+#   - without it, a draft PR carries the report only; a human pushes the fix to its branch
 # See .github/docs-drift/README.md.
 
 on:
@@ -19,7 +19,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  issues: write
 
 concurrency:
   group: docs-drift
@@ -139,18 +138,36 @@ jobs:
             echo "</details>"
             echo
             echo "---"
+            if [ ! -f docs-drift-notes.md ]; then
+              echo "**Draft - no recipe changes yet.** Push fixes to the \`${DRIFT_BRANCH}\` branch, then mark this PR ready for review."
+              echo
+            fi
             echo "Review every change against the linked doc section before merging - docs can be wrong too."
             echo "Intentional differences go in \`.github/docs-drift/accepted-deviations.yml\`."
+            echo "Delete \`.github/docs-drift/drift-report.md\` from this branch before merging."
           } > "$RUNNER_TEMP/pr-body.md"
           rm -f docs-drift-notes.md
+          # A PR needs a changed file even when nothing fixed the recipes yet.
+          cp "$RUNNER_TEMP/drift-after.md" .github/docs-drift/drift-report.md
         env:
           DOCS_SHA: ${{ steps.drift.outputs.docs_commit }}
           BEFORE_COUNT: ${{ steps.drift.outputs.drift_count }}
           AFTER_COUNT: ${{ steps.after.outputs.drift_count }}
 
+      - name: Check for recipe changes
+        if: steps.drift.outputs.drift_count != '0'
+        id: changes
+        run: |
+          if git status --porcelain -- recipes | grep -q .; then
+            echo "recipes_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "recipes_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Draft when it only carries the report (no API key, or nothing Claude could safely
+      # fix); ready for review when it carries recipe changes.
       - name: Open or update PR
         if: steps.drift.outputs.drift_count != '0'
-        id: pr
         uses: peter-evans/create-pull-request@v7
         with:
           # PRs opened with the default GITHUB_TOKEN don't trigger other workflows (e.g.
@@ -158,26 +175,11 @@ jobs:
           token: ${{ secrets.DOCS_DRIFT_TOKEN || secrets.GITHUB_TOKEN }}
           branch: ${{ env.DRIFT_BRANCH }}
           delete-branch: true
-          add-paths: recipes/**
+          add-paths: |
+            recipes/**
+            .github/docs-drift/drift-report.md
           commit-message: 'fix(nrdot): sync database recipes with New Relic docs'
           title: 'fix(nrdot): sync database recipes with New Relic docs'
           body-path: ${{ runner.temp }}/pr-body.md
           labels: docs-drift
-          draft: false
-
-      # No recipe changes (no API key, or nothing Claude could safely fix) - keep one open
-      # issue with the latest report instead of a PR.
-      - name: Open or update drift issue
-        if: steps.drift.outputs.drift_count != '0' && steps.pr.outputs.pull-request-number == ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh label create docs-drift --color FBCA04 --description "Recipe differs from New Relic docs" 2>/dev/null || true
-          TITLE="NRDOT database recipes differ from New Relic docs"
-          NUMBER=$(gh issue list --label docs-drift --state open --json number,title \
-            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
-          if [ -n "$NUMBER" ]; then
-            gh issue edit "$NUMBER" --body-file "$RUNNER_TEMP/pr-body.md"
-          else
-            gh issue create --title "$TITLE" --label docs-drift --body-file "$RUNNER_TEMP/pr-body.md"
-          fi
+          draft: ${{ steps.changes.outputs.recipes_changed != 'true' }}
