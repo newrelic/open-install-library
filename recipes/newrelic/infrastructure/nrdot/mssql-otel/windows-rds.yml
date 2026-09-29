@@ -394,10 +394,10 @@ install:
           $interval = if ($preset -eq "2") { "30s" } else { "15s" }
 
           switch ($region) {
-            "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net" }
-            "EU"      { $otlpEndpoint = "https://otlp.eu01.nr-data.net" }
-            "JP"      { $otlpEndpoint = "https://otlp.jp.nr-data.net" }
-            default   { $otlpEndpoint = "https://otlp.nr-data.net" }
+            "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net:4318" }
+            "EU"      { $otlpEndpoint = "https://otlp.eu01.nr-data.net:4318" }
+            "JP"      { $otlpEndpoint = "https://otlp.jp.nr-data.net:4318" }
+            default   { $otlpEndpoint = "https://otlp.nr-data.net:4318" }
           }
 
           # Shared receiver settings differ by preset (Full-feature carries a longer
@@ -586,19 +586,36 @@ install:
                   enabled: true
                 db.server.top_query:
                   enabled: true
+                db.server.query_plan:
+                  enabled: true
+                db.server.top_procedure:
+                  enabled: true
 
               top_query_collection:
                 lookback_time: 60s
-                max_query_sample_count: 1000
-                top_query_count: 250
+                max_query_sample_count: 500
+                top_query_count: 200
                 collection_interval: 60s
-
-              collect_full_query_text: true
-              allowed_comment_keys:
-                - nr_service_guid
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
 
               query_sample_collection:
                 max_rows_per_query: 100
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              top_procedure_collection:
+                max_procedure_sample_count: 500
+                top_procedure_count: 200
+                collection_interval: 60s
+
+              resource_attributes:
+                db.system.version:
+                  enabled: true
+                sqlserver.db.edition:
+                  enabled: true
           '@
 
           $survivors = @()
@@ -607,6 +624,7 @@ install:
           }
 
           $receiversYaml = New-Object System.Text.StringBuilder
+          $receiverList = @()
           $isFirst = $true
           foreach ($idx in $survivors) {
             $inst = $instances[$idx - 1]
@@ -625,8 +643,12 @@ install:
               continue
             }
 
-            if ($survivors.Count -eq 1) {
-              [void]$receiversYaml.AppendLine("  nrsqlserver/instance$idx" + ":")
+            if ($survivors.Count -eq 1 -and $preset -ne "2") {
+              # Preset 2 reserves the bare metrics/logs pipeline names for its own
+              # generic otlp passthrough pipelines below - always suffix there, even
+              # for a single SQL Server instance, to avoid colliding with those.
+              $receiverName = "nrsqlserver"
+              [void]$receiversYaml.AppendLine("  $receiverName" + ":")
               [void]$receiversYaml.AppendLine("    collection_interval: $interval")
               [void]$receiversYaml.AppendLine("    username: $loginName")
               [void]$receiversYaml.AppendLine("    password: $NrPassword")
@@ -637,7 +659,8 @@ install:
               [void]$receiversYaml.AppendLine("")
               [void]$receiversYaml.AppendLine($receiverTail)
             } elseif ($isFirst) {
-              [void]$receiversYaml.AppendLine("  nrsqlserver/instance$idx" + ": &nrsqlserver-common")
+              $receiverName = "nrsqlserver/instance$idx"
+              [void]$receiversYaml.AppendLine("  $receiverName" + ": &nrsqlserver-common")
               [void]$receiversYaml.AppendLine("    collection_interval: $interval")
               [void]$receiversYaml.AppendLine("    username: $loginName")
               [void]$receiversYaml.AppendLine("    password: $NrPassword")
@@ -649,13 +672,15 @@ install:
               [void]$receiversYaml.AppendLine($receiverTail)
               $isFirst = $false
             } else {
-              [void]$receiversYaml.AppendLine("  nrsqlserver/instance$idx" + ":")
+              $receiverName = "nrsqlserver/instance$idx"
+              [void]$receiversYaml.AppendLine("  $receiverName" + ":")
               [void]$receiversYaml.AppendLine("    <<: *nrsqlserver-common")
               [void]$receiversYaml.AppendLine("    username: $loginName")
               [void]$receiversYaml.AppendLine("    password: $NrPassword")
               [void]$receiversYaml.AppendLine("    server: $($inst.host)")
               [void]$receiversYaml.AppendLine("    port: $($inst.port)")
             }
+            $receiverList += $receiverName
           }
 
           $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
@@ -790,38 +815,28 @@ install:
               check_interval: ${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
               limit_mib:       ${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
               spike_limit_mib: ${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
-
-            batch:
           '@)
-          }
-
-          # Per-instance server.address/server.port tagging - the original single-
-          # instance recipe had no such processor (nothing else to disambiguate), but
-          # with multiple nrsqlserver receivers now sharing config, each needs its own
-          # tag or every instance's data reads as coming from the first one.
-          foreach ($idx in $survivors) {
-            if ($skip.ContainsKey("$idx")) { continue }
-            $inst = $instances[$idx - 1]
-            [void]$processorsAndTail.AppendLine("")
-            [void]$processorsAndTail.AppendLine("  resource/sqlserver/instance$idx" + ":")
-            [void]$processorsAndTail.AppendLine("    attributes:")
-            [void]$processorsAndTail.AppendLine("      - key: server.address")
-            [void]$processorsAndTail.AppendLine("        value: `"$($inst.host)`"")
-            [void]$processorsAndTail.AppendLine("        action: upsert")
-            [void]$processorsAndTail.AppendLine("      - key: server.port")
-            [void]$processorsAndTail.AppendLine("        value: $($inst.port)")
-            [void]$processorsAndTail.AppendLine("        action: upsert")
           }
 
           [void]$processorsAndTail.AppendLine("")
           [void]$processorsAndTail.AppendLine("exporters:")
-          [void]$processorsAndTail.AppendLine("  otlphttp:")
+          [void]$processorsAndTail.AppendLine("  otlp:")
           [void]$processorsAndTail.AppendLine("    endpoint: $otlpEndpoint")
           [void]$processorsAndTail.AppendLine("    headers:")
           [void]$processorsAndTail.AppendLine("      api-key: $licenseKey")
           [void]$processorsAndTail.AppendLine("    tls:")
           [void]$processorsAndTail.AppendLine("      insecure: false")
           [void]$processorsAndTail.AppendLine("    compression: gzip")
+          [void]$processorsAndTail.AppendLine("    sending_queue:")
+          [void]$processorsAndTail.AppendLine("      enabled: true")
+          [void]$processorsAndTail.AppendLine("      sizer: bytes")
+          [void]$processorsAndTail.AppendLine("      queue_size: 100_000_000")
+          [void]$processorsAndTail.AppendLine("      num_consumers: 4")
+          [void]$processorsAndTail.AppendLine("      batch:")
+          [void]$processorsAndTail.AppendLine("        sizer: bytes")
+          [void]$processorsAndTail.AppendLine("        max_size: 1_000_000")
+          [void]$processorsAndTail.AppendLine("        min_size: 100_000")
+          [void]$processorsAndTail.AppendLine("        flush_timeout: 5s")
           [void]$processorsAndTail.AppendLine("")
           [void]$processorsAndTail.AppendLine("service:")
           [void]$processorsAndTail.AppendLine("  telemetry:")
@@ -854,51 +869,54 @@ install:
                   - resource_detection/env
                   - cumulativetodelta
                   - batch
-                exporters: [otlphttp]
+                exporters: [otlp]
           '@)
           }
-          foreach ($idx in $survivors) {
-            if ($skip.ContainsKey("$idx")) { continue }
-            if ($preset -eq "2") {
-              [void]$processorsAndTail.AppendLine("    metrics/instance$idx" + ":")
-              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
-              [void]$processorsAndTail.AppendLine("      processors:")
-              [void]$processorsAndTail.AppendLine("        - resource/sqlserver/instance$idx")
-              [void]$processorsAndTail.AppendLine("        - resource_detection")
-              [void]$processorsAndTail.AppendLine("        - resource_detection/cloud")
-              [void]$processorsAndTail.AppendLine("        - resource_detection/env")
-              [void]$processorsAndTail.AppendLine("        - cumulativetodelta")
-              [void]$processorsAndTail.AppendLine("        - batch")
-              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
-              [void]$processorsAndTail.AppendLine("    logs/instance$idx" + ":")
-              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
-              [void]$processorsAndTail.AppendLine("      processors: [resource/sqlserver/instance$idx, resource_detection, resource_detection/cloud, resource_detection/env, batch]")
-              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
-            } else {
-              [void]$processorsAndTail.AppendLine("    metrics/instance$idx" + ":")
-              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
-              [void]$processorsAndTail.AppendLine("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]")
-              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
-              [void]$processorsAndTail.AppendLine("    logs/instance$idx" + ":")
-              [void]$processorsAndTail.AppendLine("      receivers: [nrsqlserver/instance$idx]")
-              [void]$processorsAndTail.AppendLine("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]")
-              [void]$processorsAndTail.AppendLine("      exporters: [otlphttp]")
-            }
+          # One metrics pipeline and one logs pipeline covering every instance's
+          # receiver, rather than a separate pair per instance - all instances share
+          # identical processors now, so there's nothing instance-specific left to
+          # keep them apart. Preset 2 reserves the bare metrics/logs pipeline names
+          # for its own generic otlp passthrough pipelines below, so its SQL Server
+          # pipelines use a distinct /sqlserver suffix instead.
+          $receiversJoined = $receiverList -join ", "
+          if ($preset -eq "2") {
+            [void]$processorsAndTail.AppendLine("    metrics/sqlserver:")
+            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
+            [void]$processorsAndTail.AppendLine("      processors:")
+            [void]$processorsAndTail.AppendLine("        - resource_detection")
+            [void]$processorsAndTail.AppendLine("        - resource_detection/cloud")
+            [void]$processorsAndTail.AppendLine("        - resource_detection/env")
+            [void]$processorsAndTail.AppendLine("        - cumulativetodelta")
+            [void]$processorsAndTail.AppendLine("        - batch")
+            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
+            [void]$processorsAndTail.AppendLine("    logs/sqlserver:")
+            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
+            [void]$processorsAndTail.AppendLine("      processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]")
+            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
+          } else {
+            [void]$processorsAndTail.AppendLine("    metrics:")
+            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
+            [void]$processorsAndTail.AppendLine("      processors: [memory_limiter]")
+            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
+            [void]$processorsAndTail.AppendLine("    logs:")
+            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
+            [void]$processorsAndTail.AppendLine("      processors: [memory_limiter]")
+            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
           }
           if ($preset -eq "2") {
             [void]$processorsAndTail.AppendLine(@'
               traces:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
               metrics:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
               logs:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
           '@)
           }
 

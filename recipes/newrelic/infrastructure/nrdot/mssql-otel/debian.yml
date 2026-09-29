@@ -408,10 +408,10 @@ install:
           fi
 
           case "$REGION" in
-            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
-            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
-            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
-            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4318" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4318" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net:4318" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4318" ;;
           esac
 
           # Shared receiver settings differ by preset (Full-feature carries a longer
@@ -651,19 +651,36 @@ install:
                   enabled: true
                 db.server.top_query:
                   enabled: true
+                db.server.query_plan:
+                  enabled: true
+                db.server.top_procedure:
+                  enabled: true
 
               top_query_collection:
                 lookback_time: 60s
-                max_query_sample_count: 1000
-                top_query_count: 250
+                max_query_sample_count: 500
+                top_query_count: 200
                 collection_interval: 60s
-
-              collect_full_query_text: true
-              allowed_comment_keys:
-                - nr_service_guid
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
 
               query_sample_collection:
                 max_rows_per_query: 100
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              top_procedure_collection:
+                max_procedure_sample_count: 500
+                top_procedure_count: 200
+                collection_interval: 60s
+
+              resource_attributes:
+                db.system.version:
+                  enabled: true
+                sqlserver.db.edition:
+                  enabled: true
           BLOCK
           )
 
@@ -672,10 +689,10 @@ install:
           EOF
 
           # Count survivors up front to decide whether the anchor/merge-key pattern
-          # applies - a single instance has nothing to merge into, so it gets a plain
-          # receiver. No published multi-receiver doc exists for MSSQL yet, so this
-          # mirrors MySQL's documented naming convention (nrsqlserver/instanceN) rather
-          # than inventing a new one.
+          # applies - a single instance has nothing to merge into, so it gets the plain
+          # unsuffixed name (nrsqlserver). Multiple instances fall back to MySQL's
+          # documented naming convention (nrsqlserver/instanceN) since no published
+          # multi-receiver doc exists for MSSQL yet.
           SURVIVOR_COUNT=0
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
@@ -688,6 +705,7 @@ install:
 
           MONITORED_COUNT=0
           IS_FIRST_SURVIVOR=1
+          RECEIVER_LIST=""
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
             i=$((i + 1))
@@ -705,8 +723,9 @@ install:
             fi
 
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RECEIVER_NAME="nrsqlserver"
               {
-                echo "  nrsqlserver/instance${i}:"
+                echo "  ${RECEIVER_NAME}:"
                 echo "    collection_interval: 15s"
                 echo "    username: ${LOGIN_NAME}"
                 echo "    password: \"${NR_PASSWORD}\""
@@ -718,8 +737,9 @@ install:
                 echo "$RECEIVER_TAIL"
               } >> "$CONFIG_PATH"
             elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
+              RECEIVER_NAME="nrsqlserver/instance${i}"
               {
-                echo "  nrsqlserver/instance${i}: &nrsqlserver-common"
+                echo "  ${RECEIVER_NAME}: &nrsqlserver-common"
                 echo "    collection_interval: 15s"
                 echo "    username: ${LOGIN_NAME}"
                 echo "    password: \"${NR_PASSWORD}\""
@@ -732,8 +752,9 @@ install:
               } >> "$CONFIG_PATH"
               IS_FIRST_SURVIVOR=0
             else
+              RECEIVER_NAME="nrsqlserver/instance${i}"
               {
-                echo "  nrsqlserver/instance${i}:"
+                echo "  ${RECEIVER_NAME}:"
                 echo "    <<: *nrsqlserver-common"
                 echo "    username: ${LOGIN_NAME}"
                 echo "    password: \"${NR_PASSWORD}\""
@@ -742,6 +763,7 @@ install:
               } >> "$CONFIG_PATH"
             fi
 
+            RECEIVER_LIST="${RECEIVER_LIST}${RECEIVER_LIST:+, }${RECEIVER_NAME}"
             MONITORED_COUNT=$((MONITORED_COUNT + 1))
           done < "$INSTANCES_TSV"
 
@@ -750,10 +772,6 @@ install:
             exit 1
           fi
 
-          # Per-instance server.address/server.port tagging - the original single-
-          # instance recipe had no such processor (nothing else to disambiguate), but
-          # with multiple nrsqlserver receivers now sharing config, each needs its own
-          # tag or every instance's data reads as coming from the first one.
           cat >> "$CONFIG_PATH" << EOF
 
           processors:
@@ -761,39 +779,28 @@ install:
               check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
               limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
               spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
-
-            batch:
           EOF
-
-          i=0
-          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
-              continue
-            fi
-            cat >> "$CONFIG_PATH" << EOF
-
-            resource/sqlserver/instance${i}:
-              attributes:
-                - key: server.address
-                  value: "${HOST}"
-                  action: upsert
-                - key: server.port
-                  value: ${PORT}
-                  action: upsert
-          EOF
-          done < "$INSTANCES_TSV"
 
           cat >> "$CONFIG_PATH" << EOF
 
           exporters:
-            otlphttp:
+            otlp:
               endpoint: ${OTLP_ENDPOINT}
               headers:
                 api-key: ${LICENSE_KEY}
               tls:
                 insecure: false
               compression: gzip
+              sending_queue:
+                enabled: true
+                sizer: bytes
+                queue_size: 100_000_000
+                num_consumers: 4
+                batch:
+                  sizer: bytes
+                  max_size: 1_000_000
+                  min_size: 100_000
+                  flush_timeout: 5s
 
           service:
             telemetry:
@@ -803,23 +810,20 @@ install:
             pipelines:
           EOF
 
-          i=0
-          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
-              continue
-            fi
-            cat >> "$CONFIG_PATH" << EOF
-              metrics/instance${i}:
-                receivers: [nrsqlserver/instance${i}]
-                processors: [resource/sqlserver/instance${i}, memory_limiter, batch]
-                exporters: [otlphttp]
-              logs/instance${i}:
-                receivers: [nrsqlserver/instance${i}]
-                processors: [resource/sqlserver/instance${i}, memory_limiter, batch]
-                exporters: [otlphttp]
+          # One metrics pipeline and one logs pipeline covering every instance's
+          # receiver, rather than a separate pair per instance - all instances share
+          # identical processors now, so there's nothing instance-specific left to
+          # keep them apart.
+          cat >> "$CONFIG_PATH" << EOF
+              metrics:
+                receivers: [${RECEIVER_LIST}]
+                processors: [memory_limiter]
+                exporters: [otlp]
+              logs:
+                receivers: [${RECEIVER_LIST}]
+                processors: [memory_limiter]
+                exporters: [otlp]
           EOF
-          done < "$INSTANCES_TSV"
 
           cat > "$ENV_FILE" << EOF
           OTELCOL_OPTIONS="--config=${CONFIG_PATH}"

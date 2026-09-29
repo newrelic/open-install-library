@@ -578,10 +578,10 @@ install:
           function Get-ReceiverFields($inst) { "    collection_interval: $interval`n    datasource: `"$(Get-Datasource $inst)`"" }
 
           switch ($region) {
-            "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net" }
-            "EU"      { $otlpEndpoint = "https://otlp.eu01.nr-data.net" }
-            "JP"      { $otlpEndpoint = "https://otlp.jp.nr-data.net" }
-            default   { $otlpEndpoint = "https://otlp.nr-data.net" }
+            "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net:4318" }
+            "EU"      { $otlpEndpoint = "https://otlp.eu01.nr-data.net:4318" }
+            "JP"      { $otlpEndpoint = "https://otlp.jp.nr-data.net:4318" }
+            default   { $otlpEndpoint = "https://otlp.nr-data.net:4318" }
           }
 
           if ($preset -eq "2") {
@@ -794,13 +794,15 @@ install:
                 max_query_sample_count: 500
                 top_query_count: 200
                 collection_interval: 60s
-
-              collect_full_query_text: true
-              allowed_comment_keys:
-                - nr_service_guid
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
 
               query_sample_collection:
                 max_rows_per_query: 100
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
 
           processors:
             metrics_transform:
@@ -916,13 +918,23 @@ install:
               override: true
 
           exporters:
-            otlphttp:
+            otlp:
               endpoint: __OTLP_ENDPOINT__
               headers:
                 api-key: __LICENSE_KEY__
               tls:
                 insecure: false
               compression: gzip
+              sending_queue:
+                enabled: true
+                sizer: bytes
+                queue_size: 100_000_000
+                num_consumers: 4
+                batch:
+                  sizer: bytes
+                  max_size: 1_000_000
+                  min_size: 100_000
+                  flush_timeout: 5s
 
           service:
             telemetry:
@@ -951,7 +963,7 @@ install:
                   - resource_detection/env
                   - cumulativetodelta
                   - batch
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               logs/host:
                 receivers: [nrsqlserver]
@@ -960,22 +972,22 @@ install:
                   - resource_detection/cloud
                   - resource_detection/env
                   - batch
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               traces:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               metrics:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
 
               logs:
                 receivers: [otlp]
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlphttp]
+                exporters: [otlp]
           '@
           } else {
             $template = @'
@@ -1013,19 +1025,36 @@ install:
                   enabled: true
                 db.server.top_query:
                   enabled: true
+                db.server.query_plan:
+                  enabled: true
+                db.server.top_procedure:
+                  enabled: true
 
               top_query_collection:
                 lookback_time: 60s
-                max_query_sample_count: 1000
-                top_query_count: 250
+                max_query_sample_count: 500
+                top_query_count: 200
                 collection_interval: 60s
-
-              collect_full_query_text: true
-              allowed_comment_keys:
-                - nr_service_guid
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
 
               query_sample_collection:
                 max_rows_per_query: 100
+                collect_full_query_text: true
+                allowed_comment_keys:
+                  - nr_service_guid
+
+              top_procedure_collection:
+                max_procedure_sample_count: 500
+                top_procedure_count: 200
+                collection_interval: 60s
+
+              resource_attributes:
+                db.system.version:
+                  enabled: true
+                sqlserver.db.edition:
+                  enabled: true
 
           processors:
             memory_limiter:
@@ -1033,16 +1062,24 @@ install:
               limit_mib:       ${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
               spike_limit_mib: ${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
 
-            batch:
-
           exporters:
-            otlphttp:
+            otlp:
               endpoint: __OTLP_ENDPOINT__
               headers:
                 api-key: __LICENSE_KEY__
               tls:
                 insecure: false
               compression: gzip
+              sending_queue:
+                enabled: true
+                sizer: bytes
+                queue_size: 100_000_000
+                num_consumers: 4
+                batch:
+                  sizer: bytes
+                  max_size: 1_000_000
+                  min_size: 100_000
+                  flush_timeout: 5s
 
           service:
             telemetry:
@@ -1052,13 +1089,13 @@ install:
             pipelines:
               metrics:
                 receivers: [nrsqlserver]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                processors: [memory_limiter]
+                exporters: [otlp]
 
               logs:
                 receivers: [nrsqlserver]
-                processors: [memory_limiter, batch]
-                exporters: [otlphttp]
+                processors: [memory_limiter]
+                exporters: [otlp]
           '@
           }
 
@@ -1073,8 +1110,7 @@ install:
             $exportersAndService, $oldPipelines = $rest -split "`n  pipelines:`n", 2
 
             $receivers = New-Object System.Text.StringBuilder
-            $resourceProcessors = New-Object System.Text.StringBuilder
-            $instancePipelines = New-Object System.Text.StringBuilder
+            $receiverList = @()
             $isFirst = $true
             foreach ($idx in $survivors) {
               $inst = $instances[$idx - 1]
@@ -1088,41 +1124,40 @@ install:
                 [void]$receivers.Append("    <<: *nrsqlserver-common`n")
                 [void]$receivers.Append("    datasource: `"$(Get-Datasource $inst)`"`n")
               }
+              $receiverList += "nrsqlserver/instance$idx"
+            }
 
-              [void]$resourceProcessors.Append("`n  resource/sqlserver/instance$idx" + ":`n")
-              [void]$resourceProcessors.Append("    attributes:`n")
-              [void]$resourceProcessors.Append("      - key: server.address`n")
-              [void]$resourceProcessors.Append("        value: `"$($inst.host)`"`n")
-              [void]$resourceProcessors.Append("        action: upsert`n")
-              [void]$resourceProcessors.Append("      - key: server.port`n")
-              [void]$resourceProcessors.Append("        value: $($inst.port)`n")
-              [void]$resourceProcessors.Append("        action: upsert`n")
-
-              if ($preset -eq "2") {
-                [void]$instancePipelines.Append("    metrics/instance$idx" + ":`n")
-                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
-                [void]$instancePipelines.Append("      processors:`n")
-                [void]$instancePipelines.Append("        - resource/sqlserver/instance$idx`n")
-                [void]$instancePipelines.Append("        - resource_detection`n")
-                [void]$instancePipelines.Append("        - resource_detection/cloud`n")
-                [void]$instancePipelines.Append("        - resource_detection/env`n")
-                [void]$instancePipelines.Append("        - cumulativetodelta`n")
-                [void]$instancePipelines.Append("        - batch`n")
-                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
-                [void]$instancePipelines.Append("    logs/instance$idx" + ":`n")
-                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
-                [void]$instancePipelines.Append("      processors: [resource/sqlserver/instance$idx, resource_detection, resource_detection/cloud, resource_detection/env, batch]`n")
-                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
-              } else {
-                [void]$instancePipelines.Append("    metrics/instance$idx" + ":`n")
-                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
-                [void]$instancePipelines.Append("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]`n")
-                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
-                [void]$instancePipelines.Append("    logs/instance$idx" + ":`n")
-                [void]$instancePipelines.Append("      receivers: [nrsqlserver/instance$idx]`n")
-                [void]$instancePipelines.Append("      processors: [resource/sqlserver/instance$idx, memory_limiter, batch]`n")
-                [void]$instancePipelines.Append("      exporters: [otlphttp]`n`n")
-              }
+            # One metrics pipeline and one logs pipeline covering every instance's
+            # receiver, rather than a separate pair per instance - all instances
+            # share identical processors now, so there's nothing instance-specific
+            # left to keep them apart. Preset 2 reserves the bare metrics/logs
+            # pipeline names for its own generic otlp passthrough pipelines, so its
+            # SQL Server pipelines use a distinct /sqlserver suffix instead.
+            $receiversJoined = $receiverList -join ", "
+            $instancePipelines = New-Object System.Text.StringBuilder
+            if ($preset -eq "2") {
+              [void]$instancePipelines.Append("    metrics/sqlserver:`n")
+              [void]$instancePipelines.Append("      receivers: [$receiversJoined]`n")
+              [void]$instancePipelines.Append("      processors:`n")
+              [void]$instancePipelines.Append("        - resource_detection`n")
+              [void]$instancePipelines.Append("        - resource_detection/cloud`n")
+              [void]$instancePipelines.Append("        - resource_detection/env`n")
+              [void]$instancePipelines.Append("        - cumulativetodelta`n")
+              [void]$instancePipelines.Append("        - batch`n")
+              [void]$instancePipelines.Append("      exporters: [otlp]`n`n")
+              [void]$instancePipelines.Append("    logs/sqlserver:`n")
+              [void]$instancePipelines.Append("      receivers: [$receiversJoined]`n")
+              [void]$instancePipelines.Append("      processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]`n")
+              [void]$instancePipelines.Append("      exporters: [otlp]`n`n")
+            } else {
+              [void]$instancePipelines.Append("    metrics:`n")
+              [void]$instancePipelines.Append("      receivers: [$receiversJoined]`n")
+              [void]$instancePipelines.Append("      processors: [memory_limiter]`n")
+              [void]$instancePipelines.Append("      exporters: [otlp]`n`n")
+              [void]$instancePipelines.Append("    logs:`n")
+              [void]$instancePipelines.Append("      receivers: [$receiversJoined]`n")
+              [void]$instancePipelines.Append("      processors: [memory_limiter]`n")
+              [void]$instancePipelines.Append("      exporters: [otlp]`n`n")
             }
 
             if ($preset -eq "2") {
@@ -1134,7 +1169,7 @@ install:
               $newPipelines = $instancePipelines.ToString().TrimEnd("`n") + "`n"
             }
 
-            $configText = $head + $receivers.ToString() + "`nprocessors:`n" + $processorsBody + $resourceProcessors.ToString() + "`nexporters:`n" + $exportersAndService + "`n  pipelines:`n" + $newPipelines
+            $configText = $head + $receivers.ToString() + "`nprocessors:`n" + $processorsBody + "`nexporters:`n" + $exportersAndService + "`n  pipelines:`n" + $newPipelines
           }
 
           $configText = $configText.Replace('__OTLP_ENDPOINT__', $otlpEndpoint).Replace('__LICENSE_KEY__', $licenseKey)
