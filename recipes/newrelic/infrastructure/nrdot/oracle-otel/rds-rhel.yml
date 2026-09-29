@@ -861,6 +861,7 @@ install:
 
           MONITORED_COUNT=0
           IS_FIRST_SURVIVOR=1
+          RECEIVER_LIST=""
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
             i=$((i + 1))
@@ -879,9 +880,10 @@ install:
             NR_PASSWORD=$(cat "$PW_FILE")
             CONFIGURED_LOGIN_NAME=$(cat "$USER_FILE")
 
+            RECEIVER_NAME="nroracledb/${i}"
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               {
-                echo "  nroracledb/${i}:"
+                echo "  ${RECEIVER_NAME}:"
                 echo "    endpoint: \"${HOST}:${PORT}\""
                 echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
                 echo "    password: \"${NR_PASSWORD}\""
@@ -890,7 +892,7 @@ install:
               } >> "$CONFIG_PATH"
             elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
               {
-                echo "  nroracledb/${i}: &nroracledb-rds-common"
+                echo "  ${RECEIVER_NAME}: &nroracledb-rds-common"
                 echo "    endpoint: \"${HOST}:${PORT}\""
                 echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
                 echo "    password: \"${NR_PASSWORD}\""
@@ -900,7 +902,7 @@ install:
               IS_FIRST_SURVIVOR=0
             else
               {
-                echo "  nroracledb/${i}:"
+                echo "  ${RECEIVER_NAME}:"
                 echo "    <<: *nroracledb-rds-common"
                 echo "    endpoint: \"${HOST}:${PORT}\""
                 echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
@@ -909,6 +911,7 @@ install:
               } >> "$CONFIG_PATH"
             fi
 
+            RECEIVER_LIST="${RECEIVER_LIST}${RECEIVER_LIST:+, }${RECEIVER_NAME}"
             MONITORED_COUNT=$((MONITORED_COUNT + 1))
           done < "$INSTANCES_TSV"
 
@@ -1145,23 +1148,16 @@ install:
             EXPORTER_NAME="otlp"
           fi
 
-          i=0
-          while IFS="$(printf '\t')" read -r HOST PORT SERVICE_NAME LOGIN_NAME; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
-              continue
-            fi
-            cat >> "$CONFIG_PATH" << EOF
-              metrics/oracledb/${i}:
-                receivers: [nroracledb/${i}]
+          cat >> "$CONFIG_PATH" << EOF
+              metrics/oracledb:
+                receivers: [${RECEIVER_LIST}]
                 processors: [batch]
                 exporters: [${EXPORTER_NAME}]
-              logs/oracledb/${i}:
-                receivers: [nroracledb/${i}]
+              logs/oracledb:
+                receivers: [${RECEIVER_LIST}]
                 processors: [batch]
                 exporters: [${EXPORTER_NAME}]
           EOF
-          done < "$INSTANCES_TSV"
 
           if [ "$PRESET" = "2" ]; then
             cat >> "$CONFIG_PATH" << 'EOF'

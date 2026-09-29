@@ -716,6 +716,7 @@ install:
           echo "receivers:" > "$CONFIG_PATH"
 
           IS_FIRST_SURVIVOR=1
+          RECEIVER_LIST=""
           i=0
           while [ "$i" -lt "$INSTANCE_COUNT" ]; do
             i=$((i + 1))
@@ -742,20 +743,23 @@ install:
             ENC_WALLET_DIR=$(urlencode "$WALLET_DIR")
             DATASOURCE="oracle://${ENC_USER}:${ENC_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}?SSL=enable&SSL%20Verify=true&WALLET=${ENC_WALLET_DIR}"
 
+            RECEIVER_NAME="nroracledb/adb${i}"
             if [ "$MONITORED_COUNT" -eq 1 ]; then
-              echo "  nroracledb/adb${i}:" >> "$CONFIG_PATH"
+              echo "  ${RECEIVER_NAME}:" >> "$CONFIG_PATH"
               echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
               echo "$RECEIVER_DEFAULTS" >> "$CONFIG_PATH"
             elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
-              echo "  nroracledb/adb${i}: &nroracledb-adb-common" >> "$CONFIG_PATH"
+              echo "  ${RECEIVER_NAME}: &nroracledb-adb-common" >> "$CONFIG_PATH"
               echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
               echo "$RECEIVER_DEFAULTS" >> "$CONFIG_PATH"
               IS_FIRST_SURVIVOR=0
             else
-              echo "  nroracledb/adb${i}:" >> "$CONFIG_PATH"
+              echo "  ${RECEIVER_NAME}:" >> "$CONFIG_PATH"
               echo "    <<: *nroracledb-adb-common" >> "$CONFIG_PATH"
               echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
             fi
+
+            RECEIVER_LIST="${RECEIVER_LIST}${RECEIVER_LIST:+, }${RECEIVER_NAME}"
           done
 
           {
@@ -785,21 +789,16 @@ install:
             echo "  pipelines:"
           } >> "$CONFIG_PATH"
 
-          i=0
-          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then continue; fi
-            {
-              echo "    metrics/oracledb/${i}:"
-              echo "      receivers: [nroracledb/adb${i}]"
-              echo "      processors: [batch]"
-              echo "      exporters: [otlp/newrelic]"
-              echo "    logs/oracledb/${i}:"
-              echo "      receivers: [nroracledb/adb${i}]"
-              echo "      processors: [batch]"
-              echo "      exporters: [otlp/newrelic]"
-            } >> "$CONFIG_PATH"
-          done
+          {
+            echo "    metrics/oracledb:"
+            echo "      receivers: [${RECEIVER_LIST}]"
+            echo "      processors: [batch]"
+            echo "      exporters: [otlp/newrelic]"
+            echo "    logs/oracledb:"
+            echo "      receivers: [${RECEIVER_LIST}]"
+            echo "      processors: [batch]"
+            echo "      exporters: [otlp/newrelic]"
+          } >> "$CONFIG_PATH"
 
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
