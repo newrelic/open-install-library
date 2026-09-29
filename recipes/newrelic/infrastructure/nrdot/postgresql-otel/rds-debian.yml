@@ -989,11 +989,11 @@ install:
           echo "===== TEMPORARY DIAGNOSTIC (remove before merge) ====="
 
           echo "--- generated collector config ---"
-          cat /etc/nrdot-collector/postgresql-config.yaml 2>&1
+          cat /etc/nrdot-collector/postgresql-config.yaml 2>&1 || true
 
           echo ""
           echo "--- env file ---"
-          cat /etc/nrdot-collector/nrdot-collector.conf 2>&1
+          cat /etc/nrdot-collector/nrdot-collector.conf 2>&1 || true
 
           echo ""
           echo "--- DNS resolution order for each monitored host ---"
@@ -1004,7 +1004,7 @@ install:
               continue
             fi
             echo "instance ${i} (${HOST}):"
-            getent ahosts "${HOST}" 2>&1 || echo "  getent failed"
+            getent ahosts "${HOST}" 2>&1 || true
           done < "$INSTANCES_TSV"
 
           echo ""
@@ -1016,7 +1016,7 @@ install:
             JP)      OTLP_HOST="otlp.jp.nr-data.net" ;;
             *)       OTLP_HOST="otlp.nr-data.net" ;;
           esac
-          timeout 5 bash -c "echo > /dev/tcp/${OTLP_HOST}/4317" 2>&1 && echo "TCP connect to ${OTLP_HOST}:4317 - OK" || echo "TCP connect to ${OTLP_HOST}:4317 - FAILED"
+          timeout 5 bash -c "echo > /dev/tcp/${OTLP_HOST}/4317" >/dev/null 2>&1 && echo "TCP connect to ${OTLP_HOST}:4317 - OK" || echo "TCP connect to ${OTLP_HOST}:4317 - FAILED"
 
           echo ""
           echo "--- direct psql auth check using the exact host/credentials the receiver uses ---"
@@ -1033,20 +1033,28 @@ install:
               continue
             fi
             echo "instance ${i} (${HOST}:${PORT}) as ${LOGIN_NAME}:"
-            PGPASSWORD="$NR_PASSWORD" psql -h "$HOST" -p "$PORT" -U "$LOGIN_NAME" -d postgres -tA -c "SELECT 1;" 2>&1
+            PGPASSWORD="$NR_PASSWORD" psql -h "$HOST" -p "$PORT" -U "$LOGIN_NAME" -d postgres -tA -c "SELECT 1;" 2>&1 || true
           done < "$INSTANCES_TSV"
 
           echo ""
-          echo "--- waiting 60s for a few collection cycles before checking collector health ---"
-          sleep 60
+          echo "--- nrdot-collector's own config validation ---"
+          /usr/bin/nrdot-collector validate --config=/etc/nrdot-collector/postgresql-config.yaml 2>&1 || true
+
+          echo ""
+          echo "--- running nrdot-collector directly in the foreground to capture its own startup error ---"
+          timeout 5 sudo -u nrdot-collector /usr/bin/nrdot-collector --config=/etc/nrdot-collector/postgresql-config.yaml 2>&1 || true
+
+          echo ""
+          echo "--- letting systemd settle, then checking collector health ---"
+          sleep 15
 
           echo ""
           echo "--- systemctl status nrdot-collector ---"
-          systemctl status nrdot-collector --no-pager 2>&1
+          systemctl status nrdot-collector --no-pager 2>&1 || true
 
           echo ""
           echo "--- last 150 lines of nrdot-collector journal ---"
-          journalctl -u nrdot-collector --no-pager -n 150 2>&1
+          journalctl -u nrdot-collector --no-pager -n 150 2>&1 || true
 
           echo "===== END TEMPORARY DIAGNOSTIC ====="
           echo ""
