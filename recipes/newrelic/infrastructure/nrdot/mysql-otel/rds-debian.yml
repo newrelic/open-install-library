@@ -75,9 +75,6 @@ inputVars:
     prompt: "Path to the MySQL RDS instances YAML file: "
   - name: NR_CLI_MYSQL_SECRETS_FILE
     prompt: "Path to the MySQL RDS secrets file (KEY=VALUE per instance): "
-  - name: NR_CLI_MYSQL_TLS_CA_FILE
-    prompt: "Path to a CA certificate file for validating the server's TLS certificate (leave blank to skip CA validation): "
-    default: ""
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'mysql.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -392,7 +389,6 @@ install:
       cmds:
         - |
           PRESET="{{.NR_CLI_MYSQL_CONFIG_PRESET}}"
-          TLS_CA_FILE="{{.NR_CLI_MYSQL_TLS_CA_FILE}}"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
@@ -411,33 +407,15 @@ install:
             *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
-          if [ -n "$TLS_CA_FILE" ]; then
-            CA_FILE_LINE="      ca_file: ${TLS_CA_FILE}"
-          else
-            CA_FILE_LINE="      # ca_file: /path/to/global-bundle.pem"
-          fi
-
-          # Shared receiver settings (transport/collection_interval/tls/explain_mode/
-          # statement_events/query_sample_collection/top_query_collection/events) are
-          # identical for every instance. Captured once here and echoed per instance
-          # below instead of relying on the collector's YAML loader to support
-          # merge-key aliases via a fragile multi-anchor split - this keeps the
-          # ca_file line (the one field that needs runtime interpolation inside the
-          # shared block) spliced in via a plain variable rather than baked into the
-          # heredoc.
-          RECEIVER_DEFAULTS_HEAD=$(cat << 'BLOCK'
+          # Shared receiver settings (transport/collection_interval/explain_mode/
+          # statement_events/query_sample_collection/top_query_collection/events/metrics)
+          # are identical for every instance. Captured once here and echoed per instance
+          # below instead of relying on the collector's YAML loader to support merge-key
+          # aliases via a fragile split.
+          RECEIVER_DEFAULTS=$(cat << 'BLOCK'
               transport: tcp
               collection_interval: 10s
               initial_delay: 1s
-              tls:
-                insecure: false
-                insecure_skip_verify: false
-                # Required for Amazon RDS/Aurora with SSL/TLS enforcement -- see
-                # Prerequisites -> Network access -> Amazon RDS / Aurora for MySQL.
-          BLOCK
-          )
-
-          RECEIVER_DEFAULTS_TAIL=$(cat << 'BLOCK'
               # "procedure" collects EXPLAIN plans for write statements (UPDATE/DELETE/INSERT/REPLACE)
               # without granting DML to the monitoring user, via a SQL SECURITY DEFINER procedure.
               # Falls back to "inline" (default) automatically if the procedure is absent for a schema.
@@ -466,6 +444,15 @@ install:
                 db.server.query_sample:
                   enabled: true
                 db.server.top_query:
+                  enabled: true
+              metrics:
+                mysql.query.count:
+                  enabled: true
+                mysql.query.slow.count:
+                  enabled: true
+                mysql.commands:
+                  enabled: true
+                mysql.innodb.data_file.io:
                   enabled: true
           BLOCK
           )
@@ -570,9 +557,7 @@ install:
                 echo "    endpoint: \"${HOST}:${PORT}\""
                 echo "    username: \"${LOGIN_NAME}\""
                 echo "    password: \"${NR_PASSWORD}\""
-                echo "$RECEIVER_DEFAULTS_HEAD"
-                echo "$CA_FILE_LINE"
-                echo "$RECEIVER_DEFAULTS_TAIL"
+                echo "$RECEIVER_DEFAULTS"
               } >> "$CONFIG_PATH"
             elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
               {
@@ -580,9 +565,7 @@ install:
                 echo "    endpoint: \"${HOST}:${PORT}\""
                 echo "    username: \"${LOGIN_NAME}\""
                 echo "    password: \"${NR_PASSWORD}\""
-                echo "$RECEIVER_DEFAULTS_HEAD"
-                echo "$CA_FILE_LINE"
-                echo "$RECEIVER_DEFAULTS_TAIL"
+                echo "$RECEIVER_DEFAULTS"
               } >> "$CONFIG_PATH"
               IS_FIRST_SURVIVOR=0
             else
