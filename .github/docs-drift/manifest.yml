@@ -1,0 +1,192 @@
+# Which doc sections each NRDOT recipe is built from, and how to render each recipe's
+# collector config for comparison. Read by drift_check.py.
+#
+# Doc pages are paths under src/content/docs in github.com/newrelic/docs-website,
+# i.e. https://docs.newrelic.com/docs/<page>/. `sections` are the `[#anchor]` ids on the
+# page's `##` headings; `collapser` is a `<Collapser id="...">` inside the page.
+
+docs_content_root: src/content/docs
+
+# Fixture instance lists fed to each recipe's own parse_instances task (the same shape as
+# the recipe README's instances file). `{sandbox}` is replaced with the render sandbox.
+fixtures:
+  oci_cdb_1:
+    instances:
+      - &oci_cdb { host: cdb1.example.com, port: 1521, ssh_user: opc, container_type: 1, pdb_name: "", service: ORCLCDB, login_name: newrelic, db_user: "c##newrelic" }
+  oci_pdb_1:
+    instances:
+      - &oci_pdb { host: pdb1.example.com, port: 1521, ssh_user: opc, container_type: 2, pdb_name: ORCLPDB1, service: ORCLPDB1, login_name: newrelic, db_user: newrelic }
+  oci_cdb_3:
+    instances:
+      - *oci_cdb
+      - { <<: *oci_cdb, host: cdb2.example.com, service: ORCLCDB2 }
+      - { <<: *oci_cdb, host: cdb3.example.com, service: ORCLCDB3 }
+  oci_pdb_3:
+    instances:
+      - *oci_pdb
+      - { <<: *oci_pdb, host: pdb2.example.com, pdb_name: ORCLPDB2, service: ORCLPDB2 }
+      - { <<: *oci_pdb, host: pdb3.example.com, pdb_name: ORCLPDB3, service: ORCLPDB3 }
+  rds_1:
+    instances:
+      - &rds { host: rds1.abc.us-east-1.rds.amazonaws.com, port: 1521, service: ORCL, login_name: newrelic, db_user: NEWRELIC }
+  rds_3:
+    instances:
+      - *rds
+      - { <<: *rds, host: rds2.abc.us-east-1.rds.amazonaws.com, service: ORCL2 }
+      - { <<: *rds, host: rds3.abc.us-east-1.rds.amazonaws.com, service: ORCL3 }
+  adb_1:
+    instances:
+      - &adb { host: adb1.adb.us-ashburn-1.oraclecloud.com, port: 1522, service: myadb1_high, login_name: newrelic, wallet_dir: "{sandbox}/wallet1", db_user: NEWRELIC }
+  adb_3:
+    instances:
+      - *adb
+      - { <<: *adb, host: adb2.adb.us-ashburn-1.oraclecloud.com, service: myadb2_high, wallet_dir: "{sandbox}/wallet2" }
+      - { <<: *adb, host: adb3.adb.us-ashburn-1.oraclecloud.com, service: myadb3_high, wallet_dir: "{sandbox}/wallet3" }
+
+products:
+  oracle:
+    recipe_dir: recipes/newrelic/infrastructure/nrdot/oracle-otel
+    link_prefixes: [opentelemetry/database/]
+
+    # --- Grants: the recipe's SQL block vs. the doc's SQL code blocks -------------------
+    grants:
+      - name: self-hosted CDB
+        doc: { page: opentelemetry/database/oracle/host-cdb, sections: [database-user, grant-privileges] }
+        recipe: { files: [oci-linux.yml], task: configure_database_user, block_match: "CONTAINER=ALL" }
+      - name: self-hosted PDB
+        doc: { page: opentelemetry/database/oracle/host-pdb, sections: [database-user, grant-privileges] }
+        recipe: { files: [oci-linux.yml], task: configure_database_user, block_match: "GRANT", block_exclude: "CONTAINER=ALL" }
+      - name: RDS
+        doc: { page: opentelemetry/database/oracle/rds, sections: [database-user, grant-privileges] }
+        recipe: { files: [rds-debian.yml, rds-rhel.yml], task: configure_database_user, block_match: "rdsadmin" }
+      - name: ADB
+        doc: { page: opentelemetry/database/oracle/adb, sections: [database-user, grant-privileges] }
+        # ADB builds its SQL with printf, not a heredoc - use the whole task script.
+        recipe: { files: [adb-debian.yml, adb-rhel.yml], task: configure_database_user, heredoc: false }
+
+    # --- Config rendering: how to run each recipe's config tasks in a sandbox ------------
+    render:
+      oci:
+        files: [oci-linux.yml]
+        tasks: [parse_instances, create_collector_config]
+        instance_keys: [host, port, ssh_user, container_type, pdb_name, service, login_name]
+        vars:
+          NR_CLI_ORACLE_INSTANCES_FILE: "{instances_file}"
+          NR_CLI_ORACLE_SECRETS_FILE: "{secrets_file}"
+          NEW_RELIC_REGION: US
+          NEW_RELIC_LICENSE_KEY: DUMMY_LICENSE_KEY
+        # Stand-ins for what configure_database_user writes after creating the user in Oracle.
+        per_instance_files:
+          /tmp/nr-oracle-newrelic-pw-{i}.tmp: "DummyPassw0rd{i}"
+          /tmp/nr-oracle-db-user-{i}.tmp: "{db_user}"
+        output: /etc/nrdot-collector/oracle-config.yaml
+      rds:
+        files: [rds-debian.yml, rds-rhel.yml]
+        tasks: [parse_instances, create_collector_config]
+        instance_keys: [host, port, service, login_name]
+        secrets_per_instance: ["NR_CLI_ORACLE_ADMIN_USER_{i}=admin", "NR_CLI_ORACLE_ADMIN_PASSWORD_{i}=DummyAdmin{i}"]
+        vars:
+          NR_CLI_ORACLE_INSTANCES_FILE: "{instances_file}"
+          NR_CLI_ORACLE_SECRETS_FILE: "{secrets_file}"
+          NEW_RELIC_REGION: US
+          NEW_RELIC_LICENSE_KEY: DUMMY_LICENSE_KEY
+        per_instance_files:
+          /tmp/nr-oracle-rds-newrelic-pw-{i}.tmp: "DummyPassw0rd{i}"
+          /tmp/nr-oracle-rds-db-user-{i}.tmp: "{db_user}"
+        output: /etc/nrdot-collector/oracle-config.yaml
+      adb:
+        files: [adb-debian.yml, adb-rhel.yml]
+        tasks: [parse_instances, create_collector_config]
+        instance_keys: [host, port, service, login_name, wallet_dir]
+        secrets_per_instance: ["NR_CLI_ORACLE_ADMIN_USER_{i}=ADMIN", "NR_CLI_ORACLE_ADMIN_PASSWORD_{i}=DummyAdmin{i}"]
+        vars:
+          NR_CLI_ORACLE_INSTANCES_FILE: "{instances_file}"
+          NR_CLI_ORACLE_SECRETS_FILE: "{secrets_file}"
+          NEW_RELIC_REGION: US
+          NEW_RELIC_LICENSE_KEY: DUMMY_LICENSE_KEY
+        per_instance_files:
+          /tmp/nr-oracle-adb-newrelic-pw-{i}.tmp: "DummyPassw0rd{i}"
+          /tmp/nr-oracle-adb-db-user-{i}.tmp: "{db_user}"
+        output: /etc/nrdot-collector/oracle-config.yaml
+
+    # Per-instance component names collapse to one canonical name before comparing, so a
+    # recipe's nroracledb/1..3 compares against the doc's nroracledb / nroracledb/rds /
+    # nroracledb/cdb1 etc.
+    canonical_names:
+      - ["nroracledb(/.*)?", "nroracledb"]
+      - ["resource/add_event_name(/.*)?", "resource/add_event_name"]
+      - ["(metrics|logs)/oracledb(/.*)?", "\\1/oracledb"]
+
+    # Values that are per-install by design (connection details, credentials, endpoints).
+    ignore_paths:
+      - receivers.nroracledb.endpoint
+      - receivers.nroracledb.username
+      - receivers.nroracledb.password
+      - receivers.nroracledb.service
+      - receivers.nroracledb.datasource
+      - processors.resource/add_event_name.attributes[].value
+      - exporters.*.endpoint
+      - exporters.*.headers.api-key
+
+    # --- Config scenarios: rendered recipe config vs. the doc's YAML ------------------------
+    configs:
+      # Self-hosted (oci-linux.yml)
+      - name: self-hosted CDB, database only, 1 instance
+        doc: { page: opentelemetry/database/oracle/host-cdb, section: configure-collector }
+        render: oci
+        fixture: oci_cdb_1
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "1" }
+      - name: self-hosted PDB, database only, 1 instance
+        doc: { page: opentelemetry/database/oracle/host-pdb, section: configure-collector }
+        render: oci
+        fixture: oci_pdb_1
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "1" }
+      - name: self-hosted CDB, host + database, 1 instance
+        doc: { page: opentelemetry/database/oracle/config-reference, collapser: cdb-full }
+        render: oci
+        fixture: oci_cdb_1
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "2" }
+      - name: self-hosted PDB, host + database, 1 instance
+        doc: { page: opentelemetry/database/oracle/config-reference, collapser: pdb-full }
+        render: oci
+        fixture: oci_pdb_1
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "2" }
+      - name: self-hosted CDB, multi-instance (3)
+        doc: { page: opentelemetry/database/oracle/multi-receiver, collapser: cdb }
+        render: oci
+        fixture: oci_cdb_3
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "1" }
+      - name: self-hosted PDB, multi-instance (3)
+        doc: { page: opentelemetry/database/oracle/multi-receiver, collapser: pdb }
+        render: oci
+        fixture: oci_pdb_3
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "1" }
+
+      # AWS RDS (rds-debian.yml / rds-rhel.yml)
+      - name: RDS, database only, 1 instance
+        doc: { page: opentelemetry/database/oracle/rds, section: configure-collector }
+        render: rds
+        fixture: rds_1
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "1" }
+      - name: RDS, host + database, 1 instance
+        doc: { page: opentelemetry/database/oracle/config-reference, collapser: rds-full }
+        render: rds
+        fixture: rds_1
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "2" }
+      - name: RDS, multi-instance (3)
+        doc: { page: opentelemetry/database/oracle/multi-receiver, collapser: rds }
+        render: rds
+        fixture: rds_3
+        vars: { NR_CLI_ORACLE_CONFIG_PRESET: "1" }
+
+      # Autonomous Database (adb-debian.yml / adb-rhel.yml) - database only, no preset prompt.
+      # The docs have no ADB multi-receiver YAML, so the 3-instance render is checked
+      # against the single-instance page (every receiver must still match it).
+      - name: ADB, 1 instance
+        doc: { page: opentelemetry/database/oracle/adb, section: configure-collector }
+        render: adb
+        fixture: adb_1
+      - name: ADB, multi-instance (3)
+        doc: { page: opentelemetry/database/oracle/adb, section: configure-collector }
+        render: adb
+        fixture: adb_3
