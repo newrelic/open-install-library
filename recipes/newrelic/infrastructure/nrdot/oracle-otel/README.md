@@ -143,8 +143,8 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 (swap `rds-rhel.yml` on a RHEL/CentOS/OEL host)
 
 You'll be prompted for:
-1. `NRDOT configuration - 1) Database only  2) Host + Database` — pick `1` for a minimal
-   Oracle-only config, `2` to also collect host-level metrics.
+1. `NRDOT configuration - 1) Basic  2) Advanced` — `1` enables the essential metrics
+   (30), `2` enables the full metric list (135).
 2. `Path to the Oracle RDS instances YAML file` — the absolute path to the file from Step 1.
 3. `Path to the Oracle RDS secrets file` — the absolute path to the file from Step 2.
 
@@ -357,7 +357,8 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 ```
 
 You'll be prompted for:
-1. `NRDOT configuration - 1) Database only  2) Host + Database`.
+1. `NRDOT configuration - 1) Basic  2) Advanced` — `1` enables the essential metrics
+   (30), `2` enables the full metric list (135).
 2. `Path to the Oracle instances YAML file` — the absolute path to the file from Step 1.
 3. `Path to an optional secrets file for password overrides` — the absolute path to the
    file from Step 2, or blank if you didn't create one.

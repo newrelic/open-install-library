@@ -75,7 +75,7 @@ preInstall:
 
 inputVars:
   - name: NR_CLI_POSTGRES_CONFIG_PRESET
-    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    prompt: "NRDOT configuration - 1) Basic  2) Advanced: "
     default: "1"
   - name: NR_CLI_POSTGRES_INSTANCES_FILE
     prompt: "Path to the PostgreSQL RDS instances YAML file: "
@@ -508,7 +508,7 @@ install:
           # of relying on the collector's YAML loader to support merge-key aliases
           # via a fragile split - endpoint/username/password/databases are the only
           # fields that vary per instance and are always written explicitly.
-          RECEIVER_DEFAULTS=$(cat << 'BLOCK'
+          RECEIVER_COMMON=$(cat << 'BLOCK'
               exclude_databases:
                 - rdsadmin
               collection_interval: 15s
@@ -517,6 +517,8 @@ install:
                 db.server.top_query:
                   enabled: true
                 db.server.query_sample:
+                  enabled: true
+                db.server.query_plan:
                   enabled: true
 
               resource_attributes:
@@ -533,6 +535,9 @@ install:
                 collection_interval: 60s
                 allowed_comment_keys: [nr_service_guid]
 
+          BLOCK
+          )
+          RECEIVER_METRICS_BASIC=$(cat << 'BLOCK'
               # Metrics needed for the out-of-the-box dashboard but disabled by default -
               # see "Available metrics" in the docs for the full default-on/default-off breakdown.
               metrics:
@@ -552,68 +557,65 @@ install:
                   enabled: true
           BLOCK
           )
+          RECEIVER_METRICS_ADVANCED=$(cat << 'BLOCK'
+              # All metrics are disabled by default in the receiver; enabled here for full dashboard coverage.
+              metrics:
+                postgresql.blks_hit:
+                  enabled: true
+                postgresql.blks_read:
+                  enabled: true
+                postgresql.database.locks:
+                  enabled: true
+                postgresql.deadlocks:
+                  enabled: true
+                postgresql.function.calls:
+                  enabled: true
+                postgresql.query.conflicts:
+                  enabled: true
+                postgresql.query.execution.time:
+                  enabled: true
+                postgresql.sequential_scans:
+                  enabled: true
+                postgresql.temp.io:
+                  enabled: true
+                postgresql.temp_files:
+                  enabled: true
+                postgresql.tup_deleted:
+                  enabled: true
+                postgresql.tup_fetched:
+                  enabled: true
+                postgresql.tup_inserted:
+                  enabled: true
+                postgresql.tup_returned:
+                  enabled: true
+                postgresql.tup_updated:
+                  enabled: true
+                postgresql.vector.insert.duration:
+                  enabled: true
+                postgresql.vector.insert.rows:
+                  enabled: true
+                postgresql.vector.search.calls:
+                  enabled: true
+                postgresql.vector.search.duration:
+                  enabled: true
+                postgresql.vector.search.rows_returned:
+                  enabled: true
+                postgresql.wal.delay:
+                  enabled: true
+          BLOCK
+          )
 
+          # Preset 1 = Basic (essential metrics), 2 = Advanced (full metric list).
           if [ "$PRESET" = "2" ]; then
-            cat > "$CONFIG_PATH" << 'EOF'
-          extensions:
-            health_check:
-
-          receivers:
-            otlp:
-              protocols:
-                grpc:
-                http:
-
-            host_metrics:
-              collection_interval: 30s
-              scrapers:
-                cpu:
-                  metrics:
-                    system.cpu.time:
-                      enabled: false
-                    system.cpu.utilization:
-                      enabled: true
-                load:
-                memory:
-                  metrics:
-                    system.memory.utilization:
-                      enabled: true
-                paging:
-                  metrics:
-                    system.paging.utilization:
-                      enabled: false
-                    system.paging.faults:
-                      enabled: false
-                filesystem:
-                  metrics:
-                    system.filesystem.utilization:
-                      enabled: true
-                disk:
-                  metrics:
-                    system.disk.merged:
-                      enabled: false
-                    system.disk.pending_operations:
-                      enabled: false
-                    system.disk.weighted_io_time:
-                      enabled: false
-                network:
-                  metrics:
-                    system.network.connections:
-                      enabled: false
-                # Uncomment to enable process metrics
-                # processes:
-                # process:
-                #  metrics:
-                #    process.cpu.utilization:
-                #      enabled: true
-                #    process.cpu.time:
-                #      enabled: false
-          EOF
+            RECEIVER_METRICS="$RECEIVER_METRICS_ADVANCED"
           else
-            cat > "$CONFIG_PATH" << 'EOF'
+            RECEIVER_METRICS="$RECEIVER_METRICS_BASIC"
+          fi
+          RECEIVER_DEFAULTS=$(printf '%s\n%s' "$RECEIVER_COMMON" "$RECEIVER_METRICS")
+
+          cat > "$CONFIG_PATH" << 'EOF'
           receivers:
           EOF
-          fi
 
           # Count survivors up front to decide whether the anchor/merge-key pattern
           # documented at https://docs.newrelic.com/docs/opentelemetry/database/postgresql/multi-receiver/
@@ -707,128 +709,15 @@ install:
             exit 1
           fi
 
-          if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << 'EOF'
-
-          processors:
-            metrics_transform:
-              transforms:
-                - include: system.cpu.utilization
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [state]
-                      aggregation_type: mean
-                - include: system.paging.operations
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [direction]
-                      aggregation_type: sum
-
-            filter/exclude_cpu_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
-
-            filter/exclude_memory_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
-
-            filter/exclude_memory_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
-
-            filter/exclude_filesystem_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
-
-            filter/exclude_filesystem_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_filesystem_inodes_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_system_disk:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
-
-            filter/exclude_network:
-              metrics:
-                datapoint:
-                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
-
-            attributes/exclude_system_paging:
-              include:
-                match_type: strict
-                metric_names:
-                  - system.paging.operations
-              actions:
-                - key: type
-                  action: delete
-
-            cumulative_to_delta:
-
-            transform:
-              trace_statements:
-                - context: span
-                  statements:
-                    - truncate_all(span.attributes, 4095)
-                    - truncate_all(resource.attributes, 4095)
-
-            transform/host:
-              metric_statements:
-                - context: metric
-                  statements:
-                    - set(metric.description, "")
-                    - set(metric.unit, "")
-
-            batch:
-
-            resource_detection:
-              detectors: ["system"]
-              system:
-                hostname_sources: ["os"]
-                resource_attributes:
-                  host.id:
-                    enabled: true
-            resource_detection/cloud:
-              detectors: ["gcp", "ec2", "azure"]
-              timeout: 2s
-              override: true
-            resource_detection/env:
-              detectors: ["env"]
-              timeout: 2s
-              override: true
-          EOF
-          else
-            cat >> "$CONFIG_PATH" << 'EOF'
+          cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
             batch:
+            batch/metrics:
+              send_batch_size: 8192
+              send_batch_max_size: 8192
+              timeout: 10s
           EOF
-          fi
 
           cat >> "$CONFIG_PATH" << EOF
 
@@ -838,6 +727,16 @@ install:
               headers:
                 api-key: "${LICENSE_KEY}"
               compression: gzip
+              sending_queue:
+                enabled: true
+                sizer: bytes
+                queue_size: 100_000_000
+                num_consumers: 10
+                batch:
+                  sizer: bytes
+                  max_size: 1_000_000
+                  min_size: 0
+                  flush_timeout: 5s
               retry_on_failure:
                 enabled: true
                 initial_interval: 5s
@@ -845,96 +744,16 @@ install:
                 max_elapsed_time: 300s
 
           service:
-          EOF
-
-          if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << 'EOF'
-            telemetry:
-              metrics:
-                level: none
-
-            extensions: [health_check]
-
             pipelines:
-              metrics/host:
-                receivers: [host_metrics]
-                processors:
-                  - metrics_transform
-                  - filter/exclude_cpu_utilization
-                  - filter/exclude_memory_utilization
-                  - filter/exclude_memory_usage
-                  - filter/exclude_filesystem_utilization
-                  - filter/exclude_filesystem_usage
-                  - filter/exclude_filesystem_inodes_usage
-                  - filter/exclude_system_disk
-                  - filter/exclude_network
-                  - attributes/exclude_system_paging
-                  - transform/host
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - cumulative_to_delta
-                  - batch
-                exporters: [otlp/newrelic]
-          EOF
-          else
-            cat >> "$CONFIG_PATH" << 'EOF'
-            pipelines:
-          EOF
-          fi
-
-          if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << EOF
-              metrics/postgresql:
-                receivers: [${RECEIVER_LIST}]
-                processors:
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - batch
-                exporters: [otlp/newrelic]
-
-              logs/postgresql:
-                receivers: [${RECEIVER_LIST}]
-                processors:
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - batch
-                exporters: [otlp/newrelic]
-          EOF
-          else
-            cat >> "$CONFIG_PATH" << EOF
               metrics:
                 receivers: [${RECEIVER_LIST}]
-                processors: [batch]
+                processors: [batch/metrics]
                 exporters: [otlp/newrelic]
               logs:
                 receivers: [${RECEIVER_LIST}]
                 processors: [batch]
                 exporters: [otlp/newrelic]
           EOF
-          fi
-
-          if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << 'EOF'
-
-              traces:
-                receivers: [otlp]
-                processors: [transform, resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlp/newrelic]
-
-              metrics:
-                receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlp/newrelic]
-
-              logs:
-                receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlp/newrelic]
-          EOF
-          fi
 
           cat > "$ENV_FILE" << EOF
           OTELCOL_OPTIONS="--config=${CONFIG_PATH}"

@@ -70,7 +70,7 @@ preInstall:
 
 inputVars:
   - name: NR_CLI_MSSQL_CONFIG_PRESET
-    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    prompt: "NRDOT configuration - 1) Basic  2) Advanced: "
     default: "1"
   - name: NR_CLI_MSSQL_INSTANCES_FILE
     prompt: "Path to the MSSQL instances YAML file: "
@@ -401,12 +401,6 @@ install:
 
           mkdir -p "$CONFIG_DIR"
 
-          if [ "$PRESET" = "2" ]; then
-            LIMIT_MIB=500
-          else
-            LIMIT_MIB=200
-          fi
-
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
             EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4317" ;;
@@ -414,9 +408,8 @@ install:
             *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
-          # Shared receiver settings differ by preset (Full-feature carries a longer
-          # metrics list than Standard) but are identical across instances within a
-          # preset. Captured once here and echoed per instance below instead of relying
+          # Shared receiver settings differ by preset (Advanced carries a longer
+          # metrics list than Basic) but are identical across instances within a preset. Captured once here and echoed per instance below instead of relying
           # on the collector's YAML loader to support merge-key aliases via a fragile
           # split - username/password/server/port are the only fields that vary.
           if [ "$PRESET" = "2" ]; then
@@ -431,13 +424,9 @@ install:
                   enabled: true
                 sqlserver.database.operations:
                   enabled: true
-                sqlserver.database.page_file.size:
-                  enabled: true
                 sqlserver.database.transactions.active:
                   enabled: true
                 sqlserver.database.backup_or_restore.rate:
-                  enabled: true
-                sqlserver.database.execution.errors:
                   enabled: true
                 sqlserver.database.full_scan.rate:
                   enabled: true
@@ -445,43 +434,13 @@ install:
                   enabled: true
                 sqlserver.database.tempdb.version_store.size:
                   enabled: true
-                sqlserver.database.principals.count:
-                  enabled: true
-                sqlserver.database.principals.old:
-                  enabled: true
-                sqlserver.database.principals.orphaned_users:
-                  enabled: true
-                sqlserver.database.principals.recently_created:
-                  enabled: true
-                sqlserver.database.role.members.count:
-                  enabled: true
-                sqlserver.database.role.memberships.count:
-                  enabled: true
-                sqlserver.database.role.permission.risk_level:
-                  enabled: true
-                sqlserver.database.role.roles.count:
-                  enabled: true
-                sqlserver.database.security.role_membership.count:
-                  enabled: true
-                sqlserver.server.security.principal.count:
-                  enabled: true
-                sqlserver.server.security.role_membership.count:
-                  enabled: true
-                sqlserver.lock.by_mode.count:
-                  enabled: true
-                sqlserver.lock.by_resource.count:
-                  enabled: true
                 sqlserver.lock.timeout.rate:
                   enabled: true
                 sqlserver.lock.wait.count:
                   enabled: true
-                sqlserver.lock.wait.rate:
-                  enabled: true
                 sqlserver.deadlock.rate:
                   enabled: true
                 sqlserver.transaction.delay:
-                  enabled: true
-                sqlserver.transaction.mirror_write.rate:
                   enabled: true
                 sqlserver.transaction.longest_running_time:
                   enabled: true
@@ -497,11 +456,7 @@ install:
                   enabled: true
                 sqlserver.memory.page.count:
                   enabled: true
-                sqlserver.memory.target:
-                  enabled: true
                 sqlserver.memory.usage:
-                  enabled: true
-                sqlserver.os.disk.size:
                   enabled: true
                 sqlserver.os.memory.usage:
                   enabled: true
@@ -513,19 +468,9 @@ install:
                   enabled: true
                 sqlserver.os.wait.tasks.count:
                   enabled: true
-                sqlserver.page.buffer_cache.hit_ratio:
-                  enabled: true
                 sqlserver.page.buffer_cache.free_list.stalls.rate:
                   enabled: true
-                sqlserver.page.life_expectancy:
-                  enabled: true
                 sqlserver.page.lookup.rate:
-                  enabled: true
-                sqlserver.batch.request.rate:
-                  enabled: true
-                sqlserver.batch.sql_compilation.rate:
-                  enabled: true
-                sqlserver.batch.sql_recompilation.rate:
                   enabled: true
                 sqlserver.batch.compilation.utilization:
                   enabled: true
@@ -542,8 +487,6 @@ install:
                 sqlserver.process.count:
                   enabled: true
                 sqlserver.processes.blocked:
-                  enabled: true
-                sqlserver.user.connection.count:
                   enabled: true
                 sqlserver.login.rate:
                   enabled: true
@@ -611,8 +554,6 @@ install:
                   enabled: true
                 sqlserver.table.count:
                   enabled: true
-                sqlserver.kill_connection.error.rate:
-                  enabled: true
           BLOCK
           )
           else
@@ -658,8 +599,8 @@ install:
 
               top_query_collection:
                 lookback_time: 60s
-                max_query_sample_count: 500
-                top_query_count: 200
+                max_query_sample_count: 1000
+                top_query_count: 250
                 collection_interval: 60s
                 collect_full_query_text: true
                 allowed_comment_keys:
@@ -672,8 +613,8 @@ install:
                   - nr_service_guid
 
               top_procedure_collection:
-                max_procedure_sample_count: 500
-                top_procedure_count: 200
+                max_procedure_sample_count: 1000
+                top_procedure_count: 250
                 collection_interval: 60s
 
               resource_attributes:
@@ -777,7 +718,7 @@ install:
           processors:
             memory_limiter:
               check_interval: \${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
-              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-${LIMIT_MIB}}
+              limit_mib:       \${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
               spike_limit_mib: \${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
           EOF
 
@@ -795,7 +736,7 @@ install:
                 enabled: true
                 sizer: bytes
                 queue_size: 100_000_000
-                num_consumers: 4
+                num_consumers: 10
                 batch:
                   sizer: bytes
                   max_size: 1_000_000

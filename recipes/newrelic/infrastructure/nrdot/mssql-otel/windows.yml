@@ -64,7 +64,7 @@ preInstall:
 
 inputVars:
   - name: NR_CLI_MSSQL_CONFIG_PRESET
-    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    prompt: "NRDOT configuration - 1) Basic  2) Advanced: "
     default: "1"
   - name: NR_CLI_MSSQL_INSTANCES_FILE
     prompt: "Path to the MSSQL instances YAML file: "
@@ -391,7 +391,7 @@ install:
             if ($_ -match '^([^=]+)=(.*)$') { $secrets[$matches[1]] = $matches[2] }
           }
 
-          $interval = if ($preset -eq "2") { "30s" } else { "15s" }
+          $interval = "15s"
 
           switch ($region) {
             "staging" { $otlpEndpoint = "https://staging-otlp.nr-data.net:4317" }
@@ -400,8 +400,8 @@ install:
             default   { $otlpEndpoint = "https://otlp.nr-data.net:4317" }
           }
 
-          # Shared receiver settings differ by preset (Full-feature carries a longer
-          # metrics list than Standard) but are identical across instances within a
+          # Shared receiver settings differ by preset (Advanced carries a longer
+          # metrics list than Basic) but are identical across instances within a
           # preset. Built once here as plain strings and echoed per instance below
           # instead of relying on the collector's YAML loader to support merge-key
           # aliases via a fragile split - username/password/server/port are the only
@@ -421,8 +421,6 @@ install:
                 sqlserver.database.transactions.active:
                   enabled: true
                 sqlserver.database.backup_or_restore.rate:
-                  enabled: true
-                sqlserver.database.execution.errors:
                   enabled: true
                 sqlserver.database.full_scan.rate:
                   enabled: true
@@ -593,8 +591,8 @@ install:
 
               top_query_collection:
                 lookback_time: 60s
-                max_query_sample_count: 500
-                top_query_count: 200
+                max_query_sample_count: 1000
+                top_query_count: 250
                 collection_interval: 60s
                 collect_full_query_text: true
                 allowed_comment_keys:
@@ -607,8 +605,8 @@ install:
                   - nr_service_guid
 
               top_procedure_collection:
-                max_procedure_sample_count: 500
-                top_procedure_count: 200
+                max_procedure_sample_count: 1000
+                top_procedure_count: 250
                 collection_interval: 60s
 
               resource_attributes:
@@ -643,10 +641,7 @@ install:
               continue
             }
 
-            if ($survivors.Count -eq 1 -and $preset -ne "2") {
-              # Preset 2 reserves the bare metrics/logs pipeline names for its own
-              # generic otlp passthrough pipelines below - always suffix there, even
-              # for a single SQL Server instance, to avoid colliding with those.
+            if ($survivors.Count -eq 1) {
               $receiverName = "nrsqlserver"
               [void]$receiversYaml.AppendLine("  $receiverName" + ":")
               [void]$receiversYaml.AppendLine("    collection_interval: $interval")
@@ -693,130 +688,13 @@ install:
           }
 
           $processorsAndTail = New-Object System.Text.StringBuilder
-          if ($preset -eq "2") {
-            [void]$processorsAndTail.AppendLine(@'
-          processors:
-            metrics_transform:
-              transforms:
-                - include: system.cpu.utilization
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [state]
-                      aggregation_type: mean
-                - include: system.paging.operations
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [direction]
-                      aggregation_type: sum
-
-            filter/exclude_cpu_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
-
-            filter/exclude_memory_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
-
-            filter/exclude_memory_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
-
-            filter/exclude_filesystem_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
-
-            filter/exclude_filesystem_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_filesystem_inodes_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_system_disk:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
-
-            filter/exclude_system_paging:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.paging.operations" and attributes["type"] == "cached"'
-
-            filter/exclude_network:
-              metrics:
-                datapoint:
-                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
-
-            attributes/exclude_system_paging:
-              include:
-                match_type: strict
-                metric_names:
-                  - system.paging.operations
-              actions:
-                - key: type
-                  action: delete
-
-            cumulativetodelta:
-
-            transform/host:
-              metric_statements:
-                - context: metric
-                  statements:
-                    - set(metric.description, "")
-                    - set(metric.unit, "")
-
-            batch:
-
-            resource_detection:
-              detectors: ["system"]
-              system:
-                hostname_sources: ["os"]
-                resource_attributes:
-                  host.id:
-                    enabled: true
-
-            resource_detection/cloud:
-              detectors: ["gcp", "ec2", "azure"]
-              timeout: 2s
-              override: true
-
-            resource_detection/env:
-              detectors: ["env"]
-              timeout: 2s
-              override: true
-          '@)
-          } else {
-            [void]$processorsAndTail.AppendLine(@'
+          [void]$processorsAndTail.AppendLine(@'
           processors:
             memory_limiter:
               check_interval: ${env:NR_MEM_LIMITER_CHECK_INTERVAL:-1s}
               limit_mib:       ${env:NR_MEM_LIMITER_LIMIT_MIB:-200}
               spike_limit_mib: ${env:NR_MEM_LIMITER_SPIKE_MIB:-50}
           '@)
-          }
 
           [void]$processorsAndTail.AppendLine("")
           [void]$processorsAndTail.AppendLine("exporters:")
@@ -831,7 +709,7 @@ install:
           [void]$processorsAndTail.AppendLine("      enabled: true")
           [void]$processorsAndTail.AppendLine("      sizer: bytes")
           [void]$processorsAndTail.AppendLine("      queue_size: 100_000_000")
-          [void]$processorsAndTail.AppendLine("      num_consumers: 4")
+          [void]$processorsAndTail.AppendLine("      num_consumers: 10")
           [void]$processorsAndTail.AppendLine("      batch:")
           [void]$processorsAndTail.AppendLine("        sizer: bytes")
           [void]$processorsAndTail.AppendLine("        max_size: 1_000_000")
@@ -843,82 +721,20 @@ install:
           [void]$processorsAndTail.AppendLine("    metrics:")
           [void]$processorsAndTail.AppendLine("      level: none")
           [void]$processorsAndTail.AppendLine("")
-          if ($preset -eq "2") {
-            [void]$processorsAndTail.AppendLine("  extensions: [health_check]")
-            [void]$processorsAndTail.AppendLine("")
-          }
           [void]$processorsAndTail.AppendLine("  pipelines:")
-          if ($preset -eq "2") {
-            [void]$processorsAndTail.AppendLine(@'
-              metrics/host:
-                receivers: [host_metrics]
-                processors:
-                  - metrics_transform
-                  - filter/exclude_cpu_utilization
-                  - filter/exclude_memory_utilization
-                  - filter/exclude_memory_usage
-                  - filter/exclude_filesystem_utilization
-                  - filter/exclude_filesystem_usage
-                  - filter/exclude_filesystem_inodes_usage
-                  - filter/exclude_system_disk
-                  - filter/exclude_network
-                  - attributes/exclude_system_paging
-                  - transform/host
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - cumulativetodelta
-                  - batch
-                exporters: [otlp]
-          '@)
-          }
           # One metrics pipeline and one logs pipeline covering every instance's
           # receiver, rather than a separate pair per instance - all instances share
           # identical processors now, so there's nothing instance-specific left to
-          # keep them apart. Preset 2 reserves the bare metrics/logs pipeline names
-          # for its own generic otlp passthrough pipelines below, so its SQL Server
-          # pipelines use a distinct /sqlserver suffix instead.
+          # keep them apart.
           $receiversJoined = $receiverList -join ", "
-          if ($preset -eq "2") {
-            [void]$processorsAndTail.AppendLine("    metrics/sqlserver:")
-            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
-            [void]$processorsAndTail.AppendLine("      processors:")
-            [void]$processorsAndTail.AppendLine("        - resource_detection")
-            [void]$processorsAndTail.AppendLine("        - resource_detection/cloud")
-            [void]$processorsAndTail.AppendLine("        - resource_detection/env")
-            [void]$processorsAndTail.AppendLine("        - cumulativetodelta")
-            [void]$processorsAndTail.AppendLine("        - batch")
-            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
-            [void]$processorsAndTail.AppendLine("    logs/sqlserver:")
-            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
-            [void]$processorsAndTail.AppendLine("      processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]")
-            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
-          } else {
-            [void]$processorsAndTail.AppendLine("    metrics:")
-            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
-            [void]$processorsAndTail.AppendLine("      processors: [memory_limiter]")
-            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
-            [void]$processorsAndTail.AppendLine("    logs:")
-            [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
-            [void]$processorsAndTail.AppendLine("      processors: [memory_limiter]")
-            [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
-          }
-          if ($preset -eq "2") {
-            [void]$processorsAndTail.AppendLine(@'
-              traces:
-                receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlp]
-              metrics:
-                receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlp]
-              logs:
-                receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlp]
-          '@)
-          }
+          [void]$processorsAndTail.AppendLine("    metrics:")
+          [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
+          [void]$processorsAndTail.AppendLine("      processors: [memory_limiter]")
+          [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
+          [void]$processorsAndTail.AppendLine("    logs:")
+          [void]$processorsAndTail.AppendLine("      receivers: [$receiversJoined]")
+          [void]$processorsAndTail.AppendLine("      processors: [memory_limiter]")
+          [void]$processorsAndTail.AppendLine("      exporters: [otlp]")
 
           $configText = "receivers:`n" + $receiversYaml.ToString() + "`n" + $processorsAndTail.ToString()
           $configText | Set-Content -Path $configPath -Encoding utf8
