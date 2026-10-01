@@ -139,13 +139,24 @@
 - block:
   - name: Run recipe, expect success
     win_shell: |
-      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }};
+      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} *>&1 | Tee-Object -FilePath C:\Temp\nrcli-install-output.log;
     register: output
     ignore_errors: true
+  # Ansible's live capture of win_shell's stdout has been observed to drop the
+  # final line of long-running steps (NR-620798). Writing the full output to a
+  # file via Tee-Object and reading it back afterward avoids depending on that
+  # live capture for the validate_output assertion.
+  - name: Read back the install output written to disk
+    ansible.windows.win_shell: Get-Content -Path C:\Temp\nrcli-install-output.log -Raw
+    register: file_output
   - fail:
-      msg: "The recipe failed to install when it was expected to succeed:{{ output.stdout }}"
+      msg: "The recipe failed to install when it was expected to succeed:{{ file_output.stdout }}"
     when: output is failed
   - fail:
-      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stdout }}"
-    when: validate_output is defined and output.stdout is not search(validate_output)
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ file_output.stdout }}"
+    when: validate_output is defined and file_output.stdout is not search(validate_output)
+  - name: Clean up install output file
+    ansible.windows.win_file:
+      path: C:\Temp\nrcli-install-output.log
+      state: absent
   when: command_should_fail == False
