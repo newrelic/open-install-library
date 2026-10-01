@@ -626,6 +626,7 @@ install:
           fi
           RECEIVER_DEFAULTS=$(printf '%s\n%s' "$RECEIVER_COMMON" "$RECEIVER_METRICS")
 
+          if [ "$PRESET" = "2" ]; then
           cat > "$CONFIG_PATH" << 'EOF'
           extensions:
             health_check:
@@ -636,6 +637,11 @@ install:
                 http:
 
           EOF
+          else
+          cat > "$CONFIG_PATH" << 'EOF'
+          receivers:
+          EOF
+          fi
 
           # Count survivors up front to decide whether the anchor/merge-key pattern
           # documented at https://docs.newrelic.com/docs/opentelemetry/database/mysql/multi-receiver/
@@ -705,6 +711,9 @@ install:
             exit 1
           fi
 
+          # Advanced adds the documented otlp/traces + resource_detection layout;
+          # Basic keeps the plain nrmysql pipelines with per-instance server.address/port.
+          if [ "$PRESET" = "2" ]; then
           cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
@@ -807,6 +816,86 @@ install:
                 processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
                 exporters: [otlp/newrelic]
           EOF
+          else
+          cat >> "$CONFIG_PATH" << 'EOF'
+
+          processors:
+            batch:
+          EOF
+
+          # Static server.address/server.port per instance, reusing the same HOST/PORT
+          # already set on that instance's receiver `endpoint` field above -- nrmysql
+          # itself emits no server.address/server.port, only its own
+          # mysql.instance.endpoint (a combined "host:port" string).
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RESOURCE_NAME="resource/mysql"
+            else
+              RESOURCE_NAME="resource/mysql/instance${i}"
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+
+            ${RESOURCE_NAME}:
+              attributes:
+                - key: server.address
+                  value: "${HOST}"
+                  action: upsert
+                - key: server.port
+                  value: ${PORT}
+                  action: upsert
+          EOF
+          done < "$INSTANCES_TSV"
+
+          cat >> "$CONFIG_PATH" << EOF
+
+          exporters:
+            otlp/newrelic:
+              endpoint: "${OTLP_ENDPOINT}"
+              headers:
+                api-key: "${LICENSE_KEY}"
+              compression: gzip
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
+
+          service:
+            pipelines:
+          EOF
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RECEIVER_NAME="nrmysql"
+              RESOURCE_NAME="resource/mysql"
+              PIPELINE_SUFFIX=""
+            else
+              RECEIVER_NAME="nrmysql/instance${i}"
+              RESOURCE_NAME="resource/mysql/instance${i}"
+              PIPELINE_SUFFIX="/instance${i}"
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+              metrics${PIPELINE_SUFFIX}:
+                receivers: [${RECEIVER_NAME}]
+                processors: [${RESOURCE_NAME}, batch]
+                exporters: [otlp/newrelic]
+              logs${PIPELINE_SUFFIX}:
+                receivers: [${RECEIVER_NAME}]
+                processors: [${RESOURCE_NAME}, batch]
+                exporters: [otlp/newrelic]
+          EOF
+          done < "$INSTANCES_TSV"
+          fi
 
           cat > "$ENV_FILE" << EOF
           OTELCOL_OPTIONS="--config=${CONFIG_PATH}"
