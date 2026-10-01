@@ -1,0 +1,147 @@
+---
+# Parameters:
+# newrelic_personal_api_key: The newrelic personal api key. It typically starts with NRAK-
+# newrelic_account_id: (optional) The newrelic account id
+# newrelic_region: (optional) The newrelic region. Typically "US".
+# newrelic_cli_path: (optional) The newrelic-cli to use instead of using latest published
+# validate_output: (optional) A string that must appear in stdout for this test to pass.
+#
+# Test scenario:
+#   1. Run a standard first install (no preserve flag) — installs agent and creates config.
+#   2. Append a custom marker key to newrelic-infra.yml.
+#   3. Re-run install WITH NEW_RELIC_PRESERVE_INFRA_CONFIG=true.
+#   4. Assert the agent is still installed and reporting.
+#   5. Assert the custom marker key survived the second install unchanged.
+
+- fail:
+    msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
+  when: newrelic_personal_api_key is not defined
+
+- name: set api key
+  win_environment:
+    state: present
+    name: NEW_RELIC_API_KEY
+    value: "{{ newrelic_personal_api_key }}"
+    level: machine
+  no_log: true
+
+- name: Prepare environment variables for newrelic-cli execution
+  set_fact:
+    env_vars: ""
+
+- name: Adding newrelic accountId environment variable
+  set_fact:
+    env_vars: "{{ env_vars }}; $env:NEW_RELIC_ACCOUNT_ID=\"{{ newrelic_account_id }}\""
+  when: newrelic_account_id is defined
+
+- name: Adding newrelic region environment variable
+  set_fact:
+    env_vars: "{{ env_vars }}; $env:NEW_RELIC_REGION=\"{{ newrelic_region|upper }}\""
+  when: newrelic_region is defined
+
+- name: Prepare newrelic-cli option
+  set_fact:
+    newrelic_cli_option: "-y --debug"
+
+- name: Adding optional local recipes
+  set_fact:
+    newrelic_cli_option: "{{ newrelic_cli_option }} --localRecipes C:\\Temp\\open-install-library-recipes\\"
+  when: local_recipes is defined and (local_recipes | bool == True)
+
+- name: Copy all recipes
+  ansible.windows.win_copy:
+    src: "{{ role_path }}/../../../../../../../recipes"
+    dest: "C:\\Temp\\open-install-library-recipes"
+    mode: '0777'
+  when: local_recipes is defined and (local_recipes | bool == True)
+
+- name: Copy newrelic-cli if local exists
+  ansible.windows.win_copy:
+    src: "{{ newrelic_cli_path }}"
+    dest: '%SystemRoot%\System32\newrelic.exe'
+    mode: '0777'
+  when: newrelic_cli_path is defined
+
+- name: Install newrelic cli
+  win_shell: |
+    [Net.ServicePointManager]::SecurityProtocol = 'tls13, tls12, tls'
+    (New-Object System.Net.WebClient).DownloadFile("https://download.newrelic.com/install/newrelic-cli/scripts/install.ps1", "$env:TEMP\install.ps1");
+    & $env:TEMP\install.ps1 | Out-Null;
+  when: newrelic_cli_path is not defined
+
+# ── Step 1: First standard install (no preserve flag) ───────────────────────
+- name: Run first install (standard, no preserve flag)
+  win_shell: |
+    {{ env_vars }}; newrelic install {{ newrelic_cli_option }};
+  register: first_install_output
+  ignore_errors: true
+
+- fail:
+    msg: "First install failed: {{ first_install_output.stdout }}"
+  when: first_install_output is failed
+
+# ── Step 2: Add custom marker to config ─────────────────────────────────────
+- name: Append custom marker key to newrelic-infra.yml
+  win_shell: |
+    $configPath = "C:\Program Files\New Relic\newrelic-infra\newrelic-infra.yml"
+    Add-Content -Path $configPath -Value "custom_preserve_test_key: preserved_value_12345" -Encoding utf8
+    Add-Content -Path $configPath -Value "custom_preserve_section:" -Encoding utf8
+    Add-Content -Path $configPath -Value "  nested_key: nested_value_67890" -Encoding utf8
+
+- name: Capture config state before second install
+  win_shell: "Get-Content 'C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml'"
+  register: config_before
+
+- name: Display config before second install
+  debug:
+    msg: "Config before second install:\n{{ config_before.stdout }}"
+
+# ── Step 3: Second install WITH preserve flag ────────────────────────────────
+- name: Run second install with NEW_RELIC_PRESERVE_INFRA_CONFIG=true
+  win_shell: |
+    {{ env_vars }}; $env:NEW_RELIC_PRESERVE_INFRA_CONFIG="true"; newrelic install {{ newrelic_cli_option }};
+  register: second_install_output
+  ignore_errors: true
+
+- fail:
+    msg: "Second install (with preserve flag) failed: {{ second_install_output.stdout }}"
+  when: second_install_output is failed
+
+- fail:
+    msg: "Failed to validate that {{ validate_output }} is in output: {{ second_install_output.stdout }}"
+  when: validate_output is defined and second_install_output.stdout is not search(validate_output)
+
+# ── Step 4: Verify custom marker survived ───────────────────────────────────
+- name: Read config after second install
+  win_shell: "Get-Content 'C:\\Program Files\\New Relic\\newrelic-infra\\newrelic-infra.yml'"
+  register: config_after
+
+- name: Display config after second install
+  debug:
+    msg: "Config after second install:\n{{ config_after.stdout }}"
+
+- name: Assert custom_preserve_test_key survived the second install
+  win_shell: |
+    $content = Get-Content "C:\Program Files\New Relic\newrelic-infra\newrelic-infra.yml" -Raw
+    if ($content -notmatch 'custom_preserve_test_key: preserved_value_12345') {
+      Write-Error "FAIL: custom_preserve_test_key was not preserved"
+      exit 1
+    }
+    Write-Host "PASS: custom_preserve_test_key preserved"
+  register: assert_key
+  failed_when: assert_key.rc != 0
+
+- name: Assert custom_preserve_section survived the second install
+  win_shell: |
+    $content = Get-Content "C:\Program Files\New Relic\newrelic-infra\newrelic-infra.yml" -Raw
+    if ($content -notmatch 'custom_preserve_section:') {
+      Write-Error "FAIL: custom_preserve_section was not preserved"
+      exit 1
+    }
+    Write-Host "PASS: custom_preserve_section preserved"
+  register: assert_section
+  failed_when: assert_section.rc != 0
+
+- name: Config preservation verified successfully
+  debug:
+    msg: "SUCCESS: Custom configuration keys were preserved through the second install."

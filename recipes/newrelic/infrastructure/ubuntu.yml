@@ -31,7 +31,7 @@ validationNrql: "SELECT count(*) from SystemSample where hostname like '{{.HOSTN
 validationUrl: "http://localhost:18003/v1/status/entity"
 
 preInstall:
-  requireAtDiscovery: |  
+  requireAtDiscovery: |
       IS_DOCKER_CONTAINER_CGROUP=$(grep 'docker\|lxc' /proc/1/cgroup | wc -l)
       if [ $IS_DOCKER_CONTAINER_CGROUP -gt 0 ] ; then
         echo "docker detected with cgroup, unsupported" >&2
@@ -52,6 +52,10 @@ preInstall:
         exit 131
       fi
       exit 0
+
+inputVars:
+  - name: NEW_RELIC_PRESERVE_INFRA_CONFIG
+    default: "false"
 
 install:
   version: "3"
@@ -142,6 +146,14 @@ install:
     setup_license:
       cmds:
         - |
+          PRESERVE_CONFIG="{{.NEW_RELIC_PRESERVE_INFRA_CONFIG}}"
+          if [ "$PRESERVE_CONFIG" = "true" ]; then
+            if [ -f /etc/newrelic-infra.yml ]; then
+              echo "Preserving existing configuration file: /etc/newrelic-infra.yml"
+              exit 0
+            fi
+            echo "Warning: No existing configuration found. Writing fresh configuration."
+          fi
           if [ -f /etc/newrelic-infra.yml ]; then
             sed -i "/^staging/d" /etc/newrelic-infra.yml
             sed -i "/^fedramp/d" /etc/newrelic-infra.yml
@@ -154,7 +166,6 @@ install:
           else
             touch /etc/newrelic-infra.yml
           fi
-        - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             echo 'staging: true' >> /etc/newrelic-infra.yml
           fi
@@ -171,6 +182,10 @@ install:
     setup_proxy:
       cmds:
         - |
+          PRESERVE_CONFIG="{{.NEW_RELIC_PRESERVE_INFRA_CONFIG}}"
+          if [ "$PRESERVE_CONFIG" = "true" ] && [ -f /etc/newrelic-infra.yml ]; then
+            exit 0
+          fi
           if [ ! -z "$HTTPS_PROXY" ]; then
             sed -i "/^proxy/d" /etc/newrelic-infra.yml
             echo 'proxy: {{.HTTPS_PROXY}}' >> /etc/newrelic-infra.yml
