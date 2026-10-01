@@ -1,0 +1,185 @@
+name: Docs drift check (NRDOT database recipes)
+
+# Compares the NRDOT database recipes' grants, rendered collector configs and doc links
+# against github.com/newrelic/docs-website. On drift it opens (or updates) a single PR:
+#   - with ANTHROPIC_API_KEY set, Claude updates the recipes and the PR carries the fix
+#   - without it, a draft PR carries the report only; a human pushes the fix to its branch
+# See .github/docs-drift/README.md.
+
+on:
+  schedule:
+    - cron: '30 3 * * 1-5' # 03:30 UTC, weekdays
+  workflow_dispatch:
+    inputs:
+      product:
+        description: 'Limit to one product from manifest.yml (blank = all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: docs-drift
+  cancel-in-progress: false
+
+env:
+  DRIFT_BRANCH: docs-drift/nrdot
+  HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout docs-website (OpenTelemetry pages only)
+        uses: actions/checkout@v4
+        with:
+          repository: newrelic/docs-website
+          path: .docs-website
+          sparse-checkout: src/content/docs/opentelemetry
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install checker dependencies
+        run: pip install -r .github/docs-drift/requirements.txt
+
+      - name: Check recipes against docs
+        id: drift
+        run: |
+          python .github/docs-drift/drift_check.py \
+            --docs-repo .docs-website \
+            ${{ inputs.product && format('--product {0}', inputs.product) || '' }} \
+            --report "$RUNNER_TEMP/drift-before.md" \
+            --json "$RUNNER_TEMP/drift-before.json"
+          cat "$RUNNER_TEMP/drift-before.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update recipes with Claude
+        if: steps.drift.outputs.drift_count != '0' && env.HAS_ANTHROPIC_KEY == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --model ${{ vars.DOCS_DRIFT_MODEL || 'claude-opus-5-5' }}
+            --max-turns 60
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(python .github/docs-drift/drift_check.py:*),Bash(git diff:*)"
+          prompt: |
+            The NRDOT database recipes in this repo have drifted from the public New Relic
+            docs. The drift report is at ${{ runner.temp }}/drift-before.md (JSON with exact
+            doc/recipe values at ${{ runner.temp }}/drift-before.json). The docs source is
+            checked out at .docs-website/ - each finding names the doc page and section.
+
+            Update the recipes so they match the docs. Rules:
+            - Only edit files under the recipe_dir of the affected products in
+              .github/docs-drift/manifest.yml (recipe .yml files and their README.md).
+            - Keep each -debian/-rhel pair identical apart from OS-specific lines.
+            - Grants: add what the docs add. Remove a recipe-only grant only when the docs
+              clearly replaced it (e.g. one view renamed to another); otherwise keep it.
+            - Configs: the recipe renders its config from bash heredocs/echo lines. Change
+              the shared receiver/processor blocks, keeping the single-instance,
+              multi-instance (YAML anchor) and host+database (preset 2) code paths
+              consistent with each other.
+            - Doc links: point them at the new page and an anchor that exists there.
+            - Where the docs themselves look wrong or contradict each other (for example a
+              value that differs between the single-instance page and the multi-receiver
+              page, or a package/file name that doesn't exist), do NOT change the recipe
+              to match - leave it and explain.
+            - Don't edit .github/docs-drift/accepted-deviations.yml.
+
+            After editing, re-run:
+              python .github/docs-drift/drift_check.py --docs-repo .docs-website --report /tmp/after.md --json /tmp/after.json
+            and iterate until only findings you deliberately left remain.
+
+            Finally write docs-drift-notes.md in the repo root: a short list of what you
+            changed and why, then every finding you left unfixed with the reason. Do not
+            commit.
+
+      - name: Re-check after fixes
+        if: steps.drift.outputs.drift_count != '0'
+        id: after
+        run: |
+          python .github/docs-drift/drift_check.py \
+            --docs-repo .docs-website \
+            ${{ inputs.product && format('--product {0}', inputs.product) || '' }} \
+            --report "$RUNNER_TEMP/drift-after.md" \
+            --json "$RUNNER_TEMP/drift-after.json"
+
+      - name: Compose PR body
+        if: steps.drift.outputs.drift_count != '0'
+        run: |
+          {
+            echo "Automated check of the NRDOT database recipes against [newrelic/docs-website@${DOCS_SHA:0:10}](https://github.com/newrelic/docs-website/tree/${DOCS_SHA})."
+            echo
+            if [ -f docs-drift-notes.md ]; then
+              echo "## Changes made"
+              echo
+              cat docs-drift-notes.md
+              echo
+              echo "## Remaining drift after changes (${AFTER_COUNT} finding(s))"
+              echo
+              echo "<details><summary>Report</summary>"
+              echo
+              sed '1d' "$RUNNER_TEMP/drift-after.md"
+              echo
+              echo "</details>"
+              echo
+            fi
+            echo "## Drift found before changes (${BEFORE_COUNT} finding(s))"
+            echo
+            echo "<details><summary>Report</summary>"
+            echo
+            sed '1d' "$RUNNER_TEMP/drift-before.md"
+            echo
+            echo "</details>"
+            echo
+            echo "---"
+            if [ ! -f docs-drift-notes.md ]; then
+              echo "**Draft - no recipe changes yet.** Push fixes to the \`${DRIFT_BRANCH}\` branch, then mark this PR ready for review."
+              echo
+            fi
+            echo "Review every change against the linked doc section before merging - docs can be wrong too."
+            echo "Intentional differences go in \`.github/docs-drift/accepted-deviations.yml\`."
+            echo "Delete \`.github/docs-drift/drift-report.md\` from this branch before merging."
+          } > "$RUNNER_TEMP/pr-body.md"
+          rm -f docs-drift-notes.md
+          # A PR needs a changed file even when nothing fixed the recipes yet.
+          cp "$RUNNER_TEMP/drift-after.md" .github/docs-drift/drift-report.md
+        env:
+          DOCS_SHA: ${{ steps.drift.outputs.docs_commit }}
+          BEFORE_COUNT: ${{ steps.drift.outputs.drift_count }}
+          AFTER_COUNT: ${{ steps.after.outputs.drift_count }}
+
+      - name: Check for recipe changes
+        if: steps.drift.outputs.drift_count != '0'
+        id: changes
+        run: |
+          if git status --porcelain -- recipes | grep -q .; then
+            echo "recipes_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "recipes_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Draft when it only carries the report (no API key, or nothing Claude could safely
+      # fix); ready for review when it carries recipe changes.
+      - name: Open or update PR
+        if: steps.drift.outputs.drift_count != '0'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # PRs opened with the default GITHUB_TOKEN don't trigger other workflows (e.g.
+          # validation.yml). Set DOCS_DRIFT_TOKEN (GitHub App / fine-grained PAT) for that.
+          token: ${{ secrets.DOCS_DRIFT_TOKEN || secrets.GITHUB_TOKEN }}
+          branch: ${{ env.DRIFT_BRANCH }}
+          delete-branch: true
+          add-paths: |
+            recipes/**
+            .github/docs-drift/drift-report.md
+          commit-message: 'fix(nrdot): sync database recipes with New Relic docs'
+          title: 'fix(nrdot): sync database recipes with New Relic docs'
+          body-path: ${{ runner.temp }}/pr-body.md
+          labels: docs-drift
+          draft: ${{ steps.changes.outputs.recipes_changed != 'true' }}
