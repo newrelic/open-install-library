@@ -106,7 +106,7 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 ```
 (swap `rhel.yml` on a RHEL/CentOS host)
 
-Prompts: `NRDOT configuration` (1=Standard, 2=Full-feature), instances file path,
+Prompts: `NRDOT configuration` (1=Basic, 2=Advanced), instances file path,
 secrets file path.
 
 ---
@@ -169,7 +169,7 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 ```
 (swap `rds-rhel.yml` on a RHEL/CentOS host)
 
-Prompts: `NRDOT configuration` (1=Standard, 2=Full-feature), instances file path,
+Prompts: `NRDOT configuration` (1=Basic, 2=Advanced), instances file path,
 secrets file path, and a CA certificate path (leave blank unless your RDS instances
 enforce TLS with a custom CA bundle — this one prompt applies to every instance in the
 run, since they're assumed to share the same regional CA bundle).

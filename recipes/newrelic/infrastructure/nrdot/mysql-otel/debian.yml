@@ -81,7 +81,7 @@ preInstall:
 
 inputVars:
   - name: NR_CLI_MYSQL_CONFIG_PRESET
-    prompt: "NRDOT configuration - 1) Standard  2) Full-feature: "
+    prompt: "NRDOT configuration - 1) Basic  2) Advanced: "
     default: "1"
   - name: NR_CLI_MYSQL_INSTANCES_FILE
     prompt: "Path to the MySQL instances YAML file: "
@@ -429,14 +429,11 @@ install:
           # events) are identical for every instance. Captured once here and echoed per
           # instance below instead of relying on the collector's YAML loader to support
           # merge-key aliases via a fragile split.
-          RECEIVER_DEFAULTS=$(cat << 'BLOCK'
+          RECEIVER_COMMON=$(cat << 'BLOCK'
               transport: tcp
               allow_native_passwords: true
-              collection_interval: 10s
+              collection_interval: 15s
               initial_delay: 1s
-              tls:
-                insecure: true
-                insecure_skip_verify: true
               # "procedure" collects EXPLAIN plans for write statements (UPDATE/DELETE/INSERT/REPLACE)
               # without granting DML to the monitoring user, via a SQL SECURITY DEFINER procedure.
               # Falls back to "inline" (default) automatically if the procedure is absent for a schema.
@@ -454,7 +451,7 @@ install:
                 # unless the key is explicitly allow-listed here.
                 allowed_comment_keys: [nr_service_guid]
               top_query_collection:
-                lookback_time: 120
+                lookback_time: 60
                 max_query_sample_count: 5000
                 top_query_count: 200
                 collection_interval: 60s
@@ -466,67 +463,195 @@ install:
                   enabled: true
                 db.server.top_query:
                   enabled: true
+                db.server.query_plan:
+                  enabled: true
+              resource_attributes:
+                db.system.version:
+                  enabled: true
+          BLOCK
+          )
+          RECEIVER_METRICS_BASIC=$(cat << 'BLOCK'
+              metrics:
+                mysql.query.count:
+                  enabled: true
+                mysql.query.slow.count:
+                  enabled: true
+                mysql.commands:
+                  enabled: true
+                mysql.innodb.data_file.io:
+                  enabled: true
+          BLOCK
+          )
+          RECEIVER_METRICS_ADVANCED=$(cat << 'BLOCK'
+              metrics:
+                # ---- Default-enabled metrics (kept explicit for visibility) ----
+                mysql.buffer_pool.data_pages:
+                  enabled: true
+                mysql.buffer_pool.limit:
+                  enabled: true
+                mysql.buffer_pool.operations:
+                  enabled: true
+                mysql.buffer_pool.page_flushes:
+                  enabled: true
+                mysql.buffer_pool.pages:
+                  enabled: true
+                mysql.buffer_pool.usage:
+                  enabled: true
+                mysql.double_writes:
+                  enabled: true
+                mysql.handlers:
+                  enabled: true
+                mysql.index.io.wait.count:
+                  enabled: true
+                mysql.index.io.wait.time:
+                  enabled: true
+                mysql.locks:
+                  enabled: true
+                mysql.log_operations:
+                  enabled: true
+                mysql.mysqlx_connections:
+                  enabled: true
+                mysql.opened_resources:
+                  enabled: true
+                mysql.operations:
+                  enabled: true
+                mysql.page_operations:
+                  enabled: true
+                mysql.prepared_statements:
+                  enabled: true
+                mysql.row_locks:
+                  enabled: true
+                mysql.row_operations:
+                  enabled: true
+                mysql.sorts:
+                  enabled: true
+                mysql.table.io.wait.count:
+                  enabled: true
+                mysql.table.io.wait.time:
+                  enabled: true
+                mysql.threads:
+                  enabled: true
+                mysql.tmp_resources:
+                  enabled: true
+                mysql.uptime:
+                  enabled: true
+                # ---- Disabled-by-default metrics (explicitly turned on for Advanced) ----
+                mysql.client.network.io:
+                  enabled: true
+                mysql.commands:
+                  enabled: true
+                mysql.connection.count:
+                  enabled: true
+                mysql.connection.errors:
+                  enabled: true
+                mysql.file.open:
+                  enabled: true
+                mysql.innodb.data_file.io:
+                  enabled: true
+                mysql.innodb.history_list.length:
+                  enabled: true
+                mysql.innodb.operation.pending:
+                  enabled: true
+                mysql.innodb.redo_log.checkpoint.age:
+                  enabled: true
+                mysql.innodb.redo_log.lsn.checkpoint:
+                  enabled: true
+                mysql.innodb.redo_log.lsn.current:
+                  enabled: true
+                mysql.innodb.row_lock.wait.count:
+                  enabled: true
+                mysql.innodb.row_lock.wait.duration.avg:
+                  enabled: true
+                mysql.innodb.row_lock.wait.duration.max:
+                  enabled: true
+                mysql.innodb.transaction.active.count:
+                  enabled: true
+                mysql.innodb.transaction.active.duration.max:
+                  enabled: true
+                mysql.joins:
+                  enabled: true
+                mysql.max_used_connections:
+                  enabled: true
+                mysql.myisam.key_cache.block.unused:
+                  enabled: true
+                mysql.myisam.key_cache.block.used.max:
+                  enabled: true
+                mysql.myisam.key_cache.disk.operation:
+                  enabled: true
+                mysql.myisam.key_cache.request:
+                  enabled: true
+                mysql.mysqlx_worker_threads:
+                  enabled: true
+                mysql.page_size:
+                  enabled: true
+                mysql.query.client.count:
+                  enabled: true
+                mysql.query.count:
+                  enabled: true
+                mysql.query.execution.time:
+                  enabled: true
+                mysql.query.slow.count:
+                  enabled: true
+                mysql.replica.sql_delay:
+                  enabled: true
+                mysql.replica.temp_table.open:
+                  enabled: true
+                mysql.replica.thread.running:
+                  enabled: true
+                mysql.replica.time_behind_source:
+                  enabled: true
+                mysql.server.healthy:
+                  enabled: true
+                mysql.session.active.count:
+                  enabled: true
+                mysql.statement_event.count:
+                  enabled: true
+                mysql.statement_event.wait.time:
+                  enabled: true
+                mysql.table.average_row_length:
+                  enabled: true
+                mysql.table.lock_wait.read.count:
+                  enabled: true
+                mysql.table.lock_wait.read.time:
+                  enabled: true
+                mysql.table.lock_wait.write.count:
+                  enabled: true
+                mysql.table.lock_wait.write.time:
+                  enabled: true
+                mysql.table.open:
+                  enabled: true
+                mysql.table.rows:
+                  enabled: true
+                mysql.table.size:
+                  enabled: true
+                mysql.table_open_cache:
+                  enabled: true
+                mysql.thread.slow_launch:
+                  enabled: true
           BLOCK
           )
 
+          # Preset 1 = Basic (essential metrics), 2 = Advanced (full metric list).
           if [ "$PRESET" = "2" ]; then
-            cat > "$CONFIG_PATH" << 'EOF'
+            RECEIVER_METRICS="$RECEIVER_METRICS_ADVANCED"
+          else
+            RECEIVER_METRICS="$RECEIVER_METRICS_BASIC"
+          fi
+          RECEIVER_DEFAULTS=$(printf '%s\n%s' "$RECEIVER_COMMON" "$RECEIVER_METRICS")
+
+          if [ "$PRESET" = "2" ]; then
+          cat > "$CONFIG_PATH" << 'EOF'
           extensions:
             health_check:
-
           receivers:
             otlp:
               protocols:
                 grpc:
                 http:
 
-            host_metrics:
-              collection_interval: 30s
-              scrapers:
-                cpu:
-                  metrics:
-                    system.cpu.time:
-                      enabled: false
-                    system.cpu.utilization:
-                      enabled: true
-                load:
-                memory:
-                  metrics:
-                    system.memory.utilization:
-                      enabled: true
-                paging:
-                  metrics:
-                    system.paging.utilization:
-                      enabled: false
-                    system.paging.faults:
-                      enabled: false
-                filesystem:
-                  metrics:
-                    system.filesystem.utilization:
-                      enabled: true
-                disk:
-                  metrics:
-                    system.disk.merged:
-                      enabled: false
-                    system.disk.pending_operations:
-                      enabled: false
-                    system.disk.weighted_io_time:
-                      enabled: false
-                network:
-                  metrics:
-                    system.network.connections:
-                      enabled: false
-                # Uncomment to enable process metrics, which can be noisy but valuable.
-                # processes:
-                # process:
-                #  metrics:
-                #    process.cpu.utilization:
-                #      enabled: true
-                #    process.cpu.time:
-                #      enabled: false
           EOF
           else
-            cat > "$CONFIG_PATH" << 'EOF'
+          cat > "$CONFIG_PATH" << 'EOF'
           receivers:
           EOF
           fi
@@ -534,7 +659,8 @@ install:
           # Count survivors up front to decide whether the anchor/merge-key pattern
           # documented at https://docs.newrelic.com/docs/opentelemetry/database/mysql/multi-receiver/
           # applies - a single instance has nothing to merge into, so it gets a plain
-          # receiver, matching that doc's naming convention (nrmysql/instanceN).
+          # receiver named nrmysql; with several, each follows that doc's naming
+          # convention (nrmysql/instanceN).
           SURVIVOR_COUNT=0
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
@@ -565,7 +691,7 @@ install:
 
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               {
-                echo "  nrmysql/instance${i}:"
+                echo "  nrmysql:"
                 echo "    endpoint: \"${HOST}:${PORT}\""
                 echo "    username: \"${LOGIN_NAME}\""
                 echo "    password: \"${NR_PASSWORD}\""
@@ -598,105 +724,19 @@ install:
             exit 1
           fi
 
+          # Advanced adds the documented otlp/traces + resource_detection layout;
+          # Basic keeps the plain nrmysql pipelines with per-instance server.address/port.
           if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << 'EOF'
+          cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
-            metrics_transform:
-              transforms:
-                - include: system.cpu.utilization
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [state]
-                      aggregation_type: mean
-                - include: system.paging.operations
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [direction]
-                      aggregation_type: sum
-
-            filter/exclude_cpu_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
-
-            filter/exclude_memory_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
-
-            filter/exclude_memory_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
-
-            filter/exclude_filesystem_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
-
-            filter/exclude_filesystem_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_filesystem_inodes_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_system_disk:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
-
-            filter/exclude_network:
-              metrics:
-                datapoint:
-                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
-
-            attributes/exclude_system_paging:
-              include:
-                match_type: strict
-                metric_names:
-                  - system.paging.operations
-              actions:
-                - key: type
-                  action: delete
-
-            cumulative_to_delta:
-
             transform:
               trace_statements:
                 - context: span
                   statements:
                     - truncate_all(span.attributes, 4095)
                     - truncate_all(resource.attributes, 4095)
-
-            transform/host:
-              metric_statements:
-                - context: metric
-                  statements:
-                    - set(metric.description, "")
-                    - set(metric.unit, "")
-
             batch:
-
             resource_detection:
               detectors: ["system"]
               system:
@@ -704,24 +744,97 @@ install:
                 resource_attributes:
                   host.id:
                     enabled: true
-
             resource_detection/cloud:
               detectors: ["gcp", "ec2", "azure"]
               timeout: 2s
               override: true
-
             resource_detection/env:
               detectors: ["env"]
               timeout: 2s
               override: true
           EOF
+
+          cat >> "$CONFIG_PATH" << EOF
+
+          exporters:
+            otlp/newrelic:
+              endpoint: "${OTLP_ENDPOINT}"
+              headers:
+                api-key: "${LICENSE_KEY}"
+              compression: gzip
+              sending_queue:
+                enabled: true
+                sizer: bytes
+                queue_size: 100_000_000
+                num_consumers: 10
+                batch:
+                  sizer: bytes
+                  max_size: 1_000_000
+                  min_size: 0
+                  flush_timeout: 5s
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
+
+          service:
+            pipelines:
+          EOF
+
+          i=0
+          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RECEIVER_NAME="nrmysql"
+              PIPELINE_SUFFIX=""
+            else
+              RECEIVER_NAME="nrmysql/instance${i}"
+              PIPELINE_SUFFIX="-instance${i}"
+            fi
+            cat >> "$CONFIG_PATH" << EOF
+              metrics/mysql${PIPELINE_SUFFIX}:
+                receivers: [${RECEIVER_NAME}]
+                processors:
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - batch
+                exporters: [otlp/newrelic]
+              logs/mysql${PIPELINE_SUFFIX}:
+                receivers: [${RECEIVER_NAME}]
+                processors:
+                  - resource_detection
+                  - resource_detection/cloud
+                  - resource_detection/env
+                  - batch
+                exporters: [otlp/newrelic]
+          EOF
+          done < "$INSTANCES_TSV"
+
+          cat >> "$CONFIG_PATH" << 'EOF'
+              traces:
+                receivers: [otlp]
+                processors: [transform, resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlp/newrelic]
+              metrics:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlp/newrelic]
+              logs:
+                receivers: [otlp]
+                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+                exporters: [otlp/newrelic]
+          EOF
           else
-            cat >> "$CONFIG_PATH" << 'EOF'
+          cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
             batch:
           EOF
-          fi
 
           # Static server.address/server.port per instance, reusing the same HOST/PORT
           # already set on that instance's receiver `endpoint` field above -- nrmysql
@@ -733,9 +846,14 @@ install:
             if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
               continue
             fi
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RESOURCE_NAME="resource/mysql"
+            else
+              RESOURCE_NAME="resource/mysql/instance${i}"
+            fi
             cat >> "$CONFIG_PATH" << EOF
 
-            resource/mysql/instance${i}:
+            ${RESOURCE_NAME}:
               attributes:
                 - key: server.address
                   value: "${HOST}"
@@ -761,43 +879,8 @@ install:
                 max_elapsed_time: 300s
 
           service:
-          EOF
-
-          if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << 'EOF'
-            telemetry:
-              metrics:
-                level: none
-
-            extensions: [health_check]
-
-            pipelines:
-              metrics/host:
-                receivers: [host_metrics]
-                processors:
-                  - metrics_transform
-                  - filter/exclude_cpu_utilization
-                  - filter/exclude_memory_utilization
-                  - filter/exclude_memory_usage
-                  - filter/exclude_filesystem_utilization
-                  - filter/exclude_filesystem_usage
-                  - filter/exclude_filesystem_inodes_usage
-                  - filter/exclude_system_disk
-                  - filter/exclude_network
-                  - attributes/exclude_system_paging
-                  - transform/host
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - cumulative_to_delta
-                  - batch
-                exporters: [otlp/newrelic]
-          EOF
-          else
-            cat >> "$CONFIG_PATH" << 'EOF'
             pipelines:
           EOF
-          fi
 
           i=0
           while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
@@ -805,60 +888,26 @@ install:
             if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
               continue
             fi
-            if [ "$PRESET" = "2" ]; then
-              cat >> "$CONFIG_PATH" << EOF
-              metrics/mysql/instance${i}:
-                receivers: [nrmysql/instance${i}]
-                processors:
-                  - resource/mysql/instance${i}
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - batch
-                exporters: [otlp/newrelic]
-
-              logs/mysql/instance${i}:
-                receivers: [nrmysql/instance${i}]
-                processors:
-                  - resource/mysql/instance${i}
-                  - resource_detection
-                  - resource_detection/cloud
-                  - resource_detection/env
-                  - batch
-                exporters: [otlp/newrelic]
-          EOF
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RECEIVER_NAME="nrmysql"
+              RESOURCE_NAME="resource/mysql"
+              PIPELINE_SUFFIX=""
             else
-              cat >> "$CONFIG_PATH" << EOF
-              metrics/instance${i}:
-                receivers: [nrmysql/instance${i}]
-                processors: [resource/mysql/instance${i}, batch]
-                exporters: [otlp/newrelic]
-              logs/instance${i}:
-                receivers: [nrmysql/instance${i}]
-                processors: [resource/mysql/instance${i}, batch]
-                exporters: [otlp/newrelic]
-          EOF
+              RECEIVER_NAME="nrmysql/instance${i}"
+              RESOURCE_NAME="resource/mysql/instance${i}"
+              PIPELINE_SUFFIX="/instance${i}"
             fi
-          done < "$INSTANCES_TSV"
-
-          if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << 'EOF'
-
-              traces:
-                receivers: [otlp]
-                processors: [transform, resource_detection, resource_detection/cloud, resource_detection/env, batch]
+            cat >> "$CONFIG_PATH" << EOF
+              metrics${PIPELINE_SUFFIX}:
+                receivers: [${RECEIVER_NAME}]
+                processors: [${RESOURCE_NAME}, batch]
                 exporters: [otlp/newrelic]
-
-              metrics:
-                receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
-                exporters: [otlp/newrelic]
-
-              logs:
-                receivers: [otlp]
-                processors: [resource_detection, resource_detection/cloud, resource_detection/env, batch]
+              logs${PIPELINE_SUFFIX}:
+                receivers: [${RECEIVER_NAME}]
+                processors: [${RESOURCE_NAME}, batch]
                 exporters: [otlp/newrelic]
           EOF
+          done < "$INSTANCES_TSV"
           fi
 
           cat > "$ENV_FILE" << EOF

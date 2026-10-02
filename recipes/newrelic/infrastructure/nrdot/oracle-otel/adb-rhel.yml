@@ -485,6 +485,8 @@ install:
                 "GRANT SELECT ON SYS.V_\$SESSION_EVENT TO ${LOGIN_NAME};" \
                 "GRANT SELECT ON SYS.DBA_PROCEDURES TO ${LOGIN_NAME};" \
                 "GRANT SELECT ON SYS.DBA_OBJECTS TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$PROCESS TO ${LOGIN_NAME};" \
+                "GRANT SELECT ON SYS.V_\$TRANSACTION TO ${LOGIN_NAME};" \
                 "EXIT;" | sqlplus -S /nolog 2>&1)
 
               SQLPLUS_STATUS=$?
@@ -553,10 +555,10 @@ install:
           }
 
           case "$REGION" in
-            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net" ;;
-            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net" ;;
-            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net" ;;
-            *)       OTLP_ENDPOINT="https://otlp.nr-data.net" ;;
+            staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
+            EU)      OTLP_ENDPOINT="https://otlp.eu01.nr-data.net:4317" ;;
+            JP)      OTLP_ENDPOINT="https://otlp.jp.nr-data.net:4317" ;;
+            *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
           # Built with one echo per line (not a heredoc): a heredoc whose closing
@@ -572,6 +574,10 @@ install:
             echo "        enabled: true"
             echo "      db.server.session.wait_sample:"
             echo "        enabled: true"
+            echo "      db.server.top_procedure:"
+            echo "        enabled: true"
+            echo "      db.server.query_plan:"
+            echo "        enabled: true"
             echo "    top_query_collection:"
             echo "      max_query_sample_count: 1000"
             echo "      top_query_count: 200"
@@ -584,6 +590,10 @@ install:
             echo "        - nr_service_guid"
             echo "    session_wait_event_collection:"
             echo "      max_rows_per_query: 100"
+            echo "    top_procedure_collection:"
+            echo "      max_procedure_sample_count: 1000"
+            echo "      top_procedure_count: 250"
+            echo "      collection_interval: 60s"
             echo "    metrics:"
             echo "      oracledb.cpu_time:"
             echo "        enabled: true"
@@ -679,6 +689,9 @@ install:
             echo "        enabled: true"
             echo "      oracledb.parallel_operations_downgraded_to_serial:"
             echo "        enabled: true"
+            echo "    resource_attributes:"
+            echo "      oracle.db.edition:"
+            echo "        enabled: true"
           } )
 
           INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
@@ -703,6 +716,7 @@ install:
           echo "receivers:" > "$CONFIG_PATH"
 
           IS_FIRST_SURVIVOR=1
+          RECEIVER_LIST=""
           i=0
           while [ "$i" -lt "$INSTANCE_COUNT" ]; do
             i=$((i + 1))
@@ -729,20 +743,23 @@ install:
             ENC_WALLET_DIR=$(urlencode "$WALLET_DIR")
             DATASOURCE="oracle://${ENC_USER}:${ENC_PASSWORD}@${HOST}:${PORT}/${SERVICE_NAME}?SSL=enable&SSL%20Verify=true&WALLET=${ENC_WALLET_DIR}"
 
+            RECEIVER_NAME="nroracledb/adb${i}"
             if [ "$MONITORED_COUNT" -eq 1 ]; then
-              echo "  nroracledb/adb${i}:" >> "$CONFIG_PATH"
+              echo "  ${RECEIVER_NAME}:" >> "$CONFIG_PATH"
               echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
               echo "$RECEIVER_DEFAULTS" >> "$CONFIG_PATH"
             elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
-              echo "  nroracledb/adb${i}: &nroracledb-adb-common" >> "$CONFIG_PATH"
+              echo "  ${RECEIVER_NAME}: &nroracledb-adb-common" >> "$CONFIG_PATH"
               echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
               echo "$RECEIVER_DEFAULTS" >> "$CONFIG_PATH"
               IS_FIRST_SURVIVOR=0
             else
-              echo "  nroracledb/adb${i}:" >> "$CONFIG_PATH"
+              echo "  ${RECEIVER_NAME}:" >> "$CONFIG_PATH"
               echo "    <<: *nroracledb-adb-common" >> "$CONFIG_PATH"
               echo "    datasource: \"${DATASOURCE}\"" >> "$CONFIG_PATH"
             fi
+
+            RECEIVER_LIST="${RECEIVER_LIST}${RECEIVER_LIST:+, }${RECEIVER_NAME}"
           done
 
           {
@@ -751,25 +768,10 @@ install:
             echo "  batch:"
           } >> "$CONFIG_PATH"
 
-          i=0
-          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then continue; fi
-            LINE=$(sed -n "${i}p" "$INSTANCES_TSV")
-            HOST=$(printf '%s' "$LINE" | cut -f1)
-            {
-              echo "  resource/add_event_name/${i}:"
-              echo "    attributes:"
-              echo "      - key: host.address"
-              echo "        value: \"${HOST}\""
-              echo "        action: upsert"
-            } >> "$CONFIG_PATH"
-          done
-
           {
             echo ""
             echo "exporters:"
-            echo "  otlphttp/newrelic:"
+            echo "  otlp/newrelic:"
             echo "    endpoint: \"${OTLP_ENDPOINT}\""
             echo "    headers:"
             echo "      api-key: \"${LICENSE_KEY}\""
@@ -787,21 +789,16 @@ install:
             echo "  pipelines:"
           } >> "$CONFIG_PATH"
 
-          i=0
-          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then continue; fi
-            {
-              echo "    metrics/oracledb/${i}:"
-              echo "      receivers: [nroracledb/adb${i}]"
-              echo "      processors: [resource/add_event_name/${i}, batch]"
-              echo "      exporters: [otlphttp/newrelic]"
-              echo "    logs/oracledb/${i}:"
-              echo "      receivers: [nroracledb/adb${i}]"
-              echo "      processors: [resource/add_event_name/${i}, batch]"
-              echo "      exporters: [otlphttp/newrelic]"
-            } >> "$CONFIG_PATH"
-          done
+          {
+            echo "    metrics/oracledb:"
+            echo "      receivers: [${RECEIVER_LIST}]"
+            echo "      processors: [batch]"
+            echo "      exporters: [otlp/newrelic]"
+            echo "    logs/oracledb:"
+            echo "      receivers: [${RECEIVER_LIST}]"
+            echo "      processors: [batch]"
+            echo "      exporters: [otlp/newrelic]"
+          } >> "$CONFIG_PATH"
 
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"

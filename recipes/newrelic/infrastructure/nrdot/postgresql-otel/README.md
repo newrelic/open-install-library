@@ -115,7 +115,7 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 ```
 (swap `rhel.yml` on a RHEL/CentOS host)
 
-Prompts: `NRDOT configuration` (1=Standard, 2=Full-feature), instances file path,
+Prompts: `NRDOT configuration` (1=Basic, 2=Advanced), instances file path,
 secrets file path, and a **PREVIEW** opt-in for write-statement query plans — see
 "EXPLAIN helper (preview, opt-in)" in Notes below before deciding whether to enable it.
 
@@ -180,7 +180,7 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 ```
 (swap `rds-rhel.yml` on a RHEL/CentOS host)
 
-Prompts: `NRDOT configuration` (1=Standard, 2=Full-feature), instances file path,
+Prompts: `NRDOT configuration` (1=Basic, 2=Advanced), instances file path,
 secrets file path, and a **PREVIEW** opt-in for write-statement query plans — see
 "EXPLAIN helper (preview, opt-in)" in Notes below before deciding whether to enable it.
 
