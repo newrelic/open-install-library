@@ -1,10 +1,9 @@
 # Visit our schema definition for additional information on this file format.
 # https://github.com/newrelic/open-install-library/blob/main/docs/recipe-spec/recipe-spec.md#schema-definition
-# WORK IN PROGRESS - not for use.
 
 name: nrdot-collector-oracle
 displayName: NRDOT Oracle Database (Oracle Linux)
-description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector on Oracle Linux (OCI) self-hosted environments
+description: New Relic install recipe for Oracle Database monitoring via NRDOT Collector on Oracle Linux (OCI) self-hosted environments, one or more instances
 repository: https://github.com/newrelic/nrdot-collector-releases
 
 installTargets:
@@ -31,39 +30,60 @@ preInstall:
   discoveryMode:
     - targeted
   info: |
-    To capture data from Oracle Database, we need to create/authorize a monitoring
-    identity (a database user). Since no SYS password is collected, this is done via
-    SSH into the Oracle Database host and OS-authenticated SYSDBA access (sudo su -
-    oracle -c 'sqlplus / as sysdba'). Connect to this host with SSH agent forwarding
-    (ssh -A) so the forwarded key can be reused to reach the Database host, and make
-    sure the SSH user can run 'sudo su - oracle' without a password prompt.
+    To capture data from one or more Oracle Database hosts, we need to
+    create/authorize a monitoring identity (a database user) on each. Since no SYS
+    password is collected, this is done via SSH into each Oracle Database host and
+    OS-authenticated SYSDBA access (sudo su - oracle -c 'sqlplus / as sysdba'). Connect
+    to this host with SSH agent forwarding (ssh -A) so the forwarded key can be reused
+    to reach every Database host, and make sure the SSH user for each one can run
+    'sudo su - oracle' without a password prompt.
+
+    You will be asked for two files:
+
+      1. An instances file (YAML) listing every Oracle Database host to monitor, in the
+         order you want them numbered (instance 1, 2, 3, ...). `pdb_name` is only
+         required when `container_type` is 2 (PDB):
+
+           instances:
+             - host: dbhost1.example.com
+               port: 1521
+               ssh_user: opc
+               container_type: 1
+               pdb_name:
+               service: ORCLCDB
+               login_name: newrelic
+             - host: dbhost2.example.com
+               port: 1521
+               ssh_user: opc
+               container_type: 2
+               pdb_name: ORCLPDB1
+               service: ORCLPDB1
+               login_name: newrelic
+
+      2. A secrets file (KEY=VALUE per line), optional. Unlike other NRDOT database
+         recipes, no admin password is needed here at all - the one-time grant step
+         authenticates entirely via SSH + OS-level SYSDBA access. This file only lets
+         you pin a specific monitoring password per instance instead of letting the
+         recipe auto-generate one:
+
+           NR_CLI_ORACLE_LOGIN_PASSWORD_1=<optional fixed password for instance 1>
+
+         Leave the secrets file path blank (or point it at a file that doesn't exist)
+         if you don't need to pin any passwords - every instance will auto-generate its
+         own.
+
+    Any instance that fails its version check or user setup is skipped (with a reason)
+    rather than aborting the whole install - the rest are still configured.
 
 inputVars:
-  - name: NR_CLI_ORACLE_CONTAINER_TYPE
-    prompt: "Oracle container type - 1) CDB (monitor all PDBs)  2) PDB (single PDB): "
-    default: "1"
-  - name: NR_CLI_ORACLE_PDB_NAME
-    prompt: "PDB name (mode 2 only; leave blank for CDB mode): "
   - name: NR_CLI_ORACLE_CONFIG_PRESET
-    prompt: "NRDOT configuration - 1) Database only  2) Host + Database: "
+    prompt: "NRDOT configuration - 1) Basic  2) Advanced: "
     default: "1"
-  - name: NR_CLI_ORACLE_HOST
-    prompt: "Oracle Database host (e.g. localhost): "
-    default: "localhost"
-  - name: NR_CLI_ORACLE_PORT
-    prompt: "Oracle listener port: "
-    default: "1521"
-  - name: NR_CLI_ORACLE_SSH_USER
-    prompt: "SSH user for the Oracle Database host (used once to create the monitoring user and grant privileges): "
-    default: "opc"
-  - name: NR_CLI_ORACLE_LOGIN_NAME
-    prompt: "Monitoring username (CDB mode creates it as c##<name>): "
-    default: "newrelic"
-  - name: NR_CLI_ORACLE_LOGIN_PASSWORD
-    prompt: "Password for the monitoring login (leave blank to auto-generate a random password): "
-    secret: true
-  - name: NR_CLI_ORACLE_SERVICE_NAME
-    prompt: "CDB or PDB service name for the collector connection: "
+  - name: NR_CLI_ORACLE_INSTANCES_FILE
+    prompt: "Path to the Oracle instances YAML file: "
+  - name: NR_CLI_ORACLE_SECRETS_FILE
+    prompt: "Path to an optional secrets file for password overrides (leave blank if none): "
+    default: ""
 
 validationNrql: "SELECT count(*) FROM Metric WHERE metricName LIKE 'oracledb.%' AND instrumentation.provider = 'opentelemetry' SINCE 10 minutes ago"
 
@@ -101,36 +121,9 @@ install:
             echo "systemd is required for the nrdot-collector service configuration." >&2
             exit 131
           fi
-
-    assert_container_type_inputs:
-      cmds:
         - |
-          CONTAINER_TYPE="{{.NR_CLI_ORACLE_CONTAINER_TYPE}}"
-          PDB_NAME="{{.NR_CLI_ORACLE_PDB_NAME}}"
-
-          case "$CONTAINER_TYPE" in
-            1) ;;
-            2)
-              if [ -z "$PDB_NAME" ]; then
-                echo "NR_CLI_ORACLE_PDB_NAME is required when NR_CLI_ORACLE_CONTAINER_TYPE is 2 (PDB)." >&2
-                exit 1
-              fi
-              ;;
-            *)
-              echo "NR_CLI_ORACLE_CONTAINER_TYPE must be 1 (CDB) or 2 (PDB)." >&2
-              exit 1
-              ;;
-          esac
-
-    assert_oracle_version:
-      cmds:
-        - |
-          HOST="{{.NR_CLI_ORACLE_HOST}}"
-          SSH_USER="{{.NR_CLI_ORACLE_SSH_USER}}"
-
           if [ -z "${SSH_AUTH_SOCK:-}" ]; then
             SSH_AUTH_SOCK=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1)
-            export SSH_AUTH_SOCK
           fi
           if [ -z "${SSH_AUTH_SOCK:-}" ]; then
             echo "SSH agent socket not found." >&2
@@ -138,27 +131,128 @@ install:
             exit 131
           fi
 
-          VERSION_OUTPUT=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "${SSH_USER}@${HOST}" \
-            "printf 'SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON\nSELECT version FROM v\$instance;\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'")
+    parse_instances:
+      cmds:
+        - |
+          INSTANCES_FILE="{{.NR_CLI_ORACLE_INSTANCES_FILE}}"
+          SECRETS_FILE="{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-oracle-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-skip.tmp"
 
-          if [ -z "$VERSION_OUTPUT" ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|error"; then
-            echo "Failed to connect to Oracle Database via SSH to check its version:" >&2
-            echo "$VERSION_OUTPUT" >&2
-            echo "Please verify:" >&2
-            echo "  - SSH access is available: ssh ${SSH_USER}@${HOST}" >&2
-            echo "  - The SSH user can run 'sudo su - oracle' without a password prompt" >&2
-            echo "  - The Oracle listener is running on the Database host" >&2
-            exit 1
+          rm -f "$INSTANCES_TSV" "$SKIP_FILE"
+
+          if [ ! -f "$INSTANCES_FILE" ]; then
+            echo "Instances file not found: $INSTANCES_FILE" >&2
+            exit 131
           fi
 
-          MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '^[0-9]+' | head -1)
-
-          if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
-            echo "Oracle Database version ${MAJOR_VERSION:-unknown} is not supported. Oracle Database 19c or later is required." >&2
-            exit 1
+          # Unlike other NRDOT database recipes, the secrets file here is optional -
+          # there is no required admin password (the grant step authenticates via SSH +
+          # OS-level SYSDBA), only an optional per-instance monitoring password override.
+          if [ -n "$SECRETS_FILE" ] && [ -f "$SECRETS_FILE" ]; then
+            SECRETS_PERMS=$(stat -c '%a' "$SECRETS_FILE" 2>/dev/null || stat -f '%Lp' "$SECRETS_FILE" 2>/dev/null)
+            if [ -n "$SECRETS_PERMS" ]; then
+              GROUP_OTHER_BITS=$(printf '%s' "$SECRETS_PERMS" | tail -c 2)
+              if [ "$GROUP_OTHER_BITS" != "00" ]; then
+                echo "$SECRETS_FILE is readable by group/other (permissions: $SECRETS_PERMS) - refusing to proceed." >&2
+                echo "Run: chmod 600 $SECRETS_FILE" >&2
+                exit 131
+              fi
+            fi
+            # Parse KEY=VALUE pairs without executing the file as shell script
+            # (unlike sourcing, which would run any shell syntax in it with this
+            # recipe's root privileges).
+            while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+              case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+              printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+              export "$SECRET_KEY=$SECRET_VALUE"
+            done < "$SECRETS_FILE"
           fi
 
-          echo "Oracle Database major version ${MAJOR_VERSION} detected - supported."
+          # Parses the fixed 7-key-per-item shape documented in preInstall.info
+          # (host, port, ssh_user, container_type, pdb_name, service, login_name) - not
+          # a general-purpose YAML parser.
+          awk '
+            /^[[:space:]]*-[[:space:]]*host:/ {
+              if (have) { print host "|" port "|" ssh_user "|" container_type "|" pdb_name "|" service "|" login_name }
+              host=$0; sub(/^[[:space:]]*-[[:space:]]*host:[[:space:]]*/, "", host)
+              port=""; ssh_user=""; container_type=""; pdb_name=""; service=""; login_name=""; have=1; next
+            }
+            /^[[:space:]]*port:/ { port=$0; sub(/^[[:space:]]*port:[[:space:]]*/, "", port); next }
+            /^[[:space:]]*ssh_user:/ { ssh_user=$0; sub(/^[[:space:]]*ssh_user:[[:space:]]*/, "", ssh_user); next }
+            /^[[:space:]]*container_type:/ { container_type=$0; sub(/^[[:space:]]*container_type:[[:space:]]*/, "", container_type); next }
+            /^[[:space:]]*pdb_name:/ { pdb_name=$0; sub(/^[[:space:]]*pdb_name:[[:space:]]*/, "", pdb_name); next }
+            /^[[:space:]]*service:/ { service=$0; sub(/^[[:space:]]*service:[[:space:]]*/, "", service); next }
+            /^[[:space:]]*login_name:/ { login_name=$0; sub(/^[[:space:]]*login_name:[[:space:]]*/, "", login_name); next }
+            END { if (have) { print host "|" port "|" ssh_user "|" container_type "|" pdb_name "|" service "|" login_name } }
+          ' "$INSTANCES_FILE" > "$INSTANCES_TSV"
+
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          if [ "$INSTANCE_COUNT" -eq 0 ]; then
+            echo "No instances found in $INSTANCES_FILE" >&2
+            exit 131
+          fi
+          echo "Found $INSTANCE_COUNT Oracle instance(s) in $INSTANCES_FILE"
+
+          i=0
+          while IFS='|' read -r ENTRY_HOST ENTRY_PORT ENTRY_SSH_USER ENTRY_CONTAINER_TYPE ENTRY_PDB_NAME ENTRY_SERVICE ENTRY_LOGIN_NAME; do
+            i=$((i + 1))
+            case "$ENTRY_CONTAINER_TYPE" in
+              1) ;;
+              2)
+                if [ -z "$ENTRY_PDB_NAME" ]; then
+                  echo "${i}: pdb_name is required when container_type is 2 (PDB)" >> "$SKIP_FILE"
+                  echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: pdb_name is required when container_type is 2 (PDB)" >&2
+                fi
+                ;;
+              *)
+                echo "${i}: container_type must be 1 (CDB) or 2 (PDB)" >> "$SKIP_FILE"
+                echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: container_type must be 1 (CDB) or 2 (PDB)" >&2
+                ;;
+            esac
+            if [ -z "$ENTRY_SSH_USER" ]; then
+              echo "${i}: ssh_user is required in instances file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${ENTRY_HOST}) SKIPPED: ssh_user is required in instances file" >&2
+            fi
+          done < "$INSTANCES_TSV"
+
+    assert_oracle_version:
+      cmds:
+        - |
+          INSTANCES_TSV="/tmp/nr-oracle-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-skip.tmp"
+
+          if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+            SSH_AUTH_SOCK=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1)
+            export SSH_AUTH_SOCK
+          fi
+
+          i=0
+          while IFS='|' read -r HOST PORT SSH_USER CONTAINER_TYPE PDB_NAME SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            VERSION_OUTPUT=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "${SSH_USER}@${HOST}" \
+              "printf 'SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TRIMSPOOL ON\nSELECT version FROM v\$instance;\nEXIT;\n' | sudo su - oracle -c 'sqlplus -S / as sysdba'")
+
+            if [ -z "$VERSION_OUTPUT" ] || echo "$VERSION_OUTPUT" | grep -qi "ORA-\|error"; then
+              echo "${i}: failed to connect via SSH to check version - $(echo "$VERSION_OUTPUT" | tr '\n' ' ' | sed 's/  */ /g')" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: failed to connect via SSH to check its version" >&2
+              continue
+            fi
+
+            MAJOR_VERSION=$(echo "$VERSION_OUTPUT" | grep -oE '^[0-9]+' | head -1)
+
+            if [ -z "$MAJOR_VERSION" ] || [ "$MAJOR_VERSION" -lt 19 ]; then
+              echo "${i}: unsupported Oracle Database version ${MAJOR_VERSION:-unknown} (19c or later required)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: unsupported Oracle Database version ${MAJOR_VERSION:-unknown}" >&2
+              continue
+            fi
+
+            echo "Instance ${i} (${HOST}): Oracle Database major version ${MAJOR_VERSION} detected - supported."
+          done < "$INSTANCES_TSV"
 
     install_nrdot:
       cmds:
@@ -217,119 +311,145 @@ install:
     configure_database_user:
       cmds:
         - |
-          CONTAINER_TYPE="{{.NR_CLI_ORACLE_CONTAINER_TYPE}}"
-          PDB_NAME="{{.NR_CLI_ORACLE_PDB_NAME}}"
-          LOGIN_NAME="{{.NR_CLI_ORACLE_LOGIN_NAME}}"
-          HOST="{{.NR_CLI_ORACLE_HOST}}"
-          SSH_USER="{{.NR_CLI_ORACLE_SSH_USER}}"
-          PW_FILE="/tmp/nr-oracle-newrelic-pw.tmp"
-          USER_FILE="/tmp/nr-oracle-db-user.tmp"
-          NR_SUCCESS=""
-          trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
+          SECRETS_FILE="{{.NR_CLI_ORACLE_SECRETS_FILE}}"
+          INSTANCES_TSV="/tmp/nr-oracle-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-skip.tmp"
+
+          if [ -n "$SECRETS_FILE" ] && [ -f "$SECRETS_FILE" ]; then
+            # Parse KEY=VALUE pairs without executing the file as shell script
+            # (unlike sourcing, which would run any shell syntax in it with this
+            # recipe's root privileges) - permissions already validated in
+            # parse_instances.
+            while IFS='=' read -r SECRET_KEY SECRET_VALUE; do
+              case "$SECRET_KEY" in ''|'#'*) continue ;; esac
+              printf '%s' "$SECRET_KEY" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+              export "$SECRET_KEY=$SECRET_VALUE"
+            done < "$SECRETS_FILE"
+          fi
 
           if [ -z "${SSH_AUTH_SOCK:-}" ]; then
             SSH_AUTH_SOCK=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1)
             export SSH_AUTH_SOCK
           fi
-          if [ -z "${SSH_AUTH_SOCK:-}" ]; then
-            echo "SSH agent socket not found." >&2
-            echo "Please connect to this host using SSH agent forwarding: ssh -A <user>@<this-host-ip>" >&2
-            exit 131
-          fi
 
-          if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-            echo "Invalid monitoring username: $LOGIN_NAME" >&2
-            echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-            exit 131
-          fi
+          INSTANCE_COUNT=$(wc -l < "$INSTANCES_TSV" | tr -d ' ')
+          i=0
+          while [ "$i" -lt "$INSTANCE_COUNT" ]; do
+            i=$((i + 1))
+            LINE=$(sed -n "${i}p" "$INSTANCES_TSV")
+            HOST=$(printf '%s' "$LINE" | cut -d'|' -f1)
+            PORT=$(printf '%s' "$LINE" | cut -d'|' -f2)
+            SSH_USER=$(printf '%s' "$LINE" | cut -d'|' -f3)
+            CONTAINER_TYPE=$(printf '%s' "$LINE" | cut -d'|' -f4)
+            PDB_NAME=$(printf '%s' "$LINE" | cut -d'|' -f5)
+            LOGIN_NAME=$(printf '%s' "$LINE" | cut -d'|' -f7)
 
-          if [ "$CONTAINER_TYPE" = "1" ]; then
-            DB_USER="c##${LOGIN_NAME}"
-            SET_CONTAINER="ALTER SESSION SET CONTAINER = CDB\$ROOT;"
-          else
-            DB_USER="${LOGIN_NAME}"
-            SET_CONTAINER="ALTER SESSION SET CONTAINER = \"${PDB_NAME}\";"
-          fi
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
 
-          DB_USER_UPPER=$(echo "$DB_USER" | tr '[:lower:]' '[:upper:]')
+            if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+              echo "${i}: invalid monitoring username '${LOGIN_NAME}' in instances file" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: invalid monitoring username '${LOGIN_NAME}'" >&2
+              continue
+            fi
 
-          EXISTS_SQL=$(cat << SQLEOF
+            eval "LOGIN_PASSWORD_OVERRIDE=\"\${NR_CLI_ORACLE_LOGIN_PASSWORD_${i}:-}\""
+
+            PW_FILE="/tmp/nr-oracle-newrelic-pw-${i}.tmp"
+            USER_FILE="/tmp/nr-oracle-db-user-${i}.tmp"
+
+            (
+              NR_SUCCESS=""
+              trap 'if [ "$NR_SUCCESS" != "1" ]; then rm -f "$PW_FILE" "$USER_FILE"; fi' EXIT
+
+              if [ "$CONTAINER_TYPE" = "1" ]; then
+                DB_USER="c##${LOGIN_NAME}"
+                SET_CONTAINER="ALTER SESSION SET CONTAINER = CDB\$ROOT;"
+              else
+                DB_USER="${LOGIN_NAME}"
+                SET_CONTAINER="ALTER SESSION SET CONTAINER = \"${PDB_NAME}\";"
+              fi
+
+              DB_USER_UPPER=$(echo "$DB_USER" | tr '[:lower:]' '[:upper:]')
+
+              EXISTS_SQL=$(cat << SQLEOF
           SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
           ${SET_CONTAINER}
           SELECT username FROM dba_users WHERE username='${DB_USER_UPPER}';
           EXIT;
           SQLEOF
-          )
-          EXISTS_RESULT=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "${SSH_USER}@${HOST}" \
-            "sudo su - oracle -c 'sqlplus -S / as sysdba'" <<< "$EXISTS_SQL") || true
+              )
+              EXISTS_RESULT=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "${SSH_USER}@${HOST}" \
+                "sudo su - oracle -c 'sqlplus -S / as sysdba'" <<< "$EXISTS_SQL") || true
 
-          if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${DB_USER_UPPER}[[:space:]]*$"; then
-            echo ""
-            echo "Monitoring user $DB_USER already exists."
-            echo ""
-            echo "What would you like to do?"
-            echo "  1. Use the existing user $DB_USER (you will be asked for the password)"
-            echo "  2. Create a new username"
-            echo ""
-            read -rp "Enter your choice (1 or 2): " USER_CHOICE
-
-            case "$USER_CHOICE" in
-              1)
+              if echo "$EXISTS_RESULT" | grep -qi "^[[:space:]]*${DB_USER_UPPER}[[:space:]]*$"; then
                 echo ""
-                stty -echo
-                read -rp "Enter the existing password for $DB_USER: " NR_PASSWORD
-                stty echo
+                echo "Instance ${i} (${HOST}): monitoring user $DB_USER already exists."
                 echo ""
-                printf '%s' "$NR_PASSWORD" > "$PW_FILE"
-                chmod 600 "$PW_FILE"
-                echo "$DB_USER" > "$USER_FILE"
-                chmod 600 "$USER_FILE"
-                echo "Using existing user: $DB_USER"
-                NR_SUCCESS=1
-                exit 0
-                ;;
-              2)
+                echo "What would you like to do?"
+                echo "  1. Use the existing user $DB_USER (you will be asked for the password)"
+                echo "  2. Create a new username"
                 echo ""
-                echo "  Note: Just type the name without the c## prefix in CDB mode; it will be added automatically."
-                read -rp "Enter new monitoring username: " NEW_USERNAME
-                LOGIN_NAME="$NEW_USERNAME"
-                if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
-                  echo "Invalid monitoring username: $LOGIN_NAME" >&2
-                  echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
-                  exit 131
-                fi
-                if [ "$CONTAINER_TYPE" = "1" ]; then
-                  DB_USER="c##${LOGIN_NAME}"
-                else
-                  DB_USER="${LOGIN_NAME}"
-                fi
-                ;;
-              *)
-                echo "Invalid choice. Please re-run and enter 1 or 2." >&2
-                exit 131
-                ;;
-            esac
-          fi
+                read -rp "Enter your choice (1 or 2): " USER_CHOICE
 
-          echo "$DB_USER" > "$USER_FILE"
-          chmod 600 "$USER_FILE"
+                case "$USER_CHOICE" in
+                  1)
+                    echo ""
+                    stty -echo
+                    read -rp "Enter the existing password for $DB_USER: " NR_PASSWORD
+                    stty echo
+                    echo ""
+                    printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+                    chmod 600 "$PW_FILE"
+                    echo "$DB_USER" > "$USER_FILE"
+                    chmod 600 "$USER_FILE"
+                    echo "Using existing user: $DB_USER"
+                    NR_SUCCESS=1
+                    exit 0
+                    ;;
+                  2)
+                    echo ""
+                    echo "  Note: Just type the name without the c## prefix in CDB mode; it will be added automatically."
+                    read -rp "Enter new monitoring username for instance ${i}: " NEW_USERNAME
+                    LOGIN_NAME="$NEW_USERNAME"
+                    if ! printf '%s' "$LOGIN_NAME" | grep -qE '^[A-Za-z][A-Za-z0-9_]*$'; then
+                      echo "Invalid monitoring username: $LOGIN_NAME" >&2
+                      echo "Usernames must start with a letter and contain only letters, digits, and underscores." >&2
+                      exit 1
+                    fi
+                    if [ "$CONTAINER_TYPE" = "1" ]; then
+                      DB_USER="c##${LOGIN_NAME}"
+                    else
+                      DB_USER="${LOGIN_NAME}"
+                    fi
+                    ;;
+                  *)
+                    echo "Invalid choice. Please re-run and enter 1 or 2." >&2
+                    exit 1
+                    ;;
+                esac
+              fi
 
-          if [ -z "{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}" ]; then
-            _FIRST=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 1)
-            _UPPER=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 2)
-            _LOWER=$(cat /dev/urandom | tr -dc 'a-z' | head -c 6)
-            _DIGITS=$(cat /dev/urandom | tr -dc '0-9' | head -c 4)
-            _REST=$(printf '%s' "${_UPPER}${_LOWER}${_DIGITS}#_" | fold -w1 | shuf | tr -d '\n')
-            NR_PASSWORD="${_FIRST}${_REST}"
-            unset _FIRST _UPPER _LOWER _DIGITS _REST
-          else
-            NR_PASSWORD="{{.NR_CLI_ORACLE_LOGIN_PASSWORD}}"
-          fi
-          printf '%s' "$NR_PASSWORD" > "$PW_FILE"
-          chmod 600 "$PW_FILE"
+              echo "$DB_USER" > "$USER_FILE"
+              chmod 600 "$USER_FILE"
 
-          if [ "$CONTAINER_TYPE" = "1" ]; then
-            GRANT_SQL=$(cat << SQLEOF
+              if [ -z "$LOGIN_PASSWORD_OVERRIDE" ]; then
+                _FIRST=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 1)
+                _UPPER=$(cat /dev/urandom | tr -dc 'A-Z' | head -c 2)
+                _LOWER=$(cat /dev/urandom | tr -dc 'a-z' | head -c 6)
+                _DIGITS=$(cat /dev/urandom | tr -dc '0-9' | head -c 4)
+                _REST=$(printf '%s' "${_UPPER}${_LOWER}${_DIGITS}#_" | fold -w1 | shuf | tr -d '\n')
+                NR_PASSWORD="${_FIRST}${_REST}"
+                unset _FIRST _UPPER _LOWER _DIGITS _REST
+              else
+                NR_PASSWORD="$LOGIN_PASSWORD_OVERRIDE"
+              fi
+              printf '%s' "$NR_PASSWORD" > "$PW_FILE"
+              chmod 600 "$PW_FILE"
+
+              if [ "$CONTAINER_TYPE" = "1" ]; then
+                GRANT_SQL=$(cat << SQLEOF
           WHENEVER SQLERROR EXIT SQL.SQLCODE
           ALTER SESSION SET CONTAINER = CDB\$ROOT;
           CREATE USER ${DB_USER} IDENTIFIED BY "${NR_PASSWORD}" CONTAINER=ALL;
@@ -351,20 +471,28 @@ install:
           GRANT SELECT ON V_\$PARAMETER TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON CDB_TABLESPACE_USAGE_METRICS TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON CDB_TABLESPACES TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON CDB_DATA_FILES TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON DBA_DATA_FILES TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON DBA_FREE_SPACE TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON DBA_RECYCLEBIN TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON V_\$SQL TO ${DB_USER} CONTAINER=ALL;
-          GRANT SELECT ON V_\$SQL_PLAN TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$SQL_PLAN_STATISTICS_ALL TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON V_\$LOCK TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON V_\$SESSION_EVENT TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON DBA_PROCEDURES TO ${DB_USER} CONTAINER=ALL;
           GRANT SELECT ON DBA_OBJECTS TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON CDB_PROCEDURES TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON CDB_OBJECTS TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$PDBS TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON CDB_SERVICES TO ${DB_USER} CONTAINER=ALL;
+          -- Optional: only needed to collect ASM diskgroup/disk metrics.
+          GRANT SELECT ON V_\$ASM_DISKGROUP_STAT TO ${DB_USER} CONTAINER=ALL;
+          GRANT SELECT ON V_\$ASM_DISK_STAT TO ${DB_USER} CONTAINER=ALL;
           EXIT;
           SQLEOF
-            )
-          else
-            GRANT_SQL=$(cat << SQLEOF
+                )
+              else
+                GRANT_SQL=$(cat << SQLEOF
           WHENEVER SQLERROR EXIT SQL.SQLCODE
           ALTER SESSION SET CONTAINER = "${PDB_NAME}";
           CREATE USER ${DB_USER} IDENTIFIED BY "${NR_PASSWORD}";
@@ -387,59 +515,64 @@ install:
           GRANT SELECT ON DBA_FREE_SPACE TO ${DB_USER};
           GRANT SELECT ON DBA_RECYCLEBIN TO ${DB_USER};
           GRANT SELECT ON V_\$SQL TO ${DB_USER};
-          GRANT SELECT ON V_\$SQL_PLAN TO ${DB_USER};
+          GRANT SELECT ON V_\$SQL_PLAN_STATISTICS_ALL TO ${DB_USER};
           GRANT SELECT ON V_\$LOCK TO ${DB_USER};
           GRANT SELECT ON V_\$SESSION_EVENT TO ${DB_USER};
           GRANT SELECT ON DBA_PROCEDURES TO ${DB_USER};
           GRANT SELECT ON DBA_OBJECTS TO ${DB_USER};
           GRANT SELECT ON V_\$PDBS TO ${DB_USER};
+          GRANT SELECT ON CDB_SERVICES TO ${DB_USER};
+          -- Optional: only needed to collect ASM diskgroup/disk metrics.
+          GRANT SELECT ON V_\$ASM_DISKGROUP_STAT TO ${DB_USER};
+          GRANT SELECT ON V_\$ASM_DISK_STAT TO ${DB_USER};
           EXIT;
           SQLEOF
+                )
+              fi
+
+              RESULT=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "${SSH_USER}@${HOST}" \
+                "sudo su - oracle -c 'sqlplus -S / as sysdba'" <<< "$GRANT_SQL" 2>&1)
+
+              SSH_STATUS=$?
+              REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
+              redact() {
+                if [ -n "$REDACT_PATTERN" ]; then
+                  sed "s/${REDACT_PATTERN}/[REDACTED]/g"
+                else
+                  cat
+                fi
+              }
+
+              if [ $SSH_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
+                echo "SQL script failed:" >&2
+                echo "$RESULT" | redact >&2
+                exit 1
+              fi
+              echo "$RESULT" | redact
+
+              NR_SUCCESS=1
+              echo "Oracle Database monitoring identity configured successfully for instance ${i}: $DB_USER"
             )
-          fi
-
-          RESULT=$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "${SSH_USER}@${HOST}" \
-            "sudo su - oracle -c 'sqlplus -S / as sysdba'" <<< "$GRANT_SQL" 2>&1)
-
-          SSH_STATUS=$?
-          REDACT_PATTERN=$(printf '%s' "$NR_PASSWORD" | sed -e 's/[.[\*^$/]/\\&/g')
-          redact() {
-            if [ -n "$REDACT_PATTERN" ]; then
-              sed "s/${REDACT_PATTERN}/[REDACTED]/g"
-            else
-              cat
+            SUBSHELL_STATUS=$?
+            if [ $SUBSHELL_STATUS -ne 0 ]; then
+              echo "${i}: monitoring user setup failed (see errors above)" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring user setup failed" >&2
             fi
-          }
-
-          if [ $SSH_STATUS -ne 0 ] || echo "$RESULT" | grep -qi "ORA-"; then
-            echo "SQL script failed:" >&2
-            echo "$RESULT" | redact >&2
-            exit 1
-          fi
-          echo "$RESULT" | redact
-
-          NR_SUCCESS=1
-          echo "Oracle Database monitoring identity configured successfully: $DB_USER"
+          done
 
     create_collector_config:
       cmds:
         - |
           PRESET="{{.NR_CLI_ORACLE_CONFIG_PRESET}}"
-          HOST="{{.NR_CLI_ORACLE_HOST}}"
-          PORT="{{.NR_CLI_ORACLE_PORT}}"
-          SERVICE_NAME="{{.NR_CLI_ORACLE_SERVICE_NAME}}"
           REGION="{{.NEW_RELIC_REGION}}"
           LICENSE_KEY="{{.NEW_RELIC_LICENSE_KEY}}"
           CONFIG_DIR="/etc/nrdot-collector"
           CONFIG_PATH="${CONFIG_DIR}/oracle-config.yaml"
           ENV_FILE="${CONFIG_DIR}/nrdot-collector.conf"
-          PW_FILE="/tmp/nr-oracle-newrelic-pw.tmp"
-          USER_FILE="/tmp/nr-oracle-db-user.tmp"
+          INSTANCES_TSV="/tmp/nr-oracle-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-skip.tmp"
 
           mkdir -p "$CONFIG_DIR"
-
-          NR_PASSWORD=$(cat "$PW_FILE")
-          DB_USERNAME=$(cat "$USER_FILE")
 
           case "$REGION" in
             staging) OTLP_ENDPOINT="https://staging-otlp.nr-data.net:4317" ;;
@@ -448,77 +581,23 @@ install:
             *)       OTLP_ENDPOINT="https://otlp.nr-data.net:4317" ;;
           esac
 
-          if [ "$PRESET" = "2" ]; then
-            cat > "$CONFIG_PATH" << EOF
-          extensions:
-            health_check:
-
-          receivers:
-            otlp:
-              protocols:
-                grpc:
-                http:
-
-            hostmetrics:
-              collection_interval: 60s
-              scrapers:
-                cpu:
-                  metrics:
-                    system.cpu.time:
-                      enabled: false
-                    system.cpu.utilization:
-                      enabled: true
-                load:
-                memory:
-                  metrics:
-                    system.memory.utilization:
-                      enabled: true
-                paging:
-                  metrics:
-                    system.paging.utilization:
-                      enabled: false
-                    system.paging.faults:
-                      enabled: false
-                filesystem:
-                  metrics:
-                    system.filesystem.utilization:
-                      enabled: true
-                disk:
-                  metrics:
-                    system.disk.merged:
-                      enabled: false
-                    system.disk.pending_operations:
-                      enabled: false
-                    system.disk.weighted_io_time:
-                      enabled: false
-                network:
-                  metrics:
-                    system.network.connections:
-                      enabled: false
-
-            filelog:
-              include:
-                - /var/log/alternatives.log
-                - /var/log/cloud-init.log
-                - /var/log/auth.log
-                - /var/log/dpkg.log
-                - /var/log/syslog
-                - /var/log/messages
-                - /var/log/secure
-                - /var/log/yum.log
-
-            nroracledb:
-              endpoint: "${HOST}:${PORT}"
-              username: "${DB_USERNAME}"
-              password: "${NR_PASSWORD}"
-              service: "${SERVICE_NAME}"
-              collection_interval: 10s
+          # Shared receiver settings (events/top_query/query_sample/session_wait/metrics/
+          # resource_attributes) are identical for every instance. Captured once here and
+          # echoed per instance below instead of relying on the collector's YAML loader to
+          # support merge-key aliases via a fragile split - endpoint/username/password/
+          # service are the only fields that vary per instance.
+          RECEIVER_COMMON=$(cat << 'BLOCK'
+              collection_interval: 15s
               events:
                 db.server.query_sample:
                   enabled: true
                 db.server.top_query:
                   enabled: true
                 db.server.session.wait_sample:
+                  enabled: true
+                db.server.top_procedure:
+                  enabled: true
+                db.server.query_plan:
                   enabled: true
               top_query_collection:
                 max_query_sample_count: 1000
@@ -532,41 +611,22 @@ install:
                   - nr_service_guid
               session_wait_event_collection:
                 max_rows_per_query: 100
-              metrics:
-          EOF
-          else
-            cat > "$CONFIG_PATH" << EOF
-          receivers:
-            nroracledb:
-              endpoint: "${HOST}:${PORT}"
-              username: "${DB_USERNAME}"
-              password: "${NR_PASSWORD}"
-              service: "${SERVICE_NAME}"
-              collection_interval: 10s
-              events:
-                db.server.query_sample:
-                  enabled: true
-                db.server.top_query:
-                  enabled: true
-                db.server.session.wait_sample:
-                  enabled: true
-              top_query_collection:
-                max_query_sample_count: 1000
-                top_query_count: 200
+              top_procedure_collection:
+                max_procedure_sample_count: 1000
+                top_procedure_count: 250
                 collection_interval: 60s
-                allowed_comment_keys:
-                  - nr_service_guid
-              query_sample_collection:
-                max_rows_per_query: 100
-                allowed_comment_keys:
-                  - nr_service_guid
-              session_wait_event_collection:
-                max_rows_per_query: 100
+          BLOCK
+          )
+          RECEIVER_METRICS_BASIC=$(cat << 'BLOCK'
               metrics:
-          EOF
-          fi
-
-          cat >> "$CONFIG_PATH" << 'EOF'
+                oracledb.buffer_cache.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.consistent_gets:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
                 oracledb.cpu_time:
                   enabled: true
                   attributes:
@@ -575,11 +635,15 @@ install:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.host.cpu.utilization:
+                oracledb.database.wait.utilization:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.executions:
+                oracledb.db_block_gets:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.enqueue_deadlocks:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
@@ -588,7 +652,27 @@ install:
                   attributes:
                     - oracledb.parse.type
                     - oracle.db.pdb
-                oracledb.parse_calls:
+                oracledb.executions:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.hard_parses:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.host.cpu.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.library_cache.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.logical_reads:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.logons:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
@@ -597,43 +681,11 @@ install:
                   attributes:
                     - oracledb.parse.result
                     - oracle.db.pdb
-                oracledb.parse.utilization:
+                oracledb.parse_calls:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.hard_parses:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.logical_reads:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.physical_reads:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.physical_reads_direct:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.physical_writes:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.physical_writes_direct:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.physical_read_io_requests:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.physical_write_io_requests:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.physical_io.cache_writes:
+                oracledb.pga_memory:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
@@ -643,79 +695,15 @@ install:
                     - disk.io.direction
                     - disk.io.block_size
                     - oracle.db.pdb
-                oracledb.physical_io.transferred:
-                  enabled: true
-                  attributes:
-                    - disk.io.direction
-                    - disk.io.type
-                    - oracle.db.pdb
-                oracledb.sqlnet.io.transferred:
-                  enabled: true
-                  attributes:
-                    - network.io.direction
-                    - destination.type
-                    - oracle.db.pdb
-                oracledb.consistent_gets:
+                oracledb.physical_reads:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.db_block_gets:
+                oracledb.physical_writes:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.buffer_cache.utilization:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.library_cache.utilization:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.data_dictionary.hit_ratio:
-                  enabled: true
-                oracledb.shared_pool.utilization:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.pga_memory:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.sga.limit:
-                  enabled: true
-                oracledb.sga.usage:
-                  enabled: true
-                  attributes:
-                    - oracledb.sga.component.name
-                oracledb.database.wait.utilization:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.dml_locks.limit:
-                  enabled: true
-                oracledb.dml_locks.usage:
-                  enabled: true
-                oracledb.enqueue_locks.limit:
-                  enabled: true
-                oracledb.enqueue_locks.usage:
-                  enabled: true
-                oracledb.enqueue_resources.limit:
-                  enabled: true
-                oracledb.enqueue_resources.usage:
-                  enabled: true
-                oracledb.enqueue_deadlocks:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.exchange_deadlocks:
-                  enabled: true
-                  attributes:
-                    - oracle.db.pdb
-                oracledb.processes.limit:
-                  enabled: true
                 oracledb.processes.usage:
-                  enabled: true
-                oracledb.sessions.limit:
                   enabled: true
                 oracledb.sessions.usage:
                   enabled: true
@@ -723,12 +711,29 @@ install:
                     - session_type
                     - session_status
                     - oracle.db.pdb
-                oracledb.logons:
+                oracledb.sga.usage:
+                  enabled: true
+                  attributes:
+                    - oracledb.sga.component.name
+                oracledb.shared_pool.utilization:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.transactions.limit:
+                oracledb.sql_service.response.duration:
                   enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.sqlnet.io.transferred:
+                  enabled: true
+                  attributes:
+                    - network.io.direction
+                    - destination.type
+                    - oracle.db.pdb
+                oracledb.tablespace_size.usage:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracle.db.pdb
                 oracledb.transactions.usage:
                   enabled: true
                 oracledb.user_commits:
@@ -739,23 +744,105 @@ install:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.tablespace_size.limit:
+              # Resource attributes attached to all metrics/logs (all enabled by default)
+              resource_attributes:
+                oracle.db.edition:
+                  enabled: true
+          BLOCK
+          )
+          RECEIVER_METRICS_ADVANCED=$(cat << 'BLOCK'
+              metrics:
+                oracledb.asm.disk.errors:
                   enabled: true
                   attributes:
-                    - tablespace_name
-                    - oracle.db.pdb
-                oracledb.tablespace_size.usage:
+                    - oracledb.asm.disk_group.name
+                    - oracledb.asm.disk.name
+                    - disk.io.direction
+                oracledb.asm.disk_group.capacity:
                   enabled: true
                   attributes:
-                    - tablespace_name
+                    - oracledb.asm.disk_group.name
+                oracledb.asm.disk_group.free:
+                  enabled: true
+                  attributes:
+                    - oracledb.asm.disk_group.name
+                oracledb.asm.disk_group.offline_disks:
+                  enabled: true
+                  attributes:
+                    - oracledb.asm.disk_group.name
+                oracledb.asm.disk_group.usable_free:
+                  enabled: true
+                  attributes:
+                    - oracledb.asm.disk_group.name
+                oracledb.buffer.inspected:
+                  enabled: true
+                  attributes:
+                    - oracledb.buffer.state
+                oracledb.buffer.requests:
+                  enabled: true
+                oracledb.buffer_cache.block.changes:
+                  enabled: true
+                oracledb.buffer_cache.block.changes.rate:
+                  enabled: true
+                  attributes:
                     - oracle.db.pdb
-                oracledb.storage.usage:
+                oracledb.buffer_cache.block.gets:
                   enabled: true
-                oracledb.storage.utilization:
+                oracledb.buffer_cache.utilization:
                   enabled: true
-                oracledb.recycle_bin.limit:
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.call.count:
                   enabled: true
-                oracledb.queries_parallelized:
+                  attributes:
+                    - oracledb.call.type
+                oracledb.call.recursive.cpu.time:
+                  enabled: true
+                oracledb.checkpoint.buffers:
+                  enabled: true
+                oracledb.checkpoint.completed:
+                  enabled: true
+                oracledb.consistent_gets:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.cpu.usage.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.cpu_time:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.cursor.cache.hits:
+                  enabled: true
+                oracledb.cursor.cache.size:
+                  enabled: true
+                oracledb.cursor.cache.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.cursor.open:
+                  enabled: true
+                oracledb.cursor.open.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.data_dictionary.hit_ratio:
+                  enabled: true
+                oracledb.database.cpu.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.database.wait.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.db.time:
+                  enabled: true
+                  attributes:
+                    - oracledb.session.type
+                oracledb.db_block_gets:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
@@ -763,14 +850,116 @@ install:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
+                oracledb.dml_locks.limit:
+                  enabled: true
+                oracledb.dml_locks.usage:
+                  enabled: true
                 oracledb.dml_statements_parallelized:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
-                oracledb.parallel_operations_not_downgraded:
+                oracledb.enqueue.deadlocks.rate:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
+                oracledb.enqueue.operations:
+                  enabled: true
+                  attributes:
+                    - oracledb.enqueue.type
+                oracledb.enqueue.timeouts.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.enqueue_deadlocks:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.enqueue_locks.limit:
+                  enabled: true
+                oracledb.enqueue_locks.usage:
+                  enabled: true
+                oracledb.enqueue_resources.limit:
+                  enabled: true
+                oracledb.enqueue_resources.usage:
+                  enabled: true
+                oracledb.exchange_deadlocks:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.execution.utilization:
+                  enabled: true
+                  attributes:
+                    - oracledb.parse.type
+                    - oracle.db.pdb
+                oracledb.executions:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.executions.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.gc.current_block.time:
+                  enabled: true
+                  attributes:
+                    - network.io.direction
+                oracledb.hard_parses:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.hard_parses.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.host.cpu.usage.rate:
+                  enabled: true
+                oracledb.host.cpu.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.io.requests.rate:
+                  enabled: true
+                oracledb.io.single_block.read.latency:
+                  enabled: true
+                oracledb.io.throughput.rate:
+                  enabled: true
+                oracledb.jvm.memory.committed:
+                  enabled: true
+                oracledb.jvm.memory.live:
+                  enabled: true
+                oracledb.jvm.memory.used:
+                  enabled: true
+                oracledb.library_cache.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.lob.operations:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                oracledb.lock.time:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                    - oracledb.session.type
+                oracledb.logical_reads:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.logical_reads.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.logons:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.logons.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.os.swaps:
+                  enabled: true
                 oracledb.parallel_operations_downgraded_1_to_25_pct:
                   enabled: true
                   attributes:
@@ -791,252 +980,363 @@ install:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
+                oracledb.parallel_operations_not_downgraded:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parse.cpu.time:
+                  enabled: true
+                oracledb.parse.elapsed.time:
+                  enabled: true
+                oracledb.parse.rate:
+                  enabled: true
+                  attributes:
+                    - oracledb.parse.result
+                    - oracle.db.pdb
+                oracledb.parse.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.parse_calls:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.pga.cache.utilization:
+                  enabled: true
+                oracledb.pga_memory:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_io.cache_writes:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_io.requests:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - disk.io.block_size
+                    - oracle.db.pdb
+                oracledb.physical_io.requests.rate:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - oracle.db.pdb
+                oracledb.physical_io.transferred:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - disk.io.type
+                    - oracle.db.pdb
+                oracledb.physical_io.transferred.rate:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - oracle.db.pdb
+                oracledb.physical_operations.rate:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                    - oracle.db.pdb
+                oracledb.physical_read_io_requests:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_reads:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_reads_direct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_write_io_requests:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_writes:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.physical_writes_direct:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.processes.limit:
+                  enabled: true
+                oracledb.processes.usage:
+                  enabled: true
+                oracledb.queries_parallelized:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.recovery.blocks:
+                  enabled: true
+                oracledb.recycle_bin.limit:
+                  enabled: true
+                oracledb.redo.blocks:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                oracledb.redo.operations:
+                  enabled: true
+                  attributes:
+                    - disk.io.direction
+                oracledb.redo.requests:
+                  enabled: true
+                  attributes:
+                    - oracledb.redo.request.type
+                oracledb.redo.retries:
+                  enabled: true
+                  attributes:
+                    - oracledb.redo.retry.type
+                oracledb.redo.size:
+                  enabled: true
+                oracledb.redo.size.rate:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.redo.time:
+                  enabled: true
+                  attributes:
+                    - oracledb.redo.type
                 oracledb.redo_allocation.utilization:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
+                oracledb.scan.count:
+                  enabled: true
+                  attributes:
+                    - oracledb.scan.type
+                    - oracledb.scan.mode
+                oracledb.scan.table.rows:
+                  enabled: true
+                oracledb.session.average:
+                  enabled: true
+                  attributes:
+                    - session_status
+                    - oracle.db.pdb
+                oracledb.session.stored_procedure.memory:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.session.wait.time:
+                  enabled: true
+                  attributes:
+                    - oracledb.session.wait.state
+                    - oracle.db.pdb
+                oracledb.session.waits:
+                  enabled: true
+                  attributes:
+                    - oracledb.session.wait.state
+                    - oracle.db.pdb
+                oracledb.sessions.limit:
+                  enabled: true
+                oracledb.sessions.usage:
+                  enabled: true
+                  attributes:
+                    - session_type
+                    - session_status
+                    - oracle.db.pdb
+                oracledb.sga.limit:
+                  enabled: true
+                oracledb.sga.usage:
+                  enabled: true
+                  attributes:
+                    - oracledb.sga.component.name
+                oracledb.shared_pool.utilization:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.smon.posts:
+                  enabled: true
+                  attributes:
+                    - oracledb.smon.type
+                oracledb.sort.operations:
+                  enabled: true
+                  attributes:
+                    - oracledb.sort.type
                 oracledb.sort.ratio:
                   enabled: true
                   attributes:
                     - oracledb.sort.type
                     - oracle.db.pdb
+                oracledb.sort.rows:
+                  enabled: true
                 oracledb.sql_service.response.duration:
                   enabled: true
                   attributes:
                     - oracle.db.pdb
+                oracledb.sqlnet.io.transferred:
+                  enabled: true
+                  attributes:
+                    - network.io.direction
+                    - destination.type
+                    - oracle.db.pdb
+                oracledb.storage.usage:
+                  enabled: true
+                oracledb.storage.utilization:
+                  enabled: true
+                oracledb.system.cpu.count:
+                  enabled: true
+                oracledb.system.memory.limit:
+                  enabled: true
+                oracledb.system.process.count:
+                  enabled: true
+                oracledb.tablespace.limit:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracle.db.pdb
+                oracledb.tablespace.status:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracledb.tablespace.state
+                    - oracle.db.pdb
+                oracledb.tablespace.utilization:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracle.db.pdb
+                oracledb.tablespace_size.limit:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracle.db.pdb
+                oracledb.tablespace_size.usage:
+                  enabled: true
+                  attributes:
+                    - tablespace_name
+                    - oracle.db.pdb
+                oracledb.transaction.response.time:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.transaction.rollbacks:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.transactions.limit:
+                  enabled: true
+                oracledb.transactions.rate:
+                  enabled: true
+                  attributes:
+                    - oracledb.transaction.type
+                    - oracle.db.pdb
+                oracledb.transactions.usage:
+                  enabled: true
+                oracledb.user_commits:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+                oracledb.user_rollbacks:
+                  enabled: true
+                  attributes:
+                    - oracle.db.pdb
+              # Resource attributes attached to all metrics/logs (all enabled by default)
               resource_attributes:
-                host.name:
+                oracle.db.edition:
                   enabled: true
-                oracle.db.hosting_type:
-                  enabled: true
-                oracle.db.open_mode:
-                  enabled: true
-                oracle.db.role:
-                  enabled: true
-                oracle.db.version:
-                  enabled: true
-                oracledb.instance.name:
-                  enabled: true
-                service.instance.id:
-                  enabled: true
-          EOF
+          BLOCK
+          )
 
+          # Preset 1 = Basic (essential metrics), 2 = Advanced (full metric list).
           if [ "$PRESET" = "2" ]; then
-            cat >> "$CONFIG_PATH" << 'EOF'
-
-          processors:
-            metricstransform:
-              transforms:
-                - include: system.cpu.utilization
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [state]
-                      aggregation_type: mean
-                - include: system.paging.operations
-                  action: update
-                  operations:
-                    - action: aggregate_labels
-                      label_set: [direction]
-                      aggregation_type: sum
-
-            filter/exclude_cpu_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "interrupt"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "nice"'
-                  - 'metric.name == "system.cpu.utilization" and attributes["state"] == "softirq"'
-
-            filter/exclude_memory_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "inactive"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "buffered"'
-                  - 'metric.name == "system.memory.utilization" and attributes["state"] == "slab_reclaimable"'
-
-            filter/exclude_memory_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "slab_unreclaimable"'
-                  - 'metric.name == "system.memory.usage" and attributes["state"] == "inactive"'
-
-            filter/exclude_filesystem_utilization:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.utilization" and attributes["type"] == "squashfs"'
-
-            filter/exclude_filesystem_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_filesystem_inodes_usage:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["type"] == "squashfs"'
-                  - 'metric.name == "system.filesystem.inodes.usage" and attributes["state"] == "reserved"'
-
-            filter/exclude_system_disk:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.disk.operations" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.merged" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.io_time" and IsMatch(attributes["device"], "^loop.*") == true'
-                  - 'metric.name == "system.disk.operation_time" and IsMatch(attributes["device"], "^loop.*") == true'
-
-            filter/exclude_system_paging:
-              metrics:
-                datapoint:
-                  - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
-                  - 'metric.name == "system.paging.operations" and attributes["type"] == "cached"'
-
-            filter/exclude_network:
-              metrics:
-                datapoint:
-                  - 'IsMatch(metric.name, "^system.network.*") == true and attributes["device"] == "lo"'
-
-            attributes/exclude_system_paging:
-              include:
-                match_type: strict
-                metric_names:
-                  - system.paging.operations
-              actions:
-                - key: type
-                  action: delete
-
-            transform/clear_metadata:
-              metric_statements:
-                - context: metric
-                  statements:
-                    - set(metric.description, "")
-                    - set(metric.unit, "")
-
-            transform/host:
-              metric_statements:
-                - context: metric
-                  statements:
-                    - set(metric.description, "")
-                    - set(metric.unit, "")
-
-            transform:
-              trace_statements:
-                - context: span
-                  statements:
-                    - truncate_all(span.attributes, 4095)
-                    - truncate_all(resource.attributes, 4095)
-              log_statements:
-                - context: log
-                  statements:
-                    - truncate_all(log.attributes, 4095)
-                    - truncate_all(resource.attributes, 4095)
-          EOF
-
-            cat >> "$CONFIG_PATH" << EOF
-
-            memory_limiter:
-              check_interval: 1s
-              limit_mib: \${env:NEW_RELIC_MEMORY_LIMIT_MIB:-100}
-
-            batch:
-
-            resource/add_event_name:
-              attributes:
-                - key: host.address
-                  value: "${HOST}"
-                  action: upsert
-
-            resourcedetection:
-              detectors: ["system"]
-              system:
-                hostname_sources: ["os"]
-                resource_attributes:
-                  host.id:
-                    enabled: true
-
-            resourcedetection/db_safe:
-              detectors: ["system"]
-              override: false
-              system:
-                hostname_sources: ["os"]
-                resource_attributes:
-                  host.id:
-                    enabled: true
-
-            resourcedetection/cloud:
-              detectors: ["gcp", "ec2", "azure"]
-              timeout: 2s
-              override: true
-
-            resourcedetection/env:
-              detectors: ["env"]
-              timeout: 2s
-              override: true
-
-          exporters:
-            otlp:
-              endpoint: ${OTLP_ENDPOINT}
-              headers:
-                api-key: ${LICENSE_KEY}
-              compression: gzip
-
-          service:
-            pipelines:
-              metrics/host:
-                receivers: [hostmetrics]
-                processors:
-                  - memory_limiter
-                  - metricstransform
-                  - filter/exclude_cpu_utilization
-                  - filter/exclude_memory_utilization
-                  - filter/exclude_memory_usage
-                  - filter/exclude_filesystem_utilization
-                  - filter/exclude_filesystem_usage
-                  - filter/exclude_filesystem_inodes_usage
-                  - filter/exclude_system_disk
-                  - filter/exclude_network
-                  - attributes/exclude_system_paging
-                  - transform/host
-                  - resourcedetection
-                  - resourcedetection/cloud
-                  - resourcedetection/env
-                  - batch
-                exporters: [otlp]
-              traces:
-                receivers: [otlp]
-                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
-                exporters: [otlp]
-              metrics:
-                receivers: [otlp]
-                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
-                exporters: [otlp]
-              logs:
-                receivers: [otlp]
-                processors: [memory_limiter, transform, resourcedetection, resourcedetection/cloud, resourcedetection/env, batch]
-                exporters: [otlp]
-              metrics/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
-                exporters: [otlp]
-              logs/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
-                exporters: [otlp]
-            extensions: [health_check]
-          EOF
+            RECEIVER_METRICS="$RECEIVER_METRICS_ADVANCED"
           else
-            cat >> "$CONFIG_PATH" << EOF
+            RECEIVER_METRICS="$RECEIVER_METRICS_BASIC"
+          fi
+          RECEIVER_DEFAULTS=$(printf '%s\n%s' "$RECEIVER_COMMON" "$RECEIVER_METRICS")
+
+          cat > "$CONFIG_PATH" << 'EOF'
+          receivers:
+          EOF
+
+          # Count survivors up front to decide whether the anchor/merge-key pattern from
+          # https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/#rds-multi-receiver-config
+          # applies - a single instance has nothing to merge into, so it gets a plain
+          # unsuffixed receiver (nroracledb); with several, each is named nroracledb/<i>.
+          SURVIVOR_COUNT=0
+          i=0
+          while IFS='|' read -r HOST PORT SSH_USER CONTAINER_TYPE PDB_NAME SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+            SURVIVOR_COUNT=$((SURVIVOR_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          MONITORED_COUNT=0
+          IS_FIRST_SURVIVOR=1
+          RECEIVER_LIST=""
+          i=0
+          while IFS='|' read -r HOST PORT SSH_USER CONTAINER_TYPE PDB_NAME SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
+              continue
+            fi
+
+            PW_FILE="/tmp/nr-oracle-newrelic-pw-${i}.tmp"
+            USER_FILE="/tmp/nr-oracle-db-user-${i}.tmp"
+            if [ ! -f "$PW_FILE" ] || [ ! -f "$USER_FILE" ]; then
+              echo "${i}: monitoring credentials missing at config-generation time" >> "$SKIP_FILE"
+              echo "Instance ${i} (${HOST}) SKIPPED: monitoring credentials missing at config-generation time" >&2
+              continue
+            fi
+
+            NR_PASSWORD=$(cat "$PW_FILE")
+            CONFIGURED_LOGIN_NAME=$(cat "$USER_FILE")
+
+            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
+              RECEIVER_NAME="nroracledb"
+              {
+                echo "  ${RECEIVER_NAME}:"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    service: \"${SERVICE_NAME}\""
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+            elif [ "$IS_FIRST_SURVIVOR" -eq 1 ]; then
+              RECEIVER_NAME="nroracledb/${i}"
+              {
+                echo "  ${RECEIVER_NAME}: &nroracledb-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    service: \"${SERVICE_NAME}\""
+                echo "$RECEIVER_DEFAULTS"
+              } >> "$CONFIG_PATH"
+              IS_FIRST_SURVIVOR=0
+            else
+              RECEIVER_NAME="nroracledb/${i}"
+              {
+                echo "  ${RECEIVER_NAME}:"
+                echo "    <<: *nroracledb-common"
+                echo "    endpoint: \"${HOST}:${PORT}\""
+                echo "    username: \"${CONFIGURED_LOGIN_NAME}\""
+                echo "    password: \"${NR_PASSWORD}\""
+                echo "    service: \"${SERVICE_NAME}\""
+              } >> "$CONFIG_PATH"
+            fi
+
+            RECEIVER_LIST="${RECEIVER_LIST}${RECEIVER_LIST:+, }${RECEIVER_NAME}"
+            MONITORED_COUNT=$((MONITORED_COUNT + 1))
+          done < "$INSTANCES_TSV"
+
+          if [ "$MONITORED_COUNT" -eq 0 ]; then
+            echo "No Oracle instance passed its checks - nothing to monitor. Aborting install." >&2
+            exit 1
+          fi
+
+          cat >> "$CONFIG_PATH" << 'EOF'
 
           processors:
             batch:
-            resource/add_event_name:
-              attributes:
-                - key: host.address
-                  value: "${HOST}"
-                  action: upsert
+          EOF
+
+          cat >> "$CONFIG_PATH" << EOF
 
           exporters:
             otlp/newrelic:
@@ -1052,16 +1352,18 @@ install:
 
           service:
             pipelines:
+          EOF
+
+          cat >> "$CONFIG_PATH" << EOF
               metrics/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
+                receivers: [${RECEIVER_LIST}]
+                processors: [batch]
                 exporters: [otlp/newrelic]
               logs/oracledb:
-                receivers: [nroracledb]
-                processors: [resource/add_event_name, batch]
+                receivers: [${RECEIVER_LIST}]
+                processors: [batch]
                 exporters: [otlp/newrelic]
           EOF
-          fi
 
           chown nrdot-collector:nrdot-collector "$CONFIG_PATH"
           chmod 600 "$CONFIG_PATH"
@@ -1079,8 +1381,7 @@ install:
             echo "OTELCOL_OPTIONS=\"${OTELCOL_OPTIONS}\"" | tee -a "$ENV_FILE" > /dev/null
           fi
 
-          rm -f "$PW_FILE" "$USER_FILE"
-          echo "Oracle OTel config written to ${CONFIG_PATH}"
+          echo "Oracle OTel config written to ${CONFIG_PATH} (${MONITORED_COUNT} instance(s))"
           echo "OTELCOL_OPTIONS updated in ${ENV_FILE}: ${OTELCOL_OPTIONS}"
 
     restart_nrdot:
@@ -1104,11 +1405,30 @@ install:
             exit 131
           fi
 
+          INSTANCES_TSV="/tmp/nr-oracle-instances.tsv"
+          SKIP_FILE="/tmp/nr-oracle-skip.tmp"
+
+          echo ""
+          echo "==> Oracle instance summary:"
+          echo ""
+          i=0
+          while IFS='|' read -r HOST PORT SSH_USER CONTAINER_TYPE PDB_NAME SERVICE_NAME LOGIN_NAME; do
+            i=$((i + 1))
+            REASON=$(grep "^${i}:" "$SKIP_FILE" 2>/dev/null | sed "s/^${i}: //")
+            if [ -n "$REASON" ]; then
+              echo "  [SKIP] ${i}: ${HOST} (service ${SERVICE_NAME}) - ${REASON}"
+            else
+              echo "  [OK]   ${i}: ${HOST} (service ${SERVICE_NAME})"
+            fi
+          done < "$INSTANCES_TSV"
+
+          rm -f /tmp/nr-oracle-newrelic-pw-*.tmp /tmp/nr-oracle-db-user-*.tmp "$INSTANCES_TSV" "$SKIP_FILE"
+
     default:
       cmds:
         - task: write_recipe_metadata
         - task: assert_pre_req
-        - task: assert_container_type_inputs
+        - task: parse_instances
         - task: assert_oracle_version
         - task: install_nrdot
         - task: configure_database_user

@@ -70,3 +70,27 @@
 - name: Verify SQL Server is running
   shell: "systemctl status mssql-server --no-pager"
   become: yes
+
+# The rhel.yml recipe now takes an instances file + secrets file instead of
+# single host/port/login inputVars - write both here so the install-recipe
+# role's env_var can just point at their paths. Self-hosted no longer assumes
+# 'sa' specifically, but 'sa' is still a perfectly valid admin login to use.
+- name: Write NRDOT MSSQL instances file for the multi-instance recipe
+  copy:
+    dest: "/home/{{ ansible_user }}/nrdot-mssql-instances.yml"
+    content: |
+      instances:
+        - host: localhost
+          port: 1433
+          login_name: newrelic
+    mode: '0644'
+  become: yes
+
+- name: Write NRDOT MSSQL secrets file for the multi-instance recipe
+  copy:
+    dest: "/home/{{ ansible_user }}/nrdot-mssql-secrets.env"
+    content: |
+      NR_CLI_MSSQL_ADMIN_USER_1=sa
+      NR_CLI_MSSQL_ADMIN_PASSWORD_1=YourStrong@Passw0rd
+    mode: '0600'
+  become: yes

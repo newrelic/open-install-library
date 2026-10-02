@@ -1,0 +1,28 @@
+---
+
+- name: Verify SQL Server is installed and responsive via Windows Authentication
+  win_shell: |
+    sqlcmd -S localhost -I -Q "SELECT GETDATE()";
+  register: output
+
+- fail:
+    msg: "SqlServer is not installed on the host, or the Windows account running this test lacks SQL access"
+  when: output is failed
+
+# windows-winauth.yml (Windows Domain Auth, same host as SQL Server) reads the
+# current Windows identity via SELECT SYSTEM_USER and grants it monitoring
+# permissions itself - it only needs that identity to already hold sysadmin
+# (or equivalent), which the base SQL Server AMI already grants the connecting
+# Windows account. No separate test account/password is needed for this path.
+- name: Ensure C:\Temp exists
+  ansible.windows.win_file:
+    path: "C:\\Temp"
+    state: directory
+
+- name: Write NRDOT MSSQL instances file for the Windows Auth recipe
+  ansible.windows.win_copy:
+    dest: "C:\\Temp\\nrdot-mssql-instances.yml"
+    content: |
+      instances:
+        - host: localhost
+          port: 1433
