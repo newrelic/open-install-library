@@ -56,9 +56,14 @@ preInstall:
     done
 
     if [ "$INTROSPECTOR_OK" = "false" ]; then
-      # Introspector unavailable — fall back to pgrep-based .NET detection
+      # Introspector unavailable — fall back to runtime detection
       rm -rf $TMP_DIR >/dev/null
+      # Check for framework-dependent apps (process named "dotnet")
       if pgrep -f "dotnet" > /dev/null 2>&1; then
+        exit 0
+      fi
+      # Check for self-contained apps: any process whose memory maps include CoreCLR
+      if grep -rql "coreclr\|libcoreclr" /proc/*/maps 2>/dev/null; then
         exit 0
       fi
       exit 3
@@ -216,9 +221,14 @@ install:
             fi
           done
           if [ "$INTROSPECTOR_OK" = "false" ]; then
-            echo "Warning: Could not download .NET introspector. Falling back to pgrep-based process discovery."
-            # Use pgrep to find dotnet PIDs as fallback
+            echo "Warning: Could not download .NET introspector. Falling back to runtime-based process discovery."
+            # Framework-dependent apps show as "dotnet" process
             pgrep -f "dotnet" > /tmp/dotnet-introspector/dotnet_processes.txt 2>/dev/null || true
+            # Self-contained apps: find PIDs via CoreCLR memory maps
+            grep -rl "coreclr\|libcoreclr" /proc/*/maps 2>/dev/null | while read mapfile; do
+              echo "$mapfile" | grep -oP '(?<=/proc/)\d+' >> /tmp/dotnet-introspector/dotnet_processes.txt
+            done
+            sort -u /tmp/dotnet-introspector/dotnet_processes.txt -o /tmp/dotnet-introspector/dotnet_processes.txt 2>/dev/null || true
             exit 0
           fi
         # nri-lsi-dotnet output looks like "[18044,26844,38720,31448]"
