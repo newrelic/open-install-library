@@ -42,11 +42,28 @@ preInstall:
 
     # .NET is installed, get .NET introspector tooling
     TMP_DIR=$(mktemp -dq /tmp/newrelic.XXXXXX)
-    # curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
-    curl -s https://test-repo-production.s3.us-west-2.amazonaws.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
-    zcat ${TMP_DIR}/dotnet-is-linux-x64.gz > ${TMP_DIR}/nri-lsi-dotnet
-    chmod u+x $TMP_DIR/nri-lsi-dotnet >/dev/null
-    
+    INTROSPECTOR_OK=false
+    for INTROSPECTOR_URL in \
+        "https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz" \
+        "https://test-repo-production.s3.us-west-2.amazonaws.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz"; do
+      if curl -sf "$INTROSPECTOR_URL" -o "${TMP_DIR}/dotnet-is-linux-x64.gz" 2>/dev/null \
+          && file "${TMP_DIR}/dotnet-is-linux-x64.gz" 2>/dev/null | grep -qi "gzip" \
+          && zcat "${TMP_DIR}/dotnet-is-linux-x64.gz" > "${TMP_DIR}/nri-lsi-dotnet" 2>/dev/null; then
+        chmod u+x "${TMP_DIR}/nri-lsi-dotnet" >/dev/null
+        INTROSPECTOR_OK=true
+        break
+      fi
+    done
+
+    if [ "$INTROSPECTOR_OK" = "false" ]; then
+      # Introspector unavailable — fall back to pgrep-based .NET detection
+      rm -rf $TMP_DIR >/dev/null
+      if pgrep -f "dotnet" > /dev/null 2>&1; then
+        exit 0
+      fi
+      exit 3
+    fi
+
     # Record all .NET processes
     ${TMP_DIR}/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > ${TMP_DIR}/dotnet_processes.txt
     processCount=$(cat ${TMP_DIR}/dotnet_processes.txt | wc -w)
@@ -183,11 +200,27 @@ install:
     introspector:
       cmds:
         - rm -rf /tmp/dotnet-introspector
-        - curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o /tmp/dotnet-is-linux-x64.gz
         - mkdir -p /tmp/dotnet-introspector
-        - zcat /tmp/dotnet-is-linux-x64.gz > /tmp/dotnet-introspector/nri-lsi-dotnet
-        - rm -f /tmp/dotnet-is-linux-x64.gz
-        - chmod -R 777 /tmp/dotnet-introspector
+        - |
+          INTROSPECTOR_OK=false
+          for INTROSPECTOR_URL in \
+              "https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz" \
+              "https://test-repo-production.s3.us-west-2.amazonaws.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz"; do
+            if curl -sf "$INTROSPECTOR_URL" -o /tmp/dotnet-is-linux-x64.gz 2>/dev/null \
+                && file /tmp/dotnet-is-linux-x64.gz 2>/dev/null | grep -qi "gzip" \
+                && zcat /tmp/dotnet-is-linux-x64.gz > /tmp/dotnet-introspector/nri-lsi-dotnet 2>/dev/null; then
+              rm -f /tmp/dotnet-is-linux-x64.gz
+              chmod -R 777 /tmp/dotnet-introspector
+              INTROSPECTOR_OK=true
+              break
+            fi
+          done
+          if [ "$INTROSPECTOR_OK" = "false" ]; then
+            echo "Warning: Could not download .NET introspector from any source. Proceeding without process-level discovery."
+            # write an empty process file so gather_services skips gracefully
+            touch /tmp/dotnet-introspector/dotnet_processes.txt
+            exit 0
+          fi
         # nri-lsi-dotnet output looks like "[18044,26844,38720,31448]"
         - /tmp/dotnet-introspector/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > /tmp/dotnet-introspector/dotnet_processes.txt
         - |
