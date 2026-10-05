@@ -122,30 +122,47 @@
     & $env:TEMP\install.ps1 | Out-Null;
   when: newrelic_cli_path is not defined
 
+# NR-620798: WinRM's live stdout/stderr capture for this win_shell task has been confirmed
+# (via a controlled A/B test across dependency versions, plus an async: 600 attempt, neither
+# of which changed the outcome) to unreliably drop the tail of long-running (70-150s+) command
+# output - the command itself completes fine (rc:0 / correct pass-fail exit code every time),
+# but the *captured text* is truncated. Redirecting to a file on the host and reading it back
+# in a separate task sidesteps live-capture reliability entirely, regardless of its cause.
+- name: Ensure output capture directory exists
+  ansible.windows.win_file:
+    path: C:\Temp
+    state: directory
+
 - block:
   - name: Run recipe, expect failure
     win_shell: |
-      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }};
+      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} *> C:\Temp\nr_install_output.log;
     register: output
     ignore_errors: true
+  - name: Read captured install output from file (NR-620798)
+    win_shell: Get-Content C:\Temp\nr_install_output.log -Raw
+    register: captured_output
   - fail:
-      msg: "The recipe installed when it was expected to fail:{{ output.stderr }}"
+      msg: "The recipe installed when it was expected to fail:{{ captured_output.stdout }}"
     when: output is not failed
   - fail:
-      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stderr }}"
-    when: validate_output is defined and output.stderr is not search(validate_output)
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ captured_output.stdout }}"
+    when: validate_output is defined and captured_output.stdout is not search(validate_output)
   when: command_should_fail == True
 
 - block:
   - name: Run recipe, expect success
     win_shell: |
-      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }};
+      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} *> C:\Temp\nr_install_output.log;
     register: output
     ignore_errors: true
+  - name: Read captured install output from file (NR-620798)
+    win_shell: Get-Content C:\Temp\nr_install_output.log -Raw
+    register: captured_output
   - fail:
-      msg: "The recipe failed to install when it was expected to succeed:{{ output.stdout }}"
+      msg: "The recipe failed to install when it was expected to succeed:{{ captured_output.stdout }}"
     when: output is failed
   - fail:
-      msg: "Failed to validate that {{ validate_output }} is in output:{{ output.stdout }}"
-    when: validate_output is defined and output.stdout is not search(validate_output)
+      msg: "Failed to validate that {{ validate_output }} is in output:{{ captured_output.stdout }}"
+    when: validate_output is defined and captured_output.stdout is not search(validate_output)
   when: command_should_fail == False
