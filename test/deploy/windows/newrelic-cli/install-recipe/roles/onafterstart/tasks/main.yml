@@ -126,6 +126,12 @@
   - name: Run recipe, expect failure
     win_shell: |
       {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }};
+    # async matches the Linux role's pattern (install-recipe/roles/onafterstart on linux):
+    # a synchronous win_shell holds a live WinRM "receive" loop open for the whole command
+    # duration, which has a known edge case losing the tail of output on long-running
+    # commands right as the process exits (NR-620798). async detaches the command and
+    # polls its status separately instead, avoiding that live receive loop entirely.
+    async: 600
     register: output
     ignore_errors: true
   - fail:
@@ -140,6 +146,8 @@
   - name: Run recipe, expect success
     win_shell: |
       {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }};
+    # See the async comment on the "expect failure" task above (NR-620798).
+    async: 600
     register: output
     ignore_errors: true
   - fail:
