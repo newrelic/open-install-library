@@ -136,7 +136,7 @@
 - block:
   - name: Run recipe, expect failure
     win_shell: |
-      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} > C:\Temp\nr_install_output.log;
+      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} > C:\Temp\nr_install_output.log 2> C:\Temp\nr_install_stderr.log;
     register: output
     ignore_errors: true
   - name: Read captured install output from file (NR-620798)
@@ -157,7 +157,7 @@
 
   - name: Run recipe, expect success
     win_shell: |
-      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} > C:\Temp\nr_install_output.log;
+      {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} > C:\Temp\nr_install_output.log 2> C:\Temp\nr_install_stderr.log;
     register: output
     ignore_errors: true
 
@@ -168,6 +168,11 @@
   - name: Read captured install output from file (NR-620798)
     win_shell: Get-Content C:\Temp\nr_install_output.log -Raw
     register: captured_output
+
+  - name: Read captured install stderr from file (NR-620798 diagnostics)
+    win_shell: Get-Content C:\Temp\nr_install_stderr.log -Raw
+    register: captured_stderr
+    ignore_errors: true
 
   - name: Independently check newrelic-infra service status (NR-620798 diagnostics)
     ansible.windows.win_service_info:
@@ -182,6 +187,7 @@
         - "ansible-reported rc: {{ output.rc | default('n/a') }}, failed: {{ output.failed | default('n/a') }}"
         - "live-captured stdout (output.stdout): {{ output.stdout | default('') }}"
         - "file-captured stdout (captured_output.stdout): {{ captured_output.stdout | default('') }}"
+        - "file-captured stderr / NR-620798-DIAG checkpoints (captured_stderr.stdout): {{ captured_stderr.stdout | default('') }}"
         - "newrelic-infra service info: {{ infra_service_status.services | default('n/a') }}"
 
   - fail:
