@@ -151,14 +151,39 @@
   when: command_should_fail == True
 
 - block:
+  - name: Record timestamp before install (NR-620798 diagnostics)
+    win_shell: Get-Date -Format o
+    register: ts_before
+
   - name: Run recipe, expect success
     win_shell: |
       {{ env_vars }}; newrelic install {{newrelic_cli_option}} -c {{ recipe_content_url }} *> C:\Temp\nr_install_output.log;
     register: output
     ignore_errors: true
+
+  - name: Record timestamp after install (NR-620798 diagnostics)
+    win_shell: Get-Date -Format o
+    register: ts_after
+
   - name: Read captured install output from file (NR-620798)
     win_shell: Get-Content C:\Temp\nr_install_output.log -Raw
     register: captured_output
+
+  - name: Independently check newrelic-infra service status (NR-620798 diagnostics)
+    ansible.windows.win_service_info:
+      name: newrelic-infra
+    register: infra_service_status
+
+  - name: Report NR-620798 diagnostics (always shown, pass or fail)
+    debug:
+      msg:
+        - "ts_before: {{ ts_before.stdout | default('n/a') | trim }}"
+        - "ts_after:  {{ ts_after.stdout | default('n/a') | trim }}"
+        - "ansible-reported rc: {{ output.rc | default('n/a') }}, failed: {{ output.failed | default('n/a') }}"
+        - "live-captured stdout (output.stdout): {{ output.stdout | default('') }}"
+        - "file-captured stdout (captured_output.stdout): {{ captured_output.stdout | default('') }}"
+        - "newrelic-infra service info: {{ infra_service_status.services | default('n/a') }}"
+
   - fail:
       msg: "The recipe failed to install when it was expected to succeed:{{ captured_output.stdout }}"
     when: output is failed
