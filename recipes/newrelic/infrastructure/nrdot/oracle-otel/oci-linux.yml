@@ -522,6 +522,8 @@ install:
           GRANT SELECT ON DBA_OBJECTS TO ${DB_USER};
           GRANT SELECT ON V_\$PDBS TO ${DB_USER};
           GRANT SELECT ON CDB_SERVICES TO ${DB_USER};
+          GRANT SELECT ON V_\$PROCESS TO ${DB_USER};
+          GRANT SELECT ON V_\$TRANSACTION TO ${DB_USER};
           -- Optional: only needed to collect ASM diskgroup/disk metrics.
           GRANT SELECT ON V_\$ASM_DISKGROUP_STAT TO ${DB_USER};
           GRANT SELECT ON V_\$ASM_DISK_STAT TO ${DB_USER};
@@ -1330,12 +1332,6 @@ install:
             exit 1
           fi
 
-          cat >> "$CONFIG_PATH" << 'EOF'
-
-          processors:
-            batch:
-          EOF
-
           cat >> "$CONFIG_PATH" << EOF
 
           exporters:
@@ -1349,6 +1345,16 @@ install:
                 initial_interval: 5s
                 max_interval: 30s
                 max_elapsed_time: 300s
+              sending_queue:
+                enabled: true
+                sizer: bytes
+                queue_size: 100_000_000
+                num_consumers: 10
+                batch:
+                  sizer: bytes
+                  max_size: 1_000_000
+                  min_size: 0
+                  flush_timeout: 5s
 
           service:
             pipelines:
@@ -1357,11 +1363,9 @@ install:
           cat >> "$CONFIG_PATH" << EOF
               metrics/oracledb:
                 receivers: [${RECEIVER_LIST}]
-                processors: [batch]
                 exporters: [otlp/newrelic]
               logs/oracledb:
                 receivers: [${RECEIVER_LIST}]
-                processors: [batch]
                 exporters: [otlp/newrelic]
           EOF
 
