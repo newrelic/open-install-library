@@ -102,7 +102,7 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 ```
 (swap `rhel.yml` on a RHEL/CentOS host)
 
-Prompts: `NRDOT configuration` (1=Standard, 2=Full-feature), instances file path,
+Prompts: `NRDOT configuration` (1=Basic, 2=Advanced), instances file path,
 secrets file path.
 
 ---
@@ -269,7 +269,7 @@ Must be run from an Administrator PowerShell session with `sqlcmd.exe` on `PATH`
 - The same-host grants include `db_datareader` (per the New Relic docs), which allows
   reading table data.
 - Many instances on one collector: consider raising `NR_MEM_LIMITER_LIMIT_MIB`
-  (Standard preset default 200).
+  (default 200 for both presets).
 
 ---
 

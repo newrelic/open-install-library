@@ -143,8 +143,8 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 (swap `rds-rhel.yml` on a RHEL/CentOS/OEL host)
 
 You'll be prompted for:
-1. `NRDOT configuration - 1) Database only  2) Host + Database` — pick `1` for a minimal
-   Oracle-only config, `2` to also collect host-level metrics.
+1. `NRDOT configuration - 1) Basic  2) Advanced` — `1` enables the essential metrics
+   (30), `2` enables the full metric list (135).
 2. `Path to the Oracle RDS instances YAML file` — the absolute path to the file from Step 1.
 3. `Path to the Oracle RDS secrets file` — the absolute path to the file from Step 2.
 
@@ -357,7 +357,8 @@ sudo NEW_RELIC_API_KEY=<your-api-key> NEW_RELIC_ACCOUNT_ID=<your-account-id> \
 ```
 
 You'll be prompted for:
-1. `NRDOT configuration - 1) Database only  2) Host + Database`.
+1. `NRDOT configuration - 1) Basic  2) Advanced` — `1` enables the essential metrics
+   (30), `2` enables the full metric list (135).
 2. `Path to the Oracle instances YAML file` — the absolute path to the file from Step 1.
 3. `Path to an optional secrets file for password overrides` — the absolute path to the
    file from Step 2, or blank if you didn't create one.
@@ -369,8 +370,9 @@ You'll be prompted for:
 One `nrdot-collector` service, one `/etc/nrdot-collector/oracle-config.yaml`, with a
 separate receiver and pipeline pair per instance that passed its checks — `nroracledb/<N>`
 for RDS/self-hosted, `nroracledb/adb<N>` for ADB. For 2+ instances, the receivers share
-their common settings (collection interval, events, top-query/query-sample collection,
-the ~60-entry metrics list) via a YAML anchor, following the pattern documented at
+their common settings (collection interval, events, top-query/query-sample/top-procedure/
+query-plan collection, the ~60-entry metrics list, and a single `oracle.db.edition`
+resource attribute override) via a YAML anchor, following the pattern documented at
 https://docs.newrelic.com/docs/opentelemetry/database/otel-oracledb/#rds-multi-receiver-config.
 For RDS/self-hosted, only `endpoint`, `username`, `password`, and `service` differ per
 instance. For ADB, the connection is a single `datasource` URL (embedding the wallet
