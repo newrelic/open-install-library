@@ -1,0 +1,194 @@
+---
+# Parameters:
+# newrelic_personal_api_key: The newrelic personal api key. It typically starts with NRAK-
+# newrelic_account_id: (optional) The newrelic account id
+# newrelic_region: (optional) The newrelic region. Typically "US".
+# newrelic_cli_path: (optional) The newrelic-cli to use instead of using latest published
+# validate_output: (optional) A string that must appear in stdout for this test to pass.
+#
+# Test scenario (two-pass upgrade):
+#   1. Run a standard first install (no preserve flag) — installs agent and writes config.
+#   2. Append custom content to newrelic-infra.yml.
+#   3. Compute MD5 checksum of the config file (pre-second-install snapshot).
+#   4. Re-run install WITH NEW_RELIC_PRESERVE_CONFIG=true.
+#   5. Assert the agent is still installed and reporting.
+#   6. Compute MD5 checksum again and assert it matches the pre-install snapshot exactly —
+#      the file must be byte-for-byte identical (no leakage, no overwrite).
+
+- name: Prepare newrelic_region
+  set_fact:
+    newrelic_region: "US"
+  when: newrelic_region is not defined
+
+- fail:
+    msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
+  when: newrelic_personal_api_key is not defined
+
+- name: set api key
+  lineinfile:
+    path: "/etc/environment"
+    state: present
+    regexp: "^NEW_RELIC_API_KEY="
+    line: "NEW_RELIC_API_KEY={{ newrelic_personal_api_key }}"
+  become: true
+  no_log: true
+
+- name: Prepare environment variables for newrelic-cli execution
+  set_fact:
+    env_vars: ""
+
+- name: Adding newrelic accountId environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} NEW_RELIC_ACCOUNT_ID={{ newrelic_account_id }}"
+  when: newrelic_account_id is defined
+
+- name: Adding newrelic region environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} NEW_RELIC_REGION={{ newrelic_region|upper }}"
+  when: newrelic_region is defined
+
+- name: Adding sudo user environment variable
+  set_fact:
+    env_vars: "{{ env_vars }} SUDO_USER={{ ansible_user }}"
+
+- name: Prepare newrelic-cli option
+  set_fact:
+    newrelic_cli_option: "-y --debug"
+
+- name: Adding optional local recipes
+  set_fact:
+    newrelic_cli_option: "{{ newrelic_cli_option }} --localRecipes /home/{{ansible_user}}/open-install-library-recipes/"
+  when: local_recipes is defined and (local_recipes | bool == True)
+
+- name: Copy all recipes
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../../../../../../recipes"
+    dest: "/home/{{ansible_user}}/open-install-library-recipes"
+    mode: '0777'
+  become: true
+  when: local_recipes is defined and (local_recipes | bool == True)
+
+- name: Copy newrelic-cli if local exists
+  ansible.builtin.copy:
+    src: "{{ newrelic_cli_path }}"
+    dest: /usr/local/bin/newrelic
+    mode: '0777'
+  become: true
+  when: newrelic_cli_path is defined
+
+- name: ensure tar is installed for script execution yum
+  yum:
+    pkg:
+      - tar
+    state: present
+  become: true
+  ignore_errors: true
+
+- name: ensure tar is installed for script execution dnf
+  dnf:
+    name: tar
+    state: present
+  become: true
+  ignore_errors: true
+
+- name: Install newrelic-cli
+  shell: "curl -Ls https://raw.githubusercontent.com/newrelic/newrelic-cli/master/scripts/install.sh | bash"
+  when: newrelic_cli_path is not defined
+
+- name: CLI install profile
+  shell: "/usr/local/bin/newrelic profiles add --profile install --apiKey {{ newrelic_personal_api_key }} --region {{ newrelic_region|upper }} --accountId {{ newrelic_account_id }} -y"
+  become: true
+  no_log: true
+
+- name: Default CLI profile
+  shell: "/usr/local/bin/newrelic profiles default --profile install"
+  become: true
+
+- name: Display CLI version
+  shell: "/usr/local/bin/newrelic version"
+  become: true
+
+- name: Export NEW_RELIC_EMAIL_CONTINUE
+  shell: "echo export NEW_RELIC_EMAIL_CONTINUE=N >> ~/.bashrc"
+
+# ── Step 1: First standard install (no preserve flag) ───────────────────────
+- name: Run first install (standard — no preserve flag)
+  shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install {{ newrelic_cli_option }}"
+  async: 600
+  register: first_install_output
+  become: true
+  ignore_errors: true
+
+- fail:
+    msg: "First install failed: {{ first_install_output.stdout }}"
+  when: first_install_output is failed
+
+# ── Step 2: Append custom content to config ──────────────────────────────────
+- name: Append custom content to newrelic-infra.yml
+  shell: |
+    echo 'custom_preserve_test_key: preserved_value_12345' >> /etc/newrelic-infra.yml
+    echo 'custom_preserve_section:' >> /etc/newrelic-infra.yml
+    echo '  nested_key: nested_value_67890' >> /etc/newrelic-infra.yml
+  become: true
+
+# ── Step 3: Snapshot the config BEFORE second install ────────────────────────
+- name: Compute MD5 checksum of config before second install
+  shell: "md5sum /etc/newrelic-infra.yml | awk '{print $1}'"
+  become: true
+  register: checksum_before
+
+- name: Capture full config content before second install (for diff output on failure)
+  shell: "cat /etc/newrelic-infra.yml"
+  become: true
+  register: config_before
+
+- name: Display config before second install
+  debug:
+    msg: "Config before second install (checksum={{ checksum_before.stdout }}):\n{{ config_before.stdout }}"
+
+# ── Step 4: Second install WITH NEW_RELIC_PRESERVE_CONFIG=true ──────────────────
+- name: Run second install with NEW_RELIC_PRESERVE_CONFIG=true
+  shell: "sudo -E {{ env_vars }} NEW_RELIC_PRESERVE_CONFIG=true /usr/local/bin/newrelic install {{ newrelic_cli_option }}"
+  async: 600
+  register: second_install_output
+  become: true
+  ignore_errors: true
+
+- fail:
+    msg: "Second install (with preserve flag) failed: {{ second_install_output.stdout }}"
+  when: second_install_output is failed
+
+- fail:
+    msg: "Failed to validate that {{ validate_output }} is in output: {{ second_install_output.stdout }}"
+  when: validate_output is defined and second_install_output.stdout is not search(validate_output)
+
+# ── Step 5: Snapshot the config AFTER second install and compare ─────────────
+- name: Compute MD5 checksum of config after second install
+  shell: "md5sum /etc/newrelic-infra.yml | awk '{print $1}'"
+  become: true
+  register: checksum_after
+
+- name: Capture full config content after second install (for diff output on failure)
+  shell: "cat /etc/newrelic-infra.yml"
+  become: true
+  register: config_after
+
+- name: Display config after second install
+  debug:
+    msg: "Config after second install (checksum={{ checksum_after.stdout }}):\n{{ config_after.stdout }}"
+
+- name: Assert config file is byte-for-byte identical (checksum must match)
+  fail:
+    msg: |
+      FAIL: Config file was modified by the second install — checksums differ.
+      Before: {{ checksum_before.stdout }}
+      After:  {{ checksum_after.stdout }}
+      Expected content:
+      {{ config_before.stdout }}
+      Actual content:
+      {{ config_after.stdout }}
+  when: checksum_before.stdout != checksum_after.stdout
+
+- name: Config preservation verified — file is byte-for-byte identical after second install
+  debug:
+    msg: "SUCCESS: Checksums match ({{ checksum_before.stdout }}). File was not modified."
