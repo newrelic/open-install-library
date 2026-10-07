@@ -823,34 +823,6 @@ install:
             batch:
           EOF
 
-          # Static server.address/server.port per instance, reusing the same HOST/PORT
-          # already set on that instance's receiver `endpoint` field above -- nrmysql
-          # itself emits no server.address/server.port, only its own
-          # mysql.instance.endpoint (a combined "host:port" string).
-          i=0
-          while IFS="$(printf '\t')" read -r HOST PORT LOGIN_NAME; do
-            i=$((i + 1))
-            if grep -q "^${i}:" "$SKIP_FILE" 2>/dev/null; then
-              continue
-            fi
-            if [ "$SURVIVOR_COUNT" -eq 1 ]; then
-              RESOURCE_NAME="resource/mysql"
-            else
-              RESOURCE_NAME="resource/mysql/instance${i}"
-            fi
-            cat >> "$CONFIG_PATH" << EOF
-
-            ${RESOURCE_NAME}:
-              attributes:
-                - key: server.address
-                  value: "${HOST}"
-                  action: upsert
-                - key: server.port
-                  value: ${PORT}
-                  action: upsert
-          EOF
-          done < "$INSTANCES_TSV"
-
           cat >> "$CONFIG_PATH" << EOF
 
           exporters:
@@ -877,21 +849,19 @@ install:
             fi
             if [ "$SURVIVOR_COUNT" -eq 1 ]; then
               RECEIVER_NAME="nrmysql"
-              RESOURCE_NAME="resource/mysql"
               PIPELINE_SUFFIX=""
             else
               RECEIVER_NAME="nrmysql/instance${i}"
-              RESOURCE_NAME="resource/mysql/instance${i}"
               PIPELINE_SUFFIX="/instance${i}"
             fi
             cat >> "$CONFIG_PATH" << EOF
               metrics${PIPELINE_SUFFIX}:
                 receivers: [${RECEIVER_NAME}]
-                processors: [${RESOURCE_NAME}, batch]
+                processors: [batch]
                 exporters: [otlp/newrelic]
               logs${PIPELINE_SUFFIX}:
                 receivers: [${RECEIVER_NAME}]
-                processors: [${RESOURCE_NAME}, batch]
+                processors: [batch]
                 exporters: [otlp/newrelic]
           EOF
           done < "$INSTANCES_TSV"
