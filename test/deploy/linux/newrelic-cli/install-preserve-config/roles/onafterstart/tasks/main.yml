@@ -7,6 +7,9 @@
 # validate_output: (optional) A string that must appear in stdout for this test to pass.
 #
 # Test scenario (two-pass upgrade):
+#   0. Regression check (NR-623027): a plain, non -y install with NEW_RELIC_PRESERVE_CONFIG
+#      never set must NOT prompt for it. Guards against the recipe declaring it as an
+#      `inputVars` entry again, which the CLI's varsFromInput() resolves on every install.
 #   1. Run a standard first install (no preserve flag) — installs agent and writes config.
 #   2. Append custom content to newrelic-infra.yml.
 #   3. Compute MD5 checksum of the config file (pre-second-install snapshot).
@@ -110,6 +113,32 @@
 
 - name: Export NEW_RELIC_EMAIL_CONTINUE
   shell: "echo export NEW_RELIC_EMAIL_CONTINUE=N >> ~/.bashrc"
+
+# ── Step 0: Regression check — no flag, no env var, NOT -y — must not prompt ──
+# Stdin is closed (< /dev/null): if NEW_RELIC_PRESERVE_CONFIG is ever declared as an
+# inputVars entry again, survey's prompt read hits immediate EOF and fails fast with
+# "prompt failed: EOF" — a clear, fast regression signal. If the fix holds, this just
+# runs as a normal fresh install (no flag set), which Step 1 can safely build on.
+- name: Run a non -y install with NEW_RELIC_PRESERVE_CONFIG unset — must not prompt
+  shell: "sudo -E {{ env_vars }} /usr/local/bin/newrelic install --localRecipes /home/{{ansible_user}}/open-install-library-recipes/ --debug < /dev/null"
+  async: 120
+  register: no_prompt_regression_output
+  become: true
+  ignore_errors: true
+  when: local_recipes is defined and (local_recipes | bool == True)
+
+- fail:
+    msg: |
+      FAIL (NR-623027 regression): a plain install with NEW_RELIC_PRESERVE_CONFIG unset
+      and no -y flag failed instead of completing cleanly — the signature of the CLI
+      prompting for it via varsFromInput(), which should no longer happen now that it's
+      read directly from the environment instead of declared as an inputVars entry.
+      Output: {{ no_prompt_regression_output.stdout }}
+  when: no_prompt_regression_output is defined and no_prompt_regression_output is failed
+
+- fail:
+    msg: "FAIL (NR-623027 regression): prompt text for NEW_RELIC_PRESERVE_CONFIG found in output: {{ no_prompt_regression_output.stdout }}"
+  when: no_prompt_regression_output is defined and 'NEW_RELIC_PRESERVE_CONFIG' in no_prompt_regression_output.stdout
 
 # ── Step 1: First standard install (no preserve flag) ───────────────────────
 - name: Run first install (standard — no preserve flag)
