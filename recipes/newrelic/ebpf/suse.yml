@@ -38,7 +38,6 @@ install:
         - task: check_legacy_version
         - task: validate_inputs
         - task: create_config
-        - task: install_linux_headers
         - task: install_ebpf_agent
         - task: disable_service_for_agent_control
 
@@ -518,42 +517,6 @@ install:
           EOS
 
           echo "YAML configuration file created successfully at $CONFIG_FILE"
-
-    install_linux_headers:
-      cmds:
-        - |
-          KERNEL_VERSION=$(uname -r)
-          echo "Installing kernel headers for kernel version: $KERNEL_VERSION"
-          # Detect kernel flavor from uname (e.g., default, azure, rt)
-          KERNEL_FLAVOR=$(echo "$KERNEL_VERSION" | grep -oP '[^-]+$')
-          # Get exact package version from the RPM that owns the running kernel
-          # Try vmlinuz (x86_64) first, then Image (aarch64)
-          KERNEL_PKG_VERSION=""
-          if [[ -f "/boot/vmlinuz-${KERNEL_VERSION}" ]]; then
-            KERNEL_PKG_VERSION=$(rpm -qf "/boot/vmlinuz-${KERNEL_VERSION}" --queryformat '%{VERSION}-%{RELEASE}\n' 2>/dev/null | head -1)
-          elif [[ -f "/boot/Image-${KERNEL_VERSION}" ]]; then
-            KERNEL_PKG_VERSION=$(rpm -qf "/boot/Image-${KERNEL_VERSION}" --queryformat '%{VERSION}-%{RELEASE}\n' 2>/dev/null | head -1)
-          fi
-          if [[ -n "$KERNEL_PKG_VERSION" ]]; then
-            echo "Found matching kernel package version: $KERNEL_PKG_VERSION"
-            if zypper --non-interactive install "kernel-${KERNEL_FLAVOR}-devel=${KERNEL_PKG_VERSION}"; then
-              echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."
-            else
-              echo ""
-              echo -e "\e[31mERROR:\e[0m Failed to install kernel headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
-              echo ""
-            fi
-          else
-            echo "Could not determine exact kernel package version, installing latest kernel-${KERNEL_FLAVOR}-devel"
-            if zypper --non-interactive install "kernel-${KERNEL_FLAVOR}-devel"; then
-              echo "Kernel headers installed successfully for kernel $KERNEL_VERSION."
-            else
-              echo ""
-              echo -e "\e[31mERROR:\e[0m Failed to install kernel headers for kernel $KERNEL_VERSION. Please ensure the correct headers are available and try again."
-              echo ""
-            fi
-          fi
-      ignore_error: true
 
     install_ebpf_agent:
       cmds:
