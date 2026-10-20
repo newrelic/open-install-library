@@ -1,0 +1,62 @@
+---
+- debug:
+    msg: Install .NET App
+
+# No web server in front: the app listens on {{ service_port }} directly.
+
+- name: Set default is_selfcontained (default to false)
+  set_fact:
+    is_selfcontained: "false"
+  when: is_selfcontained is undefined
+
+- name: Set default use_executable for how to run the .NET process (default to false)
+  set_fact:
+    use_executable: "false"
+  when: use_executable is undefined
+
+- name: Set default dotnet_app_name (published entrypoint name inside the app zip)
+  set_fact:
+    dotnet_app_name: "net10webapp"
+  when: dotnet_app_name is undefined
+
+- name: Set default dotnet_exe path (framework-dependent startup uses this dotnet host)
+  set_fact:
+    dotnet_exe: "/opt/dotnet/dotnet"
+  when: dotnet_exe is undefined
+
+- name: Set startup_command to executable (not dotnet xx.dll)
+  set_fact:
+    startup_command: "/var/www/{{ service_id }}/{{ dotnet_app_name }}"
+  when: use_executable|bool
+
+- name: Set startup_command to dotnet command (use dotnet xx.dll)
+  set_fact:
+    startup_command: "{{ dotnet_exe }} /var/www/{{ service_id }}/{{ dotnet_app_name }}.dll"
+  when: use_executable|bool == False
+
+- name: Set default download url for self contained web app
+  set_fact:
+    web_app_url: "https://test-repo-production.s3.us-west-2.amazonaws.com/install/dotnet/testapps/selfcontained-net10webapplication.zip"
+  when: web_app_url is undefined and (is_selfcontained|bool)
+
+- name: Set default download url for framework dependent web app
+  set_fact:
+    web_app_url: "https://test-repo-production.s3.us-west-2.amazonaws.com/install/dotnet/testapps/frameworkdependent-net10webapplication.zip"
+  when: web_app_url is undefined and (is_selfcontained|bool == False)
+
+- name: Copy dotnet webapp service file
+  template:
+    src: dotnetwebapplication.service
+    dest: /etc/systemd/system/{{ service_id }}.service
+  become: true
+
+- name: Install web app
+  shell: |
+    mkdir -p ~/{{ service_id }}
+    cd ~/{{ service_id }}
+    curl -sSf "{{ web_app_url }}" -o {{ service_id }}.zip
+    mkdir -p /var/www/{{ service_id }}
+    unzip -o ./{{ service_id }}.zip -d /var/www/{{ service_id }}
+    chmod -R 755 /var/www/{{ service_id }}
+    chown -R dotnetapp:dotnetapp /var/www/{{ service_id }}
+  become: true
