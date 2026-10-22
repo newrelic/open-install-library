@@ -128,6 +128,14 @@ install:
     setup_license:
       cmds:
         - |
+          PRESERVE_CONFIG="$NEW_RELIC_PRESERVE_CONFIG"
+          if [ "$PRESERVE_CONFIG" = "true" ]; then
+            if [ -f "{{.V2_CONFIG_FILE}}" ]; then
+              echo "Preserving existing configuration file: {{.V2_CONFIG_FILE}}"
+              exit 0
+            fi
+            echo "Warning: No existing configuration found. Writing fresh configuration."
+          fi
           if [ -f "{{.V2_CONFIG_FILE}}" ]; then
             sed -i.bak "/^staging/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
             sed -i.bak "/^fedramp/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
@@ -140,7 +148,6 @@ install:
             mkdir -p "{{.V2_CONFIG_FILE_DIR}}"
             touch "{{.V2_CONFIG_FILE}}"
           fi
-        - |
           if [ $(echo {{.NEW_RELIC_REGION}} | grep -i staging | wc -l) -gt 0 ]; then
             echo 'staging: true' >> "{{.V2_CONFIG_FILE}}"
           fi
@@ -155,6 +162,10 @@ install:
     setup_proxy:
       cmds:
         - |
+          PRESERVE_CONFIG="$NEW_RELIC_PRESERVE_CONFIG"
+          if [ "$PRESERVE_CONFIG" = "true" ] && [ -f "{{.V2_CONFIG_FILE}}" ]; then
+            exit 0
+          fi
           if [ ! -z "$HTTPS_PROXY" ]; then
             sudo sed -i.bak "/^proxy/d" "{{.V2_CONFIG_FILE}}" && rm "{{.V2_CONFIG_FILE}}".bak
             sudo echo 'proxy: {{.HTTPS_PROXY}}' >> "{{.V2_CONFIG_FILE}}"
