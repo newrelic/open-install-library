@@ -1,6 +1,6 @@
 # Dockerfile
 #base image
-FROM node:22
+FROM node:lts
 
 # Create app directory
 WORKDIR /app
