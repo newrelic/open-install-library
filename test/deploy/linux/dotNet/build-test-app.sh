@@ -31,9 +31,18 @@ mkdir -p "${SDK_ROOT}"
 exec 9>"${SDK_ROOT}/build.lock"
 flock 9
 
-if [[ ! -x "${SDK_DIR}/dotnet" ]]; then
+# Some distros (e.g. Amazon Linux 2023) mount /tmp as a small tmpfs, which can't
+# hold the SDK archive while dotnet-install.sh extracts it, so use disk instead.
+export TMPDIR=${SDK_ROOT}/tmp
+mkdir -p "${TMPDIR}"
+
+# The marker is written only after a complete install, so a partial install
+# (e.g. from a full disk) is replaced, not reused.
+if [[ ! -f "${SDK_DIR}/.install-complete" ]]; then
+  rm -rf "${SDK_DIR}"
   curl -fsSL --retry 3 https://dot.net/v1/dotnet-install.sh -o "${SDK_ROOT}/dotnet-install.sh"
   bash "${SDK_ROOT}/dotnet-install.sh" --channel "${DOTNET_CHANNEL}" --install-dir "${SDK_DIR}"
+  touch "${SDK_DIR}/.install-complete"
 fi
 
 WORK_DIR=$(mktemp -d)
