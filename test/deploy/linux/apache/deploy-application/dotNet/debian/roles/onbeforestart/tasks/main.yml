@@ -17,10 +17,15 @@
     use_executable: "false"
   when: use_executable is undefined
 
-- name: Set default dotnet_app_name (published entrypoint name inside the app zip)
+- name: Set default dotnet_app_name (published entrypoint name of the app)
   set_fact:
-    dotnet_app_name: "net5webapplication"
+    dotnet_app_name: "testwebapp"
   when: dotnet_app_name is undefined
+
+- name: Set default dotnet_channel (SDK channel used to build the app; match the installed runtime)
+  set_fact:
+    dotnet_channel: "10.0"
+  when: dotnet_channel is undefined
 
 - name: Set startup_command to executable (not dotnet xx.dll)
   set_fact:
@@ -31,16 +36,6 @@
   set_fact:
     startup_command: "/usr/bin/dotnet /var/www/{{ service_id }}/{{ dotnet_app_name }}.dll"
   when: use_executable|bool == False
-
-- name: Set default download url for self contained web app
-  set_fact:
-    web_app_url: "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/.net/selfcontained-net5webapplication.zip"
-  when: web_app_url is undefined and (is_selfcontained|bool)
-
-- name: Set default download url for framework dependent web app
-  set_fact:
-    web_app_url: "https://open-install-library-artifacts.s3-us-west-2.amazonaws.com/linux/.net/frameworkdependent-net5webapplication.zip"
-  when: web_app_url is undefined and (is_selfcontained|bool == False)
 
 - name: Init template variable for self contained application
   set_fact:
@@ -61,14 +56,25 @@
     dest: /etc/systemd/system/{{ service_id }}.service
   become: true
 
-- name: Install web app
+- name: Download web app
   shell: |
-    mkdir ~/{{ service_id }}
+    set -e
+    mkdir -p ~/{{ service_id }}
     cd ~/{{ service_id }}
-    url="{{ web_app_url }}"
-    curl $url -o {{ service_id }}.zip
+    curl -fsSL --retry 3 "{{ web_app_url }}" -o {{ service_id }}.zip
     mkdir -p /var/www/{{ service_id }}
-    unzip ./{{ service_id }}.zip -d /var/www/{{ service_id }}
+    unzip -o ./{{ service_id }}.zip -d /var/www/{{ service_id }}
+  become: true
+  when: web_app_url is defined
+
+- name: Build web app on the host
+  script: "{{ role_path }}/../../../../../../dotNet/build-test-app.sh /var/www/{{ service_id }} {{ dotnet_app_name }} {{ dotnet_channel }} {{ is_selfcontained | bool | lower }}"
+  become: true
+  when: web_app_url is undefined
+
+- name: Set web app permissions
+  shell: |
+    set -e
     chmod -R 777 /var/www/{{ service_id }}
     chown -R ubuntu:ubuntu /var/www/{{ service_id }}
   become: true
