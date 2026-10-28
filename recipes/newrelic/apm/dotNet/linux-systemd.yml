@@ -274,8 +274,24 @@ install:
             # --reinstall makes apt download the package even when it is already installed (i.e. on a rerun)
             run_apt_with_retry sudo apt-get install --download-only --reinstall newrelic-dotnet-agent -y -qq > /dev/null
           else
-            curl -s https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o /etc/yum.repos.d/newrelic-dotnet-agent.repo >/dev/null
+            # -f fails on an HTTP error instead of writing the error page over the existing .repo file
+            curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o /etc/yum.repos.d/newrelic-dotnet-agent.repo
+            # Some yum versions (e.g. Amazon Linux 2) fetch the repository's GPG keys only when they
+            # install the package, which needs the network, so import them now.
+            KEY_TMP=$(mktemp -d)
+            curl -fsS --retry 3 -o "${KEY_TMP}/548C16BF.gpg" {{.NEW_RELIC_DOWNLOAD_URL}}548C16BF.gpg
+            curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
+            sudo rpm --import "${KEY_TMP}/548C16BF.gpg" "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
+            rm -rf "${KEY_TMP}"
             sudo yum makecache -q
+            # Download the package now so install doesn't need the network. On a rerun the agent is
+            # already installed, and install --downloadonly does nothing; reinstall fails if it isn't.
+            if rpm -q newrelic-dotnet-agent > /dev/null 2>&1
+            then
+              sudo yum reinstall -y -q --downloadonly newrelic-dotnet-agent
+            else
+              sudo yum install -y -q --downloadonly newrelic-dotnet-agent
+            fi
           fi
         - echo "Done setting up the New Relic package repository"
 
