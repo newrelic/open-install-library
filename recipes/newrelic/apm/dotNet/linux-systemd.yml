@@ -10,6 +10,9 @@ installTargets:
   - type: application
     os: linux
     kernelArch: x86_64
+  - type: application
+    os: linux
+    kernelArch: aarch64
 
 keywords:
   - Apm
@@ -24,47 +27,41 @@ preInstall:
   requireAtDiscovery: |
     # The CLI shows the last line written to stderr before a non-zero exit as the reason.
 
-    # Quick heuristic before downloading the introspector: CoreCLR-based .NET processes
-    # normally map libcoreclr.so, regardless of how .NET was installed. This is not true
-    # for Native AOT apps, and /proc access restrictions can also hide process maps.
-    if ! grep -qs libcoreclr.so /proc/[0-9]*/maps
+    # Find .NET processes on any architecture: CoreCLR-based processes map libcoreclr.so,
+    # however .NET was installed (OS package, dotnet-install.sh, tarball, or a self-contained
+    # app). Native AOT apps don't, and the agent doesn't support them. Reading other users'
+    # /proc/<pid>/maps requires root, which guided install runs as.
+    # Keep in sync with the find_dotnet_processes task.
+    DOTNET_PIDS=""
+    for maps in /proc/[0-9]*/maps; do
+      grep -qs libcoreclr.so "$maps" || continue
+      pid=${maps#/proc/}
+      pid=${pid%/maps}
+      comm=$(cat "/proc/${pid}/comm" 2>/dev/null) || continue
+      # .NET-based tools that aren't applications to instrument
+      case "$comm" in
+        pwsh|powershell|code|nri-lsi-dotnet|docker*|chrome*|firefox*) continue ;;
+      esac
+      DOTNET_PIDS="${DOTNET_PIDS} ${pid}"
+    done
+
+    if [[ -z "$DOTNET_PIDS" ]]
     then
       printf '%s\n' "No CoreCLR-based .NET processes were detected. Start your .NET application and run the installer again." >&2
       exit 3
     fi
 
-    # .NET apps are running, get .NET introspector tooling
-    TMP_DIR=$(mktemp -dq /tmp/newrelic.XXXXXX)
-    curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
-    zcat ${TMP_DIR}/dotnet-is-linux-x64.gz > ${TMP_DIR}/nri-lsi-dotnet
-    chmod u+x $TMP_DIR/nri-lsi-dotnet >/dev/null
-    
-    # Record all .NET processes
-    ${TMP_DIR}/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > ${TMP_DIR}/dotnet_processes.txt
-    processCount=$(cat ${TMP_DIR}/dotnet_processes.txt | wc -w)
-    if [[ "$processCount" -eq 0 ]]; then
-      rm -rf $TMP_DIR >/dev/null
-      echo "No running .NET processes were found by the .NET introspector. Start your .NET application and run the installer again." >&2
-      exit 3
-    fi
-
-    # Record all systemd services and check if any are .NET
-    systemctl list-unit-files --type service | awk '{ print $1 }' > ${TMP_DIR}/all_services.txt
-    for sn in `cat ${TMP_DIR}/all_services.txt`; do
-        mainpid=$(systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
-        for dnp in `cat ${TMP_DIR}/dotnet_processes.txt`; do
-            
-            # .NET systemd service found!
-            if [[ "$mainpid" -eq "$dnp" ]]
-            then
-              rm -rf $TMP_DIR >/dev/null
-              exit 0
-            fi
-        done
+    # Check if any systemd service's main process is one of them
+    for sn in $(systemctl list-unit-files --type service | awk '{ print $1 }'); do
+      mainpid=$(systemctl show --property MainPID "$sn" 2>/dev/null | sed 's/MainPID=//')
+      for pid in $DOTNET_PIDS; do
+        if [[ "$mainpid" -eq "$pid" ]]
+        then
+          exit 0
+        fi
+      done
     done
-    
-    # .NET processes found, but none are running as systemd services :(
-    rm -rf $TMP_DIR >/dev/null
+
     echo ".NET processes were found, but none are running as systemd services. This installer only instruments .NET applications run by systemd." >&2
     exit 132
 
@@ -85,7 +82,7 @@ install:
         - task: verify_continue
         - task: assert_pre_req
         - task: add_gnupg2_if_required
-        - task: introspector
+        - task: find_dotnet_processes
         - task: gather_services
         - task: setup_repo
         # Runs when this task exits, success or failure. Restarts the services if a later step failed after stopping them.
@@ -178,16 +175,23 @@ install:
         DEBIAN_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
-    introspector:
+    find_dotnet_processes:
       cmds:
         - rm -rf /tmp/dotnet-introspector
-        - curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o /tmp/dotnet-is-linux-x64.gz
         - mkdir -p /tmp/dotnet-introspector
-        - zcat /tmp/dotnet-is-linux-x64.gz > /tmp/dotnet-introspector/nri-lsi-dotnet
-        - rm -f /tmp/dotnet-is-linux-x64.gz
         - chmod -R 777 /tmp/dotnet-introspector
-        # nri-lsi-dotnet output looks like "[18044,26844,38720,31448]"
-        - /tmp/dotnet-introspector/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > /tmp/dotnet-introspector/dotnet_processes.txt
+        # Same discovery as preInstall: processes that map libcoreclr.so, minus .NET-based tools
+        - |
+          for maps in /proc/[0-9]*/maps; do
+            grep -qs libcoreclr.so "$maps" || continue
+            pid=${maps#/proc/}
+            pid=${pid%/maps}
+            comm=$(cat "/proc/${pid}/comm" 2>/dev/null) || continue
+            case "$comm" in
+              pwsh|powershell|code|nri-lsi-dotnet|docker*|chrome*|firefox*) continue ;;
+            esac
+            echo "${pid}"
+          done > /tmp/dotnet-introspector/dotnet_processes.txt
         - |
           processCount=$(cat /tmp/dotnet-introspector/dotnet_processes.txt | wc -w)
           if [[ "$processCount" -eq 0 ]]; then
@@ -199,7 +203,7 @@ install:
             ${NOCOLOR}\n"
             exit 3
           fi
-        - echo "Done with introspector"
+        - echo "Done finding .NET processes"
 
     gather_services:
       cmds:
@@ -237,7 +241,13 @@ install:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
-          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          IS_APT_INSTALLED=$(which apt-get 2>/dev/null || true)
+          if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
+          then
+            # There is no ARM64 rpm of the agent, so ARM64 hosts without apt install the tarball.
+            curl -fsSL --retry 3 {{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/newrelic-dotnet-agent_arm64.tar.gz -o /tmp/dotnet-introspector/newrelic-dotnet-agent_arm64.tar.gz
+            tar -tzf /tmp/dotnet-introspector/newrelic-dotnet-agent_arm64.tar.gz > /dev/null
+          elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             # SLES: zypper reads the same rpm-md repository as yum, but it can't parse the
             # yum .repo file as published (CRLF line endings, $basearch in baseurl), so
@@ -346,7 +356,12 @@ install:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
-          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          IS_APT_INSTALLED=$(which apt-get 2>/dev/null || true)
+          if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
+          then
+            # Tarball installs are upgraded in place by the install task, which keeps newrelic.config
+            true
+          elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-netcore20-agent >/dev/null 2>&1 || true
             sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-dotnet-agent >/dev/null 2>&1 || true
@@ -375,7 +390,43 @@ install:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
-          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          IS_APT_INSTALLED=$(which apt-get 2>/dev/null || true)
+          if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
+          then
+            # The tarball was downloaded in setup_repo. Install it the way the deb and rpm packages do.
+            NEWRELIC_HOME=/usr/local/newrelic-dotnet-agent
+            TARBALL=/tmp/dotnet-introspector/newrelic-dotnet-agent_arm64.tar.gz
+            MANIFEST=${NEWRELIC_HOME}/.tarball-files
+
+            # Like a package upgrade, remove the files the previous tarball install added, so files
+            # the new version no longer ships don't linger. Logs and custom extension files aren't
+            # in the list, so they stay.
+            if [[ -f "$MANIFEST" ]]
+            then
+              while read -r f; do
+                case "$f" in
+                  */|newrelic-dotnet-agent/newrelic.config) continue ;;
+                esac
+                sudo rm -f "/usr/local/${f}"
+              done < "$MANIFEST"
+            fi
+
+            # newrelic.config is a config file in the packages, so keep the existing one
+            if [[ -f "${NEWRELIC_HOME}/newrelic.config" ]]
+            then
+              sudo tar -xzf "$TARBALL" -C /usr/local --exclude newrelic-dotnet-agent/newrelic.config
+            else
+              sudo tar -xzf "$TARBALL" -C /usr/local
+            fi
+            tar -tzf "$TARBALL" | sudo tee "$MANIFEST" > /dev/null
+
+            # The same setup as the packages' postinst scripts
+            sudo mkdir -p "${NEWRELIC_HOME}/logs" /var/log/newrelic
+            sudo chmod o+w "${NEWRELIC_HOME}/logs"
+            sudo ln -sTf "${NEWRELIC_HOME}/logs" /var/log/newrelic/dotnet
+            echo "export CORECLR_NEWRELIC_HOME=${NEWRELIC_HOME}" | sudo tee /etc/profile.d/newrelic-dotnet-agent-path.sh > /dev/null
+            sudo chmod +x ${NEWRELIC_HOME}/*.sh
+          elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             # The repository was set up and the package downloaded in setup_repo
             sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet install newrelic-dotnet-agent

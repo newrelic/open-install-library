@@ -52,7 +52,11 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 
 publish_args=(-c Release -o "${OUTPUT_DIR}" -p:UseSharedCompilation=false)
 if [[ "${SELF_CONTAINED}" == "true" ]]; then
-  publish_args+=(-r linux-x64 --self-contained true)
+  case "$(uname -m)" in
+    aarch64) runtime_id=linux-arm64 ;;
+    *) runtime_id=linux-x64 ;;
+  esac
+  publish_args+=(-r "${runtime_id}" --self-contained true)
 else
   publish_args+=(--self-contained false)
 fi
