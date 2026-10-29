@@ -240,23 +240,33 @@ install:
           if [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             # SLES: zypper reads the same rpm-md repository as yum, but it can't parse the
-            # yum .repo file ($basearch in baseurl), so write the zypper repo file directly.
+            # yum .repo file as published (CRLF line endings, $basearch in baseurl), so
+            # download it and adapt it for zypper. The recipe only targets x86_64.
             # The repository metadata is unsigned (yum's gpgcheck only checks packages), so
             # check package signatures but not the metadata signature, matching yum.
-            printf '%s\n' \
-              '[newrelic-dotnet-agent-repo]' \
-              'name=New Relic .NET agent for Linux' \
-              'baseurl=https://yum.newrelic.com/pub/newrelic/el7/x86_64' \
-              'type=rpm-md' \
-              'enabled=1' \
-              'autorefresh=1' \
-              'repo_gpgcheck=0' \
-              'pkg_gpgcheck=1' \
-              | sudo tee /etc/zypp/repos.d/newrelic-dotnet-agent.repo > /dev/null
+            REPO_TMP=$(mktemp -d)
+            curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            sed -i \
+              -e 's/\r$//' \
+              -e 's/\$basearch/x86_64/g' \
+              -e '/^\(type\|autorefresh\|repo_gpgcheck\|pkg_gpgcheck\)=/d' \
+              -e '$a\' \
+              "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            # The zypper settings are appended to the end of the file, which is only correct
+            # if the file still has a single [newrelic-dotnet-agent-repo] section.
+            if [[ "$(grep -c '^\[' "${REPO_TMP}/newrelic-dotnet-agent.repo")" -ne 1 ]] \
+              || ! grep -q '^\[newrelic-dotnet-agent-repo\]$' "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            then
+              rm -rf "${REPO_TMP}"
+              echo "The New Relic .NET agent repository file has an unexpected format and can't be adapted for zypper." >&2
+              exit 1
+            fi
+            printf '%s\n' 'type=rpm-md' 'autorefresh=1' 'repo_gpgcheck=0' 'pkg_gpgcheck=1' >> "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            sudo install -m 644 "${REPO_TMP}/newrelic-dotnet-agent.repo" /etc/zypp/repos.d/newrelic-dotnet-agent.repo
+            rm -rf "${REPO_TMP}"
             KEY_TMP=$(mktemp -d)
-            curl -fsS --retry 3 -o "${KEY_TMP}/548C16BF.gpg" {{.NEW_RELIC_DOWNLOAD_URL}}548C16BF.gpg
             curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
-            sudo rpm --import "${KEY_TMP}/548C16BF.gpg" "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
+            sudo rpm --import "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
             rm -rf "${KEY_TMP}"
             sudo zypper -n --quiet refresh -r newrelic-dotnet-agent-repo
             # --force makes zypper download the package even when it is already installed (i.e. on a rerun)
@@ -298,11 +308,12 @@ install:
             # -f fails on an HTTP error instead of writing the error page over the existing .repo file
             curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o /etc/yum.repos.d/newrelic-dotnet-agent.repo
             # Some yum versions (e.g. Amazon Linux 2) fetch the repository's GPG keys only when they
-            # install the package, which needs the network, so import them now.
+            # install the package, which needs the network, so import them now. Only the current
+            # signing key is imported: the legacy key (548C16BF) only signed agent versions
+            # <=10.47.0, which are out of support, and RHEL 10+ crypto policy rejects it.
             KEY_TMP=$(mktemp -d)
-            curl -fsS --retry 3 -o "${KEY_TMP}/548C16BF.gpg" {{.NEW_RELIC_DOWNLOAD_URL}}548C16BF.gpg
             curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
-            sudo rpm --import "${KEY_TMP}/548C16BF.gpg" "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
+            sudo rpm --import "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
             rm -rf "${KEY_TMP}"
             sudo yum makecache -q
             # Download the package now so install doesn't need the network. On a rerun the agent is
