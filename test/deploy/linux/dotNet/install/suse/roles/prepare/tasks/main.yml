@@ -1,0 +1,30 @@
+---
+- debug:
+    msg: Install ASP.NET Core 10.0 Runtime on SUSE Linux Enterprise Server
+
+# .NET is installed with dotnet-install.sh into /opt/dotnet, not from an OS package.
+# This covers hosts whose .NET runtime the .NET agent recipe can't find with
+# rpm/zypper and must detect from the running processes instead (NR-631188).
+
+- name: Install .NET runtime dependencies
+  shell: zypper -n install curl tar gzip gawk unzip libicu krb5 libopenssl3
+  become: true
+  # A newly booted SLES instance may still be running zypper in the background
+  # (e.g. registration), so wait for its lock instead of failing.
+  environment:
+    ZYPP_LOCK_TIMEOUT: "300"
+
+- name: Install ASP.NET Core 10.0 Runtime with dotnet-install.sh
+  shell: |
+    curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+    bash /tmp/dotnet-install.sh --channel 10.0 --runtime aspnetcore --install-dir /opt/dotnet
+    rm -f /tmp/dotnet-install.sh
+  become: true
+
+- name: Confirm the runtime is installed
+  shell: /opt/dotnet/dotnet --list-runtimes
+  register: dotnet_runtimes
+  changed_when: false
+
+- debug:
+    msg: "{{ dotnet_runtimes.stdout_lines }}"

@@ -22,25 +22,18 @@ processMatch: []
 
 preInstall:
   requireAtDiscovery: |
-    # Check if .NET is installed
-    # There are three packages for .NET: dotnet-runtime, aspnetcore-runtime and dotnet-sdk
-    # Checking both debian and rpm based distros together
-    
-    set +e # disable fail on error
+    # The CLI shows the last line written to stderr before a non-zero exit as the reason.
 
-    DPKG_DOTNET=$(dpkg -l dotnet-runtime* aspnetcore-runtime* dotnet-sdk* 2>/dev/null | grep -E 'dotnet-runtime.*|aspnetcore-runtime.*|dotnet-sdk.*' | wc -l)
-    YUM_DOTNET=$(sudo yum -q list installed dotnet-runtime* aspnetcore-runtime* dotnet-sdk* 2>/dev/null | grep -E 'dotnet-runtime.*|aspnetcore-runtime.*|dotnet-sdk.*' | wc -l)
-
-    set -e # enable fail on error
-
-    # if any are false, .NET is installed
-    if [[ $DPKG_DOTNET -eq 0 && $YUM_DOTNET -eq 0  ]]
+    # Quick heuristic before downloading the introspector: CoreCLR-based .NET processes
+    # normally map libcoreclr.so, regardless of how .NET was installed. This is not true
+    # for Native AOT apps, and /proc access restrictions can also hide process maps.
+    if ! grep -qs libcoreclr.so /proc/[0-9]*/maps
     then
-        # no cleanup since we didn't create any artifacts
-        exit 3
+      printf '%s\n' "No CoreCLR-based .NET processes were detected. Start your .NET application and run the installer again." >&2
+      exit 3
     fi
 
-    # .NET is installed, get .NET introspector tooling
+    # .NET apps are running, get .NET introspector tooling
     TMP_DIR=$(mktemp -dq /tmp/newrelic.XXXXXX)
     curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
     zcat ${TMP_DIR}/dotnet-is-linux-x64.gz > ${TMP_DIR}/nri-lsi-dotnet
@@ -51,6 +44,7 @@ preInstall:
     processCount=$(cat ${TMP_DIR}/dotnet_processes.txt | wc -w)
     if [[ "$processCount" -eq 0 ]]; then
       rm -rf $TMP_DIR >/dev/null
+      echo "No running .NET processes were found by the .NET introspector. Start your .NET application and run the installer again." >&2
       exit 3
     fi
 
@@ -71,6 +65,7 @@ preInstall:
     
     # .NET processes found, but none are running as systemd services :(
     rm -rf $TMP_DIR >/dev/null
+    echo ".NET processes were found, but none are running as systemd services. This installer only instruments .NET applications run by systemd." >&2
     exit 132
 
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
@@ -173,7 +168,8 @@ install:
       cmds:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
-          if [[ -z "$IS_YUM_INSTALLED" ]]; then
+          IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
+          if [[ -z "$IS_YUM_INSTALLED" && -z "$IS_ZYPPER_INSTALLED" ]]; then
             if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
               sudo apt-get install gnupg2 -y
             fi
@@ -240,7 +236,45 @@ install:
       cmds:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
-          if [[ -z "$IS_YUM_INSTALLED" ]]
+          IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
+          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          then
+            # SLES: zypper reads the same rpm-md repository as yum, but it can't parse the
+            # yum .repo file as published (CRLF line endings, $basearch in baseurl), so
+            # download it and adapt it for zypper. The recipe only targets x86_64.
+            # The repository metadata is unsigned (yum's gpgcheck only checks packages), so
+            # check package signatures but not the metadata signature, matching yum.
+            REPO_TMP=$(mktemp -d)
+            curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            sed -i \
+              -e 's/\r$//' \
+              -e 's/\$basearch/x86_64/g' \
+              -e '/^\(type\|autorefresh\|repo_gpgcheck\|pkg_gpgcheck\)=/d' \
+              -e '$a\' \
+              "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            # The zypper settings are appended to the end of the file, which is only correct
+            # if the file still has a single [newrelic-dotnet-agent-repo] section.
+            if [[ "$(grep -c '^\[' "${REPO_TMP}/newrelic-dotnet-agent.repo")" -ne 1 ]] \
+              || ! grep -q '^\[newrelic-dotnet-agent-repo\]$' "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            then
+              rm -rf "${REPO_TMP}"
+              echo "The New Relic .NET agent repository file has an unexpected format and can't be adapted for zypper." >&2
+              exit 1
+            fi
+            printf '%s\n' 'type=rpm-md' 'autorefresh=1' 'repo_gpgcheck=0' 'pkg_gpgcheck=1' >> "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            sudo install -m 644 "${REPO_TMP}/newrelic-dotnet-agent.repo" /etc/zypp/repos.d/newrelic-dotnet-agent.repo
+            rm -rf "${REPO_TMP}"
+            KEY_TMP=$(mktemp -d)
+            curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
+            sudo rpm --import "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
+            rm -rf "${KEY_TMP}"
+            # Another process (e.g. registration on a newly booted host) may hold the zypper
+            # lock, so every zypper call waits up to 5 minutes for it instead of failing.
+            # sudo resets the environment, so the variable is set after sudo.
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet refresh -r newrelic-dotnet-agent-repo
+            # --force makes zypper download the package even when it is already installed (i.e. on a rerun)
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet install --force --download-only newrelic-dotnet-agent
+          elif [[ -z "$IS_YUM_INSTALLED" ]]
           then
             # apt-get can transiently fail with exit 100 ("Unable to lock directory
             # /var/lib/apt/lists/") if another process (e.g. unattended-upgrades,
@@ -277,11 +311,12 @@ install:
             # -f fails on an HTTP error instead of writing the error page over the existing .repo file
             curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o /etc/yum.repos.d/newrelic-dotnet-agent.repo
             # Some yum versions (e.g. Amazon Linux 2) fetch the repository's GPG keys only when they
-            # install the package, which needs the network, so import them now.
+            # install the package, which needs the network, so import them now. Only the current
+            # signing key is imported: the legacy key (548C16BF) only signed agent versions
+            # <=10.47.0, which are out of support, and RHEL 10+ crypto policy rejects it.
             KEY_TMP=$(mktemp -d)
-            curl -fsS --retry 3 -o "${KEY_TMP}/548C16BF.gpg" {{.NEW_RELIC_DOWNLOAD_URL}}548C16BF.gpg
             curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
-            sudo rpm --import "${KEY_TMP}/548C16BF.gpg" "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
+            sudo rpm --import "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
             rm -rf "${KEY_TMP}"
             sudo yum makecache -q
             # Download the package now so install doesn't need the network. On a rerun the agent is
@@ -310,7 +345,12 @@ install:
       cmds:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
-          if [[ -z "$IS_YUM_INSTALLED" ]]
+          IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
+          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          then
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-netcore20-agent >/dev/null 2>&1 || true
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-dotnet-agent >/dev/null 2>&1 || true
+          elif [[ -z "$IS_YUM_INSTALLED" ]]
           then
             sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent >/dev/null 2>&1 || true
             sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-dotnet-agent >/dev/null 2>&1 || true
@@ -334,7 +374,12 @@ install:
       cmds:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
-          if [[ -z "$IS_YUM_INSTALLED" ]]
+          IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
+          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          then
+            # The repository was set up and the package downloaded in setup_repo
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet install newrelic-dotnet-agent
+          elif [[ -z "$IS_YUM_INSTALLED" ]]
           then
             # Same lock-contention retry as in setup_repo (each task cmd runs in its own shell).
             run_apt_with_retry() {
