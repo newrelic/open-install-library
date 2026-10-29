@@ -268,9 +268,12 @@ install:
             curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
             sudo rpm --import "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
             rm -rf "${KEY_TMP}"
-            sudo zypper -n --quiet refresh -r newrelic-dotnet-agent-repo
+            # Another process (e.g. registration on a newly booted host) may hold the zypper
+            # lock, so every zypper call waits up to 5 minutes for it instead of failing.
+            # sudo resets the environment, so the variable is set after sudo.
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet refresh -r newrelic-dotnet-agent-repo
             # --force makes zypper download the package even when it is already installed (i.e. on a rerun)
-            sudo zypper -n --quiet install --force --download-only newrelic-dotnet-agent
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet install --force --download-only newrelic-dotnet-agent
           elif [[ -z "$IS_YUM_INSTALLED" ]]
           then
             # apt-get can transiently fail with exit 100 ("Unable to lock directory
@@ -345,8 +348,8 @@ install:
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
           if [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
-            sudo zypper -n remove newrelic-netcore20-agent >/dev/null 2>&1 || true
-            sudo zypper -n remove newrelic-dotnet-agent >/dev/null 2>&1 || true
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-netcore20-agent >/dev/null 2>&1 || true
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-dotnet-agent >/dev/null 2>&1 || true
           elif [[ -z "$IS_YUM_INSTALLED" ]]
           then
             sudo DEBIAN_FRONTEND=noninteractive dpkg -r newrelic-netcore20-agent >/dev/null 2>&1 || true
@@ -375,7 +378,7 @@ install:
           if [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             # The repository was set up and the package downloaded in setup_repo
-            sudo zypper -n --quiet install newrelic-dotnet-agent
+            sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet install newrelic-dotnet-agent
           elif [[ -z "$IS_YUM_INSTALLED" ]]
           then
             # Same lock-contention retry as in setup_repo (each task cmd runs in its own shell).
