@@ -88,6 +88,10 @@ install:
   version: "3"
   silent: true
 
+  vars:
+    # Working directory for the files the tasks share (services list, downloaded tarball, ...)
+    DOTNET_WORK_DIR: /tmp/dotnet-guided-install
+
   tasks:
     default:
       cmds:
@@ -190,11 +194,11 @@ install:
     # discovery, and writes the services it finds to dotnet_services.txt for the later tasks
     find_dotnet_services:
       env:
-        DOTNET_SERVICES_FILE: /tmp/dotnet-introspector/dotnet_services.txt
+        DOTNET_SERVICES_FILE: "{{.DOTNET_WORK_DIR}}/dotnet_services.txt"
       cmds:
-        - rm -rf /tmp/dotnet-introspector
-        - mkdir -p /tmp/dotnet-introspector
-        - chmod -R 777 /tmp/dotnet-introspector
+        - rm -rf {{.DOTNET_WORK_DIR}}
+        - mkdir -p {{.DOTNET_WORK_DIR}}
+        - chmod -R 777 {{.DOTNET_WORK_DIR}}
         - *dotnet_discovery
         - echo "Done finding .NET services"
 
@@ -209,8 +213,8 @@ install:
           if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
           then
             # There is no ARM64 rpm of the agent, so ARM64 hosts without apt install the tarball.
-            curl -fsSL --retry 3 {{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/newrelic-dotnet-agent_arm64.tar.gz -o /tmp/dotnet-introspector/newrelic-dotnet-agent_arm64.tar.gz
-            tar -tzf /tmp/dotnet-introspector/newrelic-dotnet-agent_arm64.tar.gz > /dev/null
+            curl -fsSL --retry 3 {{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/newrelic-dotnet-agent_arm64.tar.gz -o {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz
+            tar -tzf {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz > /dev/null
           elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             # SLES: zypper reads the same rpm-md repository as yum, but it can't parse the
@@ -307,9 +311,9 @@ install:
     stop:
       cmds:
         # Marks that services are down; restore_services_on_failure restarts them if this marker is still present.
-        - touch /tmp/dotnet-introspector/.services_stopped
+        - touch {{.DOTNET_WORK_DIR}}/.services_stopped
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             sudo systemctl stop $sn
           done
         - echo "Done stopping services"
@@ -339,7 +343,7 @@ install:
           fi
 
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             if [[ -f "/etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf" ]]
             then
               sudo rm -f /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
@@ -359,7 +363,7 @@ install:
           then
             # The tarball was downloaded in setup_repo. Install it the way the deb and rpm packages do.
             NEWRELIC_HOME=/usr/local/newrelic-dotnet-agent
-            TARBALL=/tmp/dotnet-introspector/newrelic-dotnet-agent_arm64.tar.gz
+            TARBALL={{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz
             MANIFEST=${NEWRELIC_HOME}/.tarball-files
 
             # Like a package upgrade, remove the files the previous tarball install added, so files
@@ -421,7 +425,7 @@ install:
     configure:
       cmds:
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             if [[ ! -d "/etc/systemd/system/${sn}.d" ]]
             then
               sudo mkdir -p "/etc/systemd/system/${sn}.d"
@@ -452,25 +456,25 @@ install:
       cmds:
         - sudo systemctl daemon-reload
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             echo "Restarting $sn"
             sudo systemctl restart $sn
           done
-        - rm -f /tmp/dotnet-introspector/.services_stopped
+        - rm -f {{.DOTNET_WORK_DIR}}/.services_stopped
         - echo "Services restarted"
 
     restore_services_on_failure:
       cmds:
         - |
-          if [[ -f /tmp/dotnet-introspector/.services_stopped ]]
+          if [[ -f {{.DOTNET_WORK_DIR}}/.services_stopped ]]
           then
             echo "The New Relic .NET agent installation failed after stopping services. Restarting them." >&2
             sudo systemctl daemon-reload || true
-            for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+            for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
               echo "Starting $sn" >&2
               sudo systemctl start $sn || echo "Failed to start $sn" >&2
             done
-            rm -f /tmp/dotnet-introspector/.services_stopped
+            rm -f {{.DOTNET_WORK_DIR}}/.services_stopped
           fi
 
     cli_validate:
@@ -485,9 +489,9 @@ install:
           sleep 10
         # Get the current PIDs of the services
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             pid=$(systemctl show --property MainPID $sn 2>/dev/null | sed 's/MainPID=//')
-            echo "${pid}" >> /tmp/dotnet-introspector/dotnet_service_pids.txt
+            echo "${pid}" >> {{.DOTNET_WORK_DIR}}/dotnet_service_pids.txt
           done
         # For each PID, get the port(s) it is listening on by inspecting /proc/${pid}/fd (open files)
         # and comparing them with open TCP ports in /proc/net/tcp
@@ -497,17 +501,17 @@ install:
           if [[ "${realAwk}" == "/usr/bin/gawk" ]]; then
             awkArgs="--non-decimal-data"
           fi
-          for pid in `cat /tmp/dotnet-introspector/dotnet_service_pids.txt`; do
+          for pid in `cat {{.DOTNET_WORK_DIR}}/dotnet_service_pids.txt`; do
             for socket in $(sudo ls -l /proc/${pid}/fd |grep socket |sed 's/.*\[//' |sed 's/\]//' |uniq); do
               hexport=$(sudo grep ${socket} /proc/net/tcp |awk '{print $2}' |cut -d':' -f2)
               if [[ "${hexport}" -ne "" ]]; then
-                echo "${hexport}" | awk $awkArgs '{ printf("%d\n","0x"$1) }' | tee -a /tmp/dotnet-introspector/ports.txt
+                echo "${hexport}" | awk $awkArgs '{ printf("%d\n","0x"$1) }' | tee -a {{.DOTNET_WORK_DIR}}/ports.txt
               fi
             done
           done
         # Get the root (/) URL for the service listening on each port found
         - |
-          for pn in `cat /tmp/dotnet-introspector/ports.txt`; do
+          for pn in `cat {{.DOTNET_WORK_DIR}}/ports.txt`; do
             echo "Pinging http://localhost:$pn"
             for i in {1..3}; do
               sleep 1
@@ -519,5 +523,5 @@ install:
     cleanup_temp_files:
       ignore_error: true
       cmds:
-        - rm -rf /tmp/dotnet-introspector
+        - rm -rf {{.DOTNET_WORK_DIR}}
         - echo "Done cleaning up"
