@@ -84,7 +84,6 @@ install:
       cmds:
         - task: verify_continue
         - task: assert_pre_req
-        - task: add_gnupg2_if_required
         - task: introspector
         - task: gather_services
         - task: setup_repo
@@ -164,20 +163,6 @@ install:
             fi
           done
           
-    add_gnupg2_if_required:
-      cmds:
-        - |
-          IS_YUM_INSTALLED=$(which yum 2>&1 || true)
-          IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
-          if [[ -z "$IS_YUM_INSTALLED" && -z "$IS_ZYPPER_INSTALLED" ]]; then
-            if [ $(({{.DEBIAN_VERSION}})) -ge 10 ]; then
-              sudo apt-get install gnupg2 -y
-            fi
-          fi
-      vars:
-        DEBIAN_VERSION:
-          sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
-
     introspector:
       cmds:
         - rm -rf /tmp/dotnet-introspector
@@ -293,6 +278,16 @@ install:
               echo "Giving up: apt-get is still locked by another process after ${max_attempts} attempts." >&2
               exit 27
             }
+
+            # gpg builds the keyring below, but minimal Debian/Ubuntu installs and container images
+            # ship only gpgv. This runs before the New Relic source is written, but a failed earlier
+            # run may have left that source without its keyring, so an update error is tolerated:
+            # apt still refreshes the distro lists, which is all the gnupg install needs.
+            if ! command -v gpg >/dev/null 2>&1
+            then
+              sudo apt-get update >/dev/null || true
+              run_apt_with_retry sudo apt-get install gnupg -y -qq > /dev/null
+            fi
 
             echo 'deb [signed-by=/usr/share/keyrings/newrelic-apt.gpg] http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
 
