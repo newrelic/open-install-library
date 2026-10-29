@@ -1,0 +1,69 @@
+{
+    "global_tags": {
+        "owning_team": "virtuoso",
+        "Environment": "development",
+        "Department": "product",
+        "Product": "virtuoso"
+    },
+
+    "resources": [{
+        "id": "al2023-arm64",
+        "provider": "aws",
+        "type": "ec2",
+        "size": "t4g.small",
+        "ami_name": "al2023-ami-2023.*-arm64",
+        "user_name": "ec2-user"
+    }],
+
+    "services": [{
+        "id": "aspnetcore",
+        "destinations": ["al2023-arm64"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/dotNet/install/al2023/roles",
+        "port": 9999
+      },
+      {
+        "id": "apache1",
+        "destinations": ["al2023-arm64"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/apache/install/rhel/roles",
+        "port": 80
+      },
+      {
+        "id": "dotnet1",
+        "destinations": ["al2023-arm64"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/apache/deploy-application/dotNet/rhel/roles",
+        "port": 8080,
+        "params": {
+            "is_selfcontained": "true",
+            "proxy_port": "5001"
+        }
+      },
+      {
+        "id": "dotnet2",
+        "destinations": ["al2023-arm64"],
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/apache/deploy-application/dotNet/rhel/roles",
+        "port": 8081,
+        "params": {
+            "proxy_port": "5000"
+        }
+      }],
+
+  "instrumentations": {
+    "resources": [
+      {
+        "id": "cli1",
+        "resource_ids": ["al2023-arm64"],
+        "provider": "newrelic",
+        "source_repository": "https://github.com/newrelic/open-install-library.git",
+        "deploy_script_path": "test/deploy/linux/newrelic-cli/install-recipe/roles",
+        "params": {
+          "recipe_content_url": "https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/infrastructure/awslinux.yml,https://raw.githubusercontent.com/newrelic/open-install-library/main/recipes/newrelic/apm/dotNet/linux-systemd.yml",
+          "validate_output": ".NET Agent\\s+\\(installed\\)"
+        }
+      }
+    ]
+  }
+}

@@ -10,6 +10,9 @@ installTargets:
   - type: application
     os: linux
     kernelArch: x86_64
+  - type: application
+    os: linux
+    kernelArch: aarch64
 
 keywords:
   - Apm
@@ -21,52 +24,58 @@ keywords:
 processMatch: []
 
 preInstall:
-  requireAtDiscovery: |
+  # The install section's find_dotnet_services task runs this same script (the YAML alias
+  # *dotnet_discovery), with DOTNET_SERVICES_FILE set so the script writes the services it finds.
+  requireAtDiscovery: &dotnet_discovery |
     # The CLI shows the last line written to stderr before a non-zero exit as the reason.
 
-    # Quick heuristic before downloading the introspector: CoreCLR-based .NET processes
-    # normally map libcoreclr.so, regardless of how .NET was installed. This is not true
-    # for Native AOT apps, and /proc access restrictions can also hide process maps.
-    if ! grep -qs libcoreclr.so /proc/[0-9]*/maps
+    # Find .NET processes on any architecture: CoreCLR-based processes map libcoreclr.so,
+    # however .NET was installed (OS package, dotnet-install.sh, tarball, or a self-contained
+    # app). Native AOT apps don't, and the agent doesn't support them. Reading other users'
+    # /proc/<pid>/maps requires root, which guided install runs as.
+    DOTNET_PIDS=""
+    for maps in /proc/[0-9]*/maps; do
+      grep -qsi '/libcoreclr\.so$' "$maps" || continue
+      pid=${maps#/proc/}
+      pid=${pid%/maps}
+      comm=$(tr '[:upper:]' '[:lower:]' 2>/dev/null < "/proc/${pid}/comm") || continue
+      # Process name deny list: skip common system and user processes that are not relevant for instrumentation
+      # Source: https://github.com/newrelic/nri-introspector-dotnet/blob/main/src/nri-introspector-dotnet/AllowDenyLists.cs
+      case "$comm" in
+        chrome*|code*|com.docker*|dbgsvc*|docker*|dpotelemetrysvc*|firefox*|idle*|iexplore*|intellitrace*|lms*|mdnsresponder*|"memory compression"*|microsoft.*|openconsole*|powershell*|pwsh*|sihost*|sqlwriter*|system*|vpnkit*|vmmem*) continue ;;
+      esac
+      DOTNET_PIDS="${DOTNET_PIDS} ${pid}"
+    done
+
+    if [[ -z "$DOTNET_PIDS" ]]
     then
       printf '%s\n' "No CoreCLR-based .NET processes were detected. Start your .NET application and run the installer again." >&2
       exit 3
     fi
 
-    # .NET apps are running, get .NET introspector tooling
-    TMP_DIR=$(mktemp -dq /tmp/newrelic.XXXXXX)
-    curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o ${TMP_DIR}/dotnet-is-linux-x64.gz >/dev/null
-    zcat ${TMP_DIR}/dotnet-is-linux-x64.gz > ${TMP_DIR}/nri-lsi-dotnet
-    chmod u+x $TMP_DIR/nri-lsi-dotnet >/dev/null
-    
-    # Record all .NET processes
-    ${TMP_DIR}/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > ${TMP_DIR}/dotnet_processes.txt
-    processCount=$(cat ${TMP_DIR}/dotnet_processes.txt | wc -w)
-    if [[ "$processCount" -eq 0 ]]; then
-      rm -rf $TMP_DIR >/dev/null
-      echo "No running .NET processes were found by the .NET introspector. Start your .NET application and run the installer again." >&2
-      exit 3
+    # Find the systemd services whose main process is one of them
+    DOTNET_SERVICES=""
+    for sn in $(systemctl list-unit-files --type service | awk '{ print $1 }'); do
+      mainpid=$(systemctl show --property MainPID "$sn" 2>/dev/null | sed 's/MainPID=//')
+      for pid in $DOTNET_PIDS; do
+        if [[ "$mainpid" -eq "$pid" ]]
+        then
+          echo "Found .NET service: ${sn}"
+          DOTNET_SERVICES="${DOTNET_SERVICES} ${sn}"
+        fi
+      done
+    done
+
+    if [[ -z "$DOTNET_SERVICES" ]]
+    then
+      echo ".NET processes were found, but none are running as systemd services. This installer only instruments .NET applications run by systemd." >&2
+      exit 132
     fi
 
-    # Record all systemd services and check if any are .NET
-    systemctl list-unit-files --type service | awk '{ print $1 }' > ${TMP_DIR}/all_services.txt
-    for sn in `cat ${TMP_DIR}/all_services.txt`; do
-        mainpid=$(systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
-        for dnp in `cat ${TMP_DIR}/dotnet_processes.txt`; do
-            
-            # .NET systemd service found!
-            if [[ "$mainpid" -eq "$dnp" ]]
-            then
-              rm -rf $TMP_DIR >/dev/null
-              exit 0
-            fi
-        done
-    done
-    
-    # .NET processes found, but none are running as systemd services :(
-    rm -rf $TMP_DIR >/dev/null
-    echo ".NET processes were found, but none are running as systemd services. This installer only instruments .NET applications run by systemd." >&2
-    exit 132
+    if [[ -n "${DOTNET_SERVICES_FILE:-}" ]]
+    then
+      printf '%s\n' $DOTNET_SERVICES > "$DOTNET_SERVICES_FILE"
+    fi
 
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
@@ -79,14 +88,17 @@ install:
   version: "3"
   silent: true
 
+  vars:
+    # Working directory for the files the tasks share (services list, downloaded tarball, ...)
+    DOTNET_WORK_DIR: /tmp/dotnet-guided-install
+
   tasks:
     default:
       cmds:
         - task: verify_continue
         - task: assert_pre_req
         - task: add_gnupg2_if_required
-        - task: introspector
-        - task: gather_services
+        - task: find_dotnet_services
         - task: setup_repo
         # Runs when this task exits, success or failure. Restarts the services if a later step failed after stopping them.
         - defer: { task: restore_services_on_failure }
@@ -178,57 +190,17 @@ install:
         DEBIAN_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
-    introspector:
+    # Runs the preInstall discovery script again, since the services may have changed since
+    # discovery, and writes the services it finds to dotnet_services.txt for the later tasks
+    find_dotnet_services:
+      env:
+        DOTNET_SERVICES_FILE: "{{.DOTNET_WORK_DIR}}/dotnet_services.txt"
       cmds:
-        - rm -rf /tmp/dotnet-introspector
-        - curl -s https://download.newrelic.com/install/dotnet/introspector/latest/dotnet-is-linux-x64.gz -o /tmp/dotnet-is-linux-x64.gz
-        - mkdir -p /tmp/dotnet-introspector
-        - zcat /tmp/dotnet-is-linux-x64.gz > /tmp/dotnet-introspector/nri-lsi-dotnet
-        - rm -f /tmp/dotnet-is-linux-x64.gz
-        - chmod -R 777 /tmp/dotnet-introspector
-        # nri-lsi-dotnet output looks like "[18044,26844,38720,31448]"
-        - /tmp/dotnet-introspector/nri-lsi-dotnet -c | tr -d '[]' | tr ',' '\n' > /tmp/dotnet-introspector/dotnet_processes.txt
-        - |
-          processCount=$(cat /tmp/dotnet-introspector/dotnet_processes.txt | wc -w)
-          if [[ "$processCount" -eq 0 ]]; then
-            YELLOW='\033[0;33m'
-            NOCOLOR='\033[0m'
-            echo -e "${YELLOW}
-            No dotnet processes were found.  Please ensure the services you want to instrument
-            are running in systemd and try running this installer again.
-            ${NOCOLOR}\n"
-            exit 3
-          fi
-        - echo "Done with introspector"
-
-    gather_services:
-      cmds:
-        - systemctl list-unit-files --type service | awk '{ print $1 }' > /tmp/dotnet-introspector/all_services.txt
-        - cat /dev/null > /tmp/dotnet-introspector/dotnet_services.txt
-        - |
-          for sn in `cat /tmp/dotnet-introspector/all_services.txt`; do
-              mainpid=$(systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
-              for dnp in `cat /tmp/dotnet-introspector/dotnet_processes.txt`; do
-                  if [[ "$mainpid" -eq "$dnp" ]]
-                  then
-                    echo Found .NET service: $sn
-                    echo $sn >> /tmp/dotnet-introspector/dotnet_services.txt
-                  fi
-              done
-          done
-        - |
-          if [[ ! -s "/tmp/dotnet-introspector/dotnet_services.txt" ]]
-          then
-            YELLOW='\033[0;33m'
-            NOCOLOR='\033[0m'
-            echo -e "${YELLOW}
-            Dotnet processes were detected, but none were running under systemd.  
-            Please ensure the services you want to instrument are running in systemd 
-            and try running this installer again.
-            ${NOCOLOR}\n"
-            exit 20
-          fi
-        - echo "Done gathering services"
+        - rm -rf {{.DOTNET_WORK_DIR}}
+        - mkdir -p {{.DOTNET_WORK_DIR}}
+        - chmod -R 777 {{.DOTNET_WORK_DIR}}
+        - *dotnet_discovery
+        - echo "Done finding .NET services"
 
     # Repository, key, and package download happen before any services are stopped,
     # so a network or key failure leaves the customer's services running.
@@ -237,7 +209,13 @@ install:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
-          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          IS_APT_INSTALLED=$(which apt-get 2>/dev/null || true)
+          if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
+          then
+            # There is no ARM64 rpm of the agent, so ARM64 hosts without apt install the tarball.
+            curl -fsSL --retry 3 {{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/newrelic-dotnet-agent_arm64.tar.gz -o {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz
+            tar -tzf {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz > /dev/null
+          elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             # SLES: zypper reads the same rpm-md repository as yum, but it can't parse the
             # yum .repo file as published (CRLF line endings, $basearch in baseurl), so
@@ -333,9 +311,9 @@ install:
     stop:
       cmds:
         # Marks that services are down; restore_services_on_failure restarts them if this marker is still present.
-        - touch /tmp/dotnet-introspector/.services_stopped
+        - touch {{.DOTNET_WORK_DIR}}/.services_stopped
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             sudo systemctl stop $sn
           done
         - echo "Done stopping services"
@@ -346,7 +324,12 @@ install:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
-          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          IS_APT_INSTALLED=$(which apt-get 2>/dev/null || true)
+          if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
+          then
+            # Tarball installs are upgraded in place by the install task, which keeps newrelic.config
+            true
+          elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-netcore20-agent >/dev/null 2>&1 || true
             sudo ZYPP_LOCK_TIMEOUT=300 zypper -n remove newrelic-dotnet-agent >/dev/null 2>&1 || true
@@ -360,7 +343,7 @@ install:
           fi
 
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             if [[ -f "/etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf" ]]
             then
               sudo rm -f /etc/systemd/system/$sn.d/nr_dotnet_agent_env.conf
@@ -375,7 +358,43 @@ install:
         - |
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
-          if [[ -n "$IS_ZYPPER_INSTALLED" ]]
+          IS_APT_INSTALLED=$(which apt-get 2>/dev/null || true)
+          if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
+          then
+            # The tarball was downloaded in setup_repo. Install it the way the deb and rpm packages do.
+            NEWRELIC_HOME=/usr/local/newrelic-dotnet-agent
+            TARBALL={{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz
+            MANIFEST=${NEWRELIC_HOME}/.tarball-files
+
+            # Like a package upgrade, remove the files the previous tarball install added, so files
+            # the new version no longer ships don't linger. Logs and custom extension files aren't
+            # in the list, so they stay.
+            if [[ -f "$MANIFEST" ]]
+            then
+              while read -r f; do
+                case "$f" in
+                  */|newrelic-dotnet-agent/newrelic.config) continue ;;
+                esac
+                sudo rm -f "/usr/local/${f}"
+              done < "$MANIFEST"
+            fi
+
+            # newrelic.config is a config file in the packages, so keep the existing one
+            if [[ -f "${NEWRELIC_HOME}/newrelic.config" ]]
+            then
+              sudo tar -xzf "$TARBALL" -C /usr/local --exclude newrelic-dotnet-agent/newrelic.config
+            else
+              sudo tar -xzf "$TARBALL" -C /usr/local
+            fi
+            tar -tzf "$TARBALL" | sudo tee "$MANIFEST" > /dev/null
+
+            # The same setup as the packages' postinst scripts
+            sudo mkdir -p "${NEWRELIC_HOME}/logs" /var/log/newrelic
+            sudo chmod o+w "${NEWRELIC_HOME}/logs"
+            sudo ln -sTf "${NEWRELIC_HOME}/logs" /var/log/newrelic/dotnet
+            echo "export CORECLR_NEWRELIC_HOME=${NEWRELIC_HOME}" | sudo tee /etc/profile.d/newrelic-dotnet-agent-path.sh > /dev/null
+            sudo chmod +x ${NEWRELIC_HOME}/*.sh
+          elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
             # The repository was set up and the package downloaded in setup_repo
             sudo ZYPP_LOCK_TIMEOUT=300 zypper -n --quiet install newrelic-dotnet-agent
@@ -406,7 +425,7 @@ install:
     configure:
       cmds:
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             if [[ ! -d "/etc/systemd/system/${sn}.d" ]]
             then
               sudo mkdir -p "/etc/systemd/system/${sn}.d"
@@ -437,25 +456,25 @@ install:
       cmds:
         - sudo systemctl daemon-reload
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             echo "Restarting $sn"
             sudo systemctl restart $sn
           done
-        - rm -f /tmp/dotnet-introspector/.services_stopped
+        - rm -f {{.DOTNET_WORK_DIR}}/.services_stopped
         - echo "Services restarted"
 
     restore_services_on_failure:
       cmds:
         - |
-          if [[ -f /tmp/dotnet-introspector/.services_stopped ]]
+          if [[ -f {{.DOTNET_WORK_DIR}}/.services_stopped ]]
           then
             echo "The New Relic .NET agent installation failed after stopping services. Restarting them." >&2
             sudo systemctl daemon-reload || true
-            for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+            for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
               echo "Starting $sn" >&2
               sudo systemctl start $sn || echo "Failed to start $sn" >&2
             done
-            rm -f /tmp/dotnet-introspector/.services_stopped
+            rm -f {{.DOTNET_WORK_DIR}}/.services_stopped
           fi
 
     cli_validate:
@@ -470,9 +489,9 @@ install:
           sleep 10
         # Get the current PIDs of the services
         - |
-          for sn in `cat /tmp/dotnet-introspector/dotnet_services.txt`; do
+          for sn in `cat {{.DOTNET_WORK_DIR}}/dotnet_services.txt`; do
             pid=$(systemctl show --property MainPID $sn 2>/dev/null | sed 's/MainPID=//')
-            echo "${pid}" >> /tmp/dotnet-introspector/dotnet_service_pids.txt
+            echo "${pid}" >> {{.DOTNET_WORK_DIR}}/dotnet_service_pids.txt
           done
         # For each PID, get the port(s) it is listening on by inspecting /proc/${pid}/fd (open files)
         # and comparing them with open TCP ports in /proc/net/tcp
@@ -482,17 +501,17 @@ install:
           if [[ "${realAwk}" == "/usr/bin/gawk" ]]; then
             awkArgs="--non-decimal-data"
           fi
-          for pid in `cat /tmp/dotnet-introspector/dotnet_service_pids.txt`; do
+          for pid in `cat {{.DOTNET_WORK_DIR}}/dotnet_service_pids.txt`; do
             for socket in $(sudo ls -l /proc/${pid}/fd |grep socket |sed 's/.*\[//' |sed 's/\]//' |uniq); do
               hexport=$(sudo grep ${socket} /proc/net/tcp |awk '{print $2}' |cut -d':' -f2)
               if [[ "${hexport}" -ne "" ]]; then
-                echo "${hexport}" | awk $awkArgs '{ printf("%d\n","0x"$1) }' | tee -a /tmp/dotnet-introspector/ports.txt
+                echo "${hexport}" | awk $awkArgs '{ printf("%d\n","0x"$1) }' | tee -a {{.DOTNET_WORK_DIR}}/ports.txt
               fi
             done
           done
         # Get the root (/) URL for the service listening on each port found
         - |
-          for pn in `cat /tmp/dotnet-introspector/ports.txt`; do
+          for pn in `cat {{.DOTNET_WORK_DIR}}/ports.txt`; do
             echo "Pinging http://localhost:$pn"
             for i in {1..3}; do
               sleep 1
@@ -504,5 +523,5 @@ install:
     cleanup_temp_files:
       ignore_error: true
       cmds:
-        - rm -rf /tmp/dotnet-introspector
+        - rm -rf {{.DOTNET_WORK_DIR}}
         - echo "Done cleaning up"
