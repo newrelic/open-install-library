@@ -24,14 +24,15 @@ keywords:
 processMatch: []
 
 preInstall:
-  requireAtDiscovery: |
+  # The install section's find_dotnet_services task runs this same script (the YAML alias
+  # *dotnet_discovery), with DOTNET_SERVICES_FILE set so the script writes the services it finds.
+  requireAtDiscovery: &dotnet_discovery |
     # The CLI shows the last line written to stderr before a non-zero exit as the reason.
 
     # Find .NET processes on any architecture: CoreCLR-based processes map libcoreclr.so,
     # however .NET was installed (OS package, dotnet-install.sh, tarball, or a self-contained
     # app). Native AOT apps don't, and the agent doesn't support them. Reading other users'
     # /proc/<pid>/maps requires root, which guided install runs as.
-    # Keep in sync with the find_dotnet_processes task.
     DOTNET_PIDS=""
     for maps in /proc/[0-9]*/maps; do
       grep -qsi '/libcoreclr\.so$' "$maps" || continue
@@ -53,19 +54,29 @@ preInstall:
       exit 3
     fi
 
-    # Check if any systemd service's main process is one of them
+    # Find the systemd services whose main process is one of them
+    DOTNET_SERVICES=""
     for sn in $(systemctl list-unit-files --type service | awk '{ print $1 }'); do
       mainpid=$(systemctl show --property MainPID "$sn" 2>/dev/null | sed 's/MainPID=//')
       for pid in $DOTNET_PIDS; do
         if [[ "$mainpid" -eq "$pid" ]]
         then
-          exit 0
+          echo "Found .NET service: ${sn}"
+          DOTNET_SERVICES="${DOTNET_SERVICES} ${sn}"
         fi
       done
     done
 
-    echo ".NET processes were found, but none are running as systemd services. This installer only instruments .NET applications run by systemd." >&2
-    exit 132
+    if [[ -z "$DOTNET_SERVICES" ]]
+    then
+      echo ".NET processes were found, but none are running as systemd services. This installer only instruments .NET applications run by systemd." >&2
+      exit 132
+    fi
+
+    if [[ -n "${DOTNET_SERVICES_FILE:-}" ]]
+    then
+      printf '%s\n' $DOTNET_SERVICES > "$DOTNET_SERVICES_FILE"
+    fi
 
 validationNrql: "SELECT count(*) FROM NrIntegrationError WHERE purpose = 'New Relic CLI configuration validation' AND hostname like '{{.HOSTNAME}}%' since 10 minutes ago"
 
@@ -84,8 +95,7 @@ install:
         - task: verify_continue
         - task: assert_pre_req
         - task: add_gnupg2_if_required
-        - task: find_dotnet_processes
-        - task: gather_services
+        - task: find_dotnet_services
         - task: setup_repo
         # Runs when this task exits, success or failure. Restarts the services if a later step failed after stopping them.
         - defer: { task: restore_services_on_failure }
@@ -177,64 +187,17 @@ install:
         DEBIAN_VERSION:
           sh: awk -F= '/VERSION_ID/ {print $2}' /etc/os-release
 
-    find_dotnet_processes:
+    # Runs the preInstall discovery script again, since the services may have changed since
+    # discovery, and writes the services it finds to dotnet_services.txt for the later tasks
+    find_dotnet_services:
+      env:
+        DOTNET_SERVICES_FILE: /tmp/dotnet-introspector/dotnet_services.txt
       cmds:
         - rm -rf /tmp/dotnet-introspector
         - mkdir -p /tmp/dotnet-introspector
         - chmod -R 777 /tmp/dotnet-introspector
-        # Same discovery as preInstall: processes that map libcoreclr.so, minus the introspector's deny list
-        - |
-          for maps in /proc/[0-9]*/maps; do
-            grep -qsi '/libcoreclr\.so$' "$maps" || continue
-            pid=${maps#/proc/}
-            pid=${pid%/maps}
-            comm=$(tr '[:upper:]' '[:lower:]' 2>/dev/null < "/proc/${pid}/comm") || continue
-            case "$comm" in
-              chrome*|code*|com.docker*|dbgsvc*|docker*|dpotelemetrysvc*|firefox*|idle*|iexplore*|intellitrace*|lms*|mdnsresponder*|"memory compression"*|microsoft.*|openconsole*|powershell*|pwsh*|sihost*|sqlwriter*|system*|vpnkit*|vmmem*) continue ;;
-            esac
-            echo "${pid}"
-          done > /tmp/dotnet-introspector/dotnet_processes.txt
-        - |
-          processCount=$(cat /tmp/dotnet-introspector/dotnet_processes.txt | wc -w)
-          if [[ "$processCount" -eq 0 ]]; then
-            YELLOW='\033[0;33m'
-            NOCOLOR='\033[0m'
-            echo -e "${YELLOW}
-            No dotnet processes were found.  Please ensure the services you want to instrument
-            are running in systemd and try running this installer again.
-            ${NOCOLOR}\n"
-            exit 3
-          fi
-        - echo "Done finding .NET processes"
-
-    gather_services:
-      cmds:
-        - systemctl list-unit-files --type service | awk '{ print $1 }' > /tmp/dotnet-introspector/all_services.txt
-        - cat /dev/null > /tmp/dotnet-introspector/dotnet_services.txt
-        - |
-          for sn in `cat /tmp/dotnet-introspector/all_services.txt`; do
-              mainpid=$(systemctl show --property MainPID $sn 2> /dev/null | sed 's/MainPID=//')
-              for dnp in `cat /tmp/dotnet-introspector/dotnet_processes.txt`; do
-                  if [[ "$mainpid" -eq "$dnp" ]]
-                  then
-                    echo Found .NET service: $sn
-                    echo $sn >> /tmp/dotnet-introspector/dotnet_services.txt
-                  fi
-              done
-          done
-        - |
-          if [[ ! -s "/tmp/dotnet-introspector/dotnet_services.txt" ]]
-          then
-            YELLOW='\033[0;33m'
-            NOCOLOR='\033[0m'
-            echo -e "${YELLOW}
-            Dotnet processes were detected, but none were running under systemd.  
-            Please ensure the services you want to instrument are running in systemd 
-            and try running this installer again.
-            ${NOCOLOR}\n"
-            exit 20
-          fi
-        - echo "Done gathering services"
+        - *dotnet_discovery
+        - echo "Done finding .NET services"
 
     # Repository, key, and package download happen before any services are stopped,
     # so a network or key failure leaves the customer's services running.
