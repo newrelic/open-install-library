@@ -34,13 +34,15 @@ preInstall:
     # Keep in sync with the find_dotnet_processes task.
     DOTNET_PIDS=""
     for maps in /proc/[0-9]*/maps; do
-      grep -qs libcoreclr.so "$maps" || continue
+      grep -qsi '/libcoreclr\.so$' "$maps" || continue
       pid=${maps#/proc/}
       pid=${pid%/maps}
-      comm=$(cat "/proc/${pid}/comm" 2>/dev/null) || continue
-      # .NET-based tools that aren't applications to instrument
+      comm=$(tr '[:upper:]' '[:lower:]' 2>/dev/null < "/proc/${pid}/comm") || continue
+      # The .NET introspector's process name deny list (nri-introspector-dotnet AllowDenyLists.cs),
+      # matched the same way: case-insensitive prefix match on the process name. The list's
+      # nri-lsi-dotnet entry is left out: it was the introspector itself.
       case "$comm" in
-        pwsh|powershell|code|nri-lsi-dotnet|docker*|chrome*|firefox*) continue ;;
+        chrome*|code*|com.docker*|dbgsvc*|docker*|dpotelemetrysvc*|firefox*|idle*|iexplore*|intellitrace*|lms*|mdnsresponder*|"memory compression"*|microsoft.*|openconsole*|powershell*|pwsh*|sihost*|sqlwriter*|system*|vpnkit*|vmmem*) continue ;;
       esac
       DOTNET_PIDS="${DOTNET_PIDS} ${pid}"
     done
@@ -180,15 +182,15 @@ install:
         - rm -rf /tmp/dotnet-introspector
         - mkdir -p /tmp/dotnet-introspector
         - chmod -R 777 /tmp/dotnet-introspector
-        # Same discovery as preInstall: processes that map libcoreclr.so, minus .NET-based tools
+        # Same discovery as preInstall: processes that map libcoreclr.so, minus the introspector's deny list
         - |
           for maps in /proc/[0-9]*/maps; do
-            grep -qs libcoreclr.so "$maps" || continue
+            grep -qsi '/libcoreclr\.so$' "$maps" || continue
             pid=${maps#/proc/}
             pid=${pid%/maps}
-            comm=$(cat "/proc/${pid}/comm" 2>/dev/null) || continue
+            comm=$(tr '[:upper:]' '[:lower:]' 2>/dev/null < "/proc/${pid}/comm") || continue
             case "$comm" in
-              pwsh|powershell|code|nri-lsi-dotnet|docker*|chrome*|firefox*) continue ;;
+              chrome*|code*|com.docker*|dbgsvc*|docker*|dpotelemetrysvc*|firefox*|idle*|iexplore*|intellitrace*|lms*|mdnsresponder*|"memory compression"*|microsoft.*|openconsole*|powershell*|pwsh*|sihost*|sqlwriter*|system*|vpnkit*|vmmem*) continue ;;
             esac
             echo "${pid}"
           done > /tmp/dotnet-introspector/dotnet_processes.txt
