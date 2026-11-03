@@ -203,27 +203,35 @@ install:
           '
 
     # Stops IIS via iisreset, retrying up to 30 times with a 2 second delay between attempts.
+    # An attempt succeeds only if iisreset exits 0 and W3SVC reaches Stopped within 5 seconds.
     # Exits 134 if IIS never stops.
     stop:
       cmds:
         - |
           powershell -command '
           function Stop-IIS {
+            # iisreset is a native program, so a failure sets $LASTEXITCODE instead of throwing
+            iisreset /stop | Out-Null
+            if ($LASTEXITCODE -ne 0) { return $false }
             try {
-              iisreset /stop | Out-Null
+              (Get-Service W3SVC -ErrorAction Stop).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(5))
               return $true
             }
             catch { return $false }
           }
 
           $stopped = $false
-          for ($tries = 0; $tries -lt 30; $tries++) {
+          $maxTries = 30
+          for ($tries = 1; $tries -le $maxTries; $tries++) {
             if ((Stop-IIS)) {
               $stopped = $true
               break
             }
             # Try to stop IIS again after a delay
-            Start-Sleep -s 2
+            if ($tries -lt $maxTries) {
+              Write-Host "IIS did not stop (attempt $tries of $maxTries). Retrying in 2 seconds..."
+              Start-Sleep -s 2
+            }
           }
 
           if (-not $stopped) {
@@ -450,27 +458,37 @@ install:
         - echo "New Relic .NET Agent configured"
 
     # Starts IIS via iisreset, retrying up to 30 times with a 2 second delay between attempts.
+    # An attempt succeeds only if iisreset exits 0 and W3SVC reaches Running within 5 seconds.
     # Exits 135 if IIS never starts.
     start:
       cmds:
         - |
           powershell -command '
           function Start-IIS {
+            # iisreset is a native program, so a failure sets $LASTEXITCODE instead of throwing.
+            # It can also exit 0 without starting W3SVC (for example, when W3SVC is disabled),
+            # so confirm the service state too.
+            iisreset /start | Out-Null
+            if ($LASTEXITCODE -ne 0) { return $false }
             try {
-              iisreset /start | Out-Null
+              (Get-Service W3SVC -ErrorAction Stop).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(5))
               return $true
             }
             catch { return $false }
           }
 
           $started = $false
-          for ($tries = 0; $tries -lt 30; $tries++) {
+          $maxTries = 30
+          for ($tries = 1; $tries -le $maxTries; $tries++) {
             if ((Start-IIS)) {
               $started = $true
               break
             }
             # Try to start IIS again after a delay
-            Start-Sleep -s 2
+            if ($tries -lt $maxTries) {
+              Write-Host "IIS did not start (attempt $tries of $maxTries). Retrying in 2 seconds..."
+              Start-Sleep -s 2
+            }
           }
 
           if (-not $started) {
