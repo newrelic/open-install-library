@@ -1,0 +1,118 @@
+receivers:
+  # OTLP receiver for application traces and metrics from Java agent
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  # Kafka metrics receiver for broker, topic, and consumer metrics
+  kafkametrics:
+    brokers: "localhost:9092"
+    protocol_version: 2.0.0
+    scrapers:
+      - brokers
+      - topics
+      - consumers
+    collection_interval: 60s
+
+  # JMX receiver for Kafka Broker metrics
+  jmx/kafka_broker:
+    jar_path: /opt/opentelemetry-java-contrib-jmx-metrics.jar
+    endpoint: "localhost:9999"
+    target_system: kafka
+    collection_interval: 60s
+    resource_attributes:
+      kafka.broker.id: "1"
+
+  # JMX receiver for Zookeeper metrics
+  jmx/zookeeper:
+    jar_path: /opt/opentelemetry-java-contrib-jmx-metrics.jar
+    endpoint: "localhost:9998"
+    target_system: kafka
+    collection_interval: 60s
+
+  # JMX receiver for Kafka Producer application metrics
+  jmx/kafka_producer:
+    jar_path: /opt/opentelemetry-java-contrib-jmx-metrics.jar
+    endpoint: "localhost:9997"
+    target_system: "kafka-producer"
+    collection_interval: 60s
+
+  # JMX receiver for Kafka Consumer application metrics
+  jmx/kafka_consumer:
+    jar_path: /opt/opentelemetry-java-contrib-jmx-metrics.jar
+    endpoint: "localhost:9996"
+    target_system: "kafka-consumer"
+    collection_interval: 60s
+
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 30s
+
+  resourcedetection:
+    detectors: [system]
+    system:
+      resource_attributes:
+        host.name:
+          enabled: true
+        host.id:
+          enabled: true
+
+  resource:
+    attributes:
+      - action: insert
+        key: kafka.cluster.name
+        value: "test-kafka-cluster"
+      - action: insert
+        key: service.name
+        value: "kafka-otel-test"
+
+  # Filter out internal Kafka topics
+  filter/exclude_internal_topics:
+    metrics:
+      exclude:
+        match_type: regexp
+        expressions:
+          - 'attributes["topic"] matches "^__.*"'
+
+  # Transform metrics for New Relic compatibility
+  transform:
+    metric_statements:
+      - context: metric
+        statements:
+          - set(description, "") where description != ""
+          - set(unit, "") where unit != ""
+      - context: resource
+        statements:
+          - set(attributes["kafka.broker.name"], Concat(["BrokerId:", attributes["kafka.broker.id"], " (", attributes["kafka.cluster.name"], ")"], "")) where attributes["kafka.broker.id"] != nil
+      - context: datapoint
+        statements:
+          - set(attributes["kafka.topic.name"], attributes["topic"]) where attributes["topic"] != nil
+
+  # Convert cumulative metrics to delta for New Relic
+  cumulativetodelta:
+
+exporters:
+  otlp:
+    endpoint: "{{ otel_endpoint }}"
+    headers:
+      api-key: "{{ otel_api_key }}"
+    compression: gzip
+    timeout: 30s
+
+service:
+  pipelines:
+    # Metrics pipeline for all Kafka components
+    metrics:
+      receivers: [jmx/kafka_broker, jmx/zookeeper, jmx/kafka_producer, jmx/kafka_consumer, kafkametrics, otlp]
+      processors: [resourcedetection, resource, filter/exclude_internal_topics, transform, cumulativetodelta, batch]
+      exporters: [otlp]
+
+    # Traces pipeline for distributed tracing from Java applications
+    traces:
+      receivers: [otlp]
+      processors: [batch, resourcedetection]
+      exporters: [otlp]
