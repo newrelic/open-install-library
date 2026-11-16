@@ -110,7 +110,22 @@ jobs:
         id: upload-recipes-s3
         run: |
           aws s3 cp ${{ github.workspace }}/recipes.zip s3://nr-downloads-main/install/open-install-library/${{ steps.get_release.outputs.tag_name }}/recipes.zip --profile virtuoso
- 
+
+      - name: Generate and upload recipes SHA-256 checksum
+        run: |
+          sha256sum ${{ github.workspace }}/recipes.zip | awk '{print $1}' > ${{ github.workspace }}/recipes.zip.sha256
+          aws s3 cp ${{ github.workspace }}/recipes.zip.sha256 s3://nr-downloads-main/install/open-install-library/${{ steps.get_release.outputs.tag_name }}/recipes.zip.sha256 --profile virtuoso
+
+      - name: Upload recipes SHA-256 checksum to GitHub Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/recipes.zip.sha256
+          asset_name: recipes.zip.sha256
+          asset_content_type: text/plain
+
       - name: Upload currentVersion.txt to S3
         id: upload-current-version-s3
         run: |
