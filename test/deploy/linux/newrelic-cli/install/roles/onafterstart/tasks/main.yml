@@ -26,23 +26,6 @@
     msg: "A newrelic_personal_api_key is required. Create this entry in your user config file"
   when: newrelic_personal_api_key is not defined
 
-# TEMP-DIAG (SLES 16): remove once the SLES 16 failure is understood
-- name: DIAG host facts
-  shell: |
-    echo "os-release: $(grep -E '^(ID|VERSION_ID)=' /etc/os-release | tr '\n' ' ')"
-    echo "etc_environment: $(ls -l /etc/environment 2>&1)"
-    echo "getenforce: $(getenforce 2>&1)"
-    echo "python3: $(python3 --version 2>&1) at $(command -v python3)"
-    echo "selinux pkgs: $(rpm -qa 2>/dev/null | grep -i selinux | tr '\n' ' ')"
-    echo "sudo: $(command -v sudo)"
-  register: diag_facts
-  changed_when: false
-  failed_when: false
-
-- name: DIAG show host facts
-  debug:
-    var: diag_facts.stdout_lines
-
 - name: set api key
   lineinfile:
     path: "/etc/environment"
@@ -52,18 +35,6 @@
     line: "NEW_RELIC_API_KEY={{ newrelic_personal_api_key }}"
   become: true
   no_log: true
-  register: set_api_key_result
-  ignore_errors: true
-
-- name: DIAG show set api key result
-  debug:
-    msg: "failed={{ set_api_key_result.failed | default('n/a') }} rc={{ set_api_key_result.rc | default('n/a') }} msg={{ (set_api_key_result.msg | default('n/a') | string) | replace(newrelic_personal_api_key, '***') }} stderr={{ ((set_api_key_result.module_stderr | default('')) | string) | replace(newrelic_personal_api_key, '***') | truncate(700) }}"
-  no_log: false
-
-- name: DIAG fail if set api key failed
-  fail:
-    msg: "set api key failed (see DIAG output above)"
-  when: set_api_key_result is failed
 
 - name: Prepare environment variables for newrelic-cli execution
   set_fact:
