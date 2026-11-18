@@ -356,14 +356,16 @@ install:
           curl -fsS 'https://raw.githubusercontent.com/newrelic/newrelic-php-agent/main/release-data/signing-key-fingerprints.json' -o "$WORK/signing-key-fingerprints.json" \
             || fail "Unable to download the New Relic signing key data."
           cd "$WORK"
-          ACTIVE_KEY=$(awk -v purpose="apt" '
-              /^    \{/ { fingerprint = ""; url = ""; found_purpose = ""; status = "active" }
-              /"fingerprint":/ { gsub(/[",]/, "", $2); fingerprint = $2 }
-              /"public_key_url":/ { gsub(/[",]/, "", $2); url = $2 }
-              /"purpose":/ { gsub(/[",]/, "", $2); found_purpose = $2 }
-              /"status":/ { gsub(/[",]/, "", $2); status = $2 }
-              /^    \}/ { if (found_purpose == purpose && status == "active") { print fingerprint, url; exit } }
-            ' signing-key-fingerprints.json)
+          ACTIVE_KEY=$(tr -d '\n' < signing-key-fingerprints.json | grep -o '{[^{}]*}' | awk -v purpose="apt" '
+            function value(key,   found) {
+              if (!match($0, "\"" key "\" *: *\"[^\"]*\"")) return ""
+              found = substr($0, RSTART, RLENGTH)
+              sub("^\"" key "\" *: *\"", "", found)
+              sub("\"$", "", found)
+              return found
+            }
+            $0 ~ ("\"purpose\" *: *\"" purpose "\"") && ($0 !~ /"status" *:/ || $0 ~ /"status" *: *"active"/) { print value("fingerprint"), value("public_key_url"); exit }
+          ')
           FINGERPRINT=${ACTIVE_KEY%% *}
           KEY_URL=${ACTIVE_KEY#* }
           { [ -n "$FINGERPRINT" ] && [ -n "$KEY_URL" ]; } || fail "The New Relic signing key data lists no apt key."
@@ -443,14 +445,16 @@ install:
           command -v gpg > /dev/null || fail "gpg is required to verify the PHP Agent download."
           curl -fsS 'https://raw.githubusercontent.com/newrelic/newrelic-php-agent/main/release-data/signing-key-fingerprints.json' -o signing-key-fingerprints.json \
             || fail "Unable to download the New Relic signing key data."
-          ACTIVE_KEY=$(awk -v purpose="tarball" '
-              /^    \{/ { fingerprint = ""; url = ""; found_purpose = ""; status = "active" }
-              /"fingerprint":/ { gsub(/[",]/, "", $2); fingerprint = $2 }
-              /"public_key_url":/ { gsub(/[",]/, "", $2); url = $2 }
-              /"purpose":/ { gsub(/[",]/, "", $2); found_purpose = $2 }
-              /"status":/ { gsub(/[",]/, "", $2); status = $2 }
-              /^    \}/ { if (found_purpose == purpose && status == "active") { print fingerprint, url; exit } }
-            ' signing-key-fingerprints.json)
+          ACTIVE_KEY=$(tr -d '\n' < signing-key-fingerprints.json | grep -o '{[^{}]*}' | awk -v purpose="tarball" '
+            function value(key,   found) {
+              if (!match($0, "\"" key "\" *: *\"[^\"]*\"")) return ""
+              found = substr($0, RSTART, RLENGTH)
+              sub("^\"" key "\" *: *\"", "", found)
+              sub("\"$", "", found)
+              return found
+            }
+            $0 ~ ("\"purpose\" *: *\"" purpose "\"") && ($0 !~ /"status" *:/ || $0 ~ /"status" *: *"active"/) { print value("fingerprint"), value("public_key_url"); exit }
+          ')
           FINGERPRINT=${ACTIVE_KEY%% *}
           KEY_URL=${ACTIVE_KEY#* }
           { [ -n "$FINGERPRINT" ] && [ -n "$KEY_URL" ]; } || fail "The New Relic signing key data lists no tarball signing key."
@@ -465,6 +469,10 @@ install:
             || fail "The public key $KEY_URL is not the listed key $FINGERPRINT."
           SIGNATURE_STATUS=$(gpg --batch --status-fd 1 --verify "$AGENT_TARBALL.asc" "$AGENT_TARBALL" 2> /dev/null) \
             || fail "The signature of $AGENT_TARBALL is not valid."
+          # gpg also exits with 0 and prints VALIDSIG for a revoked or an expired key; these lines say so.
+          if echo "$SIGNATURE_STATUS" | grep -qE '^\[GNUPG:\] (REVKEYSIG|EXPKEYSIG|KEYEXPIRED|EXPSIG) '; then
+            fail "The key $FINGERPRINT is revoked or expired, or the signature of $AGENT_TARBALL has expired."
+          fi
           echo "$SIGNATURE_STATUS" | awk -v fingerprint="$FINGERPRINT" '$2 == "VALIDSIG" && $NF == fingerprint { found = 1 } END { exit !found }' \
             || fail "The signature of $AGENT_TARBALL was not made by the key $FINGERPRINT."
           rm -rf "$GNUPGHOME"
