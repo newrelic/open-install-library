@@ -1,0 +1,45 @@
+---
+- debug:
+    msg: Install PHP
+
+# RHEL 9 defaults to PHP 8.0; use a supported stream instead.
+- name: enable PHP 8.3 module stream
+  shell: "dnf -y module enable php:8.3"
+  become: yes
+
+- name: install PHP and nginx
+  yum:
+    pkg:
+      - nginx
+      - php
+      - php-fpm
+      - php-mysqlnd
+      - mariadb
+      - mariadb-server
+    state: present
+  become: yes
+
+- name: ensure httpd is not installed (conflicts with nginx)
+  yum:
+    name: httpd
+    state: absent
+  become: yes
+
+- name: start php-fpm service
+  systemd:
+    name: php-fpm
+    state: started
+    enabled: yes
+  become: yes
+
+- template:
+    src: "{{ item }}"
+    dest: ~/templates/
+    mode: 0755
+  with_fileglob:
+    - "../../../../../templates/*"
+  become: yes
+
+- shell:
+    cmd: ~/templates/install-wordpress.sh
+  become: yes
