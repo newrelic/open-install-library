@@ -3,32 +3,34 @@
     msg: Install Docker and PHP
     
 ########################################
-# RHEL support for Docker installation
+# Docker installation
 ########################################
 - block:
-  - name: RHEL - install Docker 
+  - name: install Docker 
     package:
       name: docker
       update_cache: yes
       state: present
   
-  - name: RHEL - Start docker service
-    shell: "service docker start"
+  - name: Start docker service
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
   
-  - name: RHEL - Granting permissions to docker from ec2-user
+  - name: Granting permissions to docker from ec2-user
     shell: "usermod -a -G docker ec2-user"
 
-  - name: RHEL - Flush user/group permissions change
+  - name: Flush user/group permissions change
     meta: reset_connection
 
-  - name: RHEL - Verify docker service is ready
+  - name: Verify docker service is ready
     shell: docker info
     register: output
     retries: 20
     delay: 15
     until: output is not failed    
-  
-  when: ansible_pkg_mgr == 'yum'
+
   become: true
 
 - name: Create templates directory
@@ -49,11 +51,10 @@
 # PHP installation
 ########################################
 
-- name: Yum update
-  shell: yum update -y
-  become: true
-
 - name: Install PHP
-  shell: yum install php -y
+  yum:
+    name: php8.4
+    state: present
+    update_cache: yes
   become: true
 
