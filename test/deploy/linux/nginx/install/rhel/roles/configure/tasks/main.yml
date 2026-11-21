@@ -1,0 +1,37 @@
+---
+- debug:
+    msg: Install NGINX
+
+- name: Set default open_status_url (default not open)
+  set_fact:
+    open_status_url: "false"
+  when: open_status_url is undefined
+
+- name: Set default status_listen (default the status page is on the default server)
+  set_fact:
+    status_listen: ""
+  when: status_listen is undefined
+
+- name: Install nginx
+  shell: "yum install nginx -y"
+  become: true
+
+- block:
+  - name: Copy nginx status config for the default server
+    template:
+      src: default-status-nginx.conf
+      dest: /etc/nginx/default.d/status.conf
+    become: true
+  when: open_status_url|bool and status_listen == ""
+
+- block:
+  - name: Copy nginx status server config listening on status_listen
+    template:
+      src: status-server-nginx.conf
+      dest: /etc/nginx/conf.d/status.conf
+    become: true
+  when: open_status_url|bool and status_listen != ""
+
+- name: Restart nginx
+  shell: "systemctl restart nginx"
+  become: yes
