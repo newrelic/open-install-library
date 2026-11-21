@@ -1,0 +1,114 @@
+---
+- name: Install OpenTelemetry Collector Contrib
+  hosts: all
+  become: true
+  vars:
+    otel_bin: "/usr/local/bin/otelcol-contrib"
+    otel_config_dir: "/etc/otelcol-contrib"
+    otel_config_path: "{{ otel_config_dir }}/config.yaml"
+    # otel_version, rpm_file, deb_file, download_url will be set dynamically
+    pre_tasks:
+      - name: Check if otel_version is provided
+        set_fact:
+          otel_version_provided: "{{ otel_version is defined and otel_version|length > 0 }}"
+
+      - name: Get latest otelcol-contrib version from GitHub if not provided
+        ansible.builtin.uri:
+          url: https://api.github.com/repos/open-telemetry/opentelemetry-collector-releases/releases/latest
+          return_content: yes
+        register: otel_release
+        when: not otel_version_provided | bool
+
+      - name: Set otel_version to latest if not provided
+        set_fact:
+          otel_version: "{{ otel_release.json.tag_name | regex_replace('^v', '') }}"
+        when: not otel_version_provided | bool
+
+      - name: Set download URLs and filenames
+        set_fact:
+          rpm_file: "otelcol-contrib_{{ otel_version }}_linux_amd64.rpm"
+          deb_file: "otelcol-contrib_{{ otel_version }}_amd64.deb"
+          download_url: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ otel_version }}"
+  tasks:
+    - name: Gather OS family
+      ansible.builtin.setup:
+        filter: ansible_os_family
+
+    - name: Ensure wget is installed
+      ansible.builtin.package:
+        name: wget
+        state: present
+
+    - name: Download and install otelcol-contrib (RHEL family)
+      when: ansible_os_family == 'RedHat'
+      block:
+        - name: Download RPM if not present
+          ansible.builtin.get_url:
+            url: "{{ download_url }}/{{ rpm_file }}"
+            dest: "/tmp/{{ rpm_file }}"
+            mode: '0644'
+          args:
+            creates: "/tmp/{{ rpm_file }}"
+        - name: Install RPM
+          ansible.builtin.yum:
+            name: "/tmp/{{ rpm_file }}"
+            state: present
+
+    - name: Download and install otelcol-contrib (Debian family)
+      when: ansible_os_family == 'Debian'
+      block:
+        - name: Download DEB if not present
+          ansible.builtin.get_url:
+            url: "{{ download_url }}/{{ deb_file }}"
+            dest: "/tmp/{{ deb_file }}"
+            mode: '0644'
+          args:
+            creates: "/tmp/{{ deb_file }}"
+        - name: Install DEB
+          ansible.builtin.apt:
+            deb: "/tmp/{{ deb_file }}"
+
+    - name: Validate otelcol-contrib binary
+      ansible.builtin.command: file {{ otel_bin }}
+      register: otel_bin_file
+      failed_when: otel_bin_file.stdout is not search('ELF 64-bit')
+
+    - name: Show otelcol-contrib version
+      ansible.builtin.command: "{{ otel_bin }} --version"
+      register: otel_version_out
+      changed_when: false
+
+    - name: Create config directory
+      ansible.builtin.file:
+        path: "{{ otel_config_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Render otelcol-contrib config from template
+      ansible.builtin.template:
+        src: "{{ otel_config_template | default('templates/config.yaml.j2') }}"
+        dest: "{{ otel_config_path }}"
+        mode: '0644'
+      vars:
+        otel_api_key: "{{ otel_api_key | default('') }}"
+        otel_endpoint: "{{ otel_endpoint | default('') }}"
+
+    - name: Stop otelcol-contrib if running
+      ansible.builtin.shell: "pkill -f '{{ otel_bin }}' || true"
+      ignore_errors: true
+
+    - name: Start otelcol-contrib
+      ansible.builtin.shell: "nohup {{ otel_bin }} --config '{{ otel_config_path }}' > ~/otel_manual.log 2>&1 &"
+      async: 10
+      poll: 0
+
+    - name: Wait for otelcol-contrib to start
+      ansible.builtin.wait_for:
+        path: "{{ otel_bin }}"
+        state: present
+        timeout: 10
+
+    - name: Check if otelcol-contrib is running
+      ansible.builtin.shell: "pgrep -f '{{ otel_bin }}'"
+      register: otel_running
+      failed_when: otel_running.rc != 0
