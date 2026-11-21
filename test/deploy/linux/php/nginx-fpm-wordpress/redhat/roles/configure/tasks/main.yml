@@ -2,16 +2,30 @@
 - debug:
     msg: Install PHP
 
-- name: install PHP and nginx
-  shell: "amazon-linux-extras install -y nginx1 lamp-mariadb10.2-php7.2 php7.2"
+- name: use the PHP 8.3 module stream (the default stream is PHP 8.0, which is end of life)
+  shell: dnf module reset -y php && dnf module enable -y php:8.3
   become: yes
 
-- name: install other pre-reqs
+- name: install PHP and nginx
   yum:
     pkg:
+      - nginx
+      - php
+      - php-fpm
+      - php-mysqlnd
       - mariadb
       - mariadb-server
+      # the recipe requires chkconfig; a RHEL host has it, the bare image of the test does not
+      - chkconfig
     state: present
+    lock_timeout: 180
+  become: yes
+
+- name: start php-fpm service
+  systemd:
+    name: php-fpm
+    state: started
+    enabled: yes
   become: yes
 
 - template:

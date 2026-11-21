@@ -50,6 +50,16 @@ wp core install --allow-root \
             --admin_password=admin \
             --admin_email=admin@example.com
 
+# The php-fpm socket of Debian and Ubuntu has the PHP version in its name (php8.3-fpm.sock); the
+# templates name php7.2, so use the socket that the pool of the installed php-fpm listens on.
+PHP_FPM_POOL=$(ls /etc/php/*/fpm/pool.d/www.conf 2>/dev/null | head -n 1)
+if [ -n "$PHP_FPM_POOL" ]; then
+	PHP_FPM_SOCK=$(awk -F'[ =]+' '/^listen *=/ {print $2; exit}' "$PHP_FPM_POOL")
+	if [ -n "$PHP_FPM_SOCK" ]; then
+		sed -i -e "s#/var/run/php/php7.2-fpm.sock#$PHP_FPM_SOCK#" ~/templates/wordpress-site ~/templates/wordpress-fpm.conf
+	fi
+fi
+
 # Try to detect nginx, if it exists we can start it an exit since if nginx is started
 # there's no need to also start apache.
 if [ $(which nginx) ]; then

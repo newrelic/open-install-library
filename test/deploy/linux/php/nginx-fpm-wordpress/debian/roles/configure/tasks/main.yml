@@ -7,11 +7,19 @@
     pkg:
       - nginx
       - php-fpm
-      - mysql-server
-      - mysql-client
+      - mariadb-server
+      - mariadb-client
+      # the recipe requires gpg; a bare cloud image may not have it
+      - gnupg
       - php-mysql
     update_cache: yes
   become: yes
+  # The apt run of the first boot can hold the dpkg lock, and the mirrors can be flaky.
+  # Retry to absorb both.
+  register: apt_install_php
+  until: apt_install_php is succeeded
+  retries: 3
+  delay: 10
 
 - template:
     src: "{{ item }}"
