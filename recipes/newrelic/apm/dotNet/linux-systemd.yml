@@ -91,6 +91,10 @@ install:
   vars:
     # Working directory for the files the tasks share (services list, downloaded tarball, ...)
     DOTNET_WORK_DIR: /tmp/dotnet-guided-install
+    # The agent repository's reviewed record of the SHA-256 of every file on the download site
+    DOTNET_RELEASE_DATA_URL: https://raw.githubusercontent.com/newrelic/newrelic-dotnet-agent/main/release-data/download-site-hashes.json
+    # Fingerprint of the New Relic package signing key (NEWRELIC_APT_2DAD550E.public)
+    DOTNET_SIGNING_KEY_FINGERPRINT: 2EA7DB7738A22D92945E8EC732FA4C172DAD550E
 
   tasks:
     default:
@@ -195,10 +199,91 @@ install:
           IS_YUM_INSTALLED=$(which yum 2>&1 || true)
           IS_ZYPPER_INSTALLED=$(which zypper 2>/dev/null || true)
           IS_APT_INSTALLED=$(which apt-get 2>/dev/null || true)
+
+          # Stops the install unless the key file holds exactly one primary key and it is the
+          # New Relic signing key. The key is downloaded, so without this check whatever the
+          # download host served would be trusted to sign the agent packages. Removes $KEY_TMP on failure.
+          verify_signing_key() {
+            local keyfile=$1
+            local expected="{{.DOTNET_SIGNING_KEY_FINGERPRINT}}"
+            local listing actual
+
+            if ! command -v gpg >/dev/null 2>&1
+            then
+              rm -rf "${KEY_TMP}"
+              echo "gpg is required to verify the New Relic package signing key, but it is not installed." >&2
+              exit 30
+            fi
+
+            # A throwaway home keeps gpg from creating ~/.gnupg. --show-keys needs GnuPG 2.1.23+;
+            # older versions list a key file when they are given no command.
+            mkdir -m 700 -p "${KEY_TMP}/gnupg"
+            listing=$(GNUPGHOME="${KEY_TMP}/gnupg" gpg --batch --with-colons --show-keys "$keyfile" 2>/dev/null \
+              || GNUPGHOME="${KEY_TMP}/gnupg" gpg --batch --with-colons --with-fingerprint "$keyfile" 2>/dev/null || true)
+            # The fpr record that follows a pub record is the primary key's. Subkey fingerprints are skipped.
+            actual=$(printf '%s\n' "$listing" | awk -F: '$1=="pub"{p=1;next} $1=="sub"||$1=="sec"||$1=="ssb"{p=0} $1=="fpr"&&p{print toupper($10);p=0}')
+
+            if [[ "$actual" != "$expected" ]]
+            then
+              rm -rf "${KEY_TMP}"
+              echo "Expected signing key fingerprint: ${expected}" >&2
+              echo "Downloaded key fingerprint:       ${actual:-none found}" >&2
+              echo "The downloaded New Relic package signing key is not the expected key, so the .NET agent was not installed." >&2
+              exit 30
+            fi
+          }
+
           if [[ "$(uname -m)" == "aarch64" && -z "$IS_APT_INSTALLED" ]]
           then
             # There is no ARM64 rpm of the agent, so ARM64 hosts without apt install the tarball.
-            curl -fsSL --retry 3 {{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/newrelic-dotnet-agent_arm64.tar.gz -o {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz
+            # Nothing signs the tarball, so check it against the SHA-256 recorded in the agent
+            # repository's release-data. That is a different origin than the download host, and
+            # every change to it is a reviewed pull request, so a tampered download can't also
+            # supply the hash it is checked against. The versioned file is downloaded, not the
+            # unversioned latest_release alias, so the version that is looked up and the file
+            # that is checked can't differ if a release lands in between.
+            if ! command -v sha256sum >/dev/null 2>&1
+            then
+              echo "This installation recipe for the New Relic .NET agent on Linux requires 'sha256sum' to verify the download." >&2
+              exit 42
+            fi
+
+            AGENT_VERSION=$(curl -fsS --retry 3 {{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/ \
+              | grep -oE 'newrelic-dotnet-agent_[0-9]+\.[0-9]+\.[0-9]+_arm64\.tar\.gz' \
+              | sed -E 's/^newrelic-dotnet-agent_//; s/_arm64\.tar\.gz$//' \
+              | sort -uV | tail -n 1)
+            if [[ -z "$AGENT_VERSION" ]]
+            then
+              echo "Could not determine the latest .NET agent version, so the ARM64 download can't be verified." >&2
+              exit 28
+            fi
+
+            TARBALL_NAME="newrelic-dotnet-agent_${AGENT_VERSION}_arm64.tar.gz"
+            # Each file is recorded on its own line as "file name": "hash". The versioned file name
+            # appears once in the whole file, so no JSON parser is needed.
+            EXPECTED_SHA256=$(curl -fsSL --retry 3 "{{.DOTNET_RELEASE_DATA_URL}}" \
+              | grep -oE "\"$(echo "$TARBALL_NAME" | sed 's/\./\\./g')\": *\"[0-9A-Fa-f]{64}\"" \
+              | grep -oE '[0-9A-Fa-f]{64}' \
+              | tr 'A-F' 'a-f' | sort -u)
+            if [[ -z "$EXPECTED_SHA256" || "$(echo "$EXPECTED_SHA256" | wc -l)" -ne 1 ]]
+            then
+              echo "Looked for the SHA-256 of ${TARBALL_NAME} in {{.DOTNET_RELEASE_DATA_URL}}" >&2
+              echo "Can't verify the .NET agent ${AGENT_VERSION} ARM64 download: the release data doesn't record exactly one SHA-256 for it, so it was not installed." >&2
+              exit 28
+            fi
+
+            curl -fsSL --retry 3 {{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/${TARBALL_NAME} -o {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz \
+              || { echo "Failed to download ${TARBALL_NAME}." >&2; exit 25; }
+            ACTUAL_SHA256=$(sha256sum {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz | awk '{print $1}')
+            if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]
+            then
+              rm -f {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz
+              echo "Recorded SHA-256:   ${EXPECTED_SHA256}" >&2
+              echo "Downloaded SHA-256: ${ACTUAL_SHA256}" >&2
+              echo "The downloaded .NET agent ${AGENT_VERSION} ARM64 package does not match the SHA-256 recorded in the release data, so it was not installed." >&2
+              exit 29
+            fi
+            echo "Verified the SHA-256 of ${TARBALL_NAME}"
             tar -tzf {{.DOTNET_WORK_DIR}}/newrelic-dotnet-agent_arm64.tar.gz > /dev/null
           elif [[ -n "$IS_ZYPPER_INSTALLED" ]]
           then
@@ -207,12 +292,21 @@ install:
             # download it and adapt it for zypper. The recipe only targets x86_64.
             # The repository metadata is unsigned (yum's gpgcheck only checks packages), so
             # check package signatures but not the metadata signature, matching yum.
+            # The signing key is verified against its pinned fingerprint and the repository file's
+            # gpgkey= is pointed at that verified copy. The published file lists the key URLs
+            # itself, and without this a key it lists could be imported without being checked.
+            KEY_TMP=$(mktemp -d)
+            curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
+            verify_signing_key "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
+            sudo install -D -m 644 "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" /etc/pki/rpm-gpg/RPM-GPG-KEY-newrelic-dotnet-agent
+
             REPO_TMP=$(mktemp -d)
             curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o "${REPO_TMP}/newrelic-dotnet-agent.repo"
             sed -i \
               -e 's/\r$//' \
               -e 's/\$basearch/x86_64/g' \
               -e '/^\(type\|autorefresh\|repo_gpgcheck\|pkg_gpgcheck\)=/d' \
+              -e 's|^gpgkey=.*|gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-newrelic-dotnet-agent|' \
               -e '$a\' \
               "${REPO_TMP}/newrelic-dotnet-agent.repo"
             # The zypper settings are appended to the end of the file, which is only correct
@@ -220,15 +314,13 @@ install:
             if [[ "$(grep -c '^\[' "${REPO_TMP}/newrelic-dotnet-agent.repo")" -ne 1 ]] \
               || ! grep -q '^\[newrelic-dotnet-agent-repo\]$' "${REPO_TMP}/newrelic-dotnet-agent.repo"
             then
-              rm -rf "${REPO_TMP}"
+              rm -rf "${REPO_TMP}" "${KEY_TMP}"
               echo "The New Relic .NET agent repository file has an unexpected format and can't be adapted for zypper." >&2
               exit 1
             fi
             printf '%s\n' 'type=rpm-md' 'autorefresh=1' 'repo_gpgcheck=0' 'pkg_gpgcheck=1' >> "${REPO_TMP}/newrelic-dotnet-agent.repo"
             sudo install -m 644 "${REPO_TMP}/newrelic-dotnet-agent.repo" /etc/zypp/repos.d/newrelic-dotnet-agent.repo
             rm -rf "${REPO_TMP}"
-            KEY_TMP=$(mktemp -d)
-            curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
             sudo rpm --import "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
             rm -rf "${KEY_TMP}"
             # Another process (e.g. registration on a newly booted host) may hold the zypper
@@ -267,30 +359,45 @@ install:
               run_apt_with_retry sudo apt-get install gnupg -y -qq > /dev/null
             fi
 
-            echo 'deb [signed-by=/usr/share/keyrings/newrelic-apt.gpg] http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
-
             # Build the keyring in a temp dir so a failed download never touches the existing keyring.
+            # The key must match the pinned fingerprint before it is added to the keyring, and the
+            # source is written only after that, so a failed check leaves no source without its keyring.
             # --batch --yes keeps gpg from prompting (and failing without a tty) when the output exists.
             KEY_TMP=$(mktemp -d)
             wget -q -O "${KEY_TMP}/newrelic-apt.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
+            verify_signing_key "${KEY_TMP}/newrelic-apt.public"
             gpg --batch --yes --dearmor -o "${KEY_TMP}/newrelic-apt.gpg" "${KEY_TMP}/newrelic-apt.public"
             sudo install -m 644 "${KEY_TMP}/newrelic-apt.gpg" /usr/share/keyrings/newrelic-apt.gpg
             rm -rf "${KEY_TMP}"
+
+            echo 'deb [signed-by=/usr/share/keyrings/newrelic-apt.gpg] http://apt.newrelic.com/debian/ newrelic non-free' | sudo tee /etc/apt/sources.list.d/newrelic.list > /dev/null
 
             run_apt_with_retry sudo apt-get -o Acquire::Check-Valid-Until=false update >/dev/null
             # --reinstall makes apt download the package even when it is already installed (i.e. on a rerun)
             run_apt_with_retry sudo apt-get install --download-only --reinstall newrelic-dotnet-agent -y -qq > /dev/null
           else
-            # -f fails on an HTTP error instead of writing the error page over the existing .repo file
-            curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o /etc/yum.repos.d/newrelic-dotnet-agent.repo
             # Some yum versions (e.g. Amazon Linux 2) fetch the repository's GPG keys only when they
             # install the package, which needs the network, so import them now. Only the current
             # signing key is imported: the legacy key (548C16BF) only signed agent versions
             # <=10.47.0, which are out of support, and RHEL 10+ crypto policy rejects it.
+            # The key is verified against its pinned fingerprint, and the repository file's gpgkey=
+            # is pointed at that verified copy. The published file lists the key URLs itself, and
+            # without this yum could import a key it lists without it being checked.
             KEY_TMP=$(mktemp -d)
             curl -fsS --retry 3 -o "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" {{.NEW_RELIC_DOWNLOAD_URL}}NEWRELIC_APT_2DAD550E.public
+            verify_signing_key "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
+            sudo install -D -m 644 "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public" /etc/pki/rpm-gpg/RPM-GPG-KEY-newrelic-dotnet-agent
             sudo rpm --import "${KEY_TMP}/NEWRELIC_APT_2DAD550E.public"
             rm -rf "${KEY_TMP}"
+            # -f fails on an HTTP error instead of writing the error page over the existing .repo file
+            REPO_TMP=$(mktemp -d)
+            curl -fsS --retry 3 https://download.newrelic.com/dot_net_agent/yum/newrelic-dotnet-agent.repo -o "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            sed -i \
+              -e 's/\r$//' \
+              -e 's|^gpgkey=.*|gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-newrelic-dotnet-agent|' \
+              "${REPO_TMP}/newrelic-dotnet-agent.repo"
+            sudo install -m 644 "${REPO_TMP}/newrelic-dotnet-agent.repo" /etc/yum.repos.d/newrelic-dotnet-agent.repo
+            rm -rf "${REPO_TMP}"
             sudo yum makecache -q
             # Download the package now so install doesn't need the network. On a rerun the agent is
             # already installed, and install --downloadonly does nothing; reinstall fails if it isn't.

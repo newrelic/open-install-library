@@ -45,6 +45,10 @@ install:
   version: "3"
   silent: true
 
+  vars:
+    # The agent repository's reviewed record of the SHA-256 of every file on the download site
+    DOTNET_RELEASE_DATA_URL: https://raw.githubusercontent.com/newrelic/newrelic-dotnet-agent/main/release-data/download-site-hashes.json
+
   tasks:
     # Runs the tasks below in order to install, configure, and validate the agent.
     default:
@@ -56,6 +60,7 @@ install:
         - task: remove_any_previous
         - task: assert_required_powershell
         - task: download
+        - task: verify_download
         - task: install
         - task: configure
         - task: start
@@ -309,8 +314,10 @@ install:
           }
           '
 
-    # Enables TLS 1.2/1.3 for the download, then downloads the agent MSI (using HTTPS_PROXY if set).
-    # Exits with a download-specific error code (24 unknown, 25 web error, 26 file/IO or access error) on failure.
+    # Enables TLS 1.2/1.3 for the download, then downloads the latest agent MSI (using HTTPS_PROXY if set)
+    # and checks its SHA-256 against the hash recorded in the agent repository's release-data.
+    # Exits with a download-specific error code (24 unknown, 25 web error, 26 file/IO or access error) on failure,
+    # 28 if the version or its recorded hash can't be found, 29 if the hash doesn't match (the MSI is deleted).
     download:
       cmds:
         - |
@@ -327,8 +334,31 @@ install:
             $WebClient.Proxy = New-Object System.Net.WebProxy($env:HTTPS_PROXY, $true)
           }
 
+          $WebClient.Encoding = [System.Text.Encoding]::UTF8
+          $msi = "$env:TEMP\NewRelicDotNetAgent_x64.msi"
+
           try {
-            $WebClient.DownloadFile("{{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/NewRelicDotNetAgent_x64.msi", "$env:TEMP\NewRelicDotNetAgent_x64.msi")
+            # Download the versioned file, not the unversioned latest_release alias, so the version
+            # whose hash is looked up and the file that is checked cannot differ if a release lands in between.
+            $listing = $WebClient.DownloadString("{{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/")
+            $versions = [regex]::Matches($listing, "NewRelicDotNetAgent_(\d+\.\d+\.\d+)_x64\.msi") | ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Unique
+            if (-not $versions) {
+              Write-Host -ForegroundColor Red "Could not determine the latest .NET agent version, so the download cannot be verified."
+              exit 28 # cannot verify the download
+            }
+            $version = ($versions | Select-Object -Last 1).ToString()
+            $fileName = "NewRelicDotNetAgent_${version}_x64.msi"
+
+            # The expected hash comes from the agent repository, which is a different origin than the
+            # download site, and every change to it is a reviewed pull request.
+            $releaseData = $WebClient.DownloadString("{{.DOTNET_RELEASE_DATA_URL}}") | ConvertFrom-Json
+            $expected = $releaseData.versions.$version.files.$fileName
+            if (-not $expected -or $expected -notmatch "^[0-9a-fA-F]{64}$") {
+              Write-Host -ForegroundColor Red "Cannot verify .NET agent ${version}: the release data does not record a SHA-256 for ${fileName}, so it was not installed."
+              exit 28 # cannot verify the download
+            }
+
+            $WebClient.DownloadFile("{{.NEW_RELIC_DOWNLOAD_URL}}dot_net_agent/latest_release/$fileName", $msi)
           }
           catch {
             $baseException = $_.Exception.GetBaseException()
@@ -343,7 +373,40 @@ install:
 
             exit $errorCode
           }
+
+          $actual = (Get-FileHash -Path $msi -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            Remove-Item -Path $msi -Force -ErrorAction SilentlyContinue
+            Write-Host -ForegroundColor Red "Recorded SHA-256:   $expected"
+            Write-Host -ForegroundColor Red "Downloaded SHA-256: $actual"
+            Write-Host -ForegroundColor Red "The downloaded .NET agent $version installer does not match the SHA-256 recorded in the release data, so it was not installed."
+            exit 29 # downloaded file does not match the recorded hash
+          }
+          Write-Host "Verified the SHA-256 of $fileName"
           '
+
+    # Checks that the downloaded MSI has a valid Authenticode signature from New Relic, Inc. The
+    # signer is matched by name, not by certificate thumbprint, so renewing the certificate doesn't
+    # break the install. If the check fails the MSI is deleted so it can't be run later.
+    # Exits 137 if the MSI is unsigned, was modified after signing, or was signed by someone else.
+    verify_download:
+      cmds:
+        - |
+          powershell -command '
+          $msi = "$env:TEMP\NewRelicDotNetAgent_x64.msi"
+          $signature = Get-AuthenticodeSignature -FilePath $msi
+          $signer = ""
+          if ($signature.SignerCertificate) {
+            $signer = $signature.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          }
+
+          if ($signature.Status -ne "Valid" -or $signer -ne "New Relic, Inc.") {
+            Remove-Item -Path $msi -Force -ErrorAction SilentlyContinue
+            Write-Host -ForegroundColor Red "The downloaded New Relic .NET Agent installer failed signature verification (status: $($signature.Status), signer: $signer), so it was not installed."
+            exit 137 # downloaded installer is not validly signed by New Relic
+          }
+          '
+        - echo "Verified the signature of the New Relic .NET Agent installer"
 
     # Runs the downloaded MSI silently with the license key.
     # Treats exit codes 0, 1641, and 3010 as success; any other msiexec exit code is raised as this task's exit code.
