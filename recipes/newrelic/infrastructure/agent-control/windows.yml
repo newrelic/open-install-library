@@ -31,6 +31,7 @@ install:
         - task: assert_required_permissions
         - task: assert_required_powershell
         - task: write_recipe_metadata
+        - task: check_connectivity
         - task: download_agent_control
         - task: run_install_ps1
         - task: post_install
@@ -84,16 +85,174 @@ install:
               } catch {}
           '
 
+    # Checks, through the proxy when there is one, that the hosts needed by the installation answer, and reports
+    # which one fails and why. Exit codes: 24 package not found, 40 connectivity problem, 41 invalid proxy CA.
+    check_connectivity:
+      cmds:
+        - |
+          powershell -command '
+              function Fail([int]$code, [string]$message) { [Console]::Error.WriteLine($message); exit $code }
+
+              # 1. The CA given for the proxy
+              $caFile = "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}"
+              $caDir = "{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}"
+              $caPaths = @()
+              if ($caFile -ne "") {
+                if (-not [IO.Path]::IsPathRooted($caFile)) { Fail 41 "The proxy CA file $caFile must be an absolute path, because Agent Control resolves it from its own working directory." }
+                if (-not (Test-Path -LiteralPath $caFile -PathType Leaf)) { Fail 41 "The proxy CA file $caFile does not exist or is not readable. Check NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE." }
+                if (-not (Select-String -LiteralPath $caFile -Pattern "-----BEGIN CERTIFICATE-----" -Quiet)) { Fail 41 "The proxy CA file $caFile is not in PEM format, and Agent Control only reads PEM. Convert a DER or .cer file with: certutil -encode <file> <file>.pem" }
+                $caPaths += $caFile
+              }
+              if ($caDir -ne "") {
+                if (-not [IO.Path]::IsPathRooted($caDir)) { Fail 41 "The proxy CA directory $caDir must be an absolute path, because Agent Control resolves it from its own working directory." }
+                if (-not (Test-Path -LiteralPath $caDir -PathType Container)) { Fail 41 "The proxy CA directory $caDir does not exist. Check NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR." }
+                $pemFiles = @(Get-ChildItem -LiteralPath $caDir -Filter *.pem -File | Where-Object { Select-String -LiteralPath $_.FullName -Pattern "-----BEGIN CERTIFICATE-----" -Quiet })
+                if ($pemFiles.Count -eq 0) { Fail 41 "The proxy CA directory $caDir has no .pem file with a certificate. Agent Control only reads files with the .pem extension and ignores others such as .crt or .cer." }
+                $caPaths += $pemFiles | ForEach-Object { $_.FullName }
+              }
+              foreach ($p in @($caFile, $caDir)) {
+                if ($p -ne "" -and ($p.StartsWith($env:TEMP, [StringComparison]::OrdinalIgnoreCase) -or $p.StartsWith("C:\Windows\Temp", [StringComparison]::OrdinalIgnoreCase))) {
+                  Write-Host "WARNING: $p is in a temporary location. If it is removed the Agent Control service will fail to start. Use a persistent path such as C:\ProgramData\New Relic\."
+                }
+              }
+
+              # Windows PowerShell 5.1 does not read the proxy environment variables, so they are passed explicitly.
+              $proxyParams = @{}
+              $px = $env:HTTPS_PROXY
+              if ($px) {
+                $pu = [Uri]$px
+                $proxyParams.Proxy = $pu.Scheme + "://" + $pu.Host + ":" + $pu.Port
+                if ($pu.UserInfo) {
+                  $cred = $pu.UserInfo.Split(":", 2)
+                  $secure = ConvertTo-SecureString ([Uri]::UnescapeDataString($cred[1])) -AsPlainText -Force
+                  $proxyParams.ProxyCredential = New-Object System.Management.Automation.PSCredential([Uri]::UnescapeDataString($cred[0]), $secure)
+                }
+              }
+
+              $acUrl = "{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}"
+              $hint = ""
+              if ($acUrl -ne "" -and -not $px) { $hint = " Note that NEW_RELIC_AGENT_CONTROL_PROXY_URL is set but HTTPS_PROXY is not: the download only uses HTTPS_PROXY or the Windows proxy settings." }
+
+              try { [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"; [Net.ServicePointManager]::SecurityProtocol = "tls13, tls12, tls" } catch { }
+
+              # 2. Download server. It is skipped when the package is already in place, so installations without Internet access keep working.
+              $zipUrl = "{{.NEW_RELIC_DOWNLOAD_URL}}preview/binaries/windows/amd64/newrelic-agent-control_{{ .NEW_RELIC_AGENT_VERSION }}_windows_amd64.zip"
+              $zipPath = "$env:TEMP\newrelic-agent-control-{{ .NEW_RELIC_AGENT_VERSION }}.zip"
+              if (-not (Test-Path -Path $zipPath)) {
+                $dlHost = ([Uri]$zipUrl).Host
+                try {
+                  $r = Invoke-WebRequest -UseBasicParsing -Method Head -Uri $zipUrl -TimeoutSec 20 @proxyParams
+                } catch {
+                  $ex = $_.Exception
+                  $resp = $ex.Response
+                  if ($resp -ne $null -and [int]$resp.StatusCode -eq 404) {
+                    Fail 24 "The Agent Control package {{ .NEW_RELIC_AGENT_VERSION }} was not found at $zipUrl. Check the version."
+                  } elseif ($resp -ne $null -and [int]$resp.StatusCode -eq 407) {
+                    Fail 40 "Cannot reach the New Relic download server ${dlHost}: the proxy requires authentication (HTTP 407). Include the credentials in HTTPS_PROXY, for example http://user:password@host:port.$hint"
+                  } elseif ($resp -ne $null) {
+                    Fail 40 "Cannot reach the New Relic download server ${dlHost}: it answered HTTP $([int]$resp.StatusCode), which usually means that the proxy blocked or could not complete the request.$hint"
+                  } else {
+                    $status = [string]$ex.Status
+                    $why = switch -Regex ($status) {
+                      "TrustFailure" { "the TLS certificate is not trusted. If the proxy inspects TLS, its CA must be in the Windows certificate store, for example with: certutil -addstore Root <file>.pem" }
+                      "NameResolutionFailure" { "the host name could not be resolved and no proxy is being used for it" }
+                      "ProxyNameResolutionFailure" { "the proxy host name could not be resolved" }
+                      "ConnectFailure" { "the connection was refused before reaching the proxy or the host" }
+                      "Timeout" { "the connection timed out" }
+                      default { "$status - $($ex.Message)" }
+                    }
+                    Fail 40 "Cannot reach the New Relic download server ${dlHost}: $why.$hint"
+                  }
+                }
+              }
+
+              # 3. Hosts used by Agent Control when Fleet Control is enabled. They are probed with curl.exe using the proxy
+              #    given to Agent Control, because the Windows system proxy cannot be reproduced reliably.
+              if ("{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" -eq "false" -or "{{.NEW_RELIC_AGENT_CONTROL_SKIP_CONNECTIVITY_CHECK}}" -eq "true") { exit 0 }
+              if ($acUrl -eq "") { Write-Host "Connectivity of the Agent Control hosts was not checked because NEW_RELIC_AGENT_CONTROL_PROXY_URL is not set."; exit 0 }
+              $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+              if (-not (Test-Path $curl)) { Write-Host "Connectivity of the Agent Control hosts was not checked because curl.exe is not available."; exit 0 }
+              $jwks = "r/blob-management/global/agentconfiguration/jwks.json"
+              switch ("{{.NEW_RELIC_REGION}}".ToLower()) {
+                "eu" { $endpoints = @("opamp.service.eu.newrelic.com/v1/opamp", "publickeys.eu.newrelic.com/$jwks", "system-identity-oauth.service.newrelic.com/oauth2/token"); $api = "api.eu.newrelic.com/graphql" }
+                "jp" { $endpoints = @("opamp.service.jp.newrelic.com/v1/opamp", "publickeys.jp.newrelic.com/$jwks", "system-identity-oauth.service.newrelic.com/oauth2/token"); $api = "api.jp.newrelic.com/graphql" }
+                { $_ -in "staging", "stg" } { $endpoints = @("opamp.staging-service.newrelic.com/v1/opamp", "staging-publickeys.newrelic.com/$jwks", "system-identity-oauth.staging-service.newrelic.com/oauth2/token"); $api = "staging-api.newrelic.com/graphql" }
+                default { $endpoints = @("opamp.service.newrelic.com/v1/opamp", "publickeys.newrelic.com/$jwks", "system-identity-oauth.service.newrelic.com/oauth2/token"); $api = "api.newrelic.com/graphql" }
+              }
+              if ("{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" -eq "") { $endpoints += $api }
+              $bundle = ""
+              if ($caPaths.Count -gt 0) {
+                $bundle = [IO.Path]::GetTempFileName()
+                $caPaths | ForEach-Object { Get-Content -LiteralPath $_ -Raw; "" } | Set-Content -LiteralPath $bundle -Encoding ASCII
+              }
+              $failures = 0
+              $last = ""
+              foreach ($e in $endpoints) {
+                $h = $e.Split("/")[0]
+                $curlArgs = @("-sS", "--ssl-no-revoke", "--max-time", "20", "-o", "NUL", "-w", "%{http_code}", "-x", $acUrl)
+                if ($bundle -ne "") { $curlArgs += @("--cacert", $bundle) }
+                $errFile = [IO.Path]::GetTempFileName()
+                $code = & $curl @curlArgs "https://$e" 2> $errFile
+                $rc = $LASTEXITCODE
+                $errText = (Get-Content -LiteralPath $errFile -Raw)
+                Remove-Item -LiteralPath $errFile -ErrorAction SilentlyContinue
+                if ($rc -ne 0) {
+                  # curl 7 and curl 8 return different exit codes when the proxy refuses CONNECT, so the message is used.
+                  $tunnel = [regex]::Match([string]$errText, "CONNECT tunnel failed, response (\d+)|Received HTTP code (\d+) from proxy after CONNECT")
+                  $tunnelWhy = ""
+                  if ($tunnel.Success) {
+                    if ($tunnel.Groups[1].Success) { $tc = $tunnel.Groups[1].Value } else { $tc = $tunnel.Groups[2].Value }
+                    if ($tc -eq "407") { $tunnelWhy = "the proxy requires authentication (HTTP 407)" } else { $tunnelWhy = "the proxy refused the connection with HTTP $tc, check that it allows this host" }
+                  }
+                  $why = if ($tunnelWhy -ne "") { $tunnelWhy } else { switch ($rc) {
+                    5 { "the proxy host name could not be resolved" }
+                    6 { "the host name could not be resolved" }
+                    7 { "the connection was refused before reaching the proxy or the host" }
+                    28 { "the connection timed out" }
+                    { $_ -in 35, 51, 58, 59, 60, 77, 82, 83, 90, 91 } { "the TLS certificate is not trusted. If the proxy inspects TLS, give its CA with NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE" }
+                    56 { if ($errText -match "407") { "the proxy requires authentication (HTTP 407)" } else { "the proxy closed the connection or rejected the request, check that it allows this host" } }
+                    default { "curl error ${rc}: $($errText.Trim())" }
+                  } }
+                  $failures++
+                  $last = "Cannot reach $h, which Agent Control needs: $why."
+                  [Console]::Error.WriteLine($last)
+                } elseif ($code -in "502", "503", "504") {
+                  $failures++
+                  $last = "Cannot reach $h, which Agent Control needs: it answered HTTP $code, which usually means that the proxy could not reach the host."
+                  [Console]::Error.WriteLine($last)
+                } else {
+                  Write-Host "$h is reachable (HTTP $code)."
+                }
+              }
+              if ($bundle -ne "") { Remove-Item -LiteralPath $bundle -ErrorAction SilentlyContinue }
+              if ($failures -gt 0) { Fail 40 "$last Set NEW_RELIC_AGENT_CONTROL_SKIP_CONNECTIVITY_CHECK=true to skip this check." }
+          '
+      vars:
+        NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.28.0" }}'
+
     download_agent_control:
       cmds:
-        - | 
+        - |
           powershell -command '
-              $zipUrl = "{{.NEW_RELIC_DOWNLOAD_URL}}preview/binaries/windows/amd64/newrelic-agent-control_{{ .NEW_RELIC_AGENT_VERSION }}_windows_amd64.zip"          
+              $zipUrl = "{{.NEW_RELIC_DOWNLOAD_URL}}preview/binaries/windows/amd64/newrelic-agent-control_{{ .NEW_RELIC_AGENT_VERSION }}_windows_amd64.zip"
               $zipPath = "$env:TEMP\newrelic-agent-control-{{ .NEW_RELIC_AGENT_VERSION }}.zip"
-              $extractPath = "$env:TEMP\newrelic-agent-control"          
-          
+              $extractPath = "$env:TEMP\newrelic-agent-control"
+
+              # Windows PowerShell 5.1 does not read the proxy environment variables, so they are passed explicitly.
+              $proxyParams = @{}
+              $px = $env:HTTPS_PROXY
+              if ($px) {
+                $pu = [Uri]$px
+                $proxyParams.Proxy = $pu.Scheme + "://" + $pu.Host + ":" + $pu.Port
+                if ($pu.UserInfo) {
+                  $cred = $pu.UserInfo.Split(":", 2)
+                  $secure = ConvertTo-SecureString ([Uri]::UnescapeDataString($cred[1])) -AsPlainText -Force
+                  $proxyParams.ProxyCredential = New-Object System.Management.Automation.PSCredential([Uri]::UnescapeDataString($cred[0]), $secure)
+                }
+              }
+
               if (-Not (Test-Path -Path $zipPath)) {
-                Write-Host "Downloading $zipUrl to $zipPath"        
+                Write-Host "Downloading $zipUrl to $zipPath"
                 # Set the protocols progressively and keep the last one that the runtime accepts.
                 try {
                   [Net.ServicePointManager]::SecurityProtocol = "tls12, tls"
@@ -102,7 +261,7 @@ install:
                   Write-Host "TLS 1.3 is not available, falling back to TLS 1.2"
                 }
                 try {
-                  Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+                  Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath @proxyParams
                 } catch {
                   Write-Host -ForegroundColor Red "Failed to download $zipUrl - $($_.Exception.Message)"
                   exit 24;
@@ -110,18 +269,23 @@ install:
               } else {
                 Write-Host "File $zipPath already exists, skipping download"
               }
-              
+
               Write-Host "Extracting to $extractPath"
               Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-              
-              # Verify signature
+
+              # Verify signature. Windows checks the certificate chain and its revocation status online, with the system proxy settings and not with the proxy given to this installation.
               $signature = Get-AuthenticodeSignature -FilePath "$extractPath\newrelic-agent-control.exe"
               $signatureCli = Get-AuthenticodeSignature -FilePath "$extractPath\newrelic-agent-control-cli.exe"
               if (("{{.NEW_RELIC_AGENT_CONTROL_SKIP_BINARY_SIGNATURE_VALIDATION}}" -ne "true") -and ($signature.Status -ne "Valid" -or $signatureCli.Status -ne "Valid")){
-                    Write-Host -ForegroundColor Red "Failed to verify the signature of the downloaded binaries "
-                    exit 24;            
+                    Write-Host -ForegroundColor Red "Failed to verify the signature of the downloaded binaries ($($signature.Status): $($signature.StatusMessage))"
+                    if ($signature.Status -eq "UnknownError") {
+                      [Console]::Error.WriteLine("Failed to verify the signature of the downloaded binaries ($($signature.StatusMessage)). Windows could not check the certificate chain, which usually means that it cannot reach the certificate authority servers directly. Configure the Windows proxy for this machine, for example with: netsh winhttp set proxy <host>:<port>")
+                    } else {
+                      [Console]::Error.WriteLine("Failed to verify the signature of the downloaded binaries ($($signature.Status): $($signature.StatusMessage))")
+                    }
+                    exit 24;
               }
-          '    
+          '
       vars:
         NEW_RELIC_AGENT_VERSION: '{{ .NEW_RELIC_AGENT_VERSION | default "1.28.0" }}'
 
