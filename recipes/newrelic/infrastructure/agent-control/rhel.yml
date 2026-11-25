@@ -84,6 +84,8 @@ install:
         - task: write_recipe_metadata
         - task: detect_previous_install
         - task: assert_pre_req
+        - task: prepare_proxy_ca
+        - task: check_connectivity
         - task: install_agent_control
         - task: config_agent_control
         - task: restart_agent_control
@@ -154,16 +156,214 @@ install:
             echo "curl is required to run the newrelic install. Please install curl and re-run the installation." >&2
             exit 16
           fi
+
+    # Builds one CA bundle (system CAs plus the proxy CA given by the user) for the steps that run before
+    # Agent Control is installed. The bundle lives in /run, which only root can write to.
+    prepare_proxy_ca:
+      cmds:
         - |
+          NR_DIR=/run/newrelic-agent-control-install
+          NR_CA_BUNDLE=$NR_DIR/ca-bundle.pem
+          rm -rf "$NR_DIR"
+          mkdir -p "$NR_DIR"
+          chmod 755 "$NR_DIR"
+          CA_FILE="{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE}}"
+          CA_DIR="{{.NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR}}"
+          if [ -z "$CA_FILE" ] && [ -z "$CA_DIR" ]; then
+            exit 0
+          fi
+          if [ -n "$CA_FILE" ]; then
+            case "$CA_FILE" in
+              /*) ;;
+              *) echo "The proxy CA file '$CA_FILE' must be an absolute path, because Agent Control resolves it from its own working directory." >&2; exit 41 ;;
+            esac
+            if [ ! -f "$CA_FILE" ] || [ ! -r "$CA_FILE" ]; then
+              echo "The proxy CA file '$CA_FILE' does not exist or is not readable. Check NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE." >&2
+              exit 41
+            fi
+            if ! grep -q -e '-----BEGIN CERTIFICATE-----' "$CA_FILE"; then
+              echo "The proxy CA file '$CA_FILE' is not in PEM format, and Agent Control only reads PEM. Convert a DER file with: openssl x509 -inform der -in <file> -out <file>.pem" >&2
+              exit 41
+            fi
+          fi
+          if [ -n "$CA_DIR" ]; then
+            case "$CA_DIR" in
+              /*) ;;
+              *) echo "The proxy CA directory '$CA_DIR' must be an absolute path, because Agent Control resolves it from its own working directory." >&2; exit 41 ;;
+            esac
+            if [ ! -d "$CA_DIR" ]; then
+              echo "The proxy CA directory '$CA_DIR' does not exist. Check NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_DIR." >&2
+              exit 41
+            fi
+            FOUND_PEM=0
+            for f in "$CA_DIR"/*.pem; do
+              if [ -f "$f" ] && grep -q -e '-----BEGIN CERTIFICATE-----' "$f"; then
+                FOUND_PEM=1
+              fi
+            done
+            if [ $FOUND_PEM -eq 0 ]; then
+              echo "The proxy CA directory '$CA_DIR' has no .pem file with a certificate. Agent Control only reads files with the .pem extension and ignores others such as .crt or .cer." >&2
+              exit 41
+            fi
+          fi
+          for p in "$CA_FILE" "$CA_DIR"; do
+            case "$p" in
+              /tmp/*|/var/tmp/*|/run/*|/dev/shm/*) echo "WARNING: '$p' is in a temporary location. If it is removed (for example at reboot) the Agent Control service will fail to start. Use a persistent path such as /etc/newrelic-agent-control/." ;;
+            esac
+          done
+          for SYS in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
+            if [ -f "$SYS" ]; then
+              cat "$SYS" > "$NR_CA_BUNDLE"
+              break
+            fi
+          done
+          if [ -n "$CA_FILE" ]; then
+            echo >> "$NR_CA_BUNDLE"
+            cat "$CA_FILE" >> "$NR_CA_BUNDLE"
+          fi
+          if [ -n "$CA_DIR" ]; then
+            for f in "$CA_DIR"/*.pem; do
+              if [ -f "$f" ]; then
+                echo >> "$NR_CA_BUNDLE"
+                cat "$f" >> "$NR_CA_BUNDLE"
+              fi
+            done
+          fi
+          chmod 644 "$NR_CA_BUNDLE"
+
+    # Checks, through the proxy when there is one, that the hosts needed by the installation answer, and
+    # reports which one fails and why. Exit codes: 21 distribution not available, 40 connectivity problem.
+    check_connectivity:
+      cmds:
+        - |
+          NR_DIR=/run/newrelic-agent-control-install
+          NR_CA_BUNDLE=$NR_DIR/ca-bundle.pem
+          NR_ERR=$NR_DIR/probe.err
+          mkdir -p "$NR_DIR"
+          DL="{{.NEW_RELIC_DOWNLOAD_URL}}"
+          DL_HOST=$(echo "$DL" | sed -e 's#^[a-z]*://##' -e 's#[/:].*$##')
+          AC_URL="{{.NEW_RELIC_AGENT_CONTROL_PROXY_URL}}"
+          AC_IGNORE_SYS="{{.NEW_RELIC_AGENT_CONTROL_PROXY_IGNORE_SYSTEM}}"
+          PX="${HTTPS_PROXY:-$https_proxy}"
+
+          PROBE_FOLLOW=""
+
+          # probe <env|ac> <url>: sets PROBE_CODE and PROBE_RC. Set PROBE_FOLLOW=1 first to follow redirects. "env" uses the proxy environment variables like
+          # the installation steps do, "ac" uses the proxy settings that Agent Control will use.
+          probe() {
+            PROBE_MODE="$1"
+            PROBE_URL="$2"
+            set -- -sS --max-time 20 -o "$NR_DIR/probe.body" -w '%{http_code}'
+            if [ -n "$PROBE_FOLLOW" ]; then
+              set -- "$@" -L
+            fi
+            if [ -f "$NR_CA_BUNDLE" ]; then
+              set -- "$@" --cacert "$NR_CA_BUNDLE"
+            fi
+            if [ "$PROBE_MODE" = "ac" ]; then
+              if [ -n "$AC_URL" ]; then
+                set -- "$@" -x "$AC_URL"
+              elif [ "$AC_IGNORE_SYS" = "true" ]; then
+                set -- "$@" --noproxy '*'
+              fi
+            fi
+            # The status goes through files because the recipe shell does not return the exit code of $(...).
+            curl "$@" "$PROBE_URL" > "$NR_DIR/probe.code" 2> "$NR_ERR" && PROBE_RC=0 || PROBE_RC=$?
+            PROBE_CODE=$(cat "$NR_DIR/probe.code")
+          }
+
+          # explain: turns the result of the last probe into a sentence in PROBE_WHY. A refused CONNECT is recognised from the
+          # curl message because the exit code differs between curl versions (7 or 56).
+          explain() {
+            # curl 8 says "CONNECT tunnel failed, response N" and curl 7 says "Received HTTP code N from proxy after CONNECT"
+            TUNNEL_CODE=$(sed -n -e 's/.*CONNECT tunnel failed, response \([0-9][0-9]*\).*/\1/p' -e 's/.*Received HTTP code \([0-9][0-9]*\) from proxy after CONNECT.*/\1/p' "$NR_ERR" | head -n 1)
+            if [ -n "$TUNNEL_CODE" ]; then
+              case "$TUNNEL_CODE" in
+                407) PROBE_WHY="the proxy requires authentication (HTTP 407)" ;;
+                *) PROBE_WHY="the proxy refused the connection with HTTP $TUNNEL_CODE, check that it allows this host" ;;
+              esac
+              return 0
+            fi
+            case $PROBE_RC in
+              5) PROBE_WHY="the proxy host name could not be resolved" ;;
+              6) PROBE_WHY="the host name could not be resolved and no proxy is being used for it" ;;
+              7) PROBE_WHY="the connection was refused before reaching the proxy or the host" ;;
+              28) PROBE_WHY="the connection timed out" ;;
+              35|51|58|59|60|77|82|83|90|91) PROBE_WHY="the TLS certificate is not trusted. If the proxy inspects TLS, its CA must be trusted: add it to the system trust store or set NEW_RELIC_AGENT_CONTROL_PROXY_CA_BUNDLE_FILE" ;;
+              56) PROBE_WHY="the proxy closed the connection or rejected the request, check that it allows this host" ;;
+              *) PROBE_WHY="curl error $PROBE_RC: $(tr '\n' ' ' < "$NR_ERR" | cut -c1-160)" ;;
+            esac
+          }
+
+          HINT=""
+          if [ -n "$AC_URL" ] && [ -z "$PX" ]; then
+            HINT=" Note that NEW_RELIC_AGENT_CONTROL_PROXY_URL is set but HTTPS_PROXY is not: the installation steps only use HTTPS_PROXY."
+          fi
+
+          # 1. Download server, which also tells whether the distribution is supported.
           if [ "{{.AMAZON_LINUX_VERSION}}" != "2" ] && [ "{{.AMAZON_LINUX_VERSION}}" != "2023" ] ; then
             REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/{{.REPO_DIR}}/{{.DISTRO_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
           else
             REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/{{.REPO_DIR}}/{{.AMAZON_LINUX_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
           fi
-          IS_NEWRELIC_AVAILABLE=$(curl -Ls $REPO_URL | grep "\[newrelic-infra\]" | wc -l)
-          if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
+          PROBE_FOLLOW=1
+          probe env "$REPO_URL"
+          PROBE_FOLLOW=""
+          if [ $PROBE_RC -ne 0 ]; then
+            explain
+            echo "Cannot reach the New Relic download server $DL_HOST: $PROBE_WHY.$HINT" >&2
+            exit 40
+          fi
+          if [ "$PROBE_CODE" = "200" ] && grep -q '\[newrelic-infra\]' "$NR_DIR/probe.body"; then
+            :
+          elif [ "$PROBE_CODE" = "404" ] || [ "$PROBE_CODE" = "200" ]; then
             echo "there is no New Relic Agent Control available for the distribution '{{.DISTRO_VERSION}}'." >&2
             exit 21
+          else
+            echo "Cannot reach the New Relic download server $DL_HOST: it answered HTTP $PROBE_CODE, which usually means that the proxy blocked or could not complete the request.$HINT" >&2
+            exit 40
+          fi
+
+          # 2. Hosts used by Agent Control when Fleet Control is enabled.
+          if [ "{{.NEW_RELIC_AGENT_CONTROL_FLEET_ENABLED}}" = "false" ] || [ "{{.NEW_RELIC_AGENT_CONTROL_SKIP_CONNECTIVITY_CHECK}}" = "true" ]; then
+            exit 0
+          fi
+          # host/path pairs that Agent Control uses, per region. The real paths are probed because some of these
+          # hosts do not answer on "/".
+          JWKS=r/blob-management/global/agentconfiguration/jwks.json
+          case "$(echo "{{.NEW_RELIC_REGION}}" | tr '[:upper:]' '[:lower:]')" in
+            eu) ENDPOINTS="opamp.service.eu.newrelic.com/v1/opamp publickeys.eu.newrelic.com/$JWKS system-identity-oauth.service.newrelic.com/oauth2/token"; API_ENDPOINT=api.eu.newrelic.com/graphql ;;
+            jp) ENDPOINTS="opamp.service.jp.newrelic.com/v1/opamp publickeys.jp.newrelic.com/$JWKS system-identity-oauth.service.newrelic.com/oauth2/token"; API_ENDPOINT=api.jp.newrelic.com/graphql ;;
+            staging|stg) ENDPOINTS="opamp.staging-service.newrelic.com/v1/opamp staging-publickeys.newrelic.com/$JWKS system-identity-oauth.staging-service.newrelic.com/oauth2/token"; API_ENDPOINT=staging-api.newrelic.com/graphql ;;
+            *) ENDPOINTS="opamp.service.newrelic.com/v1/opamp publickeys.newrelic.com/$JWKS system-identity-oauth.service.newrelic.com/oauth2/token"; API_ENDPOINT=api.newrelic.com/graphql ;;
+          esac
+          if [ -z "{{.NEW_RELIC_AUTH_PROVISIONED_CLIENT_ID}}" ]; then
+            ENDPOINTS="$ENDPOINTS $API_ENDPOINT"
+          fi
+          FAILURES=0
+          LAST=""
+          for E in $ENDPOINTS; do
+            H=${E%%/*}
+            probe ac "https://$E"
+            if [ $PROBE_RC -ne 0 ]; then
+              explain
+              FAILURES=$((FAILURES + 1))
+              LAST="Cannot reach $H, which Agent Control needs: $PROBE_WHY."
+              echo "$LAST" >&2
+            else
+              case "$PROBE_CODE" in
+                502|503|504)
+                  FAILURES=$((FAILURES + 1))
+                  LAST="Cannot reach $H, which Agent Control needs: it answered HTTP $PROBE_CODE, which usually means that the proxy could not reach the host."
+                  echo "$LAST" >&2
+                  ;;
+                *) echo "$H is reachable (HTTP $PROBE_CODE)." ;;
+              esac
+            fi
+          done
+          if [ $FAILURES -gt 0 ]; then
+            echo "$LAST Set NEW_RELIC_AGENT_CONTROL_SKIP_CONNECTIVITY_CHECK=true to skip this check." >&2
+            exit 40
           fi
       vars:
         DISTRO_VERSION:
@@ -173,6 +373,15 @@ install:
     install_agent_control:
       cmds:
         - |
+          NR_DIR=/run/newrelic-agent-control-install
+          NR_CA_BUNDLE=$NR_DIR/ca-bundle.pem
+          mkdir -p "$NR_DIR"
+          CA_OPT=""
+          YUM_CA_OPT=""
+          if [ -f "$NR_CA_BUNDLE" ]; then
+            CA_OPT="--cacert $NR_CA_BUNDLE"
+            YUM_CA_OPT="--setopt=sslcacert=$NR_CA_BUNDLE"
+          fi
           if [ "{{.AMAZON_LINUX_VERSION}}" != "2" ] && [ "{{.AMAZON_LINUX_VERSION}}" != "2023" ] ; then
             AGENT_CONTROL_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/{{.REPO_DIR}}/{{.DISTRO_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
             INFRA_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/{{.REPO_DIR}}/{{.DISTRO_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
@@ -180,23 +389,31 @@ install:
             AGENT_CONTROL_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}preview/linux/yum/{{.REPO_DIR}}/{{.AMAZON_LINUX_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
             INFRA_REPO_URL=$(echo -n "{{.NEW_RELIC_DOWNLOAD_URL}}infrastructure_agent/linux/yum/{{.REPO_DIR}}/{{.AMAZON_LINUX_VERSION}}/{{.ARCH}}/newrelic-infra.repo")
           fi
-          IS_NEWRELIC_AVAILABLE=$(curl -Ls $AGENT_CONTROL_REPO_URL | grep "\[newrelic-infra\]" | wc -l)
-          if [ $IS_NEWRELIC_AVAILABLE -eq 0 ] ; then
+          curl -fsSL $CA_OPT "$AGENT_CONTROL_REPO_URL" -o "$NR_DIR/agent-control.repo" 2> "$NR_DIR/repo.err" && REPO_RC=0 || REPO_RC=$?
+          if [ $REPO_RC -ne 0 ]; then
+            echo "Could not download the New Relic Agent Control repository definition: $(tr '\n' ' ' < "$NR_DIR/repo.err" | cut -c1-200)" >&2
+            exit 42
+          fi
+          if ! grep -q '\[newrelic-infra\]' "$NR_DIR/agent-control.repo"; then
             echo "New Relic Agent Control is not available for this architecture {{.ARCH}}. See our documentation for installing manually https://docs.newrelic.com/docs/using-new-relic/cross-product-functions/install-configure/install-new-relic" >&2
             exit 131
           fi
 
-          curl -s $INFRA_REPO_URL -o /etc/yum.repos.d/newrelic-infra.repo
-          curl -s $AGENT_CONTROL_REPO_URL | sed 's/\[newrelic-infra]/\n[newrelic-agent-control]/g' >> /etc/yum.repos.d/newrelic-infra.repo
+          curl -fsSL $CA_OPT "$INFRA_REPO_URL" -o /etc/yum.repos.d/newrelic-infra.repo 2> "$NR_DIR/repo.err" && REPO_RC=0 || REPO_RC=$?
+          if [ $REPO_RC -ne 0 ]; then
+            echo "Could not download the New Relic infrastructure repository definition: $(tr '\n' ' ' < "$NR_DIR/repo.err" | cut -c1-200)" >&2
+            exit 42
+          fi
+          sed 's/\[newrelic-infra]/\n[newrelic-agent-control]/g' "$NR_DIR/agent-control.repo" >> /etc/yum.repos.d/newrelic-infra.repo
 
-          yum -y -q makecache --disablerepo='*' --enablerepo='newrelic-infra' --enablerepo='newrelic-agent-control'
+          yum -y -q $YUM_CA_OPT makecache --disablerepo='*' --enablerepo='newrelic-infra' --enablerepo='newrelic-agent-control'
           # newrelic-super-agent package on preview repository is conflicting with newrelic-agent-control whenever installation overrides infrastructure-agent or nr-dot.
           # The --exclude parameter discard the old super-agent package from the dependency resolution process.
-          yum -y -q install newrelic-agent-control-{{.NEW_RELIC_AGENT_VERSION}} --exclude=newrelic-super-agent
+          yum -y -q $YUM_CA_OPT install newrelic-agent-control-{{.NEW_RELIC_AGENT_VERSION}} --exclude=newrelic-super-agent
           
           # this is needed untile fluentbit is not supported by OCI
           if [ "{{.AMAZON_LINUX_VERSION}}" == "2" ] || [ "{{.AMAZON_LINUX_VERSION}}" == "2023" ] ; then
-            yum -y -q install fluent-bit
+            yum -y -q $YUM_CA_OPT install fluent-bit
           fi
       vars:
         DISTRO_VERSION:
@@ -303,3 +520,4 @@ install:
       cmds:
         - |
           echo "⚙️  New Relic Agent Control configuration file can be found in /etc/newrelic-agent-control/local-data/agent-control/local_config.yaml"
+          rm -rf /run/newrelic-agent-control-install
