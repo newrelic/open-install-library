@@ -123,18 +123,43 @@ install:
 
           Remove-Item $instancesJsonPath, $skipJsonPath -ErrorAction SilentlyContinue
 
-          if (-not (Test-Path $instancesFile)) {
-            Write-Host -ForegroundColor Red "Instances file not found: $instancesFile"
-            exit 131
+          # Exit 1 (not 131) for bad input files: the CLI reports 131 as "unsupported".
+          function Read-InputFile($path, $label) {
+            if ([string]::IsNullOrWhiteSpace($path)) {
+              Write-Host -ForegroundColor Red "$label file path was not provided."
+              exit 1
+            }
+            $parent = Split-Path -Path $path -Parent
+            if ($parent -and -not (Test-Path -Path $parent -PathType Container)) {
+              Write-Host -ForegroundColor Red "$label file folder not found: $parent (from path $path)"
+              exit 1
+            }
+            if (-not (Test-Path -Path $path)) {
+              Write-Host -ForegroundColor Red "$label file not found: $path"
+              exit 1
+            }
+            if (-not (Test-Path -Path $path -PathType Leaf)) {
+              Write-Host -ForegroundColor Red "$label path is a directory, not a file: $path. Provide the full path to the file."
+              exit 1
+            }
+            try {
+              $content = @(Get-Content -Path $path -ErrorAction Stop)
+            } catch {
+              Write-Host -ForegroundColor Red "Cannot read $label file ${path}: $($_.Exception.Message) Check that the file permissions allow the current user to read it."
+              exit 1
+            }
+            if (-not ($content | Where-Object { $_.Trim() })) {
+              Write-Host -ForegroundColor Red "$label file is empty: $path"
+              exit 1
+            }
+            return $content
           }
-          if (-not (Test-Path $secretsFile)) {
-            Write-Host -ForegroundColor Red "Secrets file not found: $secretsFile"
-            exit 131
-          }
+
+          $instancesLines = Read-InputFile $instancesFile "Instances"
 
           # Parses the fixed 3-key-per-item shape documented in preInstall.info
           # (host, port, login_name) - not a general-purpose YAML parser.
-          $lines = Get-Content $instancesFile
+          $lines = $instancesLines
           $instances = @()
           $current = $null
           foreach ($line in $lines) {
@@ -151,12 +176,13 @@ install:
 
           if ($instances.Count -eq 0) {
             Write-Host -ForegroundColor Red "No instances found in $instancesFile"
-            exit 131
+            exit 1
           }
           Write-Host "Found $($instances.Count) MSSQL instance(s) in $instancesFile"
 
+          $secretsLines = Read-InputFile $secretsFile "Secrets"
           $secrets = @{}
-          Get-Content $secretsFile | ForEach-Object {
+          $secretsLines | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { $secrets[$matches[1]] = $matches[2] }
           }
 
@@ -175,6 +201,13 @@ install:
               $skip["$idx"] = "invalid monitoring username '$loginName' in instances file"
               Write-Host -ForegroundColor Yellow "Instance $idx ($($instances[$i].host)) SKIPPED: invalid monitoring username '$loginName'"
             }
+          }
+
+          # Fail before installing anything if no instance can be monitored.
+          if ($skip.Count -ge $instances.Count) {
+            Write-Host -ForegroundColor Red "No MSSQL instance can be monitored. Skipped instances:"
+            foreach ($k in ($skip.Keys | Sort-Object { [int]$_ })) { Write-Host "  ${k}: $($skip[$k])" }
+            exit 1
           }
 
           ConvertTo-Json -InputObject $instances -Depth 5 | Set-Content -Path $instancesJsonPath
@@ -232,6 +265,13 @@ install:
           }
 
           $skip | ConvertTo-Json | Set-Content -Path $skipJsonPath
+
+          # Fail before installing anything if no instance can be monitored.
+          if ($skip.Count -ge $instances.Count) {
+            Write-Host -ForegroundColor Red "No MSSQL instance can be monitored. Skipped instances:"
+            foreach ($k in ($skip.Keys | Sort-Object { [int]$_ })) { Write-Host "  ${k}: $($skip[$k])" }
+            exit 1
+          }
           PS1EOF
           powershell -NoProfile -ExecutionPolicy Bypass -File "$NR_SCRIPT"
 
@@ -253,7 +293,7 @@ install:
           $ExistingService = Get-Service -Name $CollectorService -ErrorAction SilentlyContinue
 
           if ($ExistingService) {
-            Write-Host -ForegroundColor Yellow "NRDOT Collector is already installed."
+            Write-Host -ForegroundColor Yellow "NRDOT Collector is already installed. Nothing was changed on this host."
             Write-Host ""
             Write-Host "Please follow the steps below to complete the setup:"
             Write-Host ""
@@ -267,7 +307,8 @@ install:
             Write-Host "  3. After making the above changes, restart the NRDOT Collector:"
             Write-Host "     net stop nrdot-collector; net start nrdot-collector"
             Write-Host ""
-            exit 131
+            # Exit 1 (not 131) so the CLI doesn't label this host "unsupported".
+            exit 1
           }
 
           Write-Host "Installing nrdot-collector version: $LatestVersion"
